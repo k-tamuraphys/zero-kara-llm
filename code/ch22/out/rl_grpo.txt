@@ -1,0 +1,19 @@
+step    0  acc 0.870  (32s)
+           reward 0.805  signal 0.75  kl 0.0000
+step   10  acc 0.855  (159s)
+           reward 0.758  signal 0.69  kl 0.0111
+step   20  acc 0.890  (250s)
+           reward 0.664  signal 0.75  kl 0.0284
+step   30  acc 0.865  (341s)
+           reward 0.766  signal 0.75  kl 0.0133
+step   40  acc 0.885  (419s)
+           reward 0.844  signal 0.44  kl 0.0333
+step   50  acc 0.885  (489s)
+           reward 0.742  signal 0.88  kl 0.0401
+step   60  acc 0.865  (553s)
+           reward 0.781  signal 0.62  kl 0.0201
+step   70  acc 0.855  (577s)
+           reward 0.828  signal 0.56  kl 0.0106
+step   80  acc 0.905  (601s)
+total 601s
+saved /workspace/llm-textbook/code/checkpoints/ch22_rl.pt

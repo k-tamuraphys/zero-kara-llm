@@ -1,0 +1,1425 @@
+\chapter{言語モデル：次のトークンを予測する}\label{ch:lm}
+\bookmap{3}
+
+\begin{chapterlead}
+\textbf{ここまで}: データ・モデル・損失・最適化の 4 要素がそろえば学習ができること（\chapref{ch:ml}）、そしてニューラルネットワークを勾配降下法で学習させる方法（\chapref{ch:nn}、\chapref{ch:training}）を学びました。\\[1mm]
+\textbf{この章の問い}: 文章には、人が付けた正解ラベルがありません。
+ただの文章から、何を当てさせ、どんな損失を小さくすれば、言葉を学べるのでしょうか。そして、なぜその損失なのでしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 言語モデルを「文章に確率を割り当てるもの」と説明し、それを次トークン予測の掛け算に分解できます。
+\item 文章を 1 つずらすだけで入力と正解の組が作れること（自己教師あり学習）を説明できます。
+\item 目的関数を式で書き、それを選ぶ理由を三つの見方で説明できます。損失をパープレキシティに直して読めます。
+\item 漱石の文章を数えるだけで言語モデルを作り、同じものを勾配降下法でも作れます。
+\item 貪欲・温度・top-k・top-p の違いを説明し、文章を生成できます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:ml}の分類と交差エントロピー、\chapref{ch:nn}の学習ループを思い出せれば読めます。\chapref{ch:training}の Adam は、使う場所で説明します。
+\item[\rgmust] \secref{sec:lm-definition}〜\secref{sec:lm-objective}：言語モデルの定義、正解の作り方、損失とパープレキシティ。この先のすべての実験が、ここで決める損失と物差しを使います。
+\item[\rgmust] \secref{sec:lm-bigram-count}〜\secref{sec:lm-generation}：数えるモデルと勾配降下法のモデルが同じ答えに着くこと、表のモデルの限界、文章の書かせ方。\chapref{ch:embedding}以降の章の動機と土台です。
+\item[\rgskim] 上の節の中の六つの小節（\secref{sec:lm-objective}の「なぜこの損失なのか」の（2）と（3）、\secref{sec:lm-bigram-count}の「$\alpha$ を選ぶ」、\secref{sec:lm-bigram-nn}の「全データの損失を…」と「なぜ一致するのか」、\secref{sec:lm-generation}の「三つを一つの関数にまとめる」）：別の見方、導出、実装の細部です。押さえる結論は、見出しの下の札に書きました。
+\end{readingguide}
+
+\chapref{ch:intro}で、本書の基盤モデルは「どうも仕方が」の続きに「ない。」を確率 0.559 で予測しました。
+このモデルを学習させるのに使ったのは、夏目漱石の小説の文章だけです。
+ここで、\chapref{ch:ml}を思い出してください。
+学習には、入力と正解の組が必要でした。
+しかし小説には、「この入力の正解はこれ」と書いた札は、どこにも付いていません。
+モデルは、何を正解として学んだのでしょうか。
+
+手がかりは、次の遊びにあります。
+「吾輩は猫であ□」の□に入る文字は何でしょうか。
+多くの人が「る」と答えます。
+日本語を知っているからです。
+そして答え合わせは、元の文章を見るだけで済みます。
+\textbf{文章は、問題と正解の両方を、自分の中に持っている}のです。
+これが本章の出発点です。
+
+本章は、次の三つの問いに順に答えます。
+言葉を学ぶとは、何を学ぶことか（\secref{sec:lm-definition}）。
+正解はどこから来るのか（\secref{sec:lm-self-supervised}）。
+何を小さくするのか、それはなぜか（\secref{sec:lm-objective}）。
+そのあと、いちばん簡単な言語モデルを実際に作ります。
+数えて作り（\secref{sec:lm-bigram-count}）、同じものを勾配降下法で作り直し（\secref{sec:lm-bigram-nn}）、その限界を測り（\secref{sec:lm-ngram-limits}）、最後に文章を書かせます（\secref{sec:lm-generation}）。
+
+なお、本章では\textbf{1 文字を 1 トークン}として扱います。
+漱石のコーパスに現れる文字は 4,078 種類なので、語彙の大きさは $V=4078$ です（基盤モデルの 4096 とは別の数です）。
+文章をどう区切ってトークンにするかは、\chapref{ch:tokenizer}の主題です。
+
+\section{言語モデルとは何か：文章に確率を付ける}\label{sec:lm-definition}
+
+「言葉を知っている」とは、数学の言葉で言うと、どういうことでしょうか。
+この節では、それを確率で表し、扱える大きさの問題に分解します。
+
+\subsection*{自然な文には高い確率を}
+
+次の三つを見比べてください。
+\begin{center}
+(a) 吾輩は猫である。\qquad (b) 猫は吾輩である。\qquad (c) 輩猫はで吾ある。
+\end{center}
+(a) は自然な文です。(b) は少し変ですが、文にはなっています。(c) は日本語になっていません。
+私たちは、文法の規則を一つも思い出さなくても、この順位を付けられます。
+日本語を知っているモデルにも、同じことができてほしいところです。
+そこで、「自然さ」を数で表すことにします。
+ありそうな文章には大きな数を、ありそうにない文章には小さな数を割り当てるのです。
+全部の文章について合計が 1 になるように決めれば、この数は確率です（\secref{sec:math-prob}）。
+
+\begin{definition}[言語モデル]\label{def:lm-lm}
+トークンの列 $x_1,x_2,\dots,x_T$ のそれぞれに、それが現れる確率 $p(x_1,\dots,x_T)$ を割り当てるモデルを、\term{言語モデル}{language model}と呼びます。
+\end{definition}
+
+ところが、この確率を表にして覚えることはできません。
+8 文字の文章だけでも、$4078^{8}\approx 7.6\times10^{28}$ 通りあるからです（4,078 通りを 8 回掛けた数です）。
+ほとんどの文章は、世界のどこにも一度も書かれたことがありません。
+一度も見ていない文章にも、確率を付けなければならないのです。
+
+\subsection*{連鎖律で「次の 1 個」に分解する}
+
+ここで、\chapref{ch:math}の確率の連鎖律（式\eqref{eq:math-prob-chain}）が役に立ちます。
+同時確率は、条件付き確率の掛け算に、いつでも書き直せるのでした。
+2 個の場合は、$p(a,b)=p(a)\,p(b\mid a)$ です。
+「$a$ も $b$ も起きる」確率は、「$a$ が起きる確率」に「$a$ が起きたうえで $b$ が起きる確率」を掛けたもの、という意味でした。
+個数が増えても、同じ分け方を前から順に繰り返すだけです。
+「吾輩は猫」の 4 文字なら、次のとおりです（\figref{fig:lm-chain}）。
+\begin{equation*}
+p(\text{吾輩は猫})
+= p(\text{吾})\times p(\text{輩}\mid\text{吾})\times p(\text{は}\mid\text{吾輩})\times p(\text{猫}\mid\text{吾輩は})
+\end{equation*}
+一般の長さ $T$ では、こう書けます。$x_{<t}$ は、$t$ 番目より前のトークン $x_1,\dots,x_{t-1}$ のことでした。
+\begin{equation}
+p(x_1,\dots,x_T)=\prod_{t=1}^{T}p(x_t\mid x_{<t})
+\label{eq:lm-chain}
+\end{equation}
+これは近似ではなく、どんな確率分布でも成り立つ等式です。
+右辺の一つひとつは、「ここまでの文脈 $x_{<t}$ を見て、次のトークンが $x_t$ である確率」です。
+次に来るトークンの候補は $V$ 種類しかありません。
+つまり、$V^{T}$ 通りの文章に確率を付けるという途方もない問題が、「$V$ 個の候補から次の 1 個を当てる」という問題の繰り返しに変わりました。
+この問題を、\term{次トークン予測}{next-token prediction}と呼びます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=9.5mm,y=7.2mm]
+\foreach \r/\ctx/\tgt/\formula in {
+  0//吾/{$p(\text{吾})$},
+  1/吾/輩/{$p(\text{輩}\mid\text{吾})$},
+  2/{吾,輩}/は/{$p(\text{は}\mid\text{吾輩})$},
+  3/{吾,輩,は}/猫/{$p(\text{猫}\mid\text{吾輩は})$}}{
+  \foreach \c [count=\i from 0] in \ctx {
+    \node[tok,fill=figgray] at (\i,-\r) {\c};
+  }
+  \node[tok,draw=bookaccent,fill=figred,line width=0.8pt] at (\r,-\r) {\tgt};
+  \node[anchor=west,font=\small] at (5.2,-\r) {\formula};
+}
+\foreach \r in {0,1,2} \node[font=\small] at (4.6,-\r-0.5) {$\times$};
+\draw[decorate,decoration={brace,amplitude=4pt},thick,black!60] (9.3,0.35) -- (9.3,-3.35);
+\node[anchor=west,font=\small] at (9.6,-1.5) {$=p(\text{吾輩は猫})$};
+\end{tikzpicture}
+\caption{連鎖律による分解。文章全体の確率は、「文脈（灰色）を見て次の 1 個（赤）を当てる」確率を、先頭から順に掛けたものになる。}
+\label{fig:lm-chain}
+\end{figure}
+
+\subsection*{言語モデルは「次トークンの予測器」である}
+
+以上から、言語モデルを作るには、次の関数が一つあれば足ります。
+\begin{center}
+文脈 $x_{<t}$ \ $\longmapsto$\ 次のトークンの確率分布 $\ptheta(\,\cdot\mid x_{<t})$（$V$ 個の数。0 以上で、足すと 1）
+\end{center}
+縦棒の左の「$\cdot$」は、ここに $V$ 個のトークンのどれを入れてもよいという印で、分布全体を指します。
+添字の $\theta$ は、この関数がパラメータ $\vtheta$ を持ち、学習で決まることを表します。
+\chapref{ch:intro}で基盤モデルが出力した「ない。0.559、ないから 0.121、\dots」という一覧は、まさにこの分布でした。
+本書の残りで作るものは、突き詰めれば、すべてこの関数です。
+本章では、直前の 1 文字しか見ない単純な関数を使います。
+\chapref{ch:embedding}から\chapref{ch:transformer}で、これを Transformer に取り替えます。
+取り替わるのは関数の中身だけで、本章で学ぶ学習の枠組みは、最後まで変わりません。
+
+この関数が一つあれば、二つのことができます。
+一つは\textbf{採点}です。式\eqref{eq:lm-chain}のとおりに掛け算をすれば、どんな文章の確率も計算できます。
+もう一つは\textbf{生成}です。分布から次のトークンを 1 個選び、それを文脈に足して、また次を選びます（\secref{sec:lm-generation}）。
+なお、先頭の $p(x_1)$ には文脈がありません。
+実際には、書き出しを人が与えるか、「文章の始まり」を表す特別なトークンを文脈に置きます。
+
+言葉を学ぶとは、文章の確率分布を学ぶことであり、それは「文脈から次のトークンを予測する関数」を学ぶことと同じでした。
+
+\section{正解はどこから来るのか：自己教師あり学習}\label{sec:lm-self-supervised}
+
+次トークン予測は、$V$ 個の候補から 1 個を当てる問題です。
+これは、\secref{sec:ml-classification}で学んだ分類そのものです。
+分類は、決まった候補（クラス）の中から、入力に合う 1 個を選ぶ問題でした。
+分類の学習には、入力と正解の組がたくさん必要でした。
+この節の問いは、「その組を、誰が、どうやって用意するのか」です。
+
+\subsection*{文章を 1 つずらす}
+
+答えは、冒頭の遊びにありました。
+文章「吾輩は猫である。」を、\figref{fig:lm-shift}のように 1 文字ずらして並べます。
+上の段が入力、下の段が正解です。
+「吾」の次は「輩」、「吾輩」の次は「は」、「吾輩は」の次は「猫」と、位置ごとに問題と正解の組ができます。
+8 文字の文章から、7 組です。
+人は何も書き足していません。
+
+\begin{figure}[bp]
+\centering
+\begin{tikzpicture}[x=11mm,y=9mm]
+\node[lbl,anchor=east] at (-0.8,2.1) {元の文章};
+\node[lbl,anchor=east] at (-0.8,0.9) {入力（1〜7 文字目）};
+\node[lbl,anchor=east] at (-0.8,0) {正解（2〜8 文字目）};
+\foreach \c [count=\i from 0] in {吾,輩,は,猫,で,あ,る,。} \node[tok,fill=white] at (\i,2.1) {\c};
+\foreach \c [count=\i from 0] in {吾,輩,は,猫,で,あ,る} {
+  \node[tok,fill=figgray] (x\i) at (\i,0.9) {\c};
+  \draw[arr] (x\i) -- (\i,0.33);
+}
+\foreach \c [count=\i from 0] in {輩,は,猫,で,あ,る,。} \node[tok,draw=bookaccent,fill=figred] at (\i,0) {\c};
+\node[lbl,anchor=west] at (6.6,0.45) {次を当てる};
+\end{tikzpicture}
+\caption{入力と正解の作り方。元の文章を 1 つ左にずらしたものが、そのまま正解の列になる。各列が 1 個の予測問題で、実際の入力は、その位置までの文脈全体である（図には末尾の 1 文字だけを描いた）。}
+\label{fig:lm-shift}
+\end{figure}
+
+このように、データそのものから正解を作り出して学習する方法を、\term{自己教師あり学習}{self-supervised learning}と呼びます（\tabref{tab:ml-map}で予告しました）。
+「教師」、つまり正解を与える役を、データ自身が務めるという意味です。
+\tabref{tab:lm-supervised}で、\chapref{ch:ml}の教師あり学習と比べます。
+違うのは正解の出どころだけです。
+モデルも、損失も、勾配降下法も、分類のときと同じものが使えます。
+
+\begin{table}[tbp]
+\centering
+\caption{教師あり学習と、言語モデルの自己教師あり学習。違いは正解の出どころだけにある。}
+\label{tab:lm-supervised}
+\small
+\begin{tabularx}{\linewidth}{lXX}
+\toprule
+ & 教師あり学習（\chapref{ch:ml}） & 自己教師あり学習（言語モデル） \\
+\midrule
+入力 & 人が集めたデータ & 文章の、ある位置までの文脈 \\
+正解 & 人がデータ 1 個ずつに付ける & 文章の、その次のトークン \\
+用意の手間 & データの数に比例して増える & 文章を集めるだけ \\
+学習の計算 & 分類の損失を勾配降下法で小さくする & 同じ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{quiz}
+\coderef{code:lm-data}で使う訓練用の文章は 2,287,519 文字です。
+直前の 1 文字だけを入力とする場合、入力と正解の組はいくつ作れるでしょうか。
+\end{quiz}
+
+答えは 2,287,518 組です。
+最後の 1 文字には「次の文字」がないので、文字数より 1 だけ少なくなります。
+14 作品で約 229 万問、1 作品あたり平均で十数万問の問題集が、文章を集めただけでできました。
+
+\subsection*{なぜこれが決定的なのか}
+
+正解を人が付けなくてよいと、学習データの量の上限が外れます。
+世の中に書かれた文章は、すべてそのまま教材になるからです。
+\tabref{tab:lm-scale}に、規模を並べました。
+仮に 1 個 1 秒で正解を付けられる人がいても、15.6 兆個に付け終わるには約 50 万年かかります。
+1 年は $365\times24\times3600\approx3{,}150$ 万秒なので、15.6 兆 $\div$ 3,150 万 $\approx$ 50 万、という計算です。
+LLM が桁外れの量の文章で学習できるのは、自己教師あり学習だからです。
+
+\begin{table}[tbp]
+\centering
+\caption{学習に使う文章の量。本章の実験と、実際の LLM。トークンの区切り方が違うので、桁の比較として読む。}
+\label{tab:lm-scale}
+\small
+\begin{tabular}{lrl}
+\toprule
+モデル & 学習に使った量 & 備考 \\
+\midrule
+本章のバイグラムモデル & 約 229 万トークン & 漱石 14 作品。1 文字 = 1 トークン \\
+GPT-3\cite{brown2020language} & 約 3,000 億トークン & 本章の約 13 万倍 \\
+Llama 3.1 405B\cite{dubey2024llama3} & 約 15.6 兆トークン & 本章の約 680 万倍 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{学習中の入力は、いつも本物の文章}
+
+\figref{fig:lm-shift}には、もう一つ大事な約束が隠れています。
+入力の段に並んでいるのは、いつも\textbf{本物の文章}です。
+モデルが 3 文字目の予測を外しても、4 文字目を予測するときの文脈には、正しい 3 文字目を与えます。
+このやり方を\term{教師強制}{teacher forcing}と呼びます。
+先生が、生徒の答えに関係なく、正しい途中経過を見せ続けるようなものです。
+もしモデル自身の予測を次の入力にすると、3 文字目を外した時点で、4 文字目以降は問題そのものが変わってしまいます。
+データにある正解とは比べられなくなり、前の予測が済むまで、次の問題を作ることもできません。
+教師強制なら、どの問題も初めから決まっています。だから、文章の中の予測問題を、互いに独立に、まとめて計算できます。
+文章を生成するときは事情が違います。その違いは\secref{sec:lm-generation}で扱います。
+
+\begin{caution}{「自己教師あり」は、正解なしの学習ではない}
+人がラベルを付けないので、正解のない学習だと誤解されがちです。
+しかし、どの予測にも、はっきりした正解（実際に次に来たトークン）があります。
+計算の中身は、教師あり学習の分類と同じです。
+\end{caution}
+
+正解は、文章自身から来ます。1 つずらすだけで、文章の全位置が問題と正解の組になります。
+
+\section{何を小さくするのか、それはなぜか：目的関数}\label{sec:lm-objective}
+
+データと正解がそろいました。
+学習の 4 要素（\figref{fig:ml-four-elements}）のうち、次に決めるのは損失です。
+この節の問いは二つです。
+モデルの良し悪しを、どんな 1 個の数で測るのか。
+そして、なぜその数でなければならないのか。
+
+\subsection*{正解に付けた確率を見る}
+
+12 文字の小さな文章で考えます。
+\begin{center}
+すもももももももものうち
+\end{center}
+直前の 1 文字から次の文字を予測するモデルを、仮に\tabref{tab:lm-toy}の右のように決めたとします。
+「も」の次は確率 $7/8$ で「も」、確率 $1/8$ で「の」と予測する、というモデルです。
+この数は、左の回数から作りました。
+「も」の後には 8 回の続きがあり、そのうち 7 回が「も」、1 回が「の」だったからです。
+
+\begin{table}[tbp]
+\centering
+\caption{「すもももももももものうち」の中で、ある文字（行）の次にある文字（列）が来た回数（左）と、それを行ごとの合計で割った確率（右）。空欄は 0。}
+\label{tab:lm-toy}
+\small
+\begin{tabular}{c|cccc|c}
+\toprule
+前＼次 & も & の & う & ち & 合計 \\
+\midrule
+す & 1 &  &  &  & 1 \\
+も & 7 & 1 &  &  & 8 \\
+の &  &  & 1 &  & 1 \\
+う &  &  &  & 1 & 1 \\
+\bottomrule
+\end{tabular}
+\qquad
+\begin{tabular}{c|cccc}
+\toprule
+前＼次 & も & の & う & ち \\
+\midrule
+す & 1 &  &  &  \\
+も & $7/8$ & $1/8$ &  &  \\
+の &  &  & 1 &  \\
+う &  &  &  & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+このモデルに、文章の 11 回の予測を順にさせます。
+そのたびに、\textbf{実際に次に来た文字に、モデルが付けていた確率}を見ます。
+確率が高ければ、よい予測です。
+\chapref{ch:math}で学んだように、確率 $p$ の出来事が起きたときの「驚き」は $-\log p$ でした（情報量、\secref{sec:math-info}）。
+確率 1 なら驚きは 0、確率が小さいほど驚きは大きくなります。
+\figref{fig:lm-toy}(a) が、11 回の驚きです。
+「も」の次が「も」だった 7 回は $-\log(7/8)=0.134$、「も」の次が「の」だった 1 回は $-\log(1/8)=2.079$、残りの 3 回は 0 です。
+平均すると、
+\begin{equation*}
+\frac{7\times0.134+2.079+3\times0}{11}=0.274
+\end{equation*}
+になります。この「驚きの平均」が、言語モデルの損失です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.55\linewidth,height=37mm,ybar,bar width=2.6mm,ymin=0,ymax=2.6,
+  xmin=0.3,xmax=11.7,xtick={1,...,11},xticklabels={も,も,も,も,も,も,も,も,の,う,ち},
+  xlabel={実際に次に来た文字（2〜12 文字目）},ylabel={$-\log p$},xmajorgrids=false,
+  title={(a) 11 回の予測の「驚き」},title style={font=\small,yshift=-1mm}]
+\addplot[fill=figred,draw=bookaccent] coordinates {(1,0) (2,0.134) (3,0.134) (4,0.134) (5,0.134) (6,0.134) (7,0.134) (8,0.134) (9,2.079) (10,0) (11,0)};
+\draw[dashed,bookblue,thick] (axis cs:0.3,0.274) -- (axis cs:11.7,0.274);
+\node[font=\scriptsize,text=bookblue,anchor=south west] at (axis cs:0.4,0.28) {平均 0.274};
+\node[font=\scriptsize,anchor=south] at (axis cs:5.7,0.3) {0.134 が 7 回};
+\node[font=\scriptsize,anchor=south] at (axis cs:9,2.079) {2.079};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.45\linewidth,height=37mm,xmin=0.3,xmax=1,ymin=0.2,ymax=0.7,
+  xlabel={$\theta$（「も」の次が「も」の確率）},ylabel={損失},
+  title={(b) $\theta$ を変えたときの損失},title style={font=\small,yshift=-1mm}]
+\addplot[bookblue,domain=0.3:0.995,samples=120] {-(7*ln(x)+ln(1-x))/11};
+\addplot[only marks,mark=*,bookaccent] coordinates {(0.875,0.274)};
+\node[font=\scriptsize,anchor=south,text=bookaccent] at (axis cs:0.83,0.3) {$\theta=7/8$};
+\end{axis}
+\end{tikzpicture}
+\caption{手計算の例。(a) 位置ごとの $-\log p$。1 回だけ現れた「も→の」が大きい。(b)「も」の行の確率を $(\theta,1-\theta)$ に変えると、損失は $\theta=7/8$、つまり回数の割合のときに最小になる。}
+\label{fig:lm-toy}
+\end{figure}
+
+\begin{definition}[言語モデルの損失]\label{def:lm-loss}
+訓練用の文章の中にある $N$ 個の予測問題について、正解のトークンに付けた確率の $-\log$ を平均したものを、損失とします。
+\begin{equation}
+\calL(\vtheta)=-\frac{1}{N}\sum_{t=1}^{N}\log\ptheta(x_t\mid x_{<t})
+\label{eq:lm-loss}
+\end{equation}
+\end{definition}
+
+先頭の 1 文字は予測しないので、$N$ は文字数より 1 だけ少なくなります（「すもも」では $N=11$）。
+式の $t$ は予測問題の通し番号で、$x_t$ がその正解、$x_{<t}$ がその文脈です。
+
+これは新しい式ではありません。
+\chapref{ch:pytorch}で自作した交差エントロピー（式\eqref{eq:pt-ce}）、\chapref{ch:ml}の交差エントロピー損失（定義\ref{def:ml-cross-entropy}）と同じものです。
+$V$ クラスの分類を、文章の全位置で行い、その損失を平均しているだけです。
+学習とは、この $\calL(\vtheta)$ が小さくなるように $\vtheta$ を動かすことです。
+\coderef{code:lm-toy}で、手計算を確かめておきます。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{12 文字の文章で、回数から確率を作り、損失を計算する}{code:lm-toy}{ch06/toy_bigram.py}{toy}
+\outputfile{ch06/out/toy_bigram.txt}
+
+2 行目の \code{zip(text[:-1], text[1:])} が、\figref{fig:lm-shift}の「1 つずらす」です。
+5〜7 行目では、同じものの個数を数える \code{Counter} で組の回数と行の合計を求め、割り算で確率を作っています。
+11〜12 行目が式\eqref{eq:lm-loss}で、手計算と同じ 0.2740 になりました。
+
+\subsection*{なぜこの損失なのか（1）：訓練の文章を、最もありそうにする}
+
+式\eqref{eq:lm-loss}は、どこから来たのでしょうか。
+一つ目の答えは、\secref{sec:math-mle}の最尤推定です。
+最尤推定は、「手元のデータが出てくる確率（尤度）が最も高くなるように、パラメータを選ぶ」という原理でした。
+コインを 10 回投げて表が 7 回なら、表の確率は $7/10$ と見積もるのが最もよい、という話です。
+
+言語モデルにとってのデータは、訓練用の文章です。
+先頭の 1 文字を与えたとき、モデルが残りの文章全体に付ける確率は、連鎖律（式\eqref{eq:lm-chain}）より $\prod_{t}\ptheta(x_t\mid x_{<t})$ です。
+これを最大にしたいのですが、小さな数の掛け算は扱いにくいので、対数をとります。
+1 より小さい数を 229 万個も掛けると、コンピュータの中では 0 に丸められてしまうからです（\secref{sec:math-mle}のアンダーフロー）。
+対数をとると、掛け算は足し算になります。
+しかも $\log$ は増加関数なので、対数をとっても、最大になる $\vtheta$ の場所は変わりません。
+最大化を最小化に直すために正負を入れ替え、$N$ で割ると、
+\begin{equation*}
+-\frac{1}{N}\log\prod_{t=1}^{N}\ptheta(x_t\mid x_{<t})=-\frac{1}{N}\sum_{t=1}^{N}\log\ptheta(x_t\mid x_{<t})=\calL(\vtheta)
+\end{equation*}
+となり、式\eqref{eq:lm-loss}が出てきました。
+$N$ で割るのは、文章の長さによらない「予測 1 回あたり」の数にするためです。定数で割っても、最小になる場所は変わりません。
+\textbf{損失を最小にすることは、訓練の文章の確率を最大にすることと同じ}です。
+この損失を、負の対数尤度とも呼びます（式\eqref{eq:math-nll}）。
+
+小さな例で確かめます。
+\tabref{tab:lm-toy}の「も」の行を、$(7/8,\,1/8)$ ではなく $(\theta,\,1-\theta)$ としてみます。
+驚きは、「も」の次が「も」だった 7 回が $-\log\theta$、「の」だった 1 回が $-\log(1-\theta)$、残りの 3 回が 0 です。
+したがって、損失は $-\{7\log\theta+\log(1-\theta)\}/11$ です。
+\figref{fig:lm-toy}(b) のとおり、これは $\theta=7/8$ で最小になります。
+$\log\theta$ の微分は $1/\theta$、$\log(1-\theta)$ の微分は $-1/(1-\theta)$ なので、損失を微分して 0 と置くと $7/\theta=1/(1-\theta)$ となります。
+両辺に $\theta(1-\theta)$ を掛けると $7(1-\theta)=\theta$、つまり $7=8\theta$ で、$\theta=7/8$ が出ます。コインの $7/10$ と同じ計算です。
+\textbf{回数を数えて割った確率は、損失を最小にする確率だった}のです。
+この事実は、\secref{sec:lm-bigram-count}と\secref{sec:lm-bigram-nn}で主役になります。
+
+\subsection*{なぜこの損失なのか（2）：現実の言葉の分布に近づく}
+\skimread{結論は二つです。損失を下げることは、モデルの分布を、現実の言葉の分布に近づけることと同じです。そして、まだ見ていない文章での損失は、どんなモデルでも 0 にはなりません。}
+
+残りの二つは、同じ損失を別の角度から見たものです。
+（1）が分かっていれば先へ進めるので、気楽に読んでください。
+
+二つ目の答えは、\secref{sec:math-info}の交差エントロピーです。
+ある文脈の次に来るトークンが、世の中の文章で実際に従っている分布を $\pdata$ と書きます。
+訓練の文章は、$\pdata$ から取り出したサンプルです。
+サンプルについての $-\log\ptheta$ の平均は、データが増えると、$\pdata$ と $\ptheta$ の交差エントロピーに近づきます（式\eqref{eq:math-mle-ce}）。
+そして交差エントロピーは、次のように二つに分かれるのでした。
+\begin{equation}
+\underbrace{H(\pdata,\ptheta)}_{\text{損失が近づく先}}
+=\underbrace{H(\pdata)}_{\text{言葉そのものの予測しにくさ}}+\underbrace{\KL{\pdata}{\ptheta}}_{\text{モデルのずれ}}
+\label{eq:lm-decomp}
+\end{equation}
+エントロピー $H(\pdata)$ は、本当の分布を知っていても残る、驚きの平均です。
+KL ダイバージェンスは、分布を取り違えたせいで余計に払う驚きで、0 以上になります。
+小さな例で数にしてみます。
+「も」の次は、本当は確率 $7/8$ で「も」、$1/8$ で「の」だとします。
+モデルが「半々」と答えると、どちらが来ても正解に付けていた確率は $1/2$ なので、損失は $-\log(1/2)=\log 2=0.693$ です。
+本当の確率を答えたときの損失は $\frac{7}{8}\times0.134+\frac{1}{8}\times2.079=0.377$ で、これが $H(\pdata)$ です（0.134 と 2.079 は、前に計算した驚きです）。
+差の $0.693-0.377=0.316$ が KL、つまりモデルのずれの分です。
+
+第 1 項は、モデルと関係のない定数です。
+したがって、損失を小さくすることは、第 2 項、つまり\textbf{モデルと現実のずれ}を小さくすることです。
+ここから、二つのことが分かります。
+
+第一に、\textbf{まだ見ていない文章での損失は、0 にはなりません}。
+「吾輩は」の次に来る文字は、一つに決まっていないからです。
+どんなに賢いモデルでも、平均して $H(\pdata)$ より下には行けません。
+訓練に使った文章だけは別で、丸暗記すれば損失をいくらでも下げられます（\secref{sec:lm-ngram-limits}で実際に起きます）。
+第二に、\textbf{正直な確率を言うのが最善}です。
+\figref{fig:lm-toy}(b) で、$\theta$ を 1 に近づけると損失は跳ね上がります。
+「も」の次は必ず「も」だと言い切ると、1 回だけ現れた「の」で無限大の驚きを受けるからです。
+この損失は、当てずっぽうの断言を罰し、確率を現実の割合に合わせたときに最小になります。
+
+\subsection*{なぜこの損失なのか（3）：文章を短く圧縮できる}
+\skimread{結論は「次のトークンをうまく予測できるモデルは、文章を短く圧縮できるモデルでもある」です。損失を $\log 2=0.693$ で割ると、1 トークンを書き表すのに要るビット数になります。}
+
+三つ目の見方は、情報理論から来ます\cite{shannon1948mathematical}。
+ここでの「符号」は、文字を 0 と 1 の並びで表す決まりのことです（正負の意味ではありません）。
+4 種類の文字が確率 $1/2,\,1/4,\,1/8,\,1/8$ で現れるなら、順に「0」「10」「110」「111」と決めると無駄がありません。
+長さは 1, 2, 3, 3 ビットで、どれも $-\log_2 p$ に一致します。
+一般に、確率 $p$ の出来事は、およそ $-\log_2 p$ ビットで表せることが知られています。
+よく起きることには短い符号を、珍しいことには長い符号を割り当てるのです。
+すると、損失はそのまま「1 トークンを書き表すのに必要な平均の長さ」になります。
+次のトークンをうまく予測できるモデルは、文章を短く圧縮できるモデルでもあります。
+たとえば、\secref{sec:lm-bigram-count}で作る「直前の 1 文字から次を予測するモデル」の損失は 3.58 です。
+$\log_2 x=\log x/\log 2$ なので、ビットに直すと $3.58/\log 2=5.2$ ビットです。
+4,078 種類の文字を区別なく符号にすると $\log_2 4078=12.0$ ビット要るので、半分以下に縮むことになります。
+
+\begin{figure}[bp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[box,minimum width=44mm,minimum height=10mm,line width=0.9pt] (L) at (0,0) {損失 $\calL(\vtheta)$ を小さくする};
+\node[greenbox,text width=33mm,minimum height=11mm] (a) at (-43,17) {訓練の文章の確率を\\最大にする（最尤推定）};
+\node[orangebox,text width=33mm,minimum height=11mm] (b) at (0,17) {現実の分布とのずれ\\（KL）を小さくする};
+\node[purplebox,text width=33mm,minimum height=11mm] (c) at (43,17) {文章を短い符号に\\圧縮する};
+\draw[arr,<->] (a.south) -- (L.north west);
+\draw[arr,<->] (b) -- (L);
+\draw[arr,<->] (c.south) -- (L.north east);
+\end{tikzpicture}
+\caption{一つの損失の、三つの読み方。どれも同じ式\eqref{eq:lm-loss}を別の角度から見たものである。}
+\label{fig:lm-why}
+\end{figure}
+
+\figref{fig:lm-why}に、三つの見方をまとめました。
+
+\subsection*{次の 1 個を当てるだけで、なぜ賢くなれるのか}
+
+なぜ「次の 1 個の予測」だけで、モデルは賢くなれるのでしょうか。
+\chapref{ch:intro}で直感として述べたことを、ここで言い直します。
+手がかりは、（2）の式\eqref{eq:lm-decomp}です。
+損失は、「言葉そのものの予測しにくさ」と「モデルと現実のずれ」の和でした。
+前者はモデルを変えても動かないので、損失を下げ切るには、後者のずれを 0 にするしかありません。
+
+\begin{intuition}{損失を下げ切るには、言葉の背後にあるものが要る}
+損失は、\textbf{あらゆる文章の、あらゆる位置}での平均です。
+「彼は傘を持って出かけた。外は」の次を当てるには、常識が要ります。
+「12+35=」の次を当てるには、計算が要ります。
+式\eqref{eq:lm-decomp}より、損失が下限に届くのは、すべての文脈でモデルの分布が現実の分布に一致したときだけです。
+現実の分布は、文法にも、事実にも、話の筋にも左右されます。だから、予測に役立つものは何であれ、身につければ損失が下がります。
+勾配降下法は、損失が下がる向きにパラメータを動かすので、モデルはそれらを少しずつ取り込んでいきます。
+ただし、これは「どこまでも賢くなる」という保証ではありません。
+どこまで届くかは、モデルの大きさとデータの量で決まります。本章の小さなモデルが届くのは、文字の並びの癖までです。
+\end{intuition}
+
+\subsection*{損失の物差し：基準線とパープレキシティ}
+
+損失の値を見て、良いのか悪いのかを判断するには、物差しが要ります。
+まず、\textbf{何も知らないモデル}を考えます。
+どのトークンにも同じ確率 $1/V$ を付けるモデルです（この分布を一様分布と呼びます）。
+その損失は、どの位置でも $-\log(1/V)=\log V$ です。
+本章の $V=4078$ では $\log 4078=8.31$ になります。
+学習したモデルの損失は、これより小さくなければなりません。
+比べる相手になる、このような単純な方法の成績を、\jterm{基準線}と呼びます。
+
+次に、損失を直感的な数に直します。
+もしモデルが、毎回 $k$ 個の候補に同じ確率 $1/k$ を付け、正解がその中にあるなら、正解に付けた確率は毎回 $1/k$ です。
+損失は $-\log(1/k)=\log k$ になります。
+これを逆向きに使います。$\log k=\calL$ を $k$ について解くと、$k=e^{\calL}$ です。
+つまり、損失 $\calL$ のモデルは、$e^{\calL}$ 個の候補で迷っているのと同じ、と読めます。
+
+\begin{definition}[パープレキシティ]\label{def:lm-ppl}
+損失 $\calL$ の指数 $e^{\calL}$ を、\term{パープレキシティ}{perplexity}と呼びます。
+「平均して何択の問題で迷っているか」を表します。
+\end{definition}
+
+何も知らないモデルは $e^{\log V}=V$ で、4,078 択です。
+「すもも」の例は $e^{0.274}=1.3$ で、ほぼ 1 択です。
+\figref{fig:lm-ppl}に、損失とパープレキシティの対応と、本章でこのあと測る値を並べました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=12.1mm,y=1mm]
+\draw[thick,black!70] (0,0) -- (9,0);
+\foreach \x in {0,...,9} {\draw[black!70] (\x,0) -- (\x,-1.5); \node[font=\footnotesize,anchor=north] at (\x,-1.5) {\x};}
+\node[lbl,anchor=west] at (9.15,-3.2) {損失};
+\foreach \p/\x in {1/0,2/0.693,5/1.609,10/2.303,20/2.996,50/3.912,100/4.605,1000/6.908,4078/8.313} {
+  \draw[bookblue] (\x,0) -- (\x,1.5); \node[font=\footnotesize,anchor=south,text=bookblue] at (\x,1.5) {\p};}
+\node[lbl,anchor=west,text=bookblue] at (9.15,3.4) {何択か};
+\foreach \x/\t/\h in {0.274/{「すもも」の例 1.3}/9.5,3.581/{直前の 1 文字を見る 35.9}/14,5.199/{文字の出やすさだけ 181}/9.5,8.313/{何も知らない 4078}/14} {
+  \draw[arr,bookaccent] (\x,\h) -- (\x,6.5);
+  \node[font=\footnotesize,text=bookaccent,anchor=south] at (\x,\h) {\t};}
+\end{tikzpicture}
+\caption{損失（下の目盛り）とパープレキシティ（上の目盛り）。損失が 1 下がるごとに、迷う候補の数は約 $1/2.7$ になる。赤は本章の測定値で、中の二つは\secref{sec:lm-bigram-count}で作るモデルである。}
+\label{fig:lm-ppl}
+\end{figure}
+
+\begin{quiz}
+あるモデルが、1 か所目では正解に確率 $1/2$ を、2 か所目では正解に確率 $1/8$ を付けました。
+この 2 か所での損失とパープレキシティを求めてください。$\log 2=0.693$ です。
+\end{quiz}
+
+$\log 8=3\log 2=2.079$ なので、損失は $(\log 2+\log 8)/2=(0.693+2.079)/2=1.386$、パープレキシティは $e^{1.386}=4$ です。
+2 択と 8 択の平均は 5 択ではなく、4 択になりました。
+$\log$ の平均をとってから指数に戻すので、掛け算の平均 $\sqrt{2\times8}=4$ になるのです。
+
+\begin{caution}{パープレキシティは、トークンの単位が同じときだけ比べられる}
+パープレキシティは「1 トークンあたり」の数です。
+1 文字を 1 トークンとするモデルと、数文字をまとめて 1 トークンとするモデルでは、1 回の予測の重みが違います。
+区切り方の違うモデルを比べるときは、1 文字あたりに直すなど、単位をそろえる必要があります（\secref{sec:lm-ngram-limits}で実際に行います）。
+\end{caution}
+
+目的関数は「正解に付けた確率の $-\log$ の平均」です。
+それは、訓練の文章を最もありそうにし、現実の分布に近づき、文章を短く圧縮することと同じでした。
+
+\subsection*{ここまでの道のり}
+
+\begin{itemize}
+\item 言語モデルは文章に確率を付けるモデルで、連鎖律により、次トークンの予測器が一つあれば作れます。
+\item 正解は文章自身から来ます（自己教師あり学習）。損失は、正解に付けた確率の $-\log$ の平均です。
+\item 残るのは、実際にモデルを作ることです。ここからは、漱石の文章で手を動かします。
+\end{itemize}
+
+\section{数えるだけで作る言語モデル：バイグラム}\label{sec:lm-bigram-count}
+
+枠組みは整いました。
+足りないのはモデル、つまり「文脈から次のトークンの分布を出す関数」です。
+この節の問いは、「いちばん簡単な言語モデルはどう作れるか、その損失はいくつか」です。
+
+\subsection*{直前の 1 文字だけを見る}
+
+長い文脈を扱うのは難しいので、思い切って、直前の 1 トークンだけを見ることにします。
+\begin{equation}
+p(x_t\mid x_{<t})\approx p(x_t\mid x_{t-1})
+\label{eq:lm-bigram}
+\end{equation}
+2 個以上前を捨てると決めただけで、近いという保証はありません。どのくらい損をするかは、あとで測ります。
+隣り合う 2 個の組だけを使うので、\term{バイグラム}{bigram}モデルと呼びます。
+このモデルの中身は、1 枚の表です。
+行 $a$、列 $b$ のマスに、$p(b\mid a)$、つまり「文字 $a$ の次が文字 $b$ である確率」を入れます。
+\tabref{tab:lm-toy}の右の表の、大きな版です。
+マスの数は $V\times V=4078^{2}=16{,}630{,}084$ 個で、これがこのモデルのパラメータです。
+
+表の中身は、どう決めればよいでしょうか。
+前節で見たとおり、損失を最小にするのは、回数の割合でした。
+文字 $a$ の次に文字 $b$ が来た回数を $C_{ab}$、その行の合計を $C_a=\sum_{b}C_{ab}$ と書くと、
+\begin{equation}
+p(b\mid a)=\frac{C_{ab}}{C_a}
+\label{eq:lm-count}
+\end{equation}
+です（一般の場合の証明は、演習\ref{ex:lm-mle}で扱います）。
+勾配降下法は要りません。数えるだけで、学習が終わります。
+
+\subsection*{データを用意して、数える}
+
+\coderef{code:lm-data}が、データの準備です。
+\code{load_corpus} は、本書のコーパス（漱石の 14 作品）を 1 本の文字列として返します。
+末尾の 5\% は、検証データとして取り分けます（\secref{sec:ml-generalization}）。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{文章を番号の列に直し、入力と正解を作る}{code:lm-data}{ch06/bigram_count.py}{data}
+\outputfile{ch06/out/bigram_count_1.txt}
+
+3〜5 行目で、文字に 0 から 4077 までの番号を振っています（\code{set} で重複を除き、\code{sorted} で並べた順です）。
+8〜9 行目の \code{encode} は、文字列を番号のテンソルに直す関数で、12 行目で訓練用と検証用の文章に使っています。
+13 行目が、\figref{fig:lm-shift}の「1 つずらす」です。
+\code{train[:-1]} は最後の 1 個を除いた列、\code{train[1:]} は最初の 1 個を除いた列なので、同じ位置を見比べると「ある文字」と「その次の文字」になります。
+自己教師あり学習のデータ作りは、この 1 行で終わりです。
+実行結果には、冒頭の章番号を飛ばして、4 文字目からの 8 組を表示しました（表示の部分は省いています）。
+入力の先頭は、段落の始めの全角の空白です。空白や改行も、1 個の文字として扱います。
+
+次に、組を数えます（\coderef{code:lm-count}）。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{組の回数を数え、行ごとに割って確率の表を作る}{code:lm-count}{ch06/bigram_count.py}{count}
+\outputfile{ch06/out/bigram_count_2.txt}
+
+2 行目の \code{C} が回数の表 $C_{ab}$ です。
+素朴に書くなら、組 \code{(a, b)} を 1 個ずつ取り出して \code{C[a, b] += 1} とする \code{for} 文です。
+229 万回の繰り返しは Python では遅いので、同じことを一度に行っています（\figref{fig:lm-bincount}）。
+\code{torch.bincount} は、番号の列を受け取り、0 番が何個、1 番が何個、と番号ごとの個数を返す関数です。
+そこで、組 $(a,b)$ に通し番号 $aV+b$ を振ります（コードの \code{x * V + y}）。
+$V=3$ なら、組 $(1,2)$ は $1\times3+2=5$ 番です。違う組には、必ず違う番号が付きます。
+$b$ は 0 から $V-1$ までなので、$a$ が 1 増えるたびに番号が $V$ ずつ進み、重ならないからです。
+\code{minlength=V * V} は、結果の長さを $V^{2}$ 個にそろえる指定です（指定しないと、現れたうちで最大の番号までしか返りません）。
+数えた結果は長さ $V^{2}$ の列なので、\code{view(V, V)} で $V$ 行 $V$ 列の表に並べ直します。
+通し番号 $aV+b$ の個数は、ちょうど $a$ 行 $b$ 列のマスに入ります。
+約 229 万個の組を数えるのに、1 秒もかかりません。
+8 行目が式\eqref{eq:lm-count}で、各行をその行の合計で割っています（\code{keepdim=True} とブロードキャストは\secref{sec:pt-broadcast}）。
+\code{clamp(min=1)} は、1 より小さい値を 1 に取り替えます。訓練データにない文字の行は合計が 0 なので、0 で割らないための用心です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[lbl,anchor=east] at (31,20) {前の文字 $a$（\texttt{x}）};
+\node[lbl,anchor=east] at (31,14) {次の文字 $b$（\texttt{y}）};
+\node[lbl,anchor=east] at (31,5) {通し番号 $3a+b$};
+\foreach \a/\b/\n [count=\i from 0] in {0/1/1,1/2/5,2/1/7,1/2/5,2/1/7,1/0/3} {
+  \ifnum\n=5
+    \node[cell,fill=figred] at (36+\i*6,20) {\a};
+    \node[cell,fill=figred] at (36+\i*6,14) {\b};
+    \node[cell,fill=figred] at (36+\i*6,5) {\n};
+  \else
+    \node[cell,fill=figgray] at (36+\i*6,20) {\a};
+    \node[cell,fill=figgray] at (36+\i*6,14) {\b};
+    \node[cell,fill=figorange] at (36+\i*6,5) {\n};
+  \fi
+  \draw[->,black!60] (36+\i*6,10.6) -- (36+\i*6,8.4);
+}
+\draw[arr] (51,1.6) -- node[right,font=\footnotesize] {\texttt{bincount}（番号ごとに数える）} (51,-2.6);
+\node[lbl,anchor=east] at (16,-5) {番号};
+\node[lbl,anchor=east] at (16,-10) {個数};
+\foreach \v [count=\j from 0] in {0,1,0,1,0,2,0,2,0} {
+  \node[font=\scriptsize,text=bookgray] at (21+\j*6,-5) {\j};
+  \ifnum\j=5 \node[cell,fill=figred] at (21+\j*6,-10) {\v};
+  \else\ifnum\v=0 \node[cell,fill=white] at (21+\j*6,-10) {\v};
+  \else \node[cell,fill=figorange] at (21+\j*6,-10) {\v};\fi\fi
+}
+\draw[arr] (72.5,-10) -| node[pos=0.25,above,font=\footnotesize] {\texttt{view(3, 3)}} (102,4.6);
+\node[font=\scriptsize,text=bookgray] at (89.5,25.5) {$a$＼$b$};
+\foreach \c in {0,1,2} \node[font=\scriptsize,text=bookgray] at (96+\c*6,25.5) {\c};
+\foreach \r/\row in {0/{0,1,0},1/{1,0,2},2/{0,2,0}} {
+  \node[font=\scriptsize,text=bookgray] at (90.5,20-\r*6) {\r};
+  \foreach \v [count=\c from 0] in \row {
+    \ifnum\v=0 \node[cell,fill=white] at (96+\c*6,20-\r*6) {\v};
+    \else \node[cell,fill=figorange] at (96+\c*6,20-\r*6) {\v};\fi
+  }
+}
+\node[cell,fill=figred] at (108,14) {2};
+\end{tikzpicture}
+\caption{\texttt{bincount} で組を数える流れ（$V=3$ の小さな例）。
+組 $(a,b)$ に通し番号 $3a+b$ を振り、番号ごとの個数を数え、3 行 3 列（行が $a$、列が $b$）に並べ直す。
+赤の組 $(1,2)$ は通し番号 5 で、2 個あるので、表の $a=1$、$b=2$ のマスが 2 になる。}
+\label{fig:lm-bincount}
+\end{figure}
+
+結果を見てみましょう。
+実行結果の 2 行目からは、四つの文字について、次に来る確率が高い順に 5 文字を並べました（この表示のコードは省いています）。
+「っ（52,476 回）→ た 0.460」は、「っ」が 52,476 回現れ、その次が「た」だった割合が 0.460 という意味です。
+小さい「っ」の次は、86\% が「た」か「て」です（$0.460+0.403=0.863$）。
+「言った」「思って」のような形を、モデルは数えるだけで見つけました。
+「吾」の次は 63\% が「輩」です。
+一方、「の」の次は、いちばん多い「で」でも 5\% しかなく、広く散らばっています。
+\figref{fig:lm-heat}は、よく出る 12 文字について表の一部を色で示したものです。
+1,663 万個のマスのうち、1 回でも現れた組は 108,034 個、全体の 0.65\% しかありません。
+表のほとんどは 0 です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=62mm,height=53mm,enlargelimits=false,xmin=-0.5,xmax=11.5,ymin=-0.5,ymax=11.5,axis on top,grid=none,
+  y dir=reverse,xtick={0,...,11},ytick={0,...,11},
+  xticklabels={っ,し,な,あ,で,こ,た,て,い,る,の,。},yticklabels={っ,し,な,あ,で,こ,た,て,い,る,の,。},
+  tick style={draw=none},xticklabel pos=top,
+  xlabel={次の文字 $b$},ylabel={前の文字 $a$},
+  colormap={cnt}{color(0)=(white) color(1)=(bookblue)},point meta min=0,point meta max=0.5,
+  colorbar,colorbar style={width=2.5mm,ytick={0,0.25,0.5},tick label style={font=\scriptsize}}]
+\addplot[matrix plot*,mesh/cols=12,point meta=explicit]
+  table[col sep=comma,x=j,y=i,meta=p]{code/ch06/out/bigram_heat.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{数えて作った確率の表 $p(b\mid a)$ の一部（実測）。色が濃いほど確率が高い。
+「っ」の行は「た」「て」に、「あ」の行は「る」に、「た」「る」の行は「。」に集中している。「の」の行はどこも薄い。}
+\label{fig:lm-heat}
+\end{figure}
+
+\subsection*{損失を測る：無限大という事故}
+
+このモデルの損失を、式\eqref{eq:lm-loss}のとおりに測ります（\coderef{code:lm-loss}）。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{表のモデルの損失}{code:lm-loss}{ch06/bigram_count.py}{loss}
+\outputfile{ch06/out/bigram_count_3.txt}
+
+4 行目の \code{P[a, b]} は、番号の列 \code{a} と \code{b} を使って、各組の確率をまとめて取り出しています（番号のテンソルを二つ並べる取り出し方は、\secref{sec:pt-final}の\figref{fig:pt-pick}）。
+実行結果は、この関数に訓練データと検証データを渡したものです。
+訓練データでの損失は 3.488、パープレキシティは $e^{3.488}=32.7$ です。
+4,078 択が、約 33 択まで絞れました。
+
+ところが、検証データでの損失は \code{inf}（無限大）です。
+検証データには、訓練データに一度も現れなかった組が 2,321 個（1.93\%）ありました。
+その組の確率は、表では 0 です。
+$-\log 0$ は無限大なので、たった 1 個で平均が無限大になります。
+モデルは、「見たことがない」を「起こりえない」と取り違えたのです。
+訓練データにはぴったり合い、新しいデータで失敗する。これは\secref{sec:ml-generalization}で学んだ過学習です。
+
+\subsection*{加算平滑化：見ていない組にも、少しだけ確率を残す}
+
+対策は単純です。
+どの組も、実際の回数より $\alpha$ 回だけ多く現れたことにします。
+回数に小さな下駄をはかせるわけです。$\alpha$ は、0.01 のような整数でない値でかまいません。
+\begin{equation}
+p(b\mid a)=\frac{C_{ab}+\alpha}{C_a+\alpha V}
+\label{eq:lm-smooth}
+\end{equation}
+分母の $\alpha V$ は、行の $V$ 個のマスすべてに $\alpha$ を足した分です。こうすると、行の合計が 1 のままになります。
+この方法を\term{加算平滑化}{additive smoothing}と呼びます。
+
+小さな例で確かめます。
+\tabref{tab:lm-toy}の「も」の行は、回数が「も」7、「の」1、ほかは 0 で、合計は 8 でした。
+語彙を「す・も・の・う・ち」の 5 文字、$\alpha=0.1$ とすると、分母は $8+0.1\times5=8.5$ です。
+「も」は $7.1/8.5=0.835$、「の」は $1.1/8.5=0.129$、残りの 3 文字は $0.1/8.5=0.012$ ずつになります。
+分子を全部足すと $7.1+1.1+0.1\times3=8.5$ で、分母と同じです。だから、行の合計はちょうど 1 です。
+
+$\alpha$ を 0 に近づけると元の表に戻り、大きくすると、どの文字も同じ確率の「何も知らないモデル」に近づきます。
+コードは、この式をそのまま書いた 1 行です（\file{ch06/bigram_count.py} の関数 \code{smooth}）。
+どのマスも 0 でなくなるので、検証データの損失は、もう無限大にはなりません。
+残る問題は、$\alpha$ をいくつにするかです。
+
+\subsection*{$\alpha$ を選ぶ}
+\skimread{結論は「検証損失が最も小さくなる $\alpha=0.01$ を使う。そのときの検証損失は 3.581」です。測り方の細部は、2 周目で読めば足ります。}
+
+$\alpha$ をいろいろに変えて、訓練データと検証データの損失を測りました（\tabref{tab:lm-alpha}、\figref{fig:lm-alpha}）。
+
+\begin{table}[tbp]
+\centering
+\caption{$\alpha$ ごとの損失（実測。\protect\file{ch06/bigram_count.py} の出力から）。検証損失は $\alpha=0.01$ のあたりで底になる。}
+\label{tab:lm-alpha}
+\small
+\begin{tabular}{lrrrrrrr}
+\toprule
+$\alpha$ & 0.001 & 0.003 & 0.01 & 0.03 & 0.1 & 0.3 & 1.0 \\
+\midrule
+訓練損失 & 3.494 & 3.503 & 3.528 & 3.577 & 3.682 & 3.846 & 4.125 \\
+検証損失 & 3.595 & 3.582 & \textbf{3.581} & 3.604 & 3.677 & 3.808 & 4.052 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\linewidth,height=41mm,xmode=log,xlabel={$\alpha$},ylabel={損失},
+  xmin=0.0002,xmax=0.5,ymin=3.45,ymax=3.9,legend pos=north west]
+\addplot[bookblue,mark=*,mark size=1.2pt] table[col sep=comma,x=alpha,y=train]{code/ch06/out/bigram_alpha.csv};
+\addlegendentry{訓練}
+\addplot[bookaccent,mark=square*,mark size=1.2pt] table[col sep=comma,x=alpha,y=val]{code/ch06/out/bigram_alpha.csv};
+\addlegendentry{検証}
+\draw[dashed,black!50] (axis cs:0.01,3.45) -- (axis cs:0.01,3.5812);
+\addplot[only marks,mark=o,mark size=3pt,bookaccent,thick,forget plot] coordinates {(0.01,3.5812)};
+\node[font=\scriptsize,anchor=south,text=bookaccent] at (axis cs:0.01,3.61) {$\alpha=0.01$ で 3.581};
+\end{axis}
+\end{tikzpicture}
+\caption{$\alpha$ と損失（実測。\tabref{tab:lm-alpha}より細かい刻みで測った）。訓練損失は $\alpha$ が小さいほど小さいが、検証損失には谷がある。
+$\alpha$ が小さすぎると見ていない組に厳しすぎ、大きすぎると数えた結果を薄めすぎる。}
+\label{fig:lm-alpha}
+\end{figure}
+
+$\alpha$ は、学習では決まらず、人が選ぶ値（ハイパーパラメータ）です。
+\secref{sec:ml-generalization}で学んだとおり、検証データで選びます。
+検証損失は、$\alpha=0.01$ のあたりで底になりました（3.581）。
+細かく刻むと $\alpha=0.005$ のほうがわずかに小さいのですが、差は 0.002 なので、切りのよい 0.01 を使います。
+\chapref{ch:transformer}の比較に出てくるバイグラムの 3.677 は、$\alpha=0.1$ のときの値です。
+なお、$\alpha$ が大きいところでは、検証損失が訓練損失を下回っています。
+検証データに取り分けた文章が、たまたま、よく出る文字の割合が少し高く、予測しやすい文章だったためです。間違いではありません。
+
+\subsection*{基準線と比べる}
+
+加算平滑化（$\alpha=0.01$）を入れたバイグラムモデルの検証損失は、3.581 になりました。
+無限大ではなくなりましたが、この数は良いのでしょうか。
+\tabref{tab:lm-baseline}に、基準線と並べました。
+\term{ユニグラム}{unigram}モデルは、前の文字を見ずに、文字の出やすさだけで予測するモデルです。
+どの位置でも、訓練データの中でその文字が占めていた割合を答えます（同じ平滑化を入れています）。
+「の」や「い」が多いと知っているだけで、4,078 択が 181 択になります。
+直前の 1 文字を見ると、それが 36 択になります。
+直前の 1 文字は、それだけの情報を運んでいるのです。
+
+\begin{table}[tbp]
+\centering
+\caption{検証データ（約 12 万字）での損失（実測）。どれも、検証データの文章を一度も見ずに作ったモデルである。}
+\label{tab:lm-baseline}
+\small
+\begin{tabular}{llrr}
+\toprule
+モデル & 予測に使うもの & 損失 & パープレキシティ \\
+\midrule
+何も知らないモデル（一様分布） & なし & 8.313 & 4078 \\
+ユニグラム & 文字の出やすさ & 5.199 & 181.1 \\
+バイグラム（$\alpha=0.01$） & 直前の 1 文字 & 3.581 & 35.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{採点と生成}
+
+\secref{sec:lm-definition}で、言語モデルには採点と生成ができると述べました。
+まず採点です。
+冒頭の三つの文について、式\eqref{eq:lm-chain}の掛け算を対数で計算しました。
+確率をそのまま掛けると小さくなりすぎるので、対数をとって足し算にしています。
+使うのは、平滑化した表（$\alpha=0.01$）です。
+平滑化なしの表では、見ていない組を 1 個でも含む文の確率が、0 になってしまうからです。
+先頭の文字は、「。」の直後という条件で予測します（関数 \code{log_prob} は \file{ch06/bigram_count.py} にあります）。
+\outputfile{ch06/out/bigram_count_6.txt}
+期待した順位になりました。
+右端の $p$ は、$\log p$ を指数に戻した値です（(a) なら $e^{-21.59}=4.2\times10^{-10}$ で、\code{4.2e-10} と表示されます）。
+(a) と (b) の $\log p$ の差は $26.77-21.59=5.18$ なので、(a) の確率は (b) の $e^{5.18}\approx180$ 倍です。
+(b) の「猫は吾輩である。」は、コーパスのどこにも書かれていない文です。
+それでも、でたらめな (c) の約 $10^{11}$ 倍の確率が付きました（差は $52.30-26.77=25.53$ で、$e^{25.53}\approx1.2\times10^{11}$ です）。
+見たことのない文章にも、もっともらしさに応じた確率を付けられる。
+これが、文章を丸ごと覚えるのではなく、次トークンの予測に分解したことの効き目です。
+
+次に生成です。
+\chapref{ch:math}で学んだサンプリングを、PyTorch では \code{torch.multinomial} で行います。
+確率の並びを渡すと、その確率に従って、くじを引くように番号を選んでくれる関数です。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{バイグラムモデルに文章を書かせる}{code:lm-generate}{ch06/bigram_count.py}{generate}
+\outputfile{ch06/out/bigram_count_7.txt}
+
+6 行目で次の文字を 1 個引き、それを次の回の「前の文字」にして、68 回繰り返しています。
+書き出しは「。」の次の文字からです。実行結果は、できた 68 文字を 2 行に分け、改行を「／」に替えて表示しました。
+「が出来た」「彼女の」「私は、何を」のように、日本語らしい切れ端があちこちに見えます。
+しかし、全体としては意味をなしません。
+1 文字前しか見ていないので、2 文字以上前に何を書いたかを、モデルは知らないからです。
+
+数えるだけで、言語モデルが作れました。
+何も知らないモデルの 4,078 択を、36 択にまで絞れます。
+ただし、見ていない組への備え（平滑化）が要ること、文脈が短すぎることも分かりました。
+
+\section{同じモデルを勾配降下法で作る}\label{sec:lm-bigram-nn}
+
+数えるだけで済んだのは、モデルが表で、最適な値が式\eqref{eq:lm-count}で求まるという、特別な事情があったからです。
+Transformer には、そのような公式はありません。
+頼れるのは、損失の勾配を使ってパラメータを少しずつ動かす方法だけです。
+この節の問いは、「同じバイグラムモデルを勾配降下法で学習させると、数えた答えにたどり着くか」です。
+答えの分かっている問題で、枠組みが正しく働くことを確かめます。
+
+\subsection*{確率の表を、ロジットの表に取り替える}
+
+確率の表を直接パラメータにすると、不便です。
+勾配降下法で値を動かすうちに、負になったり、行の合計が 1 でなくなったりするからです。
+そこで、\chapref{ch:math}と同じ手を使います。
+自由に動かせる数（ロジット）を表 $\mW\in\R^{V\times V}$ に持ち、softmax で確率に直します。
+\begin{equation}
+p_{\mW}(b\mid a)=\softmax(\mW\text{ の }a\text{ 行目})_b=\frac{\exp(W_{ab})}{\sum_{b'}\exp(W_{ab'})}
+\label{eq:lm-nn-model}
+\end{equation}
+softmax は、それぞれのロジットの $\exp$ をとり、その合計で割る計算でした。
+$\exp$ の値はいつも正なので、ロジットがどんな値でも、結果は「0 以上で、足すと 1」になります。
+\figref{fig:lm-table}が計算の流れです。
+入力の番号で表の行を引き、softmax をかけ、正解の位置の確率の $-\log$ をとります。
+番号で行を引くこの表は、\chapref{ch:embedding}で「埋め込み」という名前で再登場します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[tok] (x) at (-2,0) {も};
+\node[lbl,anchor=south] at (-2,4) {入力 $a$};
+\foreach \r [count=\i from 0] in {す,も,の,う,ち} {
+  \node[font=\footnotesize] at (11,10-\i*5) {\r};
+  \foreach \c in {0,...,4} {
+    \ifnum\i=1 \node[cell,minimum size=5mm,fill=figblue,draw=bookblue] at (16+\c*5,10-\i*5) {};
+    \else \node[cell,minimum size=5mm,fill=white] at (16+\c*5,10-\i*5) {};\fi}
+}
+\foreach \c [count=\i from 0] in {す,も,の,う,ち} \node[font=\footnotesize] at (16+\i*5,15) {\c};
+\node[lbl,anchor=north] at (26,-13) {ロジットの表 $\mW$（$V\times V$）};
+\draw[arr] (x) -- (8,0) |- (9,5);
+\foreach \c in {0,...,4} \node[cell,minimum size=5mm,fill=figblue,draw=bookblue] at (52+\c*5,5) {};
+\node[lbl,anchor=south] at (62,8) {ロジット（$V$ 個）};
+\draw[arr] (39,5) -- (49,5);
+\foreach \c in {0,...,4} {
+  \ifnum\c=2 \node[cell,minimum size=5mm,fill=figred,draw=bookaccent,line width=0.8pt] (pc) at (52+\c*5,-8) {};
+  \else \node[cell,minimum size=5mm,fill=figorange] at (52+\c*5,-8) {};\fi}
+\node[lbl,anchor=north] at (62,-11) {確率（足すと 1）};
+\draw[arr] (62,2) -- node[right,font=\footnotesize] {softmax} (62,-5);
+\node[redbox] (loss) at (100,-8) {$-\log p_{\mW}(b\mid a)$};
+\draw[arr] (75,-8) -- (loss);
+\node[tok,draw=bookaccent,fill=figred] (y) at (100,5) {の};
+\node[lbl,anchor=south] at (100,9) {正解 $b$};
+\draw[arr] (y) -- (loss);
+\end{tikzpicture}
+\caption{勾配降下法で学習するバイグラムモデル（語彙 5 文字の例）。入力「も」の番号で表の行を引くと、それが次の文字のロジットになる。
+softmax で確率に直し、正解「の」の位置の確率から損失を計算する。}
+\label{fig:lm-table}
+\end{figure}
+
+\begin{quiz}
+表 $\mW$ の中身をすべて 0 にしておくと、学習を始める前の損失はいくつになるでしょうか。
+\end{quiz}
+
+ロジットがすべて 0 なら、$\exp(0)=1$ が $V$ 個並ぶので、softmax の結果はどの文字も $1/V$ です。
+これは何も知らないモデルなので、損失は $\log 4078=8.313$ のはずです。
+あとで、学習の最初の 1 行で確かめます。
+\coderef{code:lm-nn-model}が、このモデルです。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{表を引くだけのモデル}{code:lm-nn-model}{ch06/bigram_nn.py}{model}
+
+モデルの書き方は\chapref{ch:nn}の \code{nn.Module} と同じで、パラメータは表 \code{W} だけです。
+7 行目の \code{nn.Parameter} は、「このテンソルは学習で動かすパラメータです」と PyTorch に登録する書き方です。
+登録しておくと \code{model.parameters()} に含まれ、最適化手法が更新してくれます。
+中身は \code{torch.zeros(V, V)} なので、確認問題のとおり、全部 0 から始まります。
+10 行目の \code{self.W[x]} が、「番号で行を引く」計算です。
+入力 1 個につき表の 1 行（4,078 個の数）が取り出されるので、5 個の入力を渡すと、形 $(5,4078)$ のロジットが返ります。
+このロジットと正解を、\chapref{ch:pytorch}以来の \code{F.cross_entropy} に渡せば、損失になります。
+言語モデルだからといって、特別な損失の関数は要りません。
+
+\subsection*{全データの損失を、回数の表でまとめて計算する}
+\skimread{結論は「関数 \code{table_loss} は、訓練データ全体の損失を返す。値は 1 組ずつ計算したときと同じで、回数の表でまとめるぶん速い」です。}
+
+ここは、計算を速くするための寄り道です。
+訓練データの組は約 229 万個あります。
+全部について $V$ 個のロジットを計算すると、約 93 億個の数になり、1 回の更新に時間がかかりすぎます。
+普通は、\secref{sec:ml-sgd}のミニバッチで少しずつ計算します。
+しかしこのモデルには、近道があります。
+同じ組 $(a,b)$ の損失は、何度計算しても同じ $-\log p_{\mW}(b\mid a)$ です。
+それなら、1 回だけ計算して、回数 $C_{ab}$ を掛ければ済みます。
+\begin{equation}
+\calL(\mW)=-\frac{1}{N}\sum_{t=1}^{N}\log p_{\mW}(x_t\mid x_{t-1})
+=-\frac{1}{N}\sum_{a}\sum_{b}C_{ab}\log p_{\mW}(b\mid a)
+\label{eq:lm-table-loss}
+\end{equation}
+左は 229 万個の和（$x_0$ は文章の先頭の文字）、右は表のマスについての和で、値は同じです。
+回数の表は、同じ計算の繰り返しをまとめるために使うだけです。答えの $C_{ab}/C_a$ をモデルに教えるわけではありません。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{回数の表を使った、全データの損失}{code:lm-table-loss}{ch06/bigram_nn.py}{table-loss}
+
+\coderef{code:lm-table-loss}の 3〜4 行目が、式\eqref{eq:lm-table-loss}の右辺です。
+\code{F.log_softmax} は、softmax をかけてから $\log$ をとるのと同じ計算です。
+4 行目の \code{C.sum()} は回数の合計で、組の総数 $N$ にあたります。
+7 行目の \code{.float()} は、整数の回数を、掛け算のために小数の型に直しています。
+1 組ずつ計算した値と一致することは、スクリプトの中で確かめています。
+
+\subsection*{学習させる}
+
+あとは、\chapref{ch:nn}の学習ループ（\figref{fig:nn-loop}）に入れるだけです。
+損失を計算し、勾配を求め、パラメータを少し動かす、の繰り返しでした。
+最適化手法には、Adam を使います。
+Adam は、勾配降下法の改良版です。
+勾配が大きいパラメータも小さいパラメータも、ほぼ同じ歩幅で動くように、パラメータ 1 個ごとに歩幅を自動で調整します。
+詳しくは\secref{sec:training-optim}で扱います。いまはこの理解で十分です。
+コードの上では、\chapref{ch:nn}の \code{torch.optim.SGD} を \code{torch.optim.Adam} に替えるだけです。
+
+Adam を選ぶ理由は、この表の勾配の偏りにあります。
+よく出る文字の行ほど、関わる予測の数が多く、勾配が大きくなります（後の式\eqref{eq:lm-grad}で確かめます）。
+ふつうの勾配降下法のように歩幅を勾配に比例させると、めったに出ない文字の行は、なかなか動きません。
+Adam は、その差をならしてくれます。\coderef{code:lm-nn-train}が学習ループです。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{学習ループ}{code:lm-nn-train}{ch06/bigram_nn.py}{train}
+\outputfile{ch06/out/bigram_nn_3.txt}
+
+1 行目で、最適化手法に、モデルのパラメータと学習率 0.5 を渡しています。
+3 行目の \code{table_loss} は、前の小節で作った、訓練データ全体の損失を返す関数です。
+1 組ずつ計算するのと同じ値を、回数の表を使って速く求めます。毎回、訓練データを全部使うので、ミニバッチには分けていません。
+7〜9 行目は、\chapref{ch:nn}と同じ 3 行です。勾配を 0 に戻し、逆伝播で勾配を求め、パラメータを更新します。
+6 行目の \code{pair_loss} は、検証データの損失を、1 組ずつの普通の計算で求める関数です（中身は \file{ch06/bigram_nn.py}）。
+\code{range(101)} なので、最後の行が 100 回更新した後の損失です。
+学習率の 0.5 は、0.05、0.5、5 の三つを試して選びました。
+0.05 では 100 回の更新では損失が下がりきらず、5 では訓練損失は下がるのに検証損失が悪くなります（演習\ref{ex:lm-lr}で確かめられます）。
+
+損失は、確認問題で予想した 8.3134 から始まり、100 回の更新で 3.4882 まで下がりました（\figref{fig:lm-nn-curve}(a)。CPU で 12 秒です）。
+数えて作った表の訓練損失は 3.4879 でした。
+勾配降下法は、数えた答えのすぐそばまで来ています。
+表の中身も比べます（\tabref{tab:lm-nn-compare}）。
+学習した表に softmax をかけた確率は、数えて作った確率と、小数第 3 位までほぼ同じです。
+\figref{fig:lm-nn-curve}(b) は、400 個の組について二つの確率を比べたもので、点は対角線の上に並んでいます。
+誰も数え方を教えていないのに、勾配降下法は、損失を下げるだけで数えた答えを見つけました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.52\linewidth,height=43mm,xlabel={更新の回数},ylabel={損失},ymin=3,ymax=8.6,xmin=0,xmax=100,
+  legend pos=north east,title={(a) 学習曲線},title style={font=\small,yshift=-1mm}]
+\addplot[bookblue] table[col sep=comma,x=step,y=train]{code/ch06/out/bigram_nn_log.csv};
+\addlegendentry{訓練}
+\addplot[bookaccent,dashed] table[col sep=comma,x=step,y=val]{code/ch06/out/bigram_nn_log.csv};
+\addlegendentry{検証}
+\addplot[black!60,densely dotted,domain=0:100,samples=2] {3.4879};
+\addlegendentry{数えた答え}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.46\linewidth,height=43mm,xmode=log,ymode=log,xlabel={数えた確率},ylabel={学習した確率},
+  xmin=1e-6,xmax=2,ymin=1e-6,ymax=2,title={(b) 確率の比較},title style={font=\small,yshift=-1mm}]
+\addplot[black!45,domain=1e-6:2,samples=2] {x};
+\addplot[only marks,mark=*,mark size=0.8pt,bookblue,opacity=0.6] table[col sep=comma,x=p_count,y=p_model]{code/ch06/out/bigram_nn_scatter.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{勾配降下法による学習（実測）。(a) 訓練損失は、数えて作った表の損失 3.4879（点線）に近づく。
+(b) 1 回以上現れた組から選んだ 400 個について、数えた確率（横）と学習した確率（縦）を比べた。両軸とも対数目盛り。}
+\label{fig:lm-nn-curve}
+\end{figure}
+
+\begin{table}[bp]
+\centering
+\caption{数えて作った確率と、勾配降下法で学習した確率（実測。\protect\file{ch06/bigram_nn.py} の出力から）。}
+\label{tab:lm-nn-compare}
+\small
+\begin{tabular}{lcccccc}
+\toprule
+ & っ→た & っ→て & で→あ & で→す & 吾→輩 & 吾→は \\
+\midrule
+数えた & 0.460 & 0.403 & 0.161 & 0.138 & 0.633 & 0.060 \\
+学習した & 0.461 & 0.403 & 0.160 & 0.138 & 0.634 & 0.061 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{なぜ一致するのか}
+\skimread{結論は「損失の勾配が 0 になるのは、モデルの確率が回数の割合 $C_{ab}/C_a$ に一致したときだけ。だから勾配降下法は、数えた答えに行き着く」です。ただし、節末の「この節の結論は」で始まる段落は、飛ばさずに読んでください。}
+
+偶然ではありません。
+\chapref{ch:ml}で、softmax と交差エントロピーを組み合わせた損失の、ロジットについての勾配は「予測した確率 $-$ 正解」になることを学びました（定理\ref{thm:ml-softmax-grad}）。
+ここでの「正解」は、正解の列で 1、ほかの列で 0 という数です。
+$W_{ab}$ が関わるのは、入力が $a$ の予測だけです。そこで、その $C_a$ 個の予測について、これを足し合わせます。
+予測した確率は毎回 $p_{\mW}(b\mid a)$ で、正解が $b$ だった回数は $C_{ab}$ です。したがって、
+\begin{equation}
+\pd{\calL}{W_{ab}}=\frac{1}{N}\bigl(C_a\,p_{\mW}(b\mid a)-C_{ab}\bigr)
+=\frac{C_a}{N}\Bigl(p_{\mW}(b\mid a)-\frac{C_{ab}}{C_a}\Bigr)
+\label{eq:lm-grad}
+\end{equation}
+となります。
+勾配が 0 になるのは、$p_{\mW}(b\mid a)=C_{ab}/C_a$ のとき、つまりモデルの確率が回数の割合に一致したときだけです。
+
+「すもも」の例で、数にしてみます。
+「も」の行は $C_a=8$、そのうち「も」の次が「も」だったのは $C_{ab}=7$ 回、予測の総数は $N=11$ でした。
+学習の途中で、モデルがこの確率にまだ $0.5$ しか付けていないとします。
+勾配は $(8\times0.5-7)/11=-3/11=-0.27$ で、負です。
+勾配降下法は勾配と逆の向きに動かすので、$W_{ab}$ は大きくなり、確率は上がります。
+確率が $7/8$ に着くと、$8\times\frac{7}{8}-7=0$ で、動きが止まります。
+モデルの確率が割合より大きければロジットを下げ、小さければ上げる。
+勾配降下法は、この調整を全部のマスで同時に行い、式\eqref{eq:lm-count}にたどり着きます。
+
+式\eqref{eq:lm-grad}の頭に付いた $C_a/N$ にも、意味があります。
+確率のずれが同じでも、勾配の大きさは、その文字が現れた回数 $C_a$ に比例するのです。
+$C_a$ は、「の」が 90,397、「吾」が 762 でした（\coderef{code:lm-count}の実行結果）。
+同じずれに対して、「の」の行の勾配は、「吾」の行の約 120 倍です（$90{,}397\div762\approx119$）。
+Adam を選んだのは、この差をならすためでした。
+
+一つだけ、数えた表と違う点があります。
+平滑化をしていないのに、検証損失が無限大にならず、3.625 に収まっています。
+$\exp$ はいつも正なので、確率を 0 にするにはロジットを $-\infty$ まで下げなければならず、100 回の更新ではそこまで届かないからです。
+ただし、$\alpha$ を選んだ加算平滑化の 3.581 には及びません。
+
+この節の結論は、本書の残りすべての土台です。
+「数える」と「損失を勾配降下法で下げる」は、同じ答えに行き着きます。
+そして後者は、表でなくても、勾配が計算できるモデルなら何にでも使えます。
+ここから先は、\code{forward} の中身、つまり文脈からロジットを作る関数を、より賢いものに取り替えていくだけです。
+
+\section{文脈を長くすると何が起きるか：$n$-グラムの限界}\label{sec:lm-ngram-limits}
+
+バイグラムの弱点は、文脈が 1 文字しかないことでした。
+それなら、直前の 2 文字、3 文字を見ればよさそうです。
+この節の問いは、「数える方法のまま文脈を長くすると、どこまで良くなるか」です。
+
+直前の $n-1$ 個を見て次を予測するモデルを、\term{$n$-グラム}{$n$-gram}モデルと呼びます。
+$n=1$ がユニグラム、$n=2$ がバイグラム、$n=3$ が\term{トライグラム}{trigram}です。
+作り方は変わりません。文脈ごとに、次に来た文字を数えます（\file{ch06/ngram.py}）。
+\tabref{tab:lm-ngram}と\figref{fig:lm-ngram}が結果です。
+
+\begin{table}[tbp]
+\centering
+\caption{$n$-グラムモデルの大きさと損失（実測）。「未観測」は、検証データの $n$ 文字の並びのうち、訓練データに一度も現れなかったものの割合。
+訓練損失は平滑化なしの値。検証損失の $\alpha$ は $n$ ごとに選び直した（そのため $n=1$ の値は\tabref{tab:lm-baseline}とわずかに違う）。}
+\label{tab:lm-ngram}
+\small
+\begin{tabular}{clrrrr}
+\toprule
+$n$ & 文脈 & 表のマス目 $V^{n}$ & 未観測 & 訓練損失 & 検証損失 \\
+\midrule
+1 & なし & $4.1\times10^{3}$ & 0.0\% & 5.282 & 5.198 \\
+2 & 1 文字 & $1.7\times10^{7}$ & 1.9\% & 3.488 & 3.581 \\
+3 & 2 文字 & $6.8\times10^{10}$ & 13.6\% & 2.337 & \textbf{3.398} \\
+4 & 3 文字 & $2.8\times10^{14}$ & 32.7\% & 1.515 & 4.256 \\
+5 & 4 文字 & $1.1\times10^{18}$ & 52.7\% & 0.926 & 5.369 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.62\linewidth,height=39mm,xlabel={$n$},ylabel={損失},xtick={1,2,3,4,5},ymin=0,ymax=6,
+  legend pos=outer north east]
+\addplot[bookblue,mark=*] table[col sep=comma,x=n,y=train]{code/ch06/out/ngram.csv};
+\addlegendentry{訓練}
+\addplot[bookaccent,mark=square*] table[col sep=comma,x=n,y=val]{code/ch06/out/ngram.csv};
+\addlegendentry{検証}
+\end{axis}
+\end{tikzpicture}
+\caption{文脈の長さと損失（実測）。訓練損失は下がり続けるが、検証損失は $n=3$ で底を打ち、その先は悪くなる。}
+\label{fig:lm-ngram}
+\end{figure}
+
+訓練損失は、$n$ を増やすほど下がります。
+ただし $n=5$ の 0.926（$e^{0.926}=2.5$ 択）は、訓練の文章を丸暗記に近い形で覚えた数字で、言葉が予測しやすくなったわけではありません。
+しかし検証損失は、$n=3$ の 3.398（パープレキシティ 29.9）が底です。
+$n=5$ は 5.369 で、前の文字を見ないユニグラムにも負けています。
+原因は「未観測」の列にあります。
+$n=5$ では、検証データの 5 文字の並びの半分以上が、訓練データに一度も出てきません。
+モデルは、その場面で手がかりを持っていないのです。
+訓練データは覚えたが、新しい文章には通用しない。典型的な過学習です。
+
+それぞれのモデルに、「吾輩は」の続きを書かせてみます。
+\outputfile{ch06/out/ngram_2.txt}
+$n$ が大きいほど、文章は滑らかです。
+ただし、$n=5$ の文章のどの 5 文字も、訓練データにそのまま出てくる並びです。
+モデルは、漱石の文章の切れ端をつなぎ合わせているにすぎません。
+
+数える方法には、二つの壁があります。
+
+\textbf{壁 1：表が爆発する。}\ 
+マス目の数は $V^{n}$ です。$n=5$ で $10^{18}$ 個、文脈を 8 文字にすると $10^{32}$ 個を超えます（$4078^{9}\approx3.1\times10^{32}$）。
+訓練データは 229 万字しかないので、表はほとんど埋まりません。
+データを何桁増やしても、追いつきません。
+
+\textbf{壁 2：似た文脈から学べない。}\ 
+表は、文脈が一字一句同じときにしか使えません。
+「猫が鳴いた」を何回数えても、「犬が鳴いた」の予測には役立ちません。
+人間なら、猫と犬は似たものだと知っているので、片方の知識をもう片方に使えます。
+
+二つの壁を越える方法は、表をやめることです。
+文脈を受け取り、計算によって次トークンの分布を出す関数、つまりニューラルネットワークに取り替えます~\cite{bengio2003neural}。
+パラメータを文脈の間で使い回すので、似た文脈には似た答えを出せます（その仕組みは\chapref{ch:embedding}で見ます）。初めて見る文脈にも、答えを出せます。
+学習の枠組みは、\secref{sec:lm-bigram-nn}のままです。
+この先の章は、その関数を一歩ずつ作っていきます（\chapref{ch:embedding}〜\chapref{ch:transformer}）。
+
+行き先を、少しだけ先回りして見ておきます。
+本書の基盤モデル（\chapref{ch:pretraining}で学習する Transformer）で同じ検証データを測ると、損失は 1 トークンあたり 4.863 でした（\file{ch06/preview_gpt.py}）。
+このモデルの 1 トークンは、平均 1.75 文字です。
+損失は $-\log$ の足し算なので、文章全体の合計を文字数で割れば、1 文字あたりに直せます。
+合計は「$4.863\times$ トークン数」、文字数は「$1.75\times$ トークン数」なので、割るとトークン数が消えて、$4.863/1.75=2.78$ になります。
+パープレキシティは $e^{2.78}=16.1$ です。
+トライグラムの 29.9 択が、約 16 択になります。
+しかも、パラメータは約 258 万個で、バイグラムの表の 1,663 万マスより少ないのです。
+
+数える方法は、文脈 2 文字が限界でした。
+限界を決めているのは目的関数ではなく、表というモデルの形です。
+
+\subsection*{ここまでの道のり}
+
+\begin{itemize}
+\item 数えるだけで、バイグラムモデルが作れました（平滑化を入れて約 36 択）。
+\item 勾配降下法でも、同じ答えに着きました。この方法は、表でなくても使えます。
+\item 数える方法は、文脈 2 文字（約 30 択）で頭打ちです。残るのは、文章の書かせ方です。
+\end{itemize}
+
+\section{文章を生成する：次のトークンの選び方}\label{sec:lm-generation}
+
+最後に、学習したモデルの使い方です。
+この節の問いは、「次トークンの確率分布から、どうやって文章を作るか」です。
+
+\subsection*{自己回帰：自分の出力を、次の入力にする}
+
+\coderef{code:lm-generate}で、すでに一度やりました。
+(1) 文脈から次トークンの分布を計算する。(2) 分布から 1 個選ぶ。(3) 選んだトークンを文脈の末尾に足す。
+これを繰り返します。
+自分の出力を次の入力に使うので、\term{自己回帰}{autoregressive}生成と呼びます。
+ChatGPT の返事が 1 語ずつ現れるのは、この繰り返しをそのまま見せているからです。
+
+学習のときとの違いに注意してください（\figref{fig:lm-autoregressive}）。
+学習では、文脈はいつもデータの正しい文章でした（教師強制）。
+生成では、文脈は自分が選んだトークンです。
+一度おかしなトークンを選ぶと、それが次の文脈に入り、ずれが積み重なることがあります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=13mm,y=9mm]
+\node[font=\small] at (1.5,4.1) {(a) 学習（教師強制）};
+\foreach \c/\d/\e/\m [count=\i from 0] in {吾/輩/輩/○,輩/は/は/○,は/、/猫/×,猫/で/で/○} {
+  \node[tok,fill=figgray] (a\i) at (\i,0) {\c};
+  \node[box,minimum width=8mm,minimum height=5mm,font=\scriptsize,inner sep=1pt] (m\i) at (\i,1.05) {モデル};
+  \node[tok,fill=white] (b\i) at (\i,2.1) {\d};
+  \node[font=\scriptsize] at (\i,2.68) {\m};
+  \node[tok,draw=bookaccent,fill=figred] at (\i,3.25) {\e};
+  \draw[arr] (a\i) -- (m\i);
+  \draw[arr] (m\i) -- (b\i);
+}
+\node[lbl,anchor=east] at (-0.5,0) {入力};
+\node[lbl,anchor=east] at (-0.5,2.1) {予測};
+\node[lbl,anchor=east] at (-0.5,3.25) {正解};
+\node[lbl] at (1.5,-0.75) {外しても、次の入力はデータの「猫」};
+\begin{scope}[xshift=66mm]
+\node[font=\small] at (1.5,4.1) {(b) 生成（自己回帰）};
+\node[lbl] at (1.5,3.25) {（比べる正解はない）};
+\foreach \c/\d [count=\i from 0] in {は/主,主/人,人/が,が/、} {
+  \ifnum\i=0 \node[tok,fill=figgray] (c\i) at (\i,0) {\c};
+  \else \node[tok,fill=figorange,draw=bookorange] (c\i) at (\i,0) {\c};\fi
+  \node[box,minimum width=8mm,minimum height=5mm,font=\scriptsize,inner sep=1pt] (n\i) at (\i,1.05) {モデル};
+  \node[tok,fill=figorange,draw=bookorange] (d\i) at (\i,2.1) {\d};
+  \draw[arr] (c\i) -- (n\i);
+  \draw[arr] (n\i) -- (d\i);
+}
+\foreach \i/\j in {0/1,1/2,2/3} \draw[darr,bookorange] (d\i.south east) -- (c\j.north west);
+\node[lbl] at (1.5,-0.75) {入力は、自分が選んだトークン};
+\end{scope}
+\end{tikzpicture}
+\caption{学習と生成の違い。(a) 学習では、予測を正解と比べるだけで、入力には戻さない。3 番目の予測「、」は外れだが、4 番目の入力はデータどおりの「猫」である。
+(b) 生成では、選んだトークン（橙）を次の入力に回す。図では直前の 1 個だけを描いたが、一般には、それまでの全部が文脈になる。}
+\label{fig:lm-autoregressive}
+\end{figure}
+
+\subsection*{貪欲法と温度}
+
+手順 (2) の「1 個選ぶ」には、いくつもの流儀があります。
+ここでは、\secref{sec:lm-ngram-limits}のトライグラムモデルを使って比べます（\file{ch06/sampling.py}）。
+
+いちばん単純なのは、確率が最大のトークンをいつも選ぶ\term{貪欲法}{greedy decoding}です。
+もう一つは、\coderef{code:lm-generate}のように、分布に従ってくじを引く方法（サンプリング）です。
+貪欲法は堅実ですが、何度やっても同じ文章になり、後で見るように同じ言い回しを繰り返しがちです。
+サンプリングは多様ですが、確率の低いトークンをときどき引いて、脱線します。
+
+二つの間をつなぐつまみが、\term{温度}{temperature} $\tau$ です。
+名前は物理学から来ています。温度が高いほど、ものの動きは乱雑になります。
+ロジット $z_i$ を $\tau$ で割ってから、softmax をかけます。
+\begin{equation}
+p_\tau(i)=\frac{\exp(z_i/\tau)}{\sum_{j}\exp(z_j/\tau)}
+\label{eq:lm-temperature}
+\end{equation}
+$\tau=1$ なら元の分布です。
+$\tau<1$ ではロジットの差が広がり、確率の高いトークンがますます選ばれやすくなります。
+$\tau$ を 0 に近づけると、差は限りなく広がって、最大のトークンの確率が 1 に近づきます。つまり貪欲法になります。
+$\tau>1$ では差が縮まり、分布は平らになります。
+$\tau=0.5$ はロジットを 2 倍に、$\tau=2$ は半分にすることと同じです（\chapref{ch:math}の演習で、softmax に試した操作です）。
+
+小さな例で確かめます。
+\tabref{tab:lm-temp-example}は、3 個のトークンのロジットが $(2,\,1,\,0)$ のときに、$\tau$ を変えて式\eqref{eq:lm-temperature}を計算したものです。
+$\tau=1$ では、$\exp$ をとった $(7.39,\,2.72,\,1)$ を合計の $11.11$ で割って、確率は $(0.665,\,0.245,\,0.090)$ になります。
+$\tau=0.5$ では 1 位の確率が $0.867$ に上がり、$\tau=2$ では $0.506$ に下がります。
+どの温度でも順位は同じで、変わるのは差の付き方だけです。
+
+\begin{table}[tbp]
+\centering
+\caption{温度の手計算。ロジット $(2,1,0)$ を $\tau$ で割り、$\exp$ をとり、合計で割る。$\tau$ が小さいほど 1 位に確率が集まり、大きいほど平らになる。}
+\label{tab:lm-temp-example}
+\small
+\begin{tabular}{clllc}
+\toprule
+$\tau$ & $z_i/\tau$ & $\exp(z_i/\tau)$ & 合計 & 確率 $p_\tau(i)$ \\
+\midrule
+0.5 & $4,\ 2,\ 0$ & $54.60,\ 7.39,\ 1$ & 62.99 & $0.867,\ 0.117,\ 0.016$ \\
+1 & $2,\ 1,\ 0$ & $7.39,\ 2.72,\ 1$ & 11.11 & $0.665,\ 0.245,\ 0.090$ \\
+2 & $1,\ 0.5,\ 0$ & $2.72,\ 1.65,\ 1$ & 5.37 & $0.506,\ 0.307,\ 0.186$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+実際の分布でも見てみます。
+\figref{fig:lm-temperature}(a) は、「先生」の次の文字の分布です。
+$\tau=0.5$ では「は」と「の」で 8 割を超え、$\tau=2$ では文字どうしの差がぐっと縮まります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.52\linewidth,height=43mm,ybar,bar width=2.2pt,ymin=0,ymax=0.5,xmin=-0.6,xmax=7.6,
+  xtick={0,...,7},xticklabels={は,の,が,に,と,を,も,か},ylabel={確率},grid=none,ymajorgrids,
+  legend style={font=\scriptsize},legend pos=north east,title={(a) 温度},title style={font=\small,yshift=-1mm}]
+\addplot[fill=bookblue,draw=none] table[col sep=comma,x=k,y=t05]{code/ch06/out/temperature.csv};
+\addlegendentry{$\tau=0.5$}
+\addplot[fill=bookgray!70,draw=none] table[col sep=comma,x=k,y=t10]{code/ch06/out/temperature.csv};
+\addlegendentry{$\tau=1$}
+\addplot[fill=bookorange,draw=none] table[col sep=comma,x=k,y=t20]{code/ch06/out/temperature.csv};
+\addlegendentry{$\tau=2$}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.52\linewidth,height=43mm,ybar,bar width=5pt,ymin=0,ymax=0.5,xmin=-0.6,xmax=7.6,
+  xtick={0,...,7},xticklabels={は,の,が,に,と,を,も,か},grid=none,ymajorgrids,
+  title={(b) top-$k$ と top-$p$（$\tau=1$）},title style={font=\small,yshift=-1mm}]
+\addplot[fill=bookgray!70,draw=none] table[col sep=comma,x=k,y=t10]{code/ch06/out/temperature.csv};
+\draw[bookaccent,thick,|-|] (axis cs:-0.4,0.33) -- node[above,font=\scriptsize,text=black] {top-$k$（$k=5$）} (axis cs:4.4,0.33);
+\draw[bookgreen,thick,|-|] (axis cs:-0.4,0.41) -- node[above,font=\scriptsize,text=black] {top-$p$（$p=0.8$）：合計 0.812} (axis cs:6.4,0.41);
+\end{axis}
+\end{tikzpicture}
+\caption{トライグラムモデルが「先生」の次に予測した分布（実測。82 個の候補のうち上位 8 個）。
+(a) 温度を下げると尖り、上げると平らになる。(b) top-$k$ は上位 5 個を、top-$p$ は合計が 0.8 に届くまでの 7 個を残す。}
+\label{fig:lm-temperature}
+\end{figure}
+
+\subsection*{top-$k$ と top-$p$：すその候補を切り捨てる}
+
+温度を上げると多様になりますが、めったに出ないはずのトークンまで選ばれやすくなります。
+\figref{fig:lm-temperature}(a) の $\tau=2$ では、上位 8 個の確率を合計しても 0.44 です。
+残りの 0.56 は、図に描いていない 74 個の候補に流れています。
+一つひとつの確率は小さくても、合計すると無視できないのです。
+そこで、選ぶ前に、確率の低い「すそ」を切り捨てます。
+
+\textbf{top-$k$ サンプリング}は、確率の高い順に $k$ 個だけ残します。
+残した確率を、合計が 1 になるように割り直してから、くじを引きます。
+\figref{fig:lm-temperature}(b) の例では、上位 5 個の合計は 0.744 なので、1 位の「は」は $0.260/0.744=0.35$ に上がります。
+ただし、$k$ を一つに決めるのは難しい問題です。
+次がほぼ決まっている場面（「吾」の次）では $k=5$ でも多すぎ、何でも来うる場面（「の」の次）では少なすぎます。
+
+\textbf{top-$p$ サンプリング}は、個数ではなく確率の合計で切ります~\cite{holtzman2020curious}。
+ここでの $p$ は、合計のしきい値に付けた名前です。
+確率の高い順に足していき、合計が $p$ に届いたところまでを残します。
+分布が尖っていれば少数だけが残り、平らなら多くが残ります。
+\figref{fig:lm-temperature}(b) では、82 個の候補のうち 7 個が残りました。
+
+\subsection*{三つを一つの関数にまとめる}
+\skimread{押さえることは、「関数 \code{sample_next} が、温度、top-$k$、top-$p$ の順に分布を加工し、最後にくじを引いて 1 個選ぶ」という流れだけです。1 行ずつの説明は、自分で生成を試すときに読めば足ります。}
+
+\coderef{code:lm-sample-next}が、三つをまとめた関数です。
+
+\par\penalty0 % 直前の段落をページに確定させる（\snippet の改ページ判定が、あふれた行を数えて誤るのを防ぐ）
+\snippet{温度・top-$k$・top-$p$ をかけてから 1 個選ぶ}{code:lm-sample-next}{ch06/sampling.py}{sample-next}
+
+1 行目の引数 \code{p} は次トークンの確率の並び、\code{g} は\coderef{code:lm-generate}と同じ乱数の生成器です。
+3〜4 行目は、温度 0 の特別扱いです。
+0 では割れないので、確率が最大の番号を \code{torch.argmax} で返します。これが貪欲法です。
+6 行目が式\eqref{eq:lm-temperature}です。
+この関数は確率 \code{p} を受け取るので、ロジットの代わりに $\log p$ を使っています。
+ロジットと $\log p$ の差は全トークンに共通の定数で、softmax の結果を変えないからです（\secref{sec:math-softmax}）。
+確率が 0 の候補は $\log 0=-\infty$ になりますが、softmax を通すと確率 0 に戻るので、問題はありません。
+
+7〜9 行目が top-$k$ です。
+\code{torch.topk} は大きい順に $k$ 個を取り出すので、その最後が $k$ 番目の確率です。\code{torch.where} で、それより小さい確率を 0 にします。
+10〜16 行目が top-$p$ です。
+\code{torch.sort} は大きい順に並べた値とその元の番号を返し、\code{torch.cumsum} は先頭からそこまでの合計を返します。
+「先生」の例では、確率が $0.260,\,0.236,\,0.110,\dots$ で、合計は $0.260,\,0.495,\,0.606,\,0.683,\,0.744,\,0.784,\,0.812,\dots$ と増えていきます。
+12 行目の \code{before} は、そこから自分の確率を引いた「自分より上の合計」です。これが 0.8 より小さい、先頭の 7 個を残します。
+7 個目は \code{before} が 0.784 で、それを足して初めて合計が 0.8 に届く候補なので、残す側に入ります。
+13 行目で、残す候補の元の番号を \code{keep} に取り出します。
+14〜16 行目では、残す位置だけ 1、ほかは 0 の \code{mask} を作って掛け、残さない候補の確率を 0 にしています。
+
+17 行目で、残った確率を合計で割り、足して 1 になるように戻します。18 行目の \code{torch.multinomial} でくじを引き、選ばれた番号を返します。
+
+\subsection*{選び方を変えて書かせる}
+
+\coderef{code:lm-sample-next}の関数 \code{sample_next} は、温度、top-$k$、top-$p$ を引数で受け取り、次のトークンを 1 個選びます。
+この関数を使って、「吾輩は」の続きを、設定を変えて書かせます。
+\outputfile{ch06/out/sampling_2.txt}
+貪欲法は、「その時の彼は、」から抜け出せなくなりました。
+確率が最大のものを選び続けると、同じ場所を回り続けることがあるのです。
+温度 1.5 は、言葉の並びがいちばん崩れています。
+温度を下げるか、top-$k$ や top-$p$ ですそを切ると、文は落ち着きます。
+モデルがトライグラムなので、どの設定でも意味は通りません。
+選び方は、モデルの持つ分布を引き出す工夫で、モデルを賢くはしないのです。
+\tabref{tab:lm-sampling}に、選び方をまとめます。
+
+\begin{table}[tbp]
+\centering
+\caption{次のトークンの選び方。実際の LLM では、温度と top-$p$ を組み合わせて使うことが多い。}
+\label{tab:lm-sampling}
+\small
+\begin{tabular}{lll}
+\toprule
+方法 & 残す候補 & 性質 \\
+\midrule
+貪欲法 & 確率が最大の 1 個 & 毎回同じ文章。繰り返しに陥りやすい \\
+温度 $\tau$ & 全部（分布の形を変える） & $\tau<1$ で堅実、$\tau>1$ で多様 \\
+top-$k$ & 上位 $k$ 個 & 残す個数がいつも同じ \\
+top-$p$ & 合計が $p$ に届くまで & 残す個数が分布の形に合わせて変わる \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+生成は、「分布を計算する、1 個選ぶ、文脈に足す」の繰り返しです。
+選び方のつまみ（温度、top-$k$、top-$p$）で、堅実さと多様さの釣り合いを決めます。
+本書のモデルに文章を書かせるときは、最後までこの関数と同じ仕組みを使います。
+
+\begin{summary}
+\item 言語モデルは、文章に確率を割り当てる関数です。連鎖律によって、「文脈から次のトークンを当てる」問題の掛け算に分解できます。
+\item 正解は、文章を 1 つずらすだけで手に入ります（自己教師あり学習）。人がラベルを付けなくてよいので、大量の文章をそのまま使えます。
+\item 目的関数は、正解の次トークンに付けた確率の $-\log$ の平均（交差エントロピー）です。最小化は、最尤推定、現実の分布への接近、文章の圧縮と同じです。
+\item 何も知らないモデルの損失は $\log V$ です。パープレキシティ $e^{\calL}$ は、モデルが実質何択で迷っているかを表します。
+\item バイグラムモデルは、組を数えるだけで作れます。4,078 択が約 36 択になりました。見ていない組には、加算平滑化で備えます。
+\item 同じモデルを勾配降下法で学習させると、数えた答えに一致します（損失 3.4882 と 3.4879）。この枠組みは、表でないモデルにもそのまま使えます。
+\item 数える方法は、表の爆発と、似た文脈から学べないことが壁になり、文脈 2 文字で頭打ちになります。
+\item 生成は自己回帰で行い、温度、top-$k$、top-$p$ で堅実さと多様さを調整します。
+\end{summary}
+
+\section*{次の章へ}
+
+本章では、1 文字を 1 トークンとしました。
+しかし文字単位では、文章が長いトークン列になり、「吾輩」のような言葉のまとまりも、モデルが一から見つけなければなりません。
+\secref{sec:lm-ngram-limits}で先回りして見た基盤モデルは、同じ検証データの約 12 万字を、68,736 個のトークンに区切って読んでいました。列の長さは、文字数の 6 割弱で済みます。
+かといって単語を単位にすると、語彙が際限なく増えます。
+文字より大きく、単語より小さい。そのちょうどよい区切りは、誰が、どうやって決めたのでしょうか。
+\chapref{ch:tokenizer}では、文字と単語の中間のちょうどよい単位を、データから自動で作る方法を学びます。
+もう一つの宿題である「似た文脈から学べない」という表の壁には、\chapref{ch:embedding}から取り組みます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Shannon の論文~\cite{shannon1948mathematical}は、$n$-グラムで英文を生成してみせた、言語モデルの原点です。
+\item Jurafsky と Martin の教科書~\cite{jurafsky2025slp}の $n$-グラムの章は、本章で省いた、より賢い平滑化を詳しく扱っています。
+\item Karpathy の講義動画~\cite{karpathy2022zerotohero}も、数えたバイグラムを勾配降下法で作り直します。
+\item Bengio らの論文~\cite{bengio2003neural}は、表をニューラルネットワークに替えた先駆けです。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 4}
+\item \textbf{（手計算）}\ 回文「たけやぶやけた」（7 文字）で、バイグラムの回数の表と確率の表を作ってください。損失とパープレキシティはいくつでしょうか（答え：0.462 と 1.587）。\file{ch06/toy_bigram.py} の \code{text} の行を書き換えて検算してください。
+\item\label{ex:lm-mle} \textbf{（導出）}\ 文字 $a$ の行の確率を $q_b$（$\sum_b q_b=1$）とします。$-\sum_b C_{ab}\log q_b$ を最小にするのは $q_b=C_{ab}/C_a$ であることを示してください。ヒント：$p_b=C_{ab}/C_a$ とおき、ギブスの不等式（式\eqref{eq:math-gibbs}）を使います。
+\item \textbf{（コード）}\ \coderef{code:lm-generate}の \code{P} を \code{smooth(C, 0.1)} に替えて生成してください。文章が大きく変わる理由を、top-$k$ の説明と結び付けて考えてください。
+\item\label{ex:lm-lr} \textbf{（コード）}\ \file{ch06/bigram_nn.py} の学習率を 0.05 と 5 に変え、100 回後の損失を比べてください。Adam を \code{torch.optim.SGD} に替えると、どうなるでしょうか。
+\item \textbf{（考察）}\ 本書の基盤モデルの検証損失は、1 トークン（平均 1.75 文字）あたり 4.863、パープレキシティは 129.4 です。129.4 を 1.75 で割っても、1 文字あたりの 16.1 にはなりません。129.4 から 16.1 を求める式を書いてください。また、単位をそろえずに 129.4 と 29.9 を比べると、何を誤解するでしょうか。
+\item \textbf{（コード）}\ \file{ch06/sampling.py} の \code{generate} を使い、温度 0.7 と top-$p$ 0.9 を組み合わせて、乱数の種を変えながら文章を 3 本作ってください。top-$k$ の $k=1$ は、どの方法と同じでしょうか。
+\end{exercises}

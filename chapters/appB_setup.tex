@@ -1,0 +1,425 @@
+\chapter{環境構築と本書のコードの動かし方}\label{app:setup}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:intro}を読んだら、\chapref{ch:pytorch}のコードを動かす前に、ここを一度通ってください。
+  要るのは、Python の入った PC と、インターネット接続です。学習を待つ時間が、合わせて 35〜47 分あります。
+\item[\rgmust] \secref{sec:setup-requirements}〜\secref{sec:setup-run}：PC の前で、上から順に、コマンドを 1 行ずつ実行しながら読みます。
+  行ごとに書いた「成功の印」を確かめてから、次の行へ進んでください。
+\item[\rgskim] \secref{sec:setup-device}：「GPU はなくてよい。学習が遅すぎるときは、ステップ数を減らせばよい」という結論だけで足ります。
+\item[\rglater] \secref{sec:setup-repro}は、結果が本文の数値と違ったときに。\secref{sec:setup-trouble}の\tabref{tab:setup-trouble}は、エラーが出たときに症状から引きます。
+  \tabref{tab:setup-deps}は、途中の章から動かしたくなったときに引きます。
+\end{readingguide}
+
+本書のコードは、すべて読者の手元で動かせます。
+この付録では、まっさらな PC から始めて、本書のモデルを自分で学習させるまでの手順をまとめます。
+必要なのは、Python の入った普通の PC だけです。
+GPU（大量の計算を速く実行する装置。\chapref{ch:gpu}で学びます）は要りません。
+付いているかどうか分からなければ、「ない」と考えて進めてかまいません。
+
+この付録を終えると、\chapref{ch:intro}で見たモデルが、自分の PC の中にできています。
+「吾輩は」の続きを書き、\code{12+35=} の答えを出した、あのモデルです。自分の PC で学習させて作ります。
+
+手順の全体は、\tabref{tab:setup-steps}のとおりです。
+「いつ」の列が「毎回」の行だけは、ターミナル（コマンドを打ち込む窓。\secref{sec:setup-install}）を開くたびに実行します。
+「成功の印」の列は、うまくいったときに画面に出るものです。印を確かめてから、次の行へ進みます。
+待ち時間は、手順 6〜8 の 3〜5 分、30〜40 分、約 2 分を足して、35〜47 分です。
+
+\begin{table}[htbp]
+\centering\small
+\caption{この付録の手順の全体。「毎回」の手順 3 と 5 だけは、ターミナルを開くたびに実行する。
+「成功の印」が出なかったら、\tabref{tab:setup-trouble}を見る。}
+\label{tab:setup-steps}
+\begin{tabular}{@{}cl@{\hspace{0.8em}}l@{\hspace{0.8em}}l@{\hspace{0.8em}}l@{\hspace{0.8em}}l@{}}
+\toprule
+ & 手順 & 節 & いつ & 待ち時間 & 成功の印 \\
+\midrule
+0 & 本書のファイルを手に入れる & \ref{sec:setup-get} & 1 回だけ & 回線による & \texttt{code} が見える \\
+1 & Python の版を確かめる & \ref{sec:setup-install} & 1 回だけ & — & 3.11 以降の番号が出る \\
+2 & 仮想環境を作る & \ref{sec:setup-install} & 1 回だけ & — & 何も出ない \\
+3 & 仮想環境に入る & \ref{sec:setup-install} & \textbf{毎回} & — & 行の先頭に \texttt{(.venv)} \\
+4 & ライブラリを入れる & \ref{sec:setup-install} & 1 回だけ & 回線による & \texttt{Successfully installed} \\
+5 & \file{code/} へ移る & \ref{sec:setup-layout} & \textbf{毎回} & — & 何も出ない \\
+6 & データを作る & \ref{sec:setup-first} & 1 回だけ & 3〜5 分 & \texttt{val:} で始まる行 \\
+7 & 基盤モデルを学習させる & \ref{sec:setup-first} & 1 回だけ & 30〜40 分 & 「計算ドリル正答率」の行 \\
+8 & 計算アシスタントにする & \ref{sec:setup-first} & 1 回だけ & 約 2 分 & 「SFT 後の正答率」の行 \\
+9 & 動作を確かめる & \ref{sec:setup-first} & 何度でも & — & 文章と計算が出る \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{必要なもの}\label{sec:setup-requirements}
+
+本書のコードを書いて確かめた環境は、\tabref{tab:setup-env}のとおりです。
+これより新しい PC なら、同じか、もっと短い時間で動きます。
+
+\begin{table}[htbp]
+\centering\small
+\caption{本書のコードを実行した環境。実行時間はすべてこの環境で測った。GPU は使っていない。}
+\label{tab:setup-env}
+\begin{tabular}{l>{\raggedright\arraybackslash}p{0.72\linewidth}}
+\toprule
+項目 & 内容 \\
+\midrule
+CPU & 4 コア（arm64）。GPU なし \\
+メモリ & 8\,GB \\
+ディスク & 空きが 2\,GB あれば足りる（CPU 版の PyTorch が約 1\,GB、データとモデルが約 0.3\,GB） \\
+OS & Linux。macOS と Windows でも、同じ手順で動く書き方にしてある \\
+Python & 3.12（3.11 以降なら動く） \\
+PyTorch & 2.15（CPU 版）。2.x なら動く \\
+NumPy & 2.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+ライブラリは、PyTorch と NumPy の二つだけで、本書のほぼすべてのコードが動きます。
+一部の節では、「実務ではこう書く」を見せるために、ほかのライブラリも使います（\tabref{tab:setup-optional}）。
+これらは、その節を動かすときに入れれば十分です。
+
+\begin{table}[htbp]
+\centering\small
+\caption{一部の節だけで使うライブラリ。入れなくても、ほかの節のコードは動く。}
+\label{tab:setup-optional}
+\begin{tabular}{lll}
+\toprule
+ライブラリ & 使う章 & 用途 \\
+\midrule
+\code{tiktoken} & 第 7 章 & 実際の LLM のトークナイザと比べる \\
+\code{transformers} & 第 13，16，23 章 & Hugging Face のモデルや対話テンプレートを使う \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{本書のファイルを手に入れる}\label{sec:setup-get}
+
+本書のコードと本文は、GitHub で公開しています。
+GitHub は、プログラムを公開して共有するためのサービスです。
+\begin{center}
+\url{https://github.com/k-tamuraphys/zero-kara-llm}
+\end{center}
+ブラウザでこのページを開き、緑色の「Code」というボタンを押して、「Download ZIP」を選びます。
+ダウンロードした ZIP ファイルを展開すると、\file{zero-kara-llm-main} というディレクトリができます。
+これが、この付録で「本書のファイル一式」と呼ぶものです。
+開いてみて、中に \file{code} というディレクトリがあれば成功です。
+置き場所は、あとで見つけやすいところなら、どこでもかまいません。
+
+git（ファイルの変更の履歴を管理する道具）を使っている人は、ZIP の代わりに、次の 1 行でも手に入ります。
+この場合、ディレクトリの名前は \file{zero-kara-llm} になります。
+
+\begin{textcode}
+git clone https://github.com/k-tamuraphys/zero-kara-llm.git
+\end{textcode}
+
+入っているのは、各章のコードと、本文に載せた実行結果、それに本文の原稿です。
+学習に使う文章（夏目漱石の作品）と、学習済みのモデルは入っていません。
+この二つは、\secref{sec:setup-first}の手順で、自分の PC で作ります。
+コードは MIT ライセンス、本文は CC BY-NC-SA 4.0 というライセンスで公開しています。
+使うときの条件は、同じページの \file{LICENSE.md} に書いてあります。
+
+\section{環境を作る}\label{sec:setup-install}
+
+ここからは、\term{ターミナル}{terminal}で作業します。
+ターミナルは、コマンドを文字で打ち込んで、PC に指示を出すための窓です。
+macOS と Linux では「ターミナル」、Windows では「PowerShell」という名前のアプリを開きます。
+開いたら、\code{cd} というコマンドで、本書のファイル一式（\secref{sec:setup-get}）を置いたディレクトリへ移動します。
+\code{ls} と打つと中身の一覧が出ます。そこに \file{code} というディレクトリが見える場所です。
+
+最初に、\code{python --version} と打って、Python の版を確かめます。
+\code{Python 3.12.x} のように表示され、番号が 3.11 以降なら成功です（\tabref{tab:setup-env}）。
+「\code{python} が見つからない」という意味のエラーが出たら、\code{python3} と打ってみてください。
+それで版が出たら、次の 1 行目の \code{python} も \code{python3} に読み替えます（仮想環境に入ったあとは、\code{python} で通じます）。
+
+次に、ほかの作業に影響しないように、本書専用の\term{仮想環境}{virtual environment}を作ります。
+仮想環境とは、ライブラリの置き場所を、作業ごとに分けるしくみです。
+次の 3 行を、1 行ずつ実行します。\texttt{\#} より右は説明なので、打ち込む必要はありません。
+Linux で GPU のない PC を使う人は、3 行目を実行する前に、すぐ下の CPU 版の説明を読んでください。
+
+\begin{textcode}
+python -m venv .venv              # 仮想環境 .venv を作る
+source .venv/bin/activate         # 仮想環境に入る（Windows は .venv\Scripts\activate）
+pip install torch numpy           # PyTorch と NumPy を入れる
+\end{textcode}
+
+\begin{enumerate}[leftmargin=2em,itemsep=0pt]
+\item 1 行目は、いまいるディレクトリの中に \file{.venv} というディレクトリを作り、そこに仮想環境を用意します。
+  成功しても、何も表示されません。エラーの文が出ずに、次の入力を待つ状態に戻れば成功です。
+\item 2 行目で、その仮想環境に入ります。成功すると、入力を待つ行の先頭に \code{(.venv)} と表示されます。
+\item 3 行目の \code{pip} は、Python のライブラリをインターネットから取ってきて入れる道具です。
+  最後に \code{Successfully installed} で始まる行が出れば成功です。
+  途中で止まったら、インターネット接続を確かめて、同じ行をもう一度実行します。
+\end{enumerate}
+
+2 行目の「仮想環境に入る」は、ターミナルを開き直すたびに必要です。
+「入っている」という状態は、そのターミナルの窓の中だけの設定で、窓を閉じると消えるからです。
+1 行目と 3 行目は、最初の 1 回だけで済みます。作った仮想環境も、入れたライブラリも、ディスクに残るからです。
+
+Linux では、3 行目のコマンドは NVIDIA の GPU 用の部品もまとめて入れるので、数 GB のディスクを使います。
+GPU のない PC では、3 行目の代わりに次の 2 行を実行して CPU 版を指定すると、約 1\,GB で済みます（本書の執筆でも、こちらを使いました）。
+\code{--index-url} は、ライブラリを取りに行く先の指定です。ここでは、PyTorch の CPU 版を置いた場所を指定しています。
+
+\begin{textcode}
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install numpy
+\end{textcode}
+
+\tabref{tab:setup-optional}のライブラリも入れるなら、\code{pip install tiktoken transformers} を続けて実行します。
+
+うまく入ったかどうかは、次の 1 行で確かめられます。
+\code{python -c} は、引用符の中の Python のコードをその場で実行する書き方で、ここでは二つのライブラリの版を表示させます。
+
+\begin{textcode}
+python -c "import torch, numpy; print(torch.__version__, numpy.__version__)"
+\end{textcode}
+
+版の番号が二つ並べば成功です（執筆に使った環境では \code{2.15.0+cpu 2.5.5} でした。番号は違っていてもかまいません）。
+\code{ModuleNotFoundError} というエラーが出たら、行の先頭に \code{(.venv)} があるかを確かめます。
+なければ、仮想環境に入る 2 行目からやり直します（\tabref{tab:setup-trouble}）。
+
+\section{コードの置き場所}\label{sec:setup-layout}
+
+本書のコードは、\file{code/} というディレクトリにまとまっています（\tabref{tab:setup-layout}）。
+章ごとのディレクトリ（\file{ch04/} など）に、その章のスクリプトが入っています。
+複数の章が共有する部品は、\file{llmbook/} というライブラリにまとめました。
+ミニGPT の本体（\file{llmbook/model.py}）は 200 行足らずで、\chapref{ch:transformer}で 1 行ずつ読み解きます。
+
+\begin{table}[htbp]
+\centering\small
+\caption{\file{code/} ディレクトリの中身。\file{data/} と \file{checkpoints/} の中身は、\secref{sec:setup-first}の手順で自分で作る。}
+\label{tab:setup-layout}
+\begin{tabular}{l>{\raggedright\arraybackslash}p{0.68\linewidth}}
+\toprule
+場所 & 内容 \\
+\midrule
+\file{llmbook/} & 共有ライブラリ。コーパス（\file{corpus.py}）、トークナイザ（\file{tokenizer.py}）、モデル（\file{model.py}）、
+  学習ループ（\file{train.py}）、計算ドリル（\file{arith.py}）、対話形式（\file{chat.py}） \\
+\file{scripts/} & 共有するデータとモデルを作る 3 本のスクリプト（\secref{sec:setup-first}） \\
+\file{data/} & コーパス \file{soseki.txt}、トークナイザ \file{bpe4096.json}、トークン列 \file{train.bin} と \file{val.bin} \\
+\file{checkpoints/} & 学習済みのモデル。基盤モデル \file{base.pt}、計算アシスタント \file{sft.pt}、各章が作る \file{chNN_*.pt} \\
+\file{ch00/}〜\file{ch25/} & 各章のスクリプト。実行結果は、それぞれの \file{out/} に保存される \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+スクリプトは、必ず \file{code/} ディレクトリの中から実行します。
+本書のスクリプトは、結果を \file{ch04/out/} のように、\file{code/} から見た場所に書き出すからです。
+
+また、\file{llmbook} を Python が見つけられるように、環境変数 \code{PYTHONPATH} に \file{code/} の場所を教えておきます。
+\term{環境変数}{environment variable}とは、ターミナルが覚えている、名前の付いた設定です。
+\code{PYTHONPATH} は、「Python がライブラリを探しに行く場所」を表します。
+ここに \file{code/} の場所を入れておくと、\code{import llmbook} と書かれたときに、Python が \file{code/llmbook/} を見つけます。
+
+\begin{textcode}
+cd code
+export PYTHONPATH=$PWD            # Windows (PowerShell) は $env:PYTHONPATH = $PWD
+\end{textcode}
+
+2 行目の \code{$PWD} は、「いまいるディレクトリの場所」に置き換わる書き方です。
+1 行目で \file{code/} に移ったあとなので、\code{PYTHONPATH} には \file{code/} の場所が入ります（だから、2 行の順序は変えられません）。
+どちらの行も、成功すると何も表示されません。
+
+この 2 行も、ターミナルを開き直すたびに実行します。
+いまいる場所も、環境変数も、そのターミナルの窓の中だけの設定だからです。
+つまり 2 日目からは、本書のファイルを置いたディレクトリで、\code{source .venv/bin/activate}、\code{cd code}、\code{export PYTHONPATH=$PWD} の 3 行を実行すれば、続きを始められます（\tabref{tab:setup-steps}の手順 3 と 5）。
+
+\section{最初に 1 回だけ：データと基盤モデルを作る}\label{sec:setup-first}
+
+本書の多くの章は、同じデータと同じモデルを使い回します。
+そこで、最初に 3 本のスクリプトを順に実行して、これらを作っておきます（\figref{fig:setup-pipeline}）。
+図の青い箱が実行するスクリプト、橙と緑の箱が、それによってできるファイルです。
+矢印のとおり、前のスクリプトが作ったものを次のスクリプトが使うので、順序は変えられません。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 6mm]
+  \node[graybox,text width=21mm] (web) {青空文庫\\（漱石 14 作品）};
+  \node[box,right=of web,text width=30mm] (prep) {\texttt{\small prepare\_data.py}\\3〜5 分};
+  \node[orangebox,right=of prep,text width=30mm] (data) {\texttt{data/}\\コーパス\\トークナイザ\\トークン列};
+  \node[box,below=9mm of data,text width=30mm] (pre) {\texttt{\small pretrain\_base.py}\\30〜40 分};
+  \node[greenbox,left=of pre,text width=30mm] (base) {\texttt{base.pt}\\基盤モデル};
+  \node[box,below=9mm of base,text width=30mm] (sft) {\texttt{\small sft\_chat.py}\\約 2 分};
+  \node[greenbox,right=of sft,text width=30mm] (sftpt) {\texttt{sft.pt}\\計算アシスタント};
+  \draw[arr] (web) -- (prep);
+  \draw[arr] (prep) -- (data);
+  \draw[arr] (data) -- (pre);
+  \draw[arr] (pre) -- (base);
+  \draw[arr] (base) -- (sft);
+  \draw[arr] (sft) -- (sftpt);
+  \node[lbl,left=3mm of base,align=right] {第 0〜19 章\\などが使う};
+  \node[lbl,right=3mm of sftpt,align=left] {第 17 章以降の\\出発点};
+\end{tikzpicture}
+\caption{最初に実行する 3 本のスクリプト（青）と、それが作るもの。上から順に実行する。}
+\label{fig:setup-pipeline}
+\end{figure}
+
+\begin{textcode}
+python scripts/prepare_data.py    # 1. コーパスの取得、トークナイザの学習、トークン化
+python scripts/pretrain_base.py   # 2. 基盤モデルの事前学習      → checkpoints/base.pt
+python scripts/sft_chat.py        # 3. 計算アシスタントへの SFT → checkpoints/sft.pt
+\end{textcode}
+
+それぞれが何をしているかは、本文で詳しく学びます。
+ここでは、待っているあいだに画面に出るものが読めるように、概要と成功の印を述べます。
+
+\begin{enumerate}[leftmargin=2em]
+\item \file{prepare_data.py} は、夏目漱石の 14 作品を青空文庫から取得し、ルビなどの記号を取り除いて 1 本の文章にします
+  （インターネット接続が必要なのは、ここだけです）。
+  学習に使う文章の集まりを、コーパスと呼びます。
+  次に、その文章からトークナイザを学習します（\chapref{ch:tokenizer}）。トークナイザは、文章をトークンに切り分ける道具です。
+  最後に、文章と計算ドリルをトークンの番号の列に直して、ファイルに書き出します（\chapref{ch:pretraining}）。
+  画面には、まず作品名と文字数が 14 行、続いて「マージ」で始まる行がいくつも出ます。
+  最後に \code{train: 2,479,113 トークン} と \code{val: 115,204 トークン} の 2 行が出れば成功です。
+\item \file{pretrain_base.py} は、約 260 万パラメータのミニGPT を、4,000 ステップ学習させます（\chapref{ch:pretraining}）。
+  1 ステップは、「データを少し見て、パラメータを少し直す」という作業の 1 回分です。
+  本書でいちばん時間のかかる計算で、\tabref{tab:setup-env}の環境で 30〜40 分かかります。
+  最初に \code{パラメータ数: 2,583,936} と出ます。
+  続いて、\code{step 0 | train 8.342 | val 8.343} のような行が、500 ステップごとに 1 行ずつ、全部で 9 行出ます。
+  \code{train} と \code{val} の右の数が損失です。損失は、モデルの予測の外れ具合を表す数で、小さいほど良い値です（\chapref{ch:ml}）。
+  この数が 8.3 付近から 3 台まで下がっていけば、学習は正常です。損失が下がっていく様子を眺めながら待ってください。
+  最後に、モデルが書いた文章と、「計算ドリル正答率」の行が出れば成功です。
+  モデルは、学習の最後にまとめて保存されます。
+  途中で止めると最初からやり直しになるので、PC がスリープしないようにしておきます。
+\item \file{sft_chat.py} は、基盤モデルを、質問に答える計算アシスタントに作り変えます（\chapref{ch:posttraining}）。
+  この作り変えを、SFT（教師ありファインチューニング）と呼びます。
+  最初に「SFT 前の正答率: 0.0\%」、最後に「SFT 後の正答率」の行が出ます。後の数字が 87\% 前後なら成功です。
+\end{enumerate}
+
+3 本とも終わったら、\chapref{ch:intro}のスクリプトで動作を確かめます。
+
+\begin{textcode}
+python ch00/hello_llm.py
+\end{textcode}
+
+「どうも仕方が」に続くトークンの候補が 5 行、区切りの \code{---}、モデルが書いた文章、計算ドリルの順に表示されれば、準備は完了です。
+ここで \code{No module named 'llmbook'} というエラーが出たら、\secref{sec:setup-layout}の \code{PYTHONPATH} の設定がまだです
+（上の 3 本だけは、この設定がなくても動きます）。
+
+損失や生成される文章は、\chapref{ch:intro}に載せたものと少し違うことがあります。
+その理由は\secref{sec:setup-repro}で説明します。
+
+\begin{caution}{本文を読む前に実行してもかまいません}
+3 本のスクリプトの中身がわからなくても、心配は要りません。
+\chapref{ch:intro}から\chapref{ch:lm}までは、でき上がったモデルを「観察する」ために使うだけです。
+中身は、\chapref{ch:tokenizer}から\chapref{ch:posttraining}で一つずつ作りながら理解していきます。
+\end{caution}
+
+\section{各章のコードを動かす}\label{sec:setup-run}
+
+各章のスクリプトは、\file{code/} ディレクトリから、次の形で実行します。
+
+\begin{textcode}
+python ch04/mlp_torch.py          # 「python 章のディレクトリ/スクリプト名」の形
+\end{textcode}
+
+本文のコードの見出しの右端に、\file{code/ch04/mlp_torch.py} のようにファイル名が書いてあります。
+それが、実行するスクリプトです。
+本文の「実行結果」の囲みは、そのスクリプトが実際に出力したものです。
+多くのスクリプトは、結果を章ごとの \file{out/} ディレクトリにも保存します。
+
+ほとんどのスクリプトは、数秒から 3 分で終わります。
+それより長くかかるものは、本文に所要時間を書いてあります。
+
+章をまたいで使うモデルがあることに注意してください（\tabref{tab:setup-deps}）。
+たとえば\chapref{ch:agentic-rl}のスクリプトは、\chapref{ch:agent}で作ったモデルから学習を始めます。
+途中の章から動かしたいときは、この表を見て、必要なモデルを先に作ってください。
+表は、右端の「使う章」の列から動かしたい章を探し、その行の「作る場所」を先に実行する、と読みます。
+
+\begin{table}[htbp]
+\centering\small
+\caption{章をまたいで使うモデル。「作る場所」のスクリプトを先に実行しておく必要がある。
+このほかに各章が作るモデルは、その章の中だけで使う。}
+\label{tab:setup-deps}
+\begin{tabular}{@{}llll@{}}
+\toprule
+ファイル & 中身 & 作る場所 & 使う章 \\
+\midrule
+\file{base.pt} & 基盤モデル & \secref{sec:setup-first} & 第 0〜19，23，25 章 \\
+\file{sft.pt} & 計算アシスタント & \secref{sec:setup-first} & 第 17〜19，22，23，25 章 \\
+\file{ch22_rl.pt} & 強化学習後のアシスタント & 第 22 章 & 第 25 章（比較） \\
+\file{ch23_tool_sft.pt} & 電卓を使うエージェント & 第 23 章 & 第 24 章 \\
+\file{ch24_agentic_rl.pt} & 強化学習後のエージェント & 第 24 章 & 第 25 章 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{GPU があるとき，CPU が遅いとき}\label{sec:setup-device}
+\skimread{「GPU はなくてよい。遅すぎるときは、学習のステップ数を減らす」だけ押さえれば足ります。}
+
+本書のコードは CPU だけで動きますが、GPU があれば、それを使うこともできます。
+共有ライブラリの関数は、どれも \code{device} という引数を持っています。
+ここに \code{"cuda"}（NVIDIA の GPU）を渡すと、計算が GPU で行われます。
+
+\begin{pycode}
+import torch
+device = "cuda" if torch.cuda.is_available() else "cpu"   # GPU があれば使う
+\end{pycode}
+
+\secref{sec:setup-first}の \file{pretrain_base.py} と \file{sft_chat.py} は、この行を持っているので、GPU があれば自動で使います。
+GPU のない人は、何もする必要はありません。
+GPU がなぜ速いのか、どう使うのかは、\chapref{ch:gpu}で詳しく学びます。
+本書のモデルは小さいので、GPU を使っても、待ち時間が劇的に減るわけではありません。
+GPU が本当に必要になるのは、モデルとデータを大きくしたときです。
+
+逆に、PC が古くて学習に時間がかかりすぎる場合は、学習のステップ数を減らしてください。
+たとえば \file{pretrain_base.py} の中の \code{max_steps=4000} を \code{max_steps=1000} に書き換えます。
+ステップ数が 1,000 ÷ 4,000 = 4 分の 1 になるので、時間も約 4 分の 1 になります（30〜40 分が、8〜10 分ほどになります）。
+モデルの性能は落ちますが、本書のコードはすべて動きます（計算の正答率などの数値は、本文より低くなります）。
+
+\section{数値が本文と違うとき}\label{sec:setup-repro}
+\laterread{結果が本文の数値と違ったときに読みます。結論は「傾向が同じなら正常」です。}
+
+自分で動かした結果が、本文の数値と少し違うことがあります。これは故障ではありません。
+理由は三つあります。
+
+\begin{itemize}
+\item \textbf{計算の順序の違い}。小数の足し算は、足す順序によって、最後の桁がわずかに変わります（\chapref{ch:distributed}で実際に確かめます）。
+  コンピュータは、小数を限られた桁数に丸めて持つからです。
+  たとえば Python で、\code{(0.1+0.2)+0.3} は \code{0.6000000000000001}、\code{0.1+(0.2+0.3)} は \code{0.6} になります。
+  CPU の種類やライブラリの版が違うと、この順序が変わります。
+  学習では、このわずかな違いが何千ステップも積み重なるので、最後の損失が小数第 2 位くらいで変わることがあります。
+\item \textbf{乱数}。本書のスクリプトは乱数の種を固定していますが、PyTorch の版が違うと、同じ種でも違う乱数が出ることがあります。
+\item \textbf{評価のぶれ}。200 問で測った正答率は、問題の選び方だけで 2〜3 ポイント上下します（\chapref{ch:eval-serving}）。
+  1 問は 1 ÷ 200 = 0.5 ポイントなので、5 問の正誤が入れ替わるだけで 0.5 × 5 = 2.5 ポイント動きます。
+\end{itemize}
+
+なお、\file{prepare_data.py} が作るデータは、どの環境でも同じになるはずです。
+コーパスの整形もトークナイザの学習も、整数と文字だけの計算で、小数の丸めが入り込まないからです。
+計算ドリルを作る乱数も、Python 標準の乱数で、種が同じなら環境によらず同じ問題が並びます。
+実際に、まっさらな仮想環境でこの付録の手順をやり直したところ、\file{data/} の 4 つのファイルは、執筆に使ったものと 1 バイトも違いませんでした。
+違いが生まれるのは、小数の計算を何千回も重ねる学習からです。
+
+大切なのは、数値の一致ではなく、傾向の一致です。
+「損失が下がっていく」「SFT の後は質問に答えるようになる」「電卓を使うと掛け算が解ける」といった傾向は、どの環境でも同じになります。
+
+\section{うまくいかないとき}\label{sec:setup-trouble}
+\laterread{エラーが出たときに、\tabref{tab:setup-trouble}を症状から引きます。先に読んでおく必要はありません。}
+
+つまずきやすい点と対処を、\tabref{tab:setup-trouble}にまとめます。左の列から、症状を探してください。
+
+\begin{table}[htbp]
+\centering\small
+\caption{よくあるエラーと対処。}
+\label{tab:setup-trouble}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.40\linewidth}>{\raggedright\arraybackslash}p{0.53\linewidth}}
+\toprule
+症状 & 原因と対処 \\
+\midrule
+\code{python} が見つからない &
+  \code{python3} と打ってみる（\secref{sec:setup-install}） \\\addlinespace
+\code{ModuleNotFoundError: No module named 'torch'} &
+  仮想環境に入っていない。\secref{sec:setup-install}の 2 行目を実行する \\\addlinespace
+\code{ModuleNotFoundError: No module named 'llmbook'} &
+  \code{PYTHONPATH} が設定されていない。\secref{sec:setup-layout}の 2 行を実行する \\\addlinespace
+\code{FileNotFoundError}（\file{base.pt}、\file{train.bin} など） &
+  \secref{sec:setup-first}の 3 本をまだ実行していないか、\file{code/} の外から実行している \\\addlinespace
+\code{FileNotFoundError}（\file{ch23_tool_sft.pt} など） &
+  前の章のモデルが必要。\tabref{tab:setup-deps}の「作る場所」のスクリプトを先に実行する \\\addlinespace
+コーパスの取得に失敗する &
+  インターネット接続を確かめて、もう一度実行する \\\addlinespace
+学習が極端に遅い &
+  ほかの重いアプリを閉じる。それでも遅ければ、\secref{sec:setup-device}のようにステップ数を減らす \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+エラーが出たら、まずメッセージの最後の行を読んでください。
+そこに、何が見つからないのか、どの形が合わないのかが書かれています。
+テンソルの形に関するエラーの読み方は、\secref{sec:pt-final}にまとめてあります。

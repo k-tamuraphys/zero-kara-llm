@@ -1,0 +1,1311 @@
+\chapter{蒸留と量子化：モデルを小さく速くする}\label{ch:distillation}
+\bookmap{5}
+
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:posttraining}で、基盤モデルを計算アシスタント \file{sft.pt} に育てました。
+\chapref{ch:lora}では、その適応を安く行う方法を学びました。\\
+\textbf{この章の問い}: 大きなモデルの能力を、小さなモデルに移すにはどうすればよいのでしょうか。
+「蒸留」は、具体的に何を計算しているのでしょうか。
+重みそのものを小さく書き直すことはできないのでしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item モデルを小さくする三つの手段（蒸留・量子化・枝刈り）の違いを、一枚の地図で説明できます。
+\item 温度付きの蒸留損失を 1 行ずつ導き、$\tau^2$ を掛ける理由を説明できます。
+\item 漱石の次トークン予測で、教師の確率をまねる効果を学習データの量を変えて測り、効く場面と効かない場面を説明できます。
+\item 線形量子化を自分で実装し、8 ビット・4 ビットで大きさと正答率を測れます。
+\item 現在の LLM 開発で、蒸留と量子化がどう使われているかを説明できます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] この章は 3 周目に読む章です。飛ばして\chapref{ch:eval-serving}へ進んでも、先は読めます。読むときは、温度付きの softmax と交差エントロピー（\chapref{ch:lm}）、KL ダイバージェンス（\chapref{ch:math}）、計算アシスタント \file{sft.pt}（\chapref{ch:posttraining}）を思い出せれば足ります。
+\item[\rgmust] \secref{sec:distill-why}、\secref{sec:distill-dark}、\secref{sec:distill-kl}、\secref{sec:distill-loss-def}、\secref{sec:distill-exp-setup}、\secref{sec:distill-exp-result}、\secref{sec:distill-exp-why}：「蒸留とは何か」。教師の確率分布に入っている情報、蒸留の損失の式、それが効くかを確かめる実験です。全員が知っておくとよい考え方です。
+\item[\rgmust] \secref{sec:distill-quant-why}〜\secref{sec:distill-quant-range}、\secref{sec:distill-quant-model}、\secref{sec:distill-compare}：「量子化とは何か」。スケールとゼロ点の計算、8 ビットや 4 ビットでの正答率、三つの手段の比較表です。\chapref{ch:capstone}が最後の段でこの 8 ビット量子化を使います。\textbf{\chapref{ch:capstone}の前に、ここは読んでください。}
+\item[\rgskim] \secref{sec:distill-kl-ce}〜\secref{sec:distill-tau2}、\secref{sec:distill-loss-impl}、\secref{sec:distill-exp-code}、\secref{sec:distill-exp-drill}、\secref{sec:distill-exp-speed}、\secref{sec:distill-quant-impl}、\secref{sec:distill-quant-err}：導出、実装、追加の実測。結論は各見出しの下の札に書きました。
+\item[\rglater] \secref{sec:distill-llm}、\secref{sec:distill-quant-llm}、\secref{sec:distill-prune-mag}：実際の LLM での蒸留と量子化の手法、枝刈り。実際にモデルを小さくするときに戻れば足ります。
+\end{readingguide}
+
+\file{sft.pt} は、約 260 万個のパラメータを持つ計算アシスタントです。
+32 ビットの浮動小数点数で保存すると、約 10\,MB になります。
+手元の PC なら、どうということのない大きさです。
+
+ところが、実際の LLM は桁が違います。
+700 億個のパラメータを 16 ビットで持つと、重みだけで 140\,GB です。
+これは、H100（80\,GB）のような GPU 1 枚のメモリには収まりません。
+しかも、LLM は 1 トークンを生成するたびに、この重みをすべて読み出します。
+重みが大きいほど、利用者は長く待たされ、運用する側は多くの GPU 代を払います。
+
+では、能力をなるべく保ったまま、モデルを小さくできないでしょうか。
+この章では、そのための二つの代表的な手段を自分で作ります。
+一つは、大きなモデルを「先生」にして小さなモデルを育てる\textbf{蒸留}です。
+もう一つは、重みの数値を粗く書き直して容量を減らす\textbf{量子化}です。
+最後に、重みの一部を捨てる\textbf{枝刈り}も概観します。
+
+\section{なぜモデルを小さくしたいのか}\label{sec:distill-why}
+
+\chapref{ch:posttraining}の LLM のライフサイクル図（\figref{fig:post-lifecycle}）では、SFT や強化学習の後に「蒸留・量子化」という段がありました。
+学習を終えたモデルを、なぜわざわざ作り変えるのでしょうか。
+この節では、小さくしたい理由を数字で確かめ、この章で扱う手段の地図を広げます。
+
+\subsection{推論のコストは重みの大きさで決まる}
+
+モデルを使うこと、つまり入力から出力を計算することを\term{推論}{inference}と呼びます。
+学習は一度ですみますが、推論は利用者がいる限り何億回も行われます。
+
+推論の費用を決める大きな要因は、重みの大きさです。
+理由は三つあります。
+第一に、重みはすべて GPU のメモリに載せる必要があります。
+第二に、1 トークンを生成するたびに重みを全部読み出すので、読み出す量が半分なら生成もおよそ半分の時間ですみます（\chapref{ch:gpu}の「メモリ帯域が律速する」状況）。
+第三に、スマートフォンや PC で動かすには、数 GB 以内に収める必要があります。
+
+\tabref{tab:distill-memory}は、パラメータ数と 1 個あたりのビット数から、重みの大きさを計算したものです。
+「パラメータ数 × ビット数 ÷ 8」バイトという掛け算だけで求まります。
+たとえば 70 億（7B）パラメータを 16 ビットで持つと、$7\times10^9\times 16 / 8 = 1.4\times10^{10}$ バイト、つまり 14\,GB です。
+
+\begin{table}[tbp]
+\centering
+\caption{重みの大きさ（GB）＝パラメータ数 × ビット数 ÷ 8。ビット数を半分にすると大きさも半分になる。
+小さなモデルにすることと、1 個あたりのビット数を減らすことは、どちらも同じ表の上を左上へ動くことに当たる。}
+\label{tab:distill-memory}
+\begin{tabular}{lrrrr}
+\toprule
+パラメータ数 & 32 ビット & 16 ビット & 8 ビット & 4 ビット \\
+\midrule
+260 万（\file{sft.pt}） & 0.010 & 0.005 & 0.0026 & 0.0013 \\
+10 億（1B） & 4 & 2 & 1 & 0.5 \\
+70 億（7B） & 28 & 14 & 7 & 3.5 \\
+700 億（70B） & 280 & 140 & 70 & 35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表から、縦の方向（パラメータの\textbf{数}を減らす）と横の方向（1 個あたりの\textbf{ビット数}を減らす）の二つで小さくできることが分かります。
+7B のモデルを 4 ビットにすれば 3.5\,GB で、ノート PC でも動かせる大きさになります。
+
+\subsection{圧縮の三つの手段}
+
+モデルを小さくする手段は、まとめて\term{モデル圧縮}{model compression}と呼ばれます。
+代表的なものは三つです（\figref{fig:distill-map}）。
+
+\begin{itemize}
+\item \term{知識蒸留}{knowledge distillation}（単に蒸留とも）: 大きな\term{教師}{teacher}モデルの出力をお手本にして、
+小さな\term{生徒}{student}モデルを学習させます。パラメータの\textbf{数}を減らす方法です。
+\item \term{量子化}{quantization}: 重みの数値を、少ないビット数の整数で近似して保存します。
+パラメータの数は同じまま、1 個あたりの\textbf{ビット数}を減らす方法です。
+\item \term{枝刈り}{pruning}: 重要でない重みを 0 にして（あるいは取り除いて）、計算や保存を省きます。
+\end{itemize}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small]
+\node[box,minimum width=30mm,minimum height=12mm,align=center] (T) at (0,0) {大きなモデル\\（学習済み）};
+\node[greenbox,minimum width=30mm,minimum height=10mm,align=center] (D) at (5,1.9) {小さな生徒\\（層・次元が少ない）};
+\node[orangebox,minimum width=30mm,minimum height=10mm,align=center] (Q) at (5,0) {同じ形・粗い数値\\（32 → 4 ビット）};
+\node[purplebox,minimum width=30mm,minimum height=10mm,align=center] (P) at (5,-1.9) {同じ形・穴あき\\（重みの一部が 0）};
+\draw[arr] (T.east) -- node[lbl,above,sloped]{蒸留} (D.west);
+\draw[arr] (T.east) -- node[lbl,above]{量子化} (Q.west);
+\draw[arr] (T.east) -- node[lbl,below,sloped]{枝刈り} (P.west);
+\node[lbl,right=2mm of D,align=left,text width=30mm] {再学習が必要\\（教師の出力で学ぶ）};
+\node[lbl,right=2mm of Q,align=left,text width=30mm] {学習なしでも可\\（数値の丸めだけ）};
+\node[lbl,right=2mm of P,align=left,text width=30mm] {学習なしでも可\\（速くするには工夫）};
+\end{tikzpicture}
+\caption{モデル圧縮の三つの手段。蒸留は別の小さなモデルを作り直し、量子化と枝刈りは同じモデルの重みを書き換える。
+三つは組み合わせられる（蒸留した生徒を、さらに量子化する）。}
+\label{fig:distill-map}
+\end{figure}
+
+図の右端の注記のとおり、蒸留は生徒の学習が必要な代わりに、生徒の形を自由に選べます。
+量子化と枝刈りは、重みを書き換えるだけでも実行できますが、形は変わりません。
+
+この章の前半（\secref{sec:distill-dark}〜\secref{sec:distill-llm}）で蒸留を、
+後半（\secref{sec:distill-quant}、\secref{sec:distill-prune}）で量子化と枝刈りを扱います。
+蒸留から始めるのは、「蒸留は具体的に何を計算しているのか」という問いに、式とコードで答えたいからです。
+
+まとめると、推論の費用は重みの大きさで決まり、重みを小さくするには「数を減らす」か「1 個あたりのビットを減らす」かの二つの方向があります。
+
+\section{教師の出力には何が入っているか}\label{sec:distill-dark}
+
+前節で、蒸留とは「教師の出力をお手本にして生徒を学習させること」だと述べました。
+しかし、ここで素朴な疑問がわきます。
+計算アシスタントなら、正解（「47です。」）は問題から機械的に作れます。
+正解がすでに手元にあるのに、わざわざ教師の出力をまねる意味はあるのでしょうか。
+この節では、教師の出力に「正解以上の情報」が入っていることを、実物で確かめます。
+
+\subsection{教師の確率分布を覗く}
+
+\file{sft.pt} に「\code{12+35は？}」とたずね、答えの 1 文字目の確率分布を見てみましょう。
+言語モデルは、次のトークンについて語彙 4,096 個すべての確率を出すのでした（\chapref{ch:lm}）。
+次のコードは、その上位 5 個を表示します。
+\code{softmax_tau} は、すぐ後で説明する温度付きの softmax です。
+いまは \code{tau=1.0} の行だけを見てください。これは普通の softmax です。
+
+\snippet{教師の分布の上位 5 個を、温度を変えて表示する}{code:distill-dark}{ch18/distill.py}{dark-knowledge}
+
+1〜3 行目で、質問を対話形式にして（\chapref{ch:posttraining}の \code{render_chat}）、トークン列にします。
+4〜5 行目で教師に入れ、最後の位置のロジット $\vz$（形は $(4096,)$）を取り出します。
+これが「答えの 1 文字目」の予測です。
+6〜11 行目で、温度を 3 通りに変えて確率に直し、上位 5 個を表示します。
+結果は次のとおりです。
+
+\outputfile{ch18/out/distill_demo.txt}
+
+出力は三つの部分からなります。
+いま読むのは、先頭の 3 行だけです。
+中ほどの表は、\secref{sec:distill-tau2}で使います。
+末尾の 4 行は、教師がいちばん確率の高いトークンを選び続けて書いた答えで、\secref{sec:distill-exp-drill}で使います。
+
+1 行目（\code{tau=1.0}）では、教師は正解の十の位「\code{4}」に 0.824 を与えています。注目したいのは残りです。
+「\code{5}」に 0.131、「\code{3}」に 0.044 を与え、「\code{6}」や「\code{2}」にはほぼ 0 です。
+つまり教師は、「答えは 40 台だろう。ただ、繰り上がりの具合では 50 台や 30 台もありうる。60 台や 20 台はない」と考えています。
+\code{12+35} の答えの十の位は、$1+3=4$ に、一の位からの繰り上がり（0 か 1）を足したものです。
+正しく計算できなかったときに間違えやすい数字が、ちょうど「\code{5}」と「\code{3}」なのです。
+「\code{5}」は、繰り上がりがあると思い違いをしたときの答えです（$4+1=5$）。
+「\code{3}」は繰り上がりでは説明がつきませんが、教師は正解の一つ下にも少し確率を残しています。
+大事なのは、確率が正解の\textbf{両隣}に集まり、離れた「\code{6}」や「\code{2}」にはほとんど置かれていない、という事実です。
+
+正解ラベルが教えるのは「\code{4} が正しい」ということだけです。
+「\code{5} はかなり惜しく、\code{6} はまったく違う」という\textbf{間違い方の構造}は、正解ラベルには含まれていません。
+教師の確率分布には、それが入っています。
+Hinton らは、蒸留の論文\cite{hinton2015distilling}と同じ時期の講演で、正解以外の確率に含まれる情報を\term{ダークナレッジ}{dark knowledge}と呼びました。
+
+
+\subsection{温度でダークナレッジを見やすくする}
+
+困ったことに、この情報は小さな数で表されがちです。
+十分に学習した教師は、正解に 0.9 以上の確率を与え、残りを 0.01 や 0.0001 といった小さな値に押し込めます。
+このままでは、生徒が「\code{6} より \code{5} のほうがずっと惜しい」という差を学ぶ手がかりが弱くなります。
+
+そこで使うのが、\chapref{ch:lm}で生成のために導入した\textbf{温度} $\tau$ です。
+ロジット $z_i$ を $\tau$ で割ってから softmax をかけるのでした（式\eqref{eq:lm-temperature}）。
+\begin{equation}
+p^{\tau}_i=\frac{\exp(z_i/\tau)}{\sum_{j=1}^{V}\exp(z_j/\tau)}
+\label{eq:distill-softmax-tau}
+\end{equation}
+$\tau>1$ にすると、ロジットどうしの差が $1/\tau$ 倍に縮まり、分布がなだらかになります。
+コードでは 1 行です。
+
+\snippet{温度付き softmax}{code:distill-softmax-tau}{ch18/distill.py}{softmax-tau}
+
+先ほどの出力の 2 行目（\code{tau=2.0}）を見てください。
+「\code{4}」の確率は 0.824 から 0.494 に下がり、「\code{5}」は 0.197、「\code{3}」は 0.114 に上がりました。
+\figref{fig:distill-dark}は、この変化を棒グラフにしたものです。
+$\tau=2$ では、正解以外の候補の違いがはっきり見えるようになります。
+
+「差が $1/\tau$ 倍に縮まる」ことを、出力の数値で確かめておきます。
+softmax では、二つの候補の確率の比は、ロジットの差だけで決まります（$p_i/p_j=\exp(z_i-z_j)$。分母は共通なので、割ると消えます）。
+$\tau=1$ では、「\code{4}」と「\code{5}」の確率の比は $0.824/0.131\approx6.3$ なので、ロジットの差は $\log 6.3\approx1.84$ です。
+$\tau=2$ では、この差が半分の $0.92$ になり、比は $\exp(0.92)\approx2.5$ に縮むはずです。
+出力の値でも $0.494/0.197\approx2.5$ で、合っています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,width=0.9\linewidth,height=52mm,ymin=0,ymax=0.95,
+  bar width=3.2mm,symbolic x coords={2,3,4,5,6},xtick=data,
+  xlabel={答えの 1 文字目の候補},ylabel={確率},
+  legend style={at={(0.98,0.97)},anchor=north east,font=\footnotesize},
+  enlarge x limits=0.15]
+\addplot[fill=figblue,draw=bookblue] coordinates {(2,0.000) (3,0.044) (4,0.824) (5,0.131) (6,0.000)};
+\addplot[fill=figorange,draw=bookorange] coordinates {(2,0.004) (3,0.114) (4,0.494) (5,0.197) (6,0.009)};
+\addplot[fill=figgreen,draw=bookgreen] coordinates {(2,0.002) (3,0.012) (4,0.025) (5,0.016) (6,0.003)};
+\legend{$\tau=1$,$\tau=2$,$\tau=4$}
+\end{axis}
+\end{tikzpicture}
+\caption{教師 \file{sft.pt} が「\code{12+35は？}」の答えの 1 文字目に与える確率（\file{distill_demo.txt} の値）。
+$\tau=1$ では正解「4」が大半を占めるが、$\tau=2$ では「5」「3」が惜しい候補として浮かび上がる。
+$\tau=4$ では、確率の大部分が語彙の残り約 4,000 個に流れ、数字どうしの差が見えにくくなる。}
+\label{fig:distill-dark}
+\end{figure}
+
+一方、3 行目（\code{tau=4.0}）では、「\code{4}」でさえ 0.025 しかありません。
+5 個を合計しても 0.06 ほどで、残りの 0.94 は語彙の他の 4,000 個あまりに薄く広がっています。
+温度を上げすぎると、数字と無関係なトークンまで同じくらいの確率になり、「数字どうしの惜しさ」が埋もれます。温度は調整すべきつまみです。
+実務では、$\tau$ を 1〜4 程度から選ぶことが多く、LLM の事前学習での蒸留では $\tau=1$ もよく使われます（\secref{sec:distill-llm}）。
+
+まとめると、教師の確率分布には「どれがどのくらい惜しいか」という、正解ラベルにない情報が入っています。
+温度 $\tau$ を上げると、その情報が見やすくなります。
+
+\section{蒸留の損失を1行ずつ組み立てる}\label{sec:distill-loss}
+
+前節で、教師の分布にはダークナレッジがあることを見ました。
+では、生徒に「教師の分布に近づけ」と教えるには、どんな損失を使えばよいのでしょうか。
+この節では、蒸留の損失を、第 1 章の KL ダイバージェンスから 1 行ずつ組み立てます。
+そして、多くの解説に出てくる「$\tau^2$ 倍」がなぜ必要なのかを確かめます。
+
+\subsection{二つの分布の近さを測る}\label{sec:distill-kl}
+
+記号を決めます。
+ある位置での教師のロジットを $\vv\in\R^V$、生徒のロジットを $\vz\in\R^V$ とします。
+これに温度 $\tau$ の softmax をかけた分布を、それぞれ $\vp^\tau$（教師）と $\vq^\tau$（生徒）と書きます。
+\begin{equation}
+p^\tau_i=\frac{\exp(v_i/\tau)}{\sum_{j}\exp(v_j/\tau)},\qquad
+q^\tau_i=\frac{\exp(z_i/\tau)}{\sum_{j}\exp(z_j/\tau)}
+\end{equation}
+教師の分布は、生徒にとっての「正解の分布」です。
+正解ラベルが 1 個のトークンだけに確率 1 を置く\textbf{硬い}目標だとすれば、
+$\vp^\tau$ は確率が多くの候補に散らばった\textbf{柔らかい}目標です。
+そこで、$\vp^\tau$ を\term{ソフトターゲット}{soft target}と呼びます。
+
+二つの分布の「ずれ」を測る道具は、\chapref{ch:math}で学びました。
+KL ダイバージェンス $\KL{p}{q}=\sum_i p_i\log(p_i/q_i)$ は、$q$ が $p$ と一致するときに 0 になり、ずれるほど大きくなる量でした（式\eqref{eq:math-kl}）。
+そこで、蒸留の損失の中心を次のように決めます。
+\begin{equation}
+\calL_{\mathrm{KD}}=\KL{\vp^\tau}{\vq^\tau}=\sum_{i=1}^{V}p^\tau_i\log\frac{p^\tau_i}{q^\tau_i}
+\label{eq:distill-kl}
+\end{equation}
+KL の引数の順番に注意してください。
+教師 $\vp^\tau$ が前（重みを付ける側）、生徒 $\vq^\tau$ が後です。
+この向きの KL は\term{前向き KL}{forward KL}と呼ばれ、教師が確率を置いた候補すべてに、生徒も確率を置くよう促します。
+なぜそうなるのかを、小さな例で確かめます。
+
+\begin{example}[KL を手で計算する]
+候補が「\code{4}」「\code{5}」「\code{3}」の 3 個だけだとします。
+教師の分布は $\vp=(0.8,\,0.15,\,0.05)$ とします（前節の出力を丸めた、説明用の値です）。
+生徒を 3 通り考え、式\eqref{eq:distill-kl}を項ごとに計算したのが\tabref{tab:distill-kl-example}です。
+たとえば 1 行目の「\code{4}」の項は、$0.8\times\log(0.8/0.5)=0.8\times0.470=0.376$ です。
+負の項もありますが、合計は必ず 0 以上になります（\chapref{ch:math}）。
+\end{example}
+
+\begin{table}[tbp]
+\centering
+\caption{KL ダイバージェンスの手計算。教師は $\vp=(0.8,\,0.15,\,0.05)$。各項は $p_i\log(p_i/q_i)$ で、KL はその合計。
+右端は、正解ラベル「4」だけを見る損失（「4」に置いた確率の $-\log$）。正解に 0.98 を置く生徒は、右端の損失は最小だが、KL は三つの中で最大になる。}
+\label{tab:distill-kl-example}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+生徒の分布 $\vq$ & 「4」の項 & 「5」の項 & 「3」の項 & KL & 正解の損失 \\
+\midrule
+迷っている $(0.5,\,0.25,\,0.25)$ & $0.376$ & $-0.077$ & $-0.080$ & 0.219 & 0.693 \\
+正解だけに自信 $(0.98,\,0.01,\,0.01)$ & $-0.162$ & $0.406$ & $0.080$ & 0.324 & 0.020 \\
+教師に近い $(0.7,\,0.2,\,0.1)$ & $0.107$ & $-0.043$ & $-0.035$ & 0.029 & 0.357 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+注目したいのは 2 行目です。
+この生徒は正解の「\code{4}」に 0.98 を置いていて、正解ラベルだけを見る損失は $-\log 0.98=0.020$ と、ほぼ 0 です。
+ところが、KL は 0.324 で、迷っている 1 行目の生徒（0.219）より大きくなりました。
+教師が 0.15 を置いた「\code{5}」に、生徒が 0.01 しか置いていないからです（その項だけで $0.15\times\log 15=0.406$）。
+$p_i\log(p_i/q_i)$ は、$p_i$ が 0 でないのに $q_i$ が小さいと大きくなります。
+だから、この向きの KL を下げるには、教師が確率を置いた候補を一つも無視できません。
+3 行目のように、惜しい候補にも教師と同じくらいの確率を置いて、はじめて KL は 0 に近づきます。
+
+\subsection{KL と交差エントロピーは定数しか違わない}\label{sec:distill-kl-ce}
+\skimread{押さえる結論は、「KL と、ソフトターゲットとの交差エントロピーは、生徒にとって同じ損失（勾配が同じ）」です。論文や実装によって、どちらで書かれていても驚かないでください。}
+
+Hinton らの論文は、KL ではなく、ソフトターゲットとの\textbf{交差エントロピー}を損失にしています\cite{hinton2015distilling}。
+どちらが正しいのでしょうか。
+じつは、生徒を学習させる目的では、二つは同じものです。
+KL を分解してみます。
+\begin{align}
+\KL{\vp^\tau}{\vq^\tau}
+&=\sum_i p^\tau_i\log p^\tau_i-\sum_i p^\tau_i\log q^\tau_i
+  &&\text{（$\log(a/b)=\log a-\log b$）}\notag\\
+&=-H(\vp^\tau)+H(\vp^\tau,\vq^\tau)
+  &&\text{（$H$ の定義）}
+\label{eq:distill-kl-ce}
+\end{align}
+これは、第 1 章と第 6 章で見た関係 $H(p,q)=H(p)+\KL{p}{q}$ そのものです（式\eqref{eq:lm-decomp}）。
+右辺の $H(\vp^\tau)$ は教師の分布だけで決まり、生徒のパラメータを含みません。
+したがって、生徒について微分すると 0 になります。
+KL を下げることと交差エントロピーを下げることは、勾配がまったく同じで、損失の値が定数だけずれているにすぎません。
+
+本書で KL を使うのは、生徒が教師と一致したときに値が 0 になり、読みやすいからです。
+
+\subsection{勾配を計算する}\label{sec:distill-grad}
+\skimread{押さえる結論は、「生徒のロジットについての勾配は $(q^\tau_i-p^\tau_i)/\tau$。生徒が教師より大きな確率を置いた候補は、ロジットを下げる向きに押される」です。導出は 2 周目で足ります。}
+
+生徒は、この損失を勾配降下法で下げて学びます。
+そこで、生徒のロジット $z_i$ についての勾配を求めます。
+これが、後で $\tau^2$ が必要になる理由の出発点です。
+
+交差エントロピー $H(\vp^\tau,\vq^\tau)=-\sum_j p^\tau_j\log q^\tau_j$ を $z_i$ で微分します（KL でも同じ勾配でした）。
+まず、温度付き softmax の対数を書き下します。
+\begin{equation}
+\log q^\tau_j=\frac{z_j}{\tau}-\log\sum_k\exp(z_k/\tau)
+\end{equation}
+これを $z_i$ で微分すると、
+\begin{align}
+\pd{\log q^\tau_j}{z_i}
+&=\frac{1}{\tau}[i=j]-\frac{1}{\tau}\cdot\frac{\exp(z_i/\tau)}{\sum_k\exp(z_k/\tau)}
+  &&\text{（第 2 項は連鎖律。$z_i/\tau$ の微分が $1/\tau$）}\notag\\
+&=\frac{1}{\tau}\bigl([i=j]-q^\tau_i\bigr)
+  &&\text{（softmax の定義）}
+\end{align}
+となります。$[i=j]$ は、$i=j$ なら 1、そうでなければ 0 を表します。
+第 2 項では、$\log$ の微分が「1/中身」、$\exp$ の微分が $\exp$ のままであることを使いました。
+中身の $\sum_k\exp(z_k/\tau)$ のうち、$z_i$ を含むのは $k=i$ の項だけなので、分子に $\exp(z_i/\tau)$ が残ります。
+これを交差エントロピーに代入します。
+\begin{align}
+\pd{H(\vp^\tau,\vq^\tau)}{z_i}
+&=-\sum_j p^\tau_j\cdot\frac{1}{\tau}\bigl([i=j]-q^\tau_i\bigr)
+  &&\text{（上の式を代入）}\notag\\
+&=-\frac{1}{\tau}\Bigl(p^\tau_i-q^\tau_i\sum_j p^\tau_j\Bigr)
+  &&\text{（$[i=j]$ が残すのは $j=i$ の項だけ）}\notag\\
+&=\frac{1}{\tau}\bigl(q^\tau_i-p^\tau_i\bigr)
+  &&\text{（確率の和 $\textstyle\sum_j p^\tau_j=1$）}
+\label{eq:distill-grad}
+\end{align}
+勾配は「生徒の確率 − 教師の確率」に $1/\tau$ を掛けたもので、生徒が教師より大きな確率を置いた候補は、ロジットを下げる方向に押されます。
+これは、$\tau=1$ で正解ラベルを使えば、\chapref{ch:ml}の定理\ref{thm:ml-softmax-grad}（softmax と交差エントロピーの勾配は「予測 $-$ 正解」）と同じ形です。
+
+\subsection{なぜ \texorpdfstring{$\tau^2$}{τ²} を掛けるのか}\label{sec:distill-tau2}
+\skimread{押さえる結論は、「温度 $\tau$ を上げると、ソフトターゲットの損失の勾配はおよそ $1/\tau^2$ 倍に縮む。そこで損失に $\tau^2$ を掛け、正解ラベルの損失と釣り合わせる」です。}
+
+式\eqref{eq:distill-grad}には $1/\tau$ が付いていました。
+しかし、それだけではありません。$\tau$ を大きくすると、$q^\tau_i$ も $p^\tau_i$ も一様分布 $1/V$ に近づき、二つの差 $q^\tau_i-p^\tau_i$ 自体も小さくなるからです。
+
+どのくらい小さくなるかを見積もります。
+$\tau$ が大きいとき、$x=z_i/\tau$ は 0 に近いので、$\exp(x)\approx1+x$ と近似できます。すると（分母では 1 を $V$ 個足すので $V$ が出ます）、
+\begin{equation}
+q^\tau_i=\frac{\exp(z_i/\tau)}{\sum_k\exp(z_k/\tau)}\approx\frac{1+z_i/\tau}{V+\sum_k z_k/\tau}
+\end{equation}
+となります。
+ロジットは全体に同じ数を足しても softmax が変わらないので（\secref{sec:math-softmax}）、平均が 0 になるようにずらしておけます（$\sum_k z_k=0$）。
+すると $q^\tau_i\approx(1+z_i/\tau)/V$ で、教師も同様に $p^\tau_i\approx(1+v_i/\tau)/V$ です。
+差をとると、
+\begin{equation}
+q^\tau_i-p^\tau_i\approx\frac{z_i-v_i}{V\tau}
+\quad\Longrightarrow\quad
+\pd{H(\vp^\tau,\vq^\tau)}{z_i}\approx\frac{1}{V\tau^2}\,(z_i-v_i)
+\label{eq:distill-grad-hot}
+\end{equation}
+です（右側は式\eqref{eq:distill-grad}に代入した結果）。
+つまり、温度が高いとき、ソフトターゲットの勾配はおよそ $1/\tau^2$ に比例して小さくなります\cite{hinton2015distilling}。
+
+これで困るのは、正解ラベルの損失と組み合わせるときです。
+正解ラベルの交差エントロピーは温度 1 で計算するので、勾配の大きさは $\tau$ によりません。
+ソフトターゲットの勾配だけが $1/\tau^2$ 倍に縮むと、$\tau$ を変えるたびに二つの損失の力関係が変わってしまいます。
+そこで、ソフトターゲットの損失に $\tau^2$ を掛けて、縮んだぶんを元に戻します。
+
+数値で確かめましょう。
+\file{distill.py} の後半では、乱数で作った教師と生徒のロジット（64 位置 × 4,096 語彙）について、KL の勾配の大きさ（ノルム）を $\tau$ を変えて測っています。
+学習済みのモデルではなく乱数を使うのは、ロジットの大きさを自分で決めて、$\tau$ だけを変えた比較をするためです。
+その結果（\secref{sec:distill-dark}で示した \file{distill_demo.txt} の後半）を\tabref{tab:distill-tau-grad}にまとめます。
+
+\begin{table}[tbp]
+\centering
+\caption{温度 $\tau$ と KL の勾配の大きさ（\file{distill_demo.txt}）。
+「比」は一つ上の行との比。$\tau$ が 2 倍になるたびに $1/\tau^2$ なら 1/4 になるはず。}
+\label{tab:distill-tau-grad}
+\begin{tabular}{rrrr}
+\toprule
+$\tau$ & KL の勾配のノルム & 比 & $\tau^2$ を掛けたもの \\
+\midrule
+1 & 0.04912 & — & 0.04912 \\
+2 & 0.00400 & 1/12.3 & 0.01600 \\
+4 & 0.00060 & 1/6.7 & 0.00960 \\
+8 & 0.00013 & 1/4.5 & 0.00859 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\tau$ が 4 から 8 に上がると、勾配はおよそ $1/4.5$ になり、$1/\tau^2$ の予想（$1/4$）に近づいています。
+（「比」は丸める前の値から計算しています。）
+$\tau^2$ を掛けた列は、$\tau=4$ と $8$ でほぼ同じ値（0.0096 と 0.0086）です。
+一方、$\tau=1\to2$ では 1/12 も縮んでいます。
+近似 $\exp(x)\approx1+x$ は、ロジットを $\tau$ で割った値が小さいときにしか成り立たないからです。
+ここではロジットの大きさが 3 程度なので、$\tau=1, 2$ ではまだ近似の範囲外です。
+$\tau^2$ は「勾配の大きさをだいたいそろえる」ための目安であり、厳密な補正ではないと分かります。
+
+\begin{quiz}
+$\tau=1$ のとき、$\tau^2$ 倍は何もしないことになります。
+では、正解ラベルの損失を使わずに、ソフトターゲットの損失だけで学習するなら、$\tau^2$ を掛けることに意味はあるでしょうか。
+\end{quiz}
+
+答えは「学習率を調整すれば、ほとんど意味はない」です。
+損失全体を定数倍すると、勾配も同じ定数倍になります。
+これは学習率を定数倍したのと同じです。
+$\tau^2$ が効くのは、大きさの違う二つの損失を足し合わせるときです。
+Hinton らも、$\tau^2$ を掛けるのは「ソフトとハードの両方の目標を使うとき」に重要だと述べています\cite{hinton2015distilling}。
+
+\subsection{蒸留の損失}\label{sec:distill-loss-def}
+
+以上をまとめると、蒸留の損失は次のようになります。
+\begin{definition}[蒸留の損失]
+教師のロジット $\vv$、生徒のロジット $\vz$、正解のトークン $y$ について、
+\begin{equation}
+\calL=\alpha\,\tau^2\,\KL{\vp^\tau}{\vq^\tau}+(1-\alpha)\,\bigl(-\log q^{1}_y\bigr)
+\label{eq:distill-loss}
+\end{equation}
+とする。$\tau$ は温度、$\alpha\in[0,1]$ はソフトターゲットの重み、$q^1_y$ は温度 1 の生徒が正解に与える確率である。
+\end{definition}
+第 1 項は、式\eqref{eq:distill-kl}の KL に係数を掛けたものです。
+第 2 項は、いつもの正解ラベルとの交差エントロピーです（\chapref{ch:lm}）。
+$\alpha=1$ なら教師の分布だけをまね、$\alpha=0$ ならいつもの学習に戻ります。
+$\tau^2$ は、前の小節の結論から来ています。
+温度を上げると、第 1 項の勾配はおよそ $1/\tau^2$ 倍に縮みます。
+$\tau^2$ を掛けてそのぶんを打ち消し、二つの項の力関係を保っているのです。
+
+この形は、Hinton らが文章で説明した手順（二つの目的関数の重み付き平均、ソフトの側に $\tau^2$）を、後の教科書が 1 本の式に書いたものです。
+論文そのものには、この 1 本の式は載っていません。
+また、論文の記号では温度を $T$ と書きますが、本書では系列長の $T$ と区別するため、第 6 章に合わせて $\tau$ と書きます。
+
+\figref{fig:distill-flow}は、この損失を計算する流れです。
+同じ入力を教師と生徒に通し、それぞれのロジットから二つの項を作ります。
+教師は固定で、勾配は生徒にだけ流れます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small,node distance=6mm]
+\node[graybox,minimum width=22mm,align=center] (x) at (0,0) {入力 $x_{<t}$\\（同じ対話）};
+\node[box,minimum width=24mm,align=center] (t) at (3.2,1.2) {教師（固定）\\4 層 192 次元};
+\node[greenbox,minimum width=24mm,align=center] (s) at (3.2,-1.2) {生徒\\2 層 96 次元};
+\node[box,minimum width=20mm] (pt) at (6.6,1.2) {$\vp^\tau=\softmax(\vv/\tau)$};
+\node[greenbox,minimum width=20mm] (qt) at (6.6,-0.3) {$\vq^\tau=\softmax(\vz/\tau)$};
+\node[greenbox,minimum width=20mm] (q1) at (6.6,-1.7) {$\vq^1=\softmax(\vz)$};
+\node[orangebox,align=center] (kl) at (10,0.45) {$\alpha\,\tau^2\,\KL{\vp^\tau}{\vq^\tau}$};
+\node[orangebox,align=center] (ce) at (10,-1.7) {$(1-\alpha)(-\log q^1_y)$};
+\node[graybox] (y) at (10,-2.9) {正解 $y$};
+\draw[arr] (x) -- (t); \draw[arr] (x) -- (s);
+\draw[arr] (t) -- node[lbl,above]{$\vv$} (pt);
+\draw[arr] (s) -- node[lbl,above]{$\vz$} (qt.west);
+\draw[arr] (s) -- (q1.west);
+\draw[arr] (pt) -- (kl); \draw[arr] (qt) -- (kl);
+\draw[arr] (q1) -- (ce); \draw[arr] (y) -- (ce);
+\end{tikzpicture}
+\caption{蒸留の損失（式\eqref{eq:distill-loss}）を計算する流れ（入力は、対話でも小説の文章でもよい）。上の経路（教師）は勾配を計算しない。
+生徒のロジット $\vz$ は二度使われる。温度 $\tau$ で割ってソフトターゲットと比べる経路と、温度 1 のまま正解と比べる経路である。}
+\label{fig:distill-flow}
+\end{figure}
+
+\subsection{実装}\label{sec:distill-loss-impl}
+\skimread{押さえる結論は、「式\eqref{eq:distill-loss}は、12 行の関数 \code{distill_loss} になる」です。}
+
+式\eqref{eq:distill-loss}をそのままコードにしたのが、次の関数です。
+
+\snippet{蒸留の損失}{code:distill-loss}{ch18/distill.py}{distill-loss}
+
+引数の \code{z_s} が生徒のロジット $\vz$、\code{z_t} が教師のロジット $\vv$ です。
+どちらも対話のバッチ全体の形 $(B, T, V)$ をしています。
+\code{y} は\chapref{ch:posttraining}の \code{encode_chat_example} が作った正解で、アシスタントの発話以外は $-100$（\code{IGNORE}）です。
+
+6 行目で、正解のある位置だけを選ぶ印 \code{mask} を作ります。
+7 行目で、その位置のロジットだけを取り出します。
+ブール値のテンソルで添字を付けると、印が真の位置だけが集められ、形は $(N, V)$ になります（$N$ は答えの位置の総数）。
+8〜9 行目は、温度付き softmax の対数 $\log\vq^\tau$（\code{log_ps}）と $\log\vp^\tau$（\code{log_pt}）です。
+確率を求めてから対数をとるより、\code{log_softmax} で直接求めるほうが数値的に安定でした（\secref{sec:math-softmax}）。
+10 行目が式\eqref{eq:distill-kl}です。
+\code{log_pt.exp()} が $p^\tau_i$、\code{(log_pt - log_ps)} が $\log(p^\tau_i/q^\tau_i)$ で、
+語彙の方向に足して（\code{sum(-1)}）、位置について平均しています（\code{mean()}）。
+11 行目は温度 1 の交差エントロピーで、正解ラベルの項です。
+12 行目で、式\eqref{eq:distill-loss}のとおりに重みを付けて足します。
+記録用に、KL と交差エントロピーも別々に返しています。
+
+まとめると、蒸留の損失は「温度 $\tau$ で柔らかくした教師の分布との KL（$\tau^2$ 倍）」と「正解との交差エントロピー」の重み付き和です。
+KL と交差エントロピーは定数しか違わず、$\tau^2$ は二つの項の勾配の大きさをそろえるためにあります。
+
+\section{実験：教師の確率は正解より多くを教えるか}\label{sec:distill-exp}
+
+前節で作った蒸留の損失で、小さな生徒を育ててみます。
+この節の問いは一つです。
+\textbf{教師の確率分布は、正解ラベルより本当に多くを教えるのでしょうか。}
+
+Hinton らは、音声認識で、この問いに答える実験をしています\cite{hinton2015distilling}。
+学習データの 3\% だけで学習すると、正解ラベルだけで学んだモデルは過学習してしまいます。
+ところが、同じ 3\% のデータで教師の確率（ソフトターゲット）をまねたモデルは、テストでの成績が、全データで学んだモデルにほぼ並びました。
+この節では、同じことを本書の規模で確かめます。
+
+\subsection{教師・生徒・データ}\label{sec:distill-exp-setup}
+
+題材は、漱石の文章の\textbf{次トークン予測}です。
+「どうも仕方が」の次は「ない。」でも「ないから」でもよいように（\chapref{ch:intro}）、文章の続きには候補がいくつもあります。
+正解ラベルが教えるのはそのうち 1 つだけですが、教師の分布は語彙 4,096 個のすべてに確率を付けます。
+答えが 1 つに決まる計算問題とは、ここが違います（後で、計算問題の場合と比べます）。
+
+\figref{fig:distill-three}が実験の設定です。
+\begin{itemize}
+\item \textbf{教師}: \chapref{ch:pretraining}の基盤モデル \file{base.pt}（4 層・192 次元、2,583,936 パラメータ）。漱石の検証データでの損失は 4.87 です。
+\item \textbf{生徒}: 2 層・4 ヘッド・96 次元のミニGPT（\code{GPTConfig(n_layer=2, n_head=4, n_embd=96)}、627,648 パラメータ、教師の約 4 分の 1）。重みは乱数で初期化します。語彙は教師と同じ 4,096 個です（ロジットを成分ごとに比べるには、語彙がそろっている必要があります）。
+\item \textbf{学習データ}: 漱石の学習用トークン列（1,363,282 トークン）の\textbf{先頭の一部だけ}。3\%（40,898 トークン）、10\%（136,328 トークン）、100\% の 3 通りです。
+\item \textbf{条件}: (a) 正解だけ（ふつうの交差エントロピー、\code{hard}）と、(b) 教師の確率をまねる（式\eqref{eq:distill-loss}、\code{soft}）の 2 通り。(b) は $\tau=2$、$\alpha=0.5$ とします。
+\end{itemize}
+$\tau=2$ は、\secref{sec:distill-dark}で惜しい候補がよく見えた温度です。
+$\alpha=0.5$ は、式\eqref{eq:distill-loss}の二つの項を半分ずつ混ぜることに当たります。
+
+割合 3 通り × 条件 2 通りで、6 回学習します。
+どれも 400 ステップ（バッチ 32、系列長 128、最大学習率 $10^{-2}$、ウォームアップ 30 ステップ＋コサイン減衰）で、そろえるのは学習の量です。
+3\% のデータは 1 ステップ 4,096 トークンなら 10 ステップで一回り（1 エポック）するので、400 ステップで約 40 回くり返し読むことになります。
+100\% なら、400 ステップでも 1.2 エポックです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small]
+\node[graybox,minimum width=30mm,align=center] (d) at (0,0) {漱石の学習データ\\先頭の 3\%・10\%・100\%};
+\node[graybox,minimum width=28mm,align=center] (a) at (4.6,1.3) {正解\\次のトークン 1 個};
+\node[box,minimum width=28mm,align=center] (b) at (4.6,-1.3) {教師 \file{base.pt} の分布\\4,096 個の確率};
+\node[greenbox,minimum width=22mm,align=center] (s) at (9.0,0) {生徒\\2 層 96 次元};
+\node[graybox,minimum width=22mm,align=center] (v) at (9.0,-2.4) {漱石の検証データ\\での損失};
+\draw[arr] (d) -- node[lbl,above,sloped]{1 つずらす} (a);
+\draw[arr] (d) -- node[lbl,below,sloped]{教師に通す} (b);
+\draw[arr] (a) -- node[lbl,above,sloped]{(a) CE} (s);
+\draw[arr] (b) -- node[lbl,below,sloped]{(b) KL+CE} (s);
+\draw[arr] (s) -- node[lbl,right]{50 ステップごと} (v);
+\end{tikzpicture}
+\caption{漱石の次トークン予測での蒸留の実験。同じ文章の窓を使い、生徒が正解の 1 トークンから学ぶか、教師の 4,096 個の確率から学ぶかだけを変える。
+評価は、どの条件でも同じ検証バッチでの、ふつうの交差エントロピー。}
+\label{fig:distill-three}
+\end{figure}
+
+\subsection{コード}\label{sec:distill-exp-code}
+\skimread{押さえる結論は、「学習ループは、損失の 1 行を除けば\chapref{ch:pretraining}の事前学習と同じ。条件 (b) では、同じ文章を教師にも通して \code{distill_loss} を呼ぶ」です。}
+
+データの準備は次のとおりです（\file{distill_lm.py}）。
+
+\snippet{漱石の部分を取り出し、先頭の一部だけを使う}{code:distill-data}{ch18/distill_lm.py}{lm-data}
+
+1〜5 行目は、\file{train.bin} と \file{val.bin} から漱石の部分を取り出します。
+どちらも漱石の文章の後に区切りの \code{<|endoftext|>}（ID 4088）があり、その後に計算ドリルが続くので、最初の区切りの手前までを使います。
+9 行目で、学習データを先頭から \code{frac} の割合だけ切り出します。
+11〜15 行目で検証バッチ（$32\times128$ を 20 個）を乱数の種を固定して作り、6 条件のすべてで同じものを使います。
+
+学習ループは、損失の 1 行を除けば\chapref{ch:pretraining}の事前学習と同じです。
+
+\snippet{2 つの条件に共通の学習ループ}{code:distill-loop}{ch18/distill_lm.py}{lm-loop}
+
+2〜5 行目で、50 ステップごとに検証損失を記録します。
+8 行目で、学習データからランダムな窓を切り出します（\chapref{ch:pretraining}の \code{get_batch}）。
+10〜13 行目が条件 (b) で、同じ窓を教師にも通し、勾配なし（\code{torch.no_grad()}）で求めた教師のロジットと\coderef{code:distill-loss}の \code{distill_loss} で損失を計算します。
+前節で作った関数を、そのまま使っています。
+正解の \code{y} には \code{-100} がないので、すべての位置が損失に入ります。
+15 行目が条件 (a) のふつうの交差エントロピーです。
+
+\subsection{結果：データが少ないほど、教師の分布が効く}\label{sec:distill-exp-result}
+
+\figref{fig:distill-curves}が、6 条件の学習曲線です（1 条件 4〜9 分。3 条件ずつ並行に走らせたため、混雑のぶん遅くなっています。計算機の混み具合によっては、もっとかかります）。
+縦軸は、漱石の検証データでのふつうの交差エントロピーで、低いほど良い予測です。
+灰色の破線は教師 \file{base.pt} の値（4.87）です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{lmcurve/.style={width=0.40\linewidth,height=46mm,xmin=0,xmax=400,ymin=4.6,ymax=8.6,
+  xtick={0,100,200,300},tick label style={font=\scriptsize},label style={font=\footnotesize},title style={font=\footnotesize}}}
+\begin{axis}[lmcurve,name=p1,title={3\%（4.1 万トークン）},xlabel={ステップ},ylabel={検証損失}]
+\addplot[thick,color=bookblue,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_hard_f0.03.csv};
+\addplot[thick,color=bookorange,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_soft_f0.03_t2_a0.5.csv};
+\addplot[dashed,color=bookgray,domain=0:400] {4.874};
+\end{axis}
+\begin{axis}[lmcurve,name=p2,at={(p1.east)},anchor=west,xshift=2mm,title={10\%（13.6 万トークン）},xlabel={ステップ},yticklabels={}]
+\addplot[thick,color=bookblue,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_hard_f0.1.csv};
+\addplot[thick,color=bookorange,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_soft_f0.1_t2_a0.5.csv};
+\addplot[dashed,color=bookgray,domain=0:400] {4.874};
+\end{axis}
+\begin{axis}[lmcurve,name=p3,at={(p2.east)},anchor=west,xshift=2mm,title={100\%（136 万トークン）},xlabel={ステップ},yticklabels={},
+  legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east}]
+\addplot[thick,color=bookblue,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_hard_f1.csv};
+\addplot[thick,color=bookorange,mark=none] table[col sep=comma,x=step,y=val_loss]{code/ch18/out/distill_lm_soft_f1_t2_a0.5.csv};
+\addplot[dashed,color=bookgray,domain=0:400] {4.874};
+\legend{(a) 正解だけ,(b) 教師の分布,教師}
+\end{axis}
+\end{tikzpicture}
+\caption{漱石の検証データでの損失の学習曲線（\file{distill_lm_*.csv}、50 ステップごと）。左から、学習データの 3\%・10\%・100\%。3\% では (a) が 150 ステップ以降に過学習で悪化するが、(b) は下がり続ける。データが増えると差は縮む。}
+\label{fig:distill-curves}
+\end{figure}
+
+
+いちばん左の 3\% のデータで、二つの条件の違いがはっきり出ました。
+(a) 正解だけの生徒は、150 ステップ（約 15 エポック）で検証損失が 7.85 まで下がった後、上がり始め、400 ステップでは 8.41 になりました。
+初期値の 8.34（何も学んでいない状態）より悪い値です。
+8.34 は、4,096 個の候補すべてに同じ確率 $1/4096$ を置いたときの損失 $\log 4096\approx8.32$ とほぼ同じです（\chapref{ch:lm}）。
+学習前の生徒は、ほぼこの「当てずっぽう」の状態にいます。
+同じ 4 万トークンをくり返し読むうちに、学習データを丸暗記し、見たことのない文章では自信を持って外すようになったのです。
+(b) 教師の分布をまねた生徒は、400 ステップまで下がり続け、6.88 に達しました\footnote{3\% のデータでは $\tau=1$（$\alpha=0.5$）も試し、最良値は 6.86 で、$\tau=2$ の 6.88 とほぼ同じでした（\file{distill_lm_soft_f0.03_t1.txt}）。本文の値はすべて $\tau=2$ のものです。}。
+同じデータ、同じステップ数で、差は最良値どうしで約 1.0、最終値どうしで約 1.5 です。
+
+10\% でも、(b) は (a) より速く下がり、400 ステップで 6.62 対 7.18 でした。
+ここでは (a) もまだ過学習しておらず、差は「過学習を防いだ」ぶんではなく、「同じステップ数で速く学べた」ぶんです。
+100\% では、(a) 6.45 対 (b) 6.12 で、差は 0.33 まで縮みました。
+データが十分にあれば、正解ラベルだけでも生徒は着実に学べるからです。
+
+\tabref{tab:distill-results}と\figref{fig:distill-best}に、最良値と最終値をまとめます。
+
+\begin{table}[tbp]
+\centering
+\caption{漱石の検証データでの損失（\file{distill_lm_*.csv}）。「最良」は 50 ステップごとに測った中の最小値で、括弧内はそのステップ。
+「最終」は 400 ステップ後。教師 \file{base.pt} は 4.87。$\tau=2$、$\alpha=0.5$。}
+\label{tab:distill-results}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+学習データ（トークン数） & \multicolumn{2}{c}{(a) 正解だけ} & \multicolumn{2}{c}{(b) 教師の分布} & 最良の差 \\
+ & 最良 & 最終 & 最良 & 最終 & (a)$-$(b) \\
+\midrule
+3\%（40,898） & 7.85（150） & 8.41 & 6.88（400） & 6.88 & 0.97 \\
+10\%（136,328） & 7.18（400） & 7.18 & 6.62（400） & 6.62 & 0.56 \\
+100\%（1,363,282） & 6.45（400） & 6.45 & 6.12（400） & 6.12 & 0.33 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,width=0.72\linewidth,height=50mm,ymin=4.5,ymax=8.2,
+  symbolic x coords={3\%,10\%,100\%},xtick=data,bar width=7mm,enlarge x limits=0.25,
+  xlabel={使った学習データの割合},ylabel={最良の検証損失},
+  nodes near coords,nodes near coords style={font=\scriptsize,/pgf/number format/fixed,/pgf/number format/precision=2},
+  legend style={font=\footnotesize,at={(0.98,0.98)},anchor=north east},grid=none]
+\addplot[fill=bookblue!60,draw=bookblue] coordinates {(3\%,7.847) (10\%,7.179) (100\%,6.449)};
+\addplot[fill=bookorange!60,draw=bookorange] coordinates {(3\%,6.877) (10\%,6.615) (100\%,6.121)};
+\legend{(a) 正解だけ,(b) 教師の分布}
+\end{axis}
+\end{tikzpicture}
+\caption{割合ごとの最良の検証損失（\tabref{tab:distill-results}）。データが少ないほど (a) と (b) の差が大きい。教師 \file{base.pt} は 4.87。}
+\label{fig:distill-best}
+\end{figure}
+
+注意として、どの生徒も教師の 4.87 には遠く及びません。
+400 ステップ（最大で 160 万トークン）は、260 万パラメータの教師が 4,000 ステップ学習したのと比べて 10 分の 1 で、生徒はまだ学習の途中です。
+この実験が示すのは「同じデータ、同じ学習量なら、教師の分布で学んだほうがずっと良い」ということで、「生徒が教師に追いつく」ことではありません。
+
+\subsection{なぜ教師の分布が効くのか}\label{sec:distill-exp-why}
+
+正解ラベルと教師の分布が運ぶ情報の量を比べてみます。
+正解ラベルが 1 つの位置で教えるのは、「4,096 個の候補のうち、実際に書かれていたのはこれ」という 1 つの事実だけです。
+「どうも仕方が」の後に「ないから」と書かれていれば、生徒は「ない。」にも確率を残すべきだったことを知る手段がありません。
+一方、教師の分布は、同じ位置で「ない。」に 0.56、「ないから」に 0.12、「ないと」に 0.06……と、ほかの候補がどれくらいありそうかまで教えます（\chapref{ch:intro}の例）。
+
+データが少ないと、この差がはっきり出ます。
+正解だけで学ぶ生徒は、同じ 4 万トークンを何十回も読むうちに、「この文脈の次はこのトークン」という個々の事実を丸暗記していきます。
+教師の分布をまねる生徒は、丸暗記しようとしても、目標そのものが「なだらかな分布」なので、1 つのトークンに確率を集めすぎることができません。
+しかも教師の分布には、教師が残りの 97\% から学んだことも反映されています。
+データが十分にあれば、正解ラベルだけでも同じことを学べるので、差は縮みます。
+
+Hinton らの音声認識の実験（\tabref{tab:distill-hinton}）も、同じ構図です。
+
+\begin{table}[tbp]
+\centering
+\caption{Hinton らの音声認識の実験（論文の表 5\cite{hinton2015distilling}）。値はフレーム単位の正解率（音声を短く区切った 1 区間ごとに、音の種類を当てた割合）。}
+\label{tab:distill-hinton}
+\begin{tabular}{lrr}
+\toprule
+学習の仕方 & 学習データでの正解率 & テストでの正解率 \\
+\midrule
+正解だけ（データの 100\%） & 63.4\% & 58.9\% \\
+正解だけ（データの 3\%） & 67.3\% & 44.5\% \\
+ソフトターゲット（データの 3\%） & 65.4\% & 57.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+データの 3\% だけを正解ラベルで学ぶと、学習データでの正解率は 100\% のときより高いのに、テストでは 58.9\% から 44.5\% に落ちました（過学習）。
+同じ 3\% でソフトターゲットを使うと、テストで 57.0\% と、100\% のデータで学んだときにほぼ並びました。
+
+本章の実験でも、3\% のデータで (a) は 150 ステップを境に悪化し、(b) は悪化しませんでした。
+差の大きさは 3\%・10\%・100\% で 0.97・0.56・0.33 と、データが少ないほど大きくなっています（\figref{fig:distill-best}）。
+ただし、本章の (b) は 3\% のデータでも 100\% の (a)（6.45）には届いていません。
+本章の生徒は教師の 4 分の 1 の大きさで、学習も途中だからです。
+規模の違いを考えると、傾向は一致し、程度はより控えめ、とまとめられます。
+
+
+\subsection{効かない場面：答えが 1 つに決まる課題}\label{sec:distill-exp-drill}
+\skimread{押さえる結論は、「答えが 1 つに決まる計算の対話では、正解だけ・教師の分布・教師の生成文の間に、意味のある差は出ない。蒸留が効くのは、続きの候補が多く、データが少ないとき」です。}
+
+では、蒸留はいつでも効くのでしょうか。
+\chapref{ch:posttraining}の計算アシスタント \file{sft.pt} を教師にして、同じ 2 層の生徒に対話形式の計算（「\code{12+35は？}」→「\code{47です。}」）を教える実験もしました（\file{distill_experiment.py}）。
+条件は 3 通りです。
+(a) 正解だけ、(b) 教師の分布、それに (c) 教師が貪欲生成で書いた答えを手本にした SFT です。
+貪欲生成は、いちばん確率の高いトークンを選び続ける生成で、\secref{sec:distill-dark}の出力の末尾 4 行がその例でした。
+評価は、別の乱数の種で作った 1,000 問の対話正答率です（\tabref{tab:distill-drill}）。
+この 1,000 問には、学習データと同じ質問も 4〜19\% 含まれます。それを除いても結論は同じです。
+
+\begin{table}[tbp]
+\centering
+\caption{計算の対話での比較（1,000 問、\code{seed=777} の対話正答率）。教師は \file{sft.pt}、生徒は 2 層・96 次元で乱数から学習。
+教師の正答率は 3 桁までで 82.6\%、2 桁まで（数が 99 以下）で 90.4\%。}
+\label{tab:distill-drill}
+\begin{tabular}{lrrr}
+\toprule
+ & 3 桁まで & 2 桁まで & 2 桁まで \\
+ & 3,000 件 & 3,000 件 & 300 件 \\
+\midrule
+(a) 正解だけ & 8.4\% & 21.4\% & 7.5\% \\
+(b) 教師の分布 & 6.8\% & 19.5\% & 9.3\% \\
+(c) 教師の生成文で SFT & 5.1\% & 20.2\% & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+3 条件の差は、3 桁の (a) と (c) の 3.3 ポイントを除けば、2 ポイント以内でした。
+この差を、評価のぶれの大きさと比べます。
+同じ評価をくり返したときの、ぶれの典型的な大きさを標準誤差と呼びます（\chapref{ch:eval-serving}で学びます）。
+正答率が 10\% 前後のとき、1,000 問の評価の標準誤差は約 1 ポイントです。
+これと比べると、2 ポイント以内の差は、意味のある差とは言えませんでした。
+学習は各条件 1 回だけなので、3.3 ポイントの差も偶然かもしれません。
+理由は二つ考えられます。
+一つは、\textbf{答えが 1 つに決まる}ことです。
+損失を計算するのは答えの数トークンだけで、「\code{です}」や「\code{<|end|>}」の位置では、教師はほぼ確率 1 で正しく、分布と正解ラベルに違いがありません。
+もう一つは、\textbf{生徒の学習が足りていない}ことです。3,000 件の学習曲線は、どの条件でも最後（1,200 か 1,500 ステップ）までまだ上がり続けていて、差を決めていたのは手本の質よりも学習の量でした。
+
+漱石の実験と並べると、蒸留が効く条件が見えてきます。
+教師の分布が正解ラベルより多くを語ること（続きの候補がいくつもある）、そして、正解ラベルだけでは足りないくらいデータが少ないことです。
+
+\subsection{生徒は速くなったか}\label{sec:distill-exp-speed}
+\skimread{押さえる結論は、「パラメータが約 1/4 の生徒でも、速さは約 2 倍どまり」です。}
+
+最後に、生徒が小さくなった効果を測ります。
+\file{eval_models.py} で、教師 \file{sft.pt} と、計算の対話で学習した 2 層の生徒（\file{ch18_hard_n3000_mv99.pt}）に「\code{12+35は？}」への応答を 100 回ずつ生成させ、1 応答あたりの時間を 3 回測りました（\figref{fig:distill-speed}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar,width=0.8\linewidth,height=30mm,xmin=0,xmax=125,
+  symbolic y coords={生徒,教師},ytick=data,bar width=4mm,
+  xlabel={1 応答あたりの時間（ミリ秒、3 回の平均）},enlarge y limits=0.5,
+  nodes near coords,nodes near coords style={font=\scriptsize},grid=none]
+\addplot[fill=bookblue!60,draw=bookblue] coordinates {(100.2,教師) (48.9,生徒)};
+\end{axis}
+\end{tikzpicture}
+\caption{教師（4 層・192 次元、258 万パラメータ）と生徒（2 層・96 次元、63 万パラメータ）の応答時間（\file{eval_models.txt}。3 回の測定は教師 95.5〜109.3、生徒 47.8〜49.8 ミリ秒）。パラメータは 1/4 だが、速さは約 2 倍にとどまる。}
+\label{fig:distill-speed}
+\end{figure}
+
+教師は 100.2 ミリ秒、生徒は 48.9 ミリ秒で、生徒のほうが $100.2\div48.9\approx2.0$ 倍速くなりました。
+4 倍でなく 2 倍にとどまるのは、小さなモデルでは Python の処理など、大きさによらない時間の割合が大きいからと考えられます。
+
+なお、ミリ秒の値そのものは、計算機の性能や混み具合で大きく変わります。
+\chapref{ch:eval-serving}では同じ教師を別の条件で測るので、値は一致しません。
+ここで見るのは、同じ条件で続けて測った教師と生徒の\textbf{比}です。
+
+まとめると、教師の確率は、続きの候補がいくつもある課題で、データが少ないときに、正解ラベルよりずっと多くを教えます。
+答えが 1 つに決まる課題では上乗せは小さく、生徒の学習が足りなければ、手本の質より学習の量が先に効きます。
+蒸留は「教師の能力が自動的に移る魔法」ではなく、効く場面を選んで使う道具です。
+
+
+\section{LLM での蒸留の実際}\label{sec:distill-llm}
+\laterread{実際の LLM で使われる蒸留の種類の案内です。自分で蒸留を試すときや、強化学習の章（\chapref{ch:rl-basics}〜）のあとに読めば足ります。商用 API の出力で蒸留を試す前には、\secref{sec:distill-llm-caution}の規約の注意を読んでください。}
+
+前節の実験では、小さな生徒で、正解ラベルと教師の分布（と教師の生成文）を比べました。
+では、数十億パラメータの本物の LLM では、蒸留はどう行われているのでしょうか。
+この節では、現在の実務で使われる蒸留の種類を整理し、それぞれが本章の実験のどれに当たるかを確かめます。
+
+\subsection{ホワイトボックスとブラックボックス}
+
+蒸留の種類を分ける最初の軸は、\textbf{教師の何が見えるか}です。
+教師の確率分布（ロジット）まで見えるなら、前節の (b) のように分布を直接まねられます。
+これを\term{ホワイトボックス蒸留}{white-box distillation}と呼びます。
+教師が生成した文章しか手に入らないなら、(c) のように生成文で SFT するしかありません。
+これを\term{ブラックボックス蒸留}{black-box distillation}と呼びます（この呼び方は MiniLLM の論文の整理に従います\cite{gu2024minillm}）。
+
+教師の生成文で学習する方法は、Kim と Rush が機械翻訳で提案し、\term{系列レベルの蒸留}{sequence-level knowledge distillation}と名付けました\cite{kim2016sequence}。
+これに対して、前節の (b) のように 1 トークンずつ分布をまねる方法を\textbf{トークンレベルの蒸留}と呼んで区別します。
+系列レベルの蒸留は、手本を教師モデルが書くだけの、ただの SFT です（\chapref{ch:posttraining}で「合成データでの SFT は蒸留の一種」と述べたのはこの意味です）。
+
+\tabref{tab:distill-variants}は、現在使われている主な蒸留の種類をまとめたものです。
+名前は多いのですが、違いは、\textbf{文章を誰が書くか}と\textbf{生徒が何を手本にするか}の二点だけです。
+\figref{fig:distill-kinds}は、表の 1・3・4 行目を、この二点で描き分けたものです。
+表の 2 行目の思考過程の蒸留は、図の左の型で、教師の文章に考える過程が含まれる場合です。
+
+\begin{table}[tbp]
+\centering
+\caption{LLM の蒸留の主な種類。上の二つは教師の生成文しか使わず、下の二つは教師の確率分布を使う。
+「本章」の列は、前節の実験（計算の対話での比較を含む）のどれに当たるかを示す。}
+\label{tab:distill-variants}
+\small
+\begin{tabular}{@{}p{24mm}p{38mm}p{12mm}p{36mm}@{}}
+\toprule
+種類 & 生徒が学ぶもの & 本章 & 代表例 \\
+\midrule
+系列レベル（合成データ） & 教師の生成文で SFT & (c) & Kim \& Rush 2016、各社の蒸留サービス \\
+思考過程の蒸留 & 考える過程（\code{<think>}）を含む生成文で SFT & (c) の拡張 & DeepSeek-R1-Distill \\
+ロジット蒸留 & 固定したデータ上の教師の分布 & (b) & Gemma 2・3 の事前学習 \\
+オンポリシー蒸留 & 生徒が自分で生成した文の上の教師の分布 & — & GKD、Qwen3 の小型モデル \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+\node[font=\small\bfseries] at (0,0.75) {系列レベルの蒸留};
+\node[font=\small\bfseries] at (4.1,0.75) {ロジット蒸留};
+\node[font=\small\bfseries] at (8.2,0.75) {オンポリシー蒸留};
+\node[box,minimum width=35mm,minimum height=8mm] (w1) at (0,0) {教師が文章を書く};
+\node[graybox,minimum width=35mm,minimum height=8mm] (w2) at (4.1,0) {用意してある文章};
+\node[greenbox,minimum width=35mm,minimum height=8mm] (w3) at (8.2,0) {生徒が文章を書く};
+\node[graybox,minimum width=35mm,minimum height=10mm,align=center] (t1) at (0,-1.5) {その文章の次のトークン\\（各位置に 1 個）};
+\node[box,minimum width=35mm,minimum height=10mm,align=center] (t2) at (4.1,-1.5) {教師の確率分布\\（各位置に $V$ 個）};
+\node[box,minimum width=35mm,minimum height=10mm,align=center] (t3) at (8.2,-1.5) {教師の確率分布\\（各位置に $V$ 個）};
+\node[greenbox,minimum width=35mm,minimum height=10mm,align=center] (s1) at (0,-3.0) {生徒：交差エントロピー\\（ふつうの SFT）};
+\node[greenbox,minimum width=35mm,minimum height=10mm,align=center] (s2) at (4.1,-3.0) {生徒：KL で\\分布に近づける};
+\node[greenbox,minimum width=35mm,minimum height=10mm,align=center] (s3) at (8.2,-3.0) {生徒：KL で\\分布に近づける};
+\draw[arr] (w1) -- node[lbl,right]{1 つずらす} (t1);
+\draw[arr] (w2) -- node[lbl,right]{教師に通す} (t2);
+\draw[arr] (w3) -- node[lbl,right]{教師に通す} (t3);
+\draw[arr] (t1) -- node[lbl,right]{手本} (s1);
+\draw[arr] (t2) -- node[lbl,right]{手本} (s2);
+\draw[arr] (t3) -- node[lbl,right]{手本} (s3);
+\draw[darr] (s3.east) -- ++(0.45,0) |- (w3.east);
+\node[lbl,rotate=90] at (10.7,-1.5) {学習した生徒がまた書く};
+\end{tikzpicture}
+\caption{LLM の蒸留の三つの型（\tabref{tab:distill-variants}の 1・3・4 行目）。上段は文章を誰が書くか、中段は生徒の手本、下段は生徒の学び方。
+左（本章の条件 (c)）は教師の文章だけで足りる。中央（条件 (b)）と右は、教師の確率分布が要る。右では、学習で変わった生徒が次の文章を書き、手本もそのつど作り直される（破線）。}
+\label{fig:distill-kinds}
+\end{figure}
+
+\subsection{思考過程の蒸留}
+
+表の 2 行目は、近年もっとも注目された使い方です。
+強化学習は、モデルが自分で答えを作り、その良し悪しの評価で学ぶ方法です（\chapref{ch:rl-basics}から学びます）。
+強化学習で「考えてから答える」ように育てたモデルは、答えの前に長い思考過程を書きます。
+この思考過程ごと生徒に SFT すると、生徒も考えてから答えるようになります。
+
+DeepSeek-R1 の論文では、R1 の学習途中で作った約 80 万件の手本で、Qwen や Llama の公開モデル（1.5B〜70B）を SFT しました\cite{guo2025deepseekr1}。
+推論問題の手本は、1 つの問題に答えを何通りも生成させ、正しい答えだけを残して作られています。
+ロジットも KL も強化学習も使わない純粋な SFT ですが、32B の生徒は、同じ 32B の基盤モデルに強化学習を直接かけたものより、数学の試験でかなり高い点を取りました。
+
+\subsection{ロジット蒸留とオンポリシー蒸留}
+
+表の 3 行目のロジット蒸留は、教師の重みを持っている開発元が、自社の小さなモデルを作るときに使います。
+Gemma 2 の 2B と 9B のモデルは、次トークン予測の代わりに、大きな教師の分布との交差エントロピー
+（本章の記号では $-\sum_i p^1_i\log q^1_i$）を下げる形で事前学習されました\cite{gemma2024gemma2}。
+これは式\eqref{eq:distill-loss}で $\tau=1$、$\alpha=1$ としたものに当たります。
+Gemma 3 では、語彙全体の分布の代わりに、1 トークンあたり 256 個の候補だけを教師の分布から抜き出して使っています\cite{gemma2025gemma3}。
+
+4 行目のオンポリシー蒸留は、ロジット蒸留の弱点を補うものです。
+ロジット蒸留や SFT では、生徒は「正しい文章」の上でだけ練習します。
+ところが、実際に使うときの生徒は自分で文章を生成するので、一度間違えると、練習したことのない状況に入り込みます。
+そこで、\textbf{生徒が自分で書いた文章の上で教わる}方法（オンポリシー。逆に、教師や人が書いた固定の文章で学ぶことをオフポリシーと呼びます）が考えられました。生徒に自分で文章を生成させ、その上で教師が 1 トークンずつ「自分ならこう予測する」と分布を示し、それに近づけます（GKD と呼ばれる方法\cite{agarwal2024gkd}）。
+\figref{fig:distill-kinds}の右の型です。
+Qwen3 の小型モデルは、まず教師の生成文で SFT し（オフポリシー）、次にこのオンポリシー蒸留を行う 2 段階で作られました\cite{yang2025qwen3}。
+報告では、同じモデルに強化学習を行うより高い性能を、約 10 分の 1 の GPU 時間で得ています。
+「生徒が自分で生成する」点は強化学習（\chapref{ch:rl-basics}から）と同じで、報酬の代わりに教師の分布が 1 トークンごとの評価になります。
+
+教師の出力ではなく、\textbf{途中の計算}（中間層）までまねる方法もあります。
+DistilBERT は、出力の分布に加えて隠れ状態の向きを教師にそろえ、教師の 1 層おきの重みを生徒の初期値にしました\cite{sanh2019distilbert}。
+TinyBERT は、注意の重みの行列や隠れ状態を層ごとに教師へ近づけます\cite{jiao2020tinybert}。
+どちらも BERT（文の分類などに使う、生成をしない Transformer）の小型化で発達した方法で、現在の LLM では、出力の分布か生成文を使う方法が主流です。
+
+\subsection{使い分けと注意}\label{sec:distill-llm-caution}
+
+どの蒸留を選ぶかは、まず「教師の分布が手に入るか」で決まります。商用 API の教師なら (c) しか選べません。
+\chapref{ch:posttraining}の使い分けの表（\tabref{tab:post-methods}）に当てはめると、
+蒸留は「目標の振る舞いを持つ大きなモデルがあり、それを小さく安くしたいとき」の手段です。
+
+ここで、法律と規約の注意を一つ書いておきます。
+商用 LLM の多くは、利用規約で、出力を使って競合するモデルを開発することを禁じています。
+たとえば OpenAI と Google の API の規約は競合モデルの開発を禁じ、Anthropic の利用ポリシーは、事前の許可なく出力を AI モデルの学習に使うこと（「モデルの蒸留」と明記）を禁じています（いずれも 2026 年 11 月時点）。
+練習として蒸留を試すなら、蒸留を明示的に許可したライセンスの公開モデル（たとえば MIT ライセンスの DeepSeek-R1）を教師にするのが安全です。
+なお、蒸留した生徒の重みは、出発点にした基盤モデルのライセンスも引き継ぎます。
+
+まとめると、LLM の蒸留は、教師の分布が見えるか（ホワイトボックス）見えないか（ブラックボックス）で大きく分かれ、
+現在の主流は、教師の生成文（思考過程を含む）で SFT する系列レベルの蒸留と、それに続くオンポリシー蒸留です。
+
+\section{量子化：重みを少ないビットで表す}\label{sec:distill-quant}
+
+\begin{column}{ここまでの道のり}
+(1) 重みを小さくするには「数を減らす」か「ビットを減らす」かの二方向がある。
+(2) 数を減らす蒸留は、教師の分布を温度付き KL でまね、$\tau^2$ で勾配をそろえる。
+(3) 漱石の次トークン予測では、データが少ないほど教師の分布が効いた。答えが 1 つの計算では差は出なかった。実務の主流は生成文での SFT。ここから「ビットを減らす」方向へ進む。
+\end{column}
+
+ここまでの蒸留は、パラメータの\textbf{数}を減らす方法でした。
+しかし、蒸留には生徒を学習させる手間がかかります。
+\tabref{tab:distill-memory}のもう一つの方向、つまりパラメータ 1 個あたりの\textbf{ビット数}を減らすことは、学習なしでできないでしょうか。
+この節では、重みを 8 ビットや 4 ビットの整数で近似する\textbf{量子化}を自分で実装し、\file{sft.pt} がどこまで粗い数値に耐えられるかを測ります。
+
+\subsection{なぜ粗くしてよいのか}\label{sec:distill-quant-why}
+
+\file{sft.pt} の重みは、32 ビットの浮動小数点数（\code{float32}）で保存されています。
+32 ビットあれば約 7 桁の精度がありますが、重みにそこまでの精度は必要でしょうか。
+
+\figref{fig:quant-hist}は、\file{sft.pt} の 1 層目の MLP の重み（$768\times192$ の行列）の値の分布です。
+MLP が 192 次元を 4 倍の 768 次元に広げる層（\chapref{ch:transformer}）の重みです。
+ほとんどの重みは $-0.1$ から $0.1$ の狭い範囲に集まっています。
+この範囲を 16 段階（4 ビット）や 256 段階（8 ビット）の目盛りに区切り、各重みを最寄りの目盛りに丸めても、
+一つ一つの重みの誤差はわずかです。
+たとえば 16 段階なら、目盛りの幅は $(0.194-(-0.193))/15\approx0.026$ です（目盛りが 16 個なら、すき間は 15 個です）。
+最寄りの目盛りまでの距離は、最大でもその半分の 0.013 です。
+そして、ニューラルネットワークの出力は、多数の重みの積和で決まります。
+個々の小さな誤差は、正にも負にも出るので、足し合わせるとある程度打ち消し合います。
+これが、量子化が成り立つ直感的な理由です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,bar width=1.6mm,width=0.92\linewidth,height=50mm,
+  xmin=-0.21,xmax=0.21,ymin=0,xlabel={重みの値},ylabel={個数},
+  xtick={-0.2,-0.1,0,0.1,0.2},
+  /pgf/number format/fixed,scaled y ticks=false,
+  yticklabel style={/pgf/number format/1000 sep={,}}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=count]{code/ch18/out/quant_hist.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{\file{sft.pt} の 1 層目の MLP の重み（$768\times192=147{,}456$ 個）の値の分布（幅 0.01 ごとの個数。\file{quant_hist.csv}）。
+最小値は $-0.193$、最大値は $0.194$ で、大半が 0 の近くに集まる。この範囲を 16 段階（4 ビット）に区切っても、目盛りの幅は 0.026 ほどである。}
+\label{fig:quant-hist}
+\end{figure}
+
+
+\subsection{線形量子化：スケールとゼロ点}\label{sec:distill-quant-linear}
+
+実数を整数に写す最も素直な方法は、等間隔の目盛りを使うことです。
+これを\term{線形量子化}{linear quantization}と呼びます\cite{jacob2018quantization}。
+具体例から始めます。
+
+5 個の重み $\vw=(-0.6,\,-0.1,\,0.0,\,0.3,\,0.9)$ を、2 ビットの整数 $\{0,1,2,3\}$ で表すことにします。
+最小値 $-0.6$ を整数 0 に、最大値 $0.9$ を整数 3 に対応させます。
+すると、目盛り 1 つの幅は
+\begin{equation}
+s=\frac{\max(\vw)-\min(\vw)}{2^b-1}=\frac{0.9-(-0.6)}{3}=0.5
+\end{equation}
+です。この $s$ を\term{スケール}{scale}と呼びます。
+次に、実数の 0.0 がどの整数に当たるかを決めます。
+$-0.6$ が整数 0 なので、0.0 はそこから $0.6/0.5=1.2$ 目盛り上、丸めて整数 1 です。
+この整数を\term{ゼロ点}{zero point}と呼び、$z_0$ と書きます（ロジットの $\vz$ と区別するため添字 0 を付けます）。
+\begin{equation}
+z_0=\operatorname{round}\!\left(-\frac{\min(\vw)}{s}\right)=\operatorname{round}(1.2)=1
+\end{equation}
+各重みは、$s$ で割って丸め、ゼロ点を足して、範囲 $[0, 2^b-1]$ に収めます。
+\begin{equation}
+q_i=\operatorname{clamp}\!\left(\operatorname{round}\!\left(\frac{w_i}{s}\right)+z_0,\;0,\;2^b-1\right)
+\label{eq:quant-q}
+\end{equation}
+元の値に戻す（\term{逆量子化}{dequantization}）ときは、逆の計算をします。
+\begin{equation}
+\hat w_i=s\,(q_i-z_0)
+\label{eq:quant-deq}
+\end{equation}
+\tabref{tab:quant-example}は、5 個の重みでこの計算を 1 つずつ行ったものです。
+たとえば $w_i=0.3$ の行は、$0.3/0.5=0.6$ を丸めて 1、これにゼロ点 1 を足して $q_i=2$ です。
+戻すと $\hat w_i=0.5\times(2-1)=0.5$ で、元の 0.3 との誤差は 0.2 です。
+$w_i=-0.6$ の行では、$-1.2$ を丸めて $-1$、ゼロ点を足して $q_i=0$ になります。
+
+\begin{table}[tbp]
+\centering
+\caption{2 ビットの線形量子化の手計算（$s=0.5$、$z_0=1$）。誤差はどれも目盛りの幅の半分 $s/2=0.25$ 以下に収まる。
+0.0 はぴったり表せる（ゼロ点を整数にした効果）。}
+\label{tab:quant-example}
+\begin{tabular}{rrrrr}
+\toprule
+$w_i$ & $w_i/s$ & $q_i$（式\eqref{eq:quant-q}） & $\hat w_i$（式\eqref{eq:quant-deq}） & 誤差 $\abs{\hat w_i-w_i}$ \\
+\midrule
+$-0.6$ & $-1.2$ & 0 & $-0.5$ & 0.1 \\
+$-0.1$ & $-0.2$ & 1 & $0.0$ & 0.1 \\
+$0.0$ & $0.0$ & 1 & $0.0$ & 0.0 \\
+$0.3$ & $0.6$ & 2 & $0.5$ & 0.2 \\
+$0.9$ & $1.8$ & 3 & $1.0$ & 0.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\figref{fig:quant-grid}は、同じ計算を数直線の上で描いたものです。
+上の数直線が実数の重み、下が整数の目盛りです。
+最小値 $-0.6$ が $-0.5$ になるのは、ゼロ点を 1.2 から整数 1 に丸めたぶん、目盛り全体が 0.1 だけずれたからです（その代わり 0.0 はぴったり表せます）。
+保存するのは、整数 $q_i$（1 個 2 ビット）と、組全体で 1 組の $s$ と $z_0$ だけです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small,x=50mm]
+\draw[->,black!60] (-0.75,1.2) -- (1.1,1.2) node[right]{$w$};
+\draw[->,black!60] (-0.75,0) -- (1.1,0) node[right]{$\hat w$};
+\foreach \v/\q in {-0.5/0,0/1,0.5/2,1.0/3}{
+  \draw[bookblue,thick] (\v,-0.08) -- (\v,0.08);
+  \node[below,bookblue,align=center,font=\footnotesize] at (\v,-0.1) {$q=\q$\\$\hat w=\v$};
+}
+\foreach \w/\v in {-0.6/-0.5,-0.1/0,0.0/0,0.3/0.5,0.9/1.0}{
+  \fill[bookaccent] (\w,1.2) circle (1.3pt);
+  \draw[darr,bookaccent!70] (\w,1.15) -- (\v,0.12);
+}
+\foreach \w in {-0.6,-0.1,0.3,0.9}{\node[above,font=\footnotesize] at (\w,1.25) {$\w$};}
+\node[above,font=\footnotesize] at (0.06,1.25) {$0.0$};
+\draw[<->,black!60] (0,-0.85) -- node[below,font=\footnotesize]{$s=0.5$} (0.5,-0.85);
+\end{tikzpicture}
+\caption{2 ビットの線形量子化（\tabref{tab:quant-example}）。上の赤い点が元の重み、下の青い目盛りが表せる値で、
+各重みは最寄りの目盛りに丸められる。目盛りの間隔がスケール $s$、実数 0 の位置にある目盛りの番号がゼロ点 $z_0=1$ である。}
+\label{fig:quant-grid}
+\end{figure}
+
+この方式は、最小値と最大値を別々に合わせるので\term{非対称量子化}{asymmetric quantization}と呼ばれます。
+ゼロ点を 0 に固定し、$[-\max\abs{w},\,\max\abs{w}]$ を目盛りに割り当てる\term{対称量子化}{symmetric quantization}もよく使われます。
+対称のほうが計算は少し簡単ですが、重みの分布が 0 に対して偏っていると、目盛りの一部が無駄になります。
+
+\subsection{どの範囲ごとにスケールを持つか}\label{sec:distill-quant-range}
+
+スケール $s$ は、最大値と最小値で決まりました。
+すると、行列の中に 1 個だけ極端に大きな重みがあると、$s$ が大きくなり、他のすべての重みが粗い目盛りで丸められてしまいます。
+これを避けるには、スケールを持つ範囲を小さく区切ればよいのです。
+\begin{itemize}
+\item \textbf{行ごと}（per-channel）: 重み行列の 1 行ごとに $s, z_0$ を持つ。出力の 1 成分ごとに目盛りを合わせることに当たる。
+\item \textbf{グループごと}（group-wise）: 32 個や 128 個の連続した重みごとに $s, z_0$ を持つ。4 ビット以下ではこれが標準的。
+\end{itemize}
+区切りを細かくするほど誤差は減りますが、容量は増えます。32 個ごとに 16 ビットの $s$ と $z_0$ を持つと、重み 1 個あたり $2\times16/32=1$ ビットの上乗せです。
+
+\subsection{実装}\label{sec:distill-quant-impl}
+\skimread{押さえる結論は、「本章では、重みを整数に丸めてすぐ小数に戻した値で置き換える（疑似量子化）。精度への影響は測れるが、速くはならない」です。}
+
+式\eqref{eq:quant-q}と式\eqref{eq:quant-deq}を、行ごと・グループごとの両方に対応させて実装します。
+
+\snippet{線形量子化と逆量子化}{code:quant}{ch18/quantize.py}{quantize}
+
+7 行目で、重みを「1 組が 1 行」になるように並べ替えます。
+\code{group} を指定すれば 32 個ずつの行に、指定しなければ元の行列の行のまま（行ごと）です。
+8〜9 行目で、各行の最小値と最大値を求めます。
+\code{keepdim=True} により形が $(\text{組の数}, 1)$ のまま残り、次の行で行ごとに割り算できます。
+10〜12 行目が、スケール $s$ とゼロ点 $z_0$ の計算です。
+13 行目が式\eqref{eq:quant-q}で、14 行目で 8 ビットの符号なし整数（\code{uint8}）として返します。
+（4 ビットなら実際の保存形式では 2 個を 1 バイトに詰めます。）
+\code{dequantize} は式\eqref{eq:quant-deq}で、最後に元の形に戻します。
+
+モデル全体に適用するのが、次の関数です。
+
+\snippet{モデルの重みを量子化する}{code:quant-model}{ch18/quantize.py}{quantize-model}
+
+3 行目で、元のモデルを壊さないよう複製します。
+6 行目で、2 次元のパラメータ（線形層の重みと埋め込み行列）だけを選びます。
+レイヤー正規化の重みのような 1 次元のパラメータは、数が少ないので 32 ビットのまま残します。
+7〜8 行目で、量子化してすぐ逆量子化した値で重みを置き換えます。
+これは\term{疑似量子化}{fake quantization}と呼ばれる手法で、「量子化した重みで計算したら精度はどうなるか」を、普通の浮動小数点の計算のまま確かめられます。
+実際に速くするには、整数のまま計算する専用の処理（計算カーネル）が必要です（この点は\secref{sec:distill-prune}の比較表で触れます）。
+9 行目では、量子化した場合の容量を数えます。整数のビット数に加えて、$s$ と $z_0$ を 16 ビットずつ数えています。
+10〜12 行目で、量子化しないパラメータを 32 ビットのまま数え、合計を MB に直して返します。
+
+\subsection{量子化誤差を測る}\label{sec:distill-quant-err}
+\skimread{押さえる結論は、「ビット数を 1 減らすと、丸めの誤差は約 2 倍になる。同じビット数なら、32 個ごとのスケールのほうが、行ごとより誤差が 2〜3 割小さい」です。}
+
+まず、\figref{fig:quant-hist}の行列 1 つで、ビット数と誤差の関係を見ます。
+\file{quantize.py} の前半を実行した結果です。
+
+\outputfile{ch18/out/quant_err.txt}
+
+2 行目以降は、ビット数 \code{bits} とグループの大きさ \code{group}（\code{None} は行ごと）を変えたときの、誤差の絶対値の平均です。
+8 ビット・行ごとの誤差 0.000201 は、重みの範囲（約 0.39）の 2,000 分の 1 ほどで、ほとんど無視できる大きさです。
+ビット数を減らすと、誤差は 8 → 4 ビットで約 17 倍、4 → 3 ビットで約 2.1 倍、3 → 2 ビットで約 2.3 倍になります。
+1 ビット減るごとに目盛りの幅が約 2 倍になるからです（8 → 4 ビットなら $2^4=16$ 倍）。
+正確には、目盛りの幅は範囲を $2^b-1$ で割ったものです。
+8 → 4 ビットで $255/15=17$ 倍、4 → 3 ビットで $15/7\approx2.1$ 倍、3 → 2 ビットで $7/3\approx2.3$ 倍になり、測った誤差の比と合います。
+同じビット数なら、32 個ごとのほうが行ごとより誤差が 2〜3 割小さくなっています。小さな組ほど最大値と最小値の幅が狭いからです。
+
+本当に知りたいのは「モデルの答えが変わらないか」です。
+次の小節の出力の 1 行目の \code{fp32: 10.34 MB} は、量子化前の容量です。
+続いて、モデル全体を量子化し、1,000 問の対話正答率を測ります。
+
+
+\subsection{モデル全体を量子化する}\label{sec:distill-quant-model}
+
+\file{quantize.py} の後半では、\code{quantize_model} でモデル全体を量子化し、1,000 問（\code{seed=777}）の対話正答率を測ります。
+ここでの量子化は、重みを整数に丸め、すぐ元の小数に戻した値で置き換える\textbf{疑似量子化}です（\secref{sec:distill-quant-impl}）。
+計算は 32 ビットのままで、容量は「整数のまま保存したら何 MB か」を計算で求めます。
+評価には 1 設定あたり 1〜2 分かかります。
+結果は次のとおりです（\tabref{tab:quant-results}と\figref{fig:quant-acc}にもまとめました）。
+
+\outputfile{ch18/out/quant_acc.txt}
+
+\begin{table}[tbp]
+\centering
+\caption{\file{sft.pt} を学習後量子化したときの容量と対話正答率（1,000 問）。\code{row} は行ごと、\code{g32} は 32 個ごとにスケールを持つ。
+容量にはスケールとゼロ点（各 16 ビット）と、量子化しない正規化層を含む。
+「元との比」は、この表の容量どうしの割り算である（8 ビットなら $10.34\div2.64\approx3.9$ なので 1/3.9）。}
+\label{tab:quant-results}
+\begin{tabular}{lrrr}
+\toprule
+方式 & 容量（MB） & 元との比 & 正答率 \\
+\midrule
+32 ビット（元） & 10.34 & 1 & 82.6\% \\
+8 ビット・行ごと & 2.64 & 1/3.9 & 82.4\% \\
+4 ビット・行ごと & 1.35 & 1/7.7 & 76.0\% \\
+4 ビット・32 個ごと & 1.63 & 1/6.3 & 82.3\% \\
+3 ビット・行ごと & 1.03 & 1/10.0 & 69.0\% \\
+3 ビット・32 個ごと & 1.30 & 1/8.0 & 75.0\% \\
+2 ビット・32 個ごと & 0.98 & 1/10.6 & 40.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.86\linewidth,height=55mm,xmode=log,log basis x=2,
+  xmin=0.5,xmax=16,ymin=0,ymax=0.9,xlabel={容量（MB、対数目盛り）},ylabel={対話の正答率},
+  xtick={0.5,1,2,4,8,16},xticklabels={0.5,1,2,4,8,16},
+  yticklabel style={/pgf/number format/fixed}]
+\addplot[only marks,mark=*,color=bookblue] table[col sep=comma,x=mb,y=acc]{code/ch18/out/quant.csv};
+\node[font=\scriptsize,anchor=north] at (axis cs:10.336,0.805) {32 ビット（元）};
+\node[font=\scriptsize,anchor=west] at (axis cs:2.75,0.824) {8・行};
+\node[font=\scriptsize,anchor=west] at (axis cs:1.72,0.824) {4・32個};
+\node[font=\scriptsize,anchor=west] at (axis cs:1.43,0.752) {4・行};
+\node[font=\scriptsize,anchor=east] at (axis cs:1.26,0.752) {3・32個};
+\node[font=\scriptsize,anchor=east] at (axis cs:0.99,0.69) {3・行};
+\node[font=\scriptsize,anchor=west] at (axis cs:1.02,0.403) {2・32個};
+\end{axis}
+\end{tikzpicture}
+\caption{量子化の方式ごとの容量と正答率（\file{quant.csv}）。右上の点が 32 ビット（元）で、左へ進むほど小さい。点の横の「4・32個」は 4 ビット・32 個ごと、「4・行」は 4 ビット・行ごとを表す（数値は\tabref{tab:quant-results}）。
+8 ビットと 4 ビット・32 個ごとは、ほぼ元の正答率のまま 1/4〜1/6 の大きさになる。3 ビット以下では急に崩れる。}
+\label{fig:quant-acc}
+\end{figure}
+
+8 ビット・行ごとでは、容量が 1/3.9 になり、正答率は 82.6\% から 82.4\% へ、ほとんど変わりません（差は評価のぶれより小さい）。
+4 ビット・行ごとでは、正答率が 76.0\% に落ちました。
+ところが、同じ 4 ビットでも 32 個ごとにスケールを持つと 82.3\% で、元とほとんど変わりません。
+容量はスケールのぶん 1.35\,MB から 1.63\,MB に増えますが、それでも元の 1/6 です。
+誤差を測ったときに見た「グループごとのほうが誤差が小さい」ことが、正答率の差になって現れたのです（\secref{sec:distill-quant-err}。1 つの行列で測ると、32 個ごとのほうが誤差が 2〜3 割小さくなりました）。
+3 ビットでは、32 個ごとでも 75.0\%、行ごとでは 69.0\% と、はっきり落ちます。
+2 ビット（32 個ごと）では 40.3\% で、半分以上の問題を間違えるようになりました。
+\figref{fig:quant-acc}のとおり、4 ビットより左（小さい側）で正答率が急に崩れます。
+
+\begin{quiz}
+\file{sft.pt} の容量の計算で、8 ビット・行ごとの 2.64\,MB は、32 ビットの 10.34\,MB のちょうど 1/4（2.585\,MB）より少し大きくなっています。
+増えたぶんは何でしょうか。
+\end{quiz}
+
+増えたのは、行ごとのスケールとゼロ点（各 16 ビット）と、量子化しなかったレイヤー正規化の重み（32 ビットのまま）です。
+行の長さが 192 と短いこのモデルでは、この上乗せが目立ちます。
+
+まとめると、8 ビットは精度をほぼ失わず、4 ビットもグループごとのスケールで精度をほぼ保てました。3 ビット以下は、単純な丸めでは目に見えて落ちます。
+
+
+\subsection{実際の LLM の量子化}\label{sec:distill-quant-llm}
+\laterread{実際の LLM の量子化の手法と保存形式の案内です。公開モデルの量子化版（GGUF など）を選ぶときや、自分で量子化するときに戻れば足ります。}
+
+本章の量子化は、重みを最寄りの目盛りに丸めるだけの、\term{学習後量子化}{post-training quantization}の最も単純な形（RTN、round to nearest）でした。
+LLM を 4 ビット以下にするときは、次のような工夫が使われます。
+
+\begin{itemize}
+\item \textbf{GPTQ}\cite{frantar2023gptq}: 少量の入力データ（較正データ。重みの調整に使う、実際の入力の見本）を流し、層の出力の誤差が小さくなるように、重みを 1 列ずつ丸めては残りの列で誤差を補正します。
+「一つ一つの重みの誤差」ではなく「層の出力の誤差」を小さくする点が、本章の丸めとの違いです。
+\item \textbf{AWQ}\cite{lin2024awq}: 入力の値が大きく出るチャネル（入力ベクトルの成分。重み行列ではその成分に掛かる列）を見つけ、その重みを丸める前に拡大しておくことで、重要な重みの誤差を相対的に小さくします。
+\item \term{量子化を意識した学習}{quantization-aware training, QAT}: 学習（または追加の学習）の途中から、順伝播で疑似量子化した重みを使います。モデルが丸めに強い重みを自分で見つけます\cite{jacob2018quantization}。Gemma 3 は QAT 版のチェックポイントを公開しています\cite{gemma2025gemma3}。
+\item \textbf{NF4}\cite{dettmers2023qlora}: 目盛りを等間隔でなく、0 の近くに密に置く 4 ビットの形式（\figref{fig:quant-hist}の分布に合わせる）。QLoRA で使われます。
+\end{itemize}
+
+なお、GPTQ や AWQ は計算の手法で、保存の形式（llama.cpp などの \textbf{GGUF}、vLLM などが読む compressed-tensors）とは別物です。
+GGUF の「Q4\_K\_M」は複数のビット数を混ぜたレシピで、平均は重み 1 個あたり約 4.9 ビットです。
+
+
+\section{枝刈りと、手法の使い分け}\label{sec:distill-prune}
+
+量子化は「1 個 1 個の重みを粗くする」方法でした。
+これとは別に、「重要でない重みを 0 にしてしまう」という発想もあります。
+この節では、その\textbf{枝刈り}を簡単に試し、最後に本章のすべての手法を一つの表で比べます。
+
+\subsection{絶対値の小さい重みを捨てる}\label{sec:distill-prune-mag}
+\laterread{枝刈りの小さな実験です。後の章では使いません。圧縮の手段を選ぶときに読めば足ります。}
+
+重みの絶対値が小さければ、その重みを 0 にしても、積和の結果はあまり変わらないはずです。
+そこで、絶対値の小さいほうから決まった割合の重みを 0 にします。
+これを\term{絶対値による枝刈り}{magnitude pruning}と呼びます\cite{han2015learning}。
+コードは数行です。
+
+\snippet{絶対値による枝刈り}{code:prune}{ch18/quantize.py}{prune}
+
+3 行目で、行列 1 つあたり 0 にする個数 $k$ を決めます。
+5 行目の \code{kthvalue} は、$k$ 番目に小さい値を返す関数で、これを\textbf{しきい値}にします。
+6 行目で、絶対値がしきい値以下の重みをすべて 0 にします。
+1 次元のパラメータ（正規化層）は枝刈りしません。
+
+\file{sft.pt} の 2 次元の重みを、それぞれ 30\%、50\%、70\%、90\% の割合で 0 にして、1,000 問の正答率を測りました（\code{python ch18/quantize.py prune}）。
+
+\outputfile{ch18/out/prune.txt}
+
+30\% を 0 にしても正答率は 82.6\% から 78.7\% への低下にとどまりますが、50\% では 29.7\%、70\% ではほぼ 0\% になりました（\figref{fig:prune}）。
+同じ容量の削減で比べると、量子化のほうがずっと有利です。
+4 ビット・32 個ごとの量子化は容量を 1/6 にして 82.3\% を保ちましたが、枝刈りは半分の重みを捨てただけで大きく崩れます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.7\linewidth,height=42mm,xmin=-0.05,xmax=0.95,ymin=0,ymax=0.9,
+  xlabel={0 にした重みの割合},ylabel={対話の正答率},
+  yticklabel style={/pgf/number format/fixed},xticklabel style={/pgf/number format/fixed}]
+\addplot[mark=*,thick,color=bookpurple] table[col sep=comma,x=frac,y=acc]{code/ch18/out/prune.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{絶対値による枝刈り（再学習なし）の割合と正答率（\file{prune.csv}、1,000 問）。30\% までは緩やかだが、50\% で急に崩れる。}
+\label{fig:prune}
+\end{figure}
+
+ここでは 0 にした後に学習をしていませんが、実際には、枝刈りの後で少し学習し直すと、精度の多くを取り戻せることが知られています\cite{han2015learning}。
+大きなネットワークの中には、最初の値のまま取り出して学習すれば同じ性能に届く部分ネットワークが含まれている、という「宝くじ仮説」も提案されています\cite{frankle2019lottery}。
+
+
+\subsection{本章の手法を比べる}\label{sec:distill-compare}
+
+\tabref{tab:distill-compare}は、本章で扱った三つの手段を、本章の実測とともに並べたものです。
+枝刈りの行は、絶対値の小さい重みから順に 0 にしたときの結果です（\secref{sec:distill-prune-mag}）。
+「学習」の列の QAT は、量子化したまま学習し直して、丸めに強い重みを見つける方法です（\secref{sec:distill-quant-llm}）。
+
+\begin{table}[tbp]
+\centering
+\caption{モデル圧縮の三つの手段の比較。「本章の実測」は 1,000 問の対話正答率（教師 \file{sft.pt} は 82.6\%、10.34\,MB）。}
+\label{tab:distill-compare}
+\small
+\begin{tabular}{@{}p{14mm}p{22mm}p{16mm}p{36mm}p{25mm}@{}}
+\toprule
+手段 & 減らすもの & 学習 & 本章の実測 & 速くするには \\
+\midrule
+蒸留 & パラメータの数（層・次元） & 必要（生徒を学習） & 1/4 の生徒で 2 倍速い。漱石 3\% で検証損失 6.88（正解だけは 7.85、教師 4.87） & そのまま速い（普通の小さなモデル） \\
+量子化 & 1 個あたりのビット数 & 不要（QAT では使う） & 8 ビットで 82.4\%（1/3.9）、4 ビット・32 個ごとで 82.3\%（1/6.3） & 低ビットの行列積の計算カーネル \\
+枝刈り & 0 でない重みの数 & 不要（再学習で改善） & 30\% で 78.7\%、50\% で 29.7\%（再学習なし） & 疎行列の形式と専用の計算 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表の最後の列に注意してください。本章の量子化と枝刈りは精度を確かめるための疑似的なもので、計算は 32 ビットのままでした。
+量子化で速くするには、低ビットのまま重みを読み出して計算する専用の処理（計算カーネル）が要ります。
+枝刈りは、ばらばらの位置を 0 にしても普通の行列積では計算が減らないので、「4 個のうち 2 個を 0」のような規則正しい形にして GPU の機能を使います。
+
+三つの手段は組み合わせられ、蒸留で小さなモデルを作ってから 4 ビットに量子化して配るのがよくある順番です。
+\tabref{tab:distill-scale}に、本章の実験と実際の LLM 開発の規模を対比しておきます。
+表の GPTQ と AWQ は、4 ビット量子化の手法です（\secref{sec:distill-quant-llm}）。
+
+\begin{table}[tbp]
+\centering
+\caption{本章の小さな実験と、実際の LLM の蒸留・量子化の対比（実際の例は\secref{sec:distill-llm}と\secref{sec:distill-quant}で挙げたもの）。}
+\label{tab:distill-scale}
+\small
+\begin{tabular}{@{}p{22mm}p{44mm}p{52mm}@{}}
+\toprule
+ & 本章 & 実際の LLM \\
+\midrule
+教師 & \file{base.pt}・\file{sft.pt}、260 万パラメータ & 数百億〜数千億パラメータ \\
+生徒 & 63 万パラメータ、乱数から & 10 億〜700 億パラメータ。多くは事前学習済みのモデルから \\
+蒸留のデータ & 漱石 4 万〜136 万トークン、計算の対話 3,000 件 & DeepSeek-R1-Distill で約 80 万件（平均 約 5,000 トークン）、Gemma 2 の事前学習では兆単位のトークン \\
+計算 & CPU 2 スレッドで 1 条件 数分〜10 分 & 数千〜数万 GPU 時間（目安） \\
+量子化 & 丸めるだけ（RTN）、疑似量子化 & GPTQ・AWQ・QAT、専用カーネルで実際に低ビットで計算 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+まとめると、蒸留は形を変えて小さくし、量子化と枝刈りは形を保ったまま重みを粗くします。
+どれも「精度と大きさの交換」であり、実際に速くするには、計算の側の対応も必要です。
+
+
+
+\begin{summary}
+\item 推論の費用は重みの大きさで決まる。重みは「パラメータ数 × ビット数 ÷ 8」バイトで、数を減らす（蒸留）か、1 個あたりのビットを減らす（量子化）かで小さくできる。
+\item 教師の確率分布には、正解ラベルにない「どれがどのくらい惜しいか」という情報が入っている。温度 $\tau>1$ で softmax をなだらかにすると、それが見やすくなる。
+\item 蒸留の損失は $\alpha\,\tau^2\,\KL{\vp^\tau}{\vq^\tau}+(1-\alpha)\,\mathrm{CE}$。KL とソフトターゲットの交差エントロピーは教師のエントロピー（定数）しか違わない。ソフトターゲットの勾配は高温でおよそ $1/\tau^2$ に縮むので、$\tau^2$ を掛けて正解の項と釣り合わせる。
+\item 漱石の次トークン予測で、学習データを 3\% に減らすと、正解だけで学んだ生徒は 150 ステップで過学習したが、教師 \file{base.pt} の分布をまねた生徒は下がり続け、最良の検証損失が約 1.0 低かった。正解ラベルは 1 位置につき 1 トークンしか教えないが、教師の分布はほかの候補の確からしさまで教える。答えが 1 つに決まる計算の対話では、3 通りの差は評価のぶれの範囲だった。
+\item 現在の LLM の蒸留の主流は、教師の生成文（思考過程を含む）で SFT する系列レベルの蒸留と、生徒の生成文の上で教師の分布をまねるオンポリシー蒸留である。商用 API の出力での蒸留は、利用規約で制限されていることが多い。
+\item 線形量子化は、スケール $s$ とゼロ点 $z_0$ で実数を等間隔の整数に写す。\file{sft.pt} では、8 ビットと 4 ビット（32 個ごとのスケール）が、正答率をほぼ保ったまま容量を 1/4〜1/6 にした。
+\item 枝刈りは絶対値の小さい重みを 0 にする。容量や速度の得をするには、疎な形式や専用の計算が要る。
+\end{summary}
+
+\section*{次の章へ}
+
+SFT・LoRA・蒸留・量子化で、モデルを作り変える手段がそろいました。
+ところが本章では、正答率の数ポイントの差が意味を持つかを何度も気にしました。また、多くの利用者に同時に答えを返すには、まだ工夫が要ります。
+次の\chapref{ch:eval-serving}では、モデルの良し悪しを信用できる形で測る方法と、作ったモデルを速く安く届ける推論の仕組みを学びます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Hinton, Vinyals, Dean「Distilling the Knowledge in a Neural Network」\cite{hinton2015distilling}: 温度付きのソフトターゲットを提案した、蒸留の原典。$\tau^2$ の議論は第 2 節。
+\item Sanh ら「DistilBERT」\cite{sanh2019distilbert}: 出力・隠れ状態・言語モデルの 3 つの損失を組み合わせた、Transformer の蒸留の代表例。
+\item DeepSeek-AI「DeepSeek-R1」\cite{guo2025deepseekr1}: 思考過程を含む約 80 万件の手本による系列レベルの蒸留で、小型モデルの推論能力を大きく伸ばした報告。
+\item Jacob ら「Quantization and Training of Neural Networks for Efficient Integer-Arithmetic-Only Inference」\cite{jacob2018quantization}: スケールとゼロ点による整数量子化と、量子化を意識した学習の標準的な定式化。
+\item Frantar ら「GPTQ」\cite{frantar2023gptq}と Lin ら「AWQ」\cite{lin2024awq}: LLM の 4 ビット量子化を実用にした、学習後量子化の二つの代表的な手法。
+\end{itemize}
+
+\begin{exercises}
+\exfirst[3〜5 は学習を走らせる問題です。]{1 と 2}
+\item （手計算）$\vw=(-0.4,\,0.1,\,0.2,\,0.8)$ を 2 ビットで非対称量子化してください。スケール $s$、ゼロ点 $z_0$、各 $q_i$、$\hat w_i$、誤差を求め、誤差が $s/2$ 以下であることを確かめてください。
+\item （手計算）語彙が 3 個で、教師のロジットが $\vv=(2,\,1,\,0)$、生徒のロジットが $\vz=(0,\,0,\,0)$ のとき、$\tau=1$ と $\tau=2$ で $\vp^\tau$ と $\vq^\tau$ を求め、式\eqref{eq:distill-grad}の勾配を計算してください。$\tau$ を 2 倍にすると、勾配は何分の 1 になりましたか。
+\item （コード）\file{distill_lm.py} の引数で $\tau$ と $\alpha$ を変えて（たとえば \code{python ch18/distill_lm.py soft 0.03 400 4 0.5} や \code{... soft 0.03 400 2 1}）、3\% のデータでの最良の検証損失がどう変わるか調べてください。$\alpha=1$（正解を使わない）にしたとき、損失に掛けている $\tau^2$ を外すと結果は変わるでしょうか。
+\item （コード）\file{distill_lm.py} の割合を 1\% や 30\% にして、(a) と (b) の最良の検証損失の差が、データの量とともにどう変わるかをグラフにしてください。
+1\% では過学習が早いので、検証損失は 10 ステップごとに測ってください。
+\item （コード）計算の対話の実験（\file{distill_experiment.py}、\tabref{tab:distill-drill}）の条件 (c) で、教師の答えのうち正解のものだけを残して学習してください（\secref{sec:distill-llm}の DeepSeek-R1 の「正しい答えだけを残す」選別に当たります）。正答率は (a) と比べてどうなりますか。
+\end{exercises}

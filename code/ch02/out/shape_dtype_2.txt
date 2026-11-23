@@ -1,0 +1,4 @@
+torch.int64 torch.float32 torch.bool
+tensor([False,  True,  True])
+torch.float32 torch.int64
+0.10000000149011612

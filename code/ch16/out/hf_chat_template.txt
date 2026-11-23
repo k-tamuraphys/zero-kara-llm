@@ -1,0 +1,12 @@
+<|im_start|>system
+あなたは計算アシスタントです。<|im_end|>
+<|im_start|>user
+12+35は？<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+
+トークン数 33、先頭 2 トークン: ['<|im_start|>', 'system']
+<|system|>あなたは計算アシスタントです。<|end|><|user|>12+35は？<|end|><|assistant|>

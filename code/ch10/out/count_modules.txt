@@ -1,0 +1,13 @@
+tok_emb.weight           (4096, 192)   786,432
+pos_emb.weight            (128, 192)    24,576
+blocks.0.ln1.weight           (192,)       192
+blocks.0.ln1.bias             (192,)       192
+blocks.0.attn.qkv.weight  (576, 192)   110,592
+blocks.0.attn.proj.weight  (192, 192)    36,864
+blocks.0.ln2.weight           (192,)       192
+blocks.0.ln2.bias             (192,)       192
+blocks.0.mlp.fc.weight    (768, 192)   147,456
+blocks.0.mlp.proj.weight  (192, 768)   147,456
+ln_f.weight                   (192,)       192
+ln_f.bias                     (192,)       192
+lm_head と tok_emb は同じテンソルか: True

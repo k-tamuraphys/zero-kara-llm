@@ -1,0 +1,1691 @@
+\chapter{ニューラルネットワークと誤差逆伝播法}\label{ch:nn}
+\bookmap{2}
+
+% この章の図で共通に使う pgfplots のスタイル（名前に章の接頭辞 nn を付けている）
+\pgfplotsset{
+  nn spiral/.style={width=46mm,height=44mm,xmin=-1.15,xmax=1.15,ymin=-1.15,ymax=1.15,
+    xlabel={$x_1$},ylabel={$x_2$},grid=none,axis on top,title style={font=\small,yshift=-1mm},
+    xtick={-1,0,1},ytick={-1,0,1},ylabel style={yshift=-2mm},
+    colormap={nnreg}{color(0cm)=(figblue); color(1cm)=(figorange); color(2cm)=(figgreen)},
+    point meta min=0,point meta max=2},
+  nn points/.style={scatter,only marks,mark size=0.9pt,scatter src=explicit symbolic,
+    scatter/classes={0={mark=*,bookblue},1={mark=square*,bookorange},2={mark=triangle*,bookgreen}}},
+  nn regions/.style={surf,shader=flat corner,point meta=explicit,mesh/cols=60,draw=none},
+}
+
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:ml}で、機械学習の 4 つの要素（データ・モデル・損失関数・最適化）を学びました。
+直線や平面で答えを出す線形モデルなら、勾配降下法で学習させられます。\\[1mm]
+\textbf{この章の問い}: 直線では分けられないデータを、どうすれば扱えるのか。
+パラメータが何百万個もあるモデルの勾配を、どうすれば現実的な時間で計算できるのか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 線形モデルの限界と、活性化関数が必要な理由を説明できます。
+\item 多層パーセプトロン（MLP）の式を書き、各層の形とパラメータ数を数えられます。
+\item 計算グラフの上で、誤差逆伝播法を手で 1 ステップずつ実行できます。
+\item 自動微分エンジンを 140 行ほどで自作し、PyTorch と同じ勾配が出ることを確かめられます。
+\item PyTorch の標準的な学習ループ（5 行）を、意味を理解して書けます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:ml}の softmax 回帰・交差エントロピー・勾配降下法と、\chapref{ch:math}の連鎖律を思い出せれば読めます。
+\item[\rgmust] \secref{sec:nn-linear-limit}〜\secref{sec:nn-backprop}：線形モデルの限界から、MLP、誤差逆伝播法まで。この先のどのモデルも、ここで学ぶ方法で学習します。長い\secref{sec:nn-backprop}も、飛ばさずに読んでください。
+\item[\rgskim] \secref{sec:nn-neuron}の「よく使われる活性化関数」と、\secref{sec:nn-mlp}の「どんな関数まで表せるのか」：前者は 4 つの関数の名前と形、後者は「幅を増やせば、どんな連続関数にも近づける」という結論だけ押さえれば先へ進めます。
+\item[\rgmust] \secref{sec:nn-value}と\secref{sec:nn-pytorch}：\code{loss.backward()} の中身を自作し、PyTorch の 5 行の学習ループに置き換えます。この 5 行は、本書の最後まで使います。
+\item[\rgskim] \secref{sec:nn-mlp-scratch}：自作エンジンでの MLP の学習。「渦巻きデータが解けた。PyTorch と同じ計算だが、約 400 倍遅い」という結果だけ押さえれば足ります。
+\item[\rgskim] \secref{sec:nn-deep}：層を深くすると勾配が消えたり爆発したりして、学習が進まなくなるという予告です。対策を扱う\chapref{ch:training}を読むときに、読み直してください。
+\end{readingguide}
+
+\chapref{ch:ml}で作った softmax 回帰は、いくつかの塊に分かれたデータをうまく分類できました。
+ところが章の最後で、渦巻きの形をしたデータにはつまずきました。この章は、そこから始めます。
+\figref{fig:nn-spiral-linear}(a) が、その形のデータです。3 つのクラスの点が、原点から渦を巻くように並んでいます。
+人の目には、3 本の腕がはっきり見えます。
+
+このデータに softmax 回帰を当てはめた結果が、\figref{fig:nn-spiral-linear}(b) です。
+背景の色は、モデルがその場所をどのクラスと予測するかを表します。
+平面が 3 つの扇形に切り分けられているだけで、渦巻きの形を捉えていません。
+正解率は 54\% で、半分近くを間違えます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=data,nn spiral,title={(a) 渦巻きデータ}]
+\addplot[nn points] table[col sep=comma,x=x1,y=x2,meta=label]{code/ch04/out/spiral_train.csv};
+\end{axis}
+\begin{axis}[at={(data.east)},anchor=west,xshift=20mm,nn spiral,title={(b) softmax 回帰の予測}]
+\addplot[nn regions] table[col sep=comma,x=x1,y=x2,meta=c]{code/ch04/out/linear_regions.csv};
+\addplot[nn points] table[col sep=comma,x=x1,y=x2,meta=label]{code/ch04/out/spiral_train.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{渦巻きデータ（300 点）と線形モデル。(a) 点の形と色がクラスを表す（丸・四角・三角の 3 クラス）。
+(b) 背景の色は、softmax 回帰の予測を表す（正解率 54\%）。境界がまっすぐなので、曲がった腕に沿えない。}
+\label{fig:nn-spiral-linear}
+\end{figure}
+
+この章では、まずこの失敗の原因を突き止めます。
+次に、それを乗り越えるモデルとして\textbf{ニューラルネットワーク}を組み立てます。
+そして、それを学習させるための計算方法である\textbf{誤差逆伝播法}を、手計算と自作のプログラムの両方で身につけます。
+LLM も一つの大きなニューラルネットワークであり、誤差逆伝播法で学習されます。この章は、本書の残りすべての土台です。
+
+\section{線形モデルの限界}\label{sec:nn-linear-limit}
+
+渦巻きデータでの失敗は、学習不足のせいでしょうか。モデルの限界でしょうか。
+この節では、それを実験と小さな証明で確かめます。
+
+データは、\chapref{ch:ml}の終わりで見たものと同じ形の渦巻きです。
+この章のために点を作り直したので、数字は\chapref{ch:ml}と少しだけ違います（作り方は \file{ch04/data.py}）。
+これに当てはめた softmax 回帰は、入力 $\vx$ から各クラスのスコア（ロジット）$\vz=\mW\vx+\vb$ を計算し、softmax で確率に直すモデルでした。
+1,000 ステップ学習させました（\file{ch04/linear_limit.py}）。
+損失は 250 ステップ目までに 1.10 から 0.72 へ下がり、そこからまったく動きません。
+正解率も 0.540 のままです。
+学習は終わっています。原因は学習不足ではなく、モデルの形にあります。
+
+\subsection*{境界がまっすぐにしかならない}
+
+softmax 回帰は、スコア $z_k$ が最も大きいクラスを予測として選びます。
+すると、クラス 1 とクラス 2 の予測が入れ替わる場所は、$z_1=z_2$ となる点です。
+$\mW$ の $k$ 行目を $\vw_k^\T$ と書くと、$z_k=\vw_k^\T\vx+b_k$ です。
+$z_1=z_2$ に代入して整理すると、次の式になります。
+\begin{equation}
+(\vw_1-\vw_2)^\T\vx+(b_1-b_2)=0
+\label{eq:nn-linear-boundary}
+\end{equation}
+これは $x_1$ と $x_2$ の 1 次式です。1 次式が 0 になる点の集まりは、直線です。
+たとえば $x_1+x_2-1=0$ は、$x_2=-x_1+1$ と書き直せる直線です。
+どのクラスの組でも同じなので、softmax 回帰が作れる境界は、\textbf{直線だけ}です。
+パラメータをどう調整しても、直線の位置と傾きが変わるだけで、曲げることはできません。
+\figref{fig:nn-spiral-linear}(b) の領域がどれも直線で区切られているのは、このためです。
+
+\subsection*{最小の反例：XOR}
+
+「直線では分けられない」ことを、もっと小さな例で厳密に確かめます。データはたった 4 点です（\figref{fig:nn-xor}）。
+
+入力は $(x_1,x_2)$ で、どちらも 0 か 1 です。
+「2 つのうち、ちょうど片方だけが 1」のときクラス 1、それ以外はクラス 0 とします。
+この規則を\term{排他的論理和}{exclusive or, XOR}と呼びます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[scale=1.6,every node/.append style={font=\footnotesize}]
+  \draw[->,black!60] (-0.35,0) -- (1.6,0) node[right]{$x_1$};
+  \draw[->,black!60] (0,-0.35) -- (0,1.6) node[above]{$x_2$};
+  \node[below,text=bookgray] at (1,-0.12) {1};
+  \node[left,text=bookgray] at (-0.12,1) {1};
+  \node[below left,text=bookgray] at (-0.08,-0.08) {0};
+  % 候補の直線
+  \draw[dashed,bookgray,thick] (-0.3,0.55) -- (1.5,0.45) node[right,align=left]{直線 A};
+  \draw[dashed,bookgray,thick] (0.55,-0.3) -- (0.45,1.5) node[above]{直線 B};
+  \draw[dashed,bookgray,thick] (0.8,-0.3) -- (-0.3,0.8) node[above left=-1mm]{直線 C};
+  % 点
+  \node[circle,draw=bookblue,fill=figblue,minimum size=4.5mm,inner sep=0pt] at (0,0) {0};
+  \node[circle,draw=bookblue,fill=figblue,minimum size=4.5mm,inner sep=0pt] at (1,1) {0};
+  \node[rectangle,draw=bookorange,fill=figorange,minimum size=4.2mm,inner sep=0pt] at (1,0) {1};
+  \node[rectangle,draw=bookorange,fill=figorange,minimum size=4.2mm,inner sep=0pt] at (0,1) {1};
+  \node[anchor=west,align=left,font=\small] at (2.3,0.7)
+    {\textcolor{bookblue}{丸}: クラス 0\quad \textcolor{bookorange}{四角}: クラス 1\\[2mm]
+     直線 A: 上下に分けると、\\\quad 下側に丸と四角が混ざる\\[1mm]
+     直線 B: 左右に分けても同じ\\[1mm]
+     直線 C: 左下の丸だけを切り離すと、\\\quad 右上の丸が四角の側に残る};
+\end{tikzpicture}
+\caption{XOR のデータ。同じクラスの点が対角に向かい合っている。
+どのように直線を 1 本引いても、丸と四角を両側にきれいに分けることはできない。}
+\label{fig:nn-xor}
+\end{figure}
+
+図の上でどう直線を引いても、うまくいきません。
+ただ、直線の引き方は無限にあるので、試すだけでは証明になりません。式で確かめます。
+
+クラスが 2 つなら、予測はスコアの差 $z_1-z_2$ の正負で決まります。
+この差は、式\eqref{eq:nn-linear-boundary}の左辺と同じ形の 1 次式です。これを $z=w_1x_1+w_2x_2+b$ と書きます。
+$z>0$ ならクラス 1、$z\le 0$ ならクラス 0 と予測します。
+4 点すべてに正解するには、次の 4 つの条件が同時に成り立つ必要があります。
+\begin{align*}
+(0,0)\text{ はクラス 0}&:\quad b\le 0 &
+(1,1)\text{ はクラス 0}&:\quad w_1+w_2+b\le 0\\
+(1,0)\text{ はクラス 1}&:\quad w_1+b>0 &
+(0,1)\text{ はクラス 1}&:\quad w_2+b>0
+\end{align*}
+上の段の 2 つの式を足すと $w_1+w_2+2b\le 0$、下の段の 2 つを足すと $w_1+w_2+2b>0$ です。
+同じ量が「0 以下」であり、かつ「0 より大きい」ことになり、矛盾します。
+4 つの条件を満たす $w_1,w_2,b$ は存在しません。どんなに学習を続けても、線形モデルは XOR を解けないのです。
+
+一つの手は、入力を人の手で加工することです。
+XOR なら、3 つ目の入力として積 $x_1x_2$ を加えると、$z=x_1+x_2-2x_1x_2-0.5$ で 4 点すべてに正解できます。
+$(0,0)$ では $z=-0.5$、$(1,0)$ と $(0,1)$ では $z=1-0.5=0.5$、$(1,1)$ では $z=1+1-2-0.5=-0.5$ です。
+片方だけが 1 の 2 点でだけ、$z$ が正になります。
+入力をうまく\textbf{変換}すれば、線形モデルでも解けるわけです。
+しかし、渦巻きや文章に効く変換を、人が考案するのは困難です。
+
+そこで発想を変えます。
+\textbf{入力をどう変換するかも、データから学習させる}のです。
+変換の部分にもパラメータを持たせ、最後の線形モデルと一緒に勾配降下法で調整します。
+これが、ニューラルネットワークの基本の考え方です。
+
+この節で分かったことをまとめます。
+線形モデルが作れる境界は直線（一般には平面）だけで、XOR のような単純な問題も解けません。
+限界を超えるには、入力の変換そのものを学習できるモデルが必要です。
+
+\section{ニューロンと活性化関数}\label{sec:nn-neuron}
+
+前節の結論は、「入力を変換する部分にもパラメータを持たせたい」でした。
+手元にある変換は、線形モデルの $\mW\vx+\vb$ です。
+では、これを 2 回、3 回と重ねれば、複雑な変換になるのでしょうか。
+
+試しに 2 回重ねてみます。
+1 回目の変換で $\vh=\mW_1\vx+\vb_1$ を作り、それを 2 回目の変換 $\vz=\mW_2\vh+\vb_2$ に入れます。
+添字の 1、2 は、何回目の変換かを表す番号です。
+$\vz$ の式に $\vh$ を代入して、展開します。
+\begin{align}
+\vz&=\mW_2(\mW_1\vx+\vb_1)+\vb_2 &&\text{（$\vh$ を代入した）}\notag\\
+&=(\mW_2\mW_1)\vx+(\mW_2\vb_1+\vb_2) &&\text{（かっこを展開した）}
+\label{eq:nn-collapse}
+\end{align}
+$\mW_2\mW_1$ は行列の積なので、一つの行列です（\chapref{ch:math}）。
+$\mW_2\vb_1+\vb_2$ は一つのベクトルです。
+それぞれを $\mW'$、$\vb'$ と書けば、$\vz=\mW'\vx+\vb'$ です。
+2 回重ねたつもりが、\textbf{1 回の線形の変換と同じもの}になってしまいました。
+3 回でも 100 回でも、同じ理屈で 1 回ぶんにまとまります。
+
+乱数で作った線形の変換を 10 回重ね、1 回ぶんにまとめた変換と比べました。
+結果の差は、丸めの誤差ほど（約 0.000002）です（\file{ch04/stack_linear.py}）。
+線形の変換だけを重ねても、表現できるものは増えません。境界はまっすぐなままです。
+
+\subsection*{曲げる部品を挟む}
+
+重ねた変換が 1 つにまとまってしまうのは、式\eqref{eq:nn-collapse}でかっこを展開できたからです。
+展開できないようにするには、2 つの変換の間に、\textbf{線形でない}計算を挟めばよいはずです。
+
+最も単純な「線形でない計算」の一つは、負の数を 0 に切り上げる関数 $\relu(u)\defeq\max(0,u)$ です。
+これを \term{ReLU}{rectified linear unit}（レル）と呼びます。$u$ が正ならそのまま通し、負なら 0 にします。
+グラフは、原点で折れ曲がった折れ線です（\figref{fig:nn-activations}の左）。この「折れ曲がり」が、線形でないということです。
+線形の変換で作った数を ReLU のような関数に通す。この一組が、ニューラルネットワークの最小の部品です。
+
+\begin{definition}[ニューロンと活性化関数]\label{def:nn-neuron}
+入力 $\vx\in\R^{n}$ を受け取り、次の 2 段階で 1 つの数 $h$ を出力する部品を\term{ニューロン}{neuron}と呼びます。
+\begin{equation}
+u=\vw^\T\vx+b=w_1x_1+\dots+w_nx_n+b,\qquad h=\phi(u)
+\label{eq:nn-neuron}
+\end{equation}
+$\vw\in\R^{n}$ は\textbf{重み}、$b$ は\textbf{バイアス}で、どちらも学習されるパラメータです。
+$\phi$（ファイ）は、1 つの数を受け取って 1 つの数を返す、線形でない関数です。
+これを\term{活性化関数}{activation function}と呼びます。
+\end{definition}
+
+\figref{fig:nn-neuron}が、ニューロン 1 個の計算です。
+前半の $u=\vw^\T\vx+b$ は線形モデルと同じ計算で、後半でその結果を活性化関数に通します。
+本書では、活性化関数に入る前の値を $u$、通した後の値を $h$ と書くことにします。
+
+% 図表が説明より前（ページの上）に出ないようにする
+\suppressfloats[t]
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\small}]
+  \node[plainbox,minimum width=8mm] (x1) at (0,0.85) {$x_1$};
+  \node[plainbox,minimum width=8mm] (x2) at (0,0) {$x_2$};
+  \node[plainbox,minimum width=8mm] (x3) at (0,-0.85) {$x_3$};
+  \node[op,minimum size=9mm] (sum) at (3.1,0) {$\Sigma$};
+  \node[orangebox,minimum width=11mm] (u) at (5.0,0) {$u$};
+  \node[greenbox,minimum width=13mm,minimum height=9mm] (phi) at (7.0,0) {$\phi$};
+  \node[box,minimum width=11mm] (h) at (9.0,0) {$h$};
+  \node[plainbox,minimum width=8mm] (b) at (3.1,-1.2) {$b$};
+  \draw[arr] (x1) -- node[above,lbl,pos=0.45]{$\times w_1$} (sum);
+  \draw[arr] (x2) -- node[above,lbl,pos=0.45]{$\times w_2$} (sum);
+  \draw[arr] (x3) -- node[below,lbl,pos=0.45]{$\times w_3$} (sum);
+  \draw[arr] (b) -- node[right,lbl]{足す} (sum);
+  \draw[arr] (sum) -- (u); \draw[arr] (u) -- (phi); \draw[arr] (phi) -- (h);
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt}] (1.0,-1.8) -- (5.6,-1.8)
+    node[midway,below=4pt,lbl]{線形の変換 $u=\vw^\T\vx+b$};
+  \draw[decorate,decoration={brace,mirror,amplitude=4pt}] (6.1,-1.8) -- (9.6,-1.8)
+    node[midway,below=4pt,lbl]{活性化関数 $h=\phi(u)$};
+  \node[lbl] at (0,1.45) {入力};
+  \node[lbl] at (9.0,0.65) {出力};
+\end{tikzpicture}
+\caption{ニューロン 1 個の計算（入力が 3 個の場合）。入力に重みを掛けて足し合わせ、バイアスを足す。
+その結果 $u$ を活性化関数 $\phi$ に通したものが、出力 $h$ になる。}
+\label{fig:nn-neuron}
+\end{figure}
+
+ニューロンは、もともと脳の神経細胞を指す言葉です。ただし、脳とのたとえは名前の由来にとどまります。
+ニューロンをたくさんつないだモデルを、\term{ニューラルネットワーク}{neural network}と呼びます。
+
+\subsection*{よく使われる活性化関数}
+\skimread{初読では、4 つの関数の名前とグラフの形（\figref{fig:nn-activations}）だけ見れば足ります。この章で主に使うのは ReLU です。「シグモイドの傾きは最大でも 0.25」という性質は、\secref{sec:nn-deep}で使います。}
+
+活性化関数は ReLU だけではありません。本書で出会うのは、\tabref{tab:nn-activations}の 4 つです。
+\figref{fig:nn-activations}に、それぞれのグラフ（左）と、その傾き、つまり導関数 $\phi'(u)$ の値（右）を描きました。
+傾きも見るのは、この章の後半で、勾配の計算に $\phi'(u)$ が掛け算の形で現れるからです。
+
+\begin{table}[tbp]
+\centering
+\caption{代表的な活性化関数。傾き（導関数）は、\secref{sec:nn-backprop}以降の勾配の計算で使う。}
+\label{tab:nn-activations}
+\small
+\begin{tabular}{llll}
+\toprule
+名前 & 式 $\phi(u)$ & 傾き $\phi'(u)$ & 出力の範囲 \\
+\midrule
+ReLU & $\max(0,u)$ & $u>0$ で 1、$u<0$ で 0 & 0 以上 \\
+シグモイド & $\sigmoid(u)=1/(1+e^{-u})$ & $\sigmoid(u)\bigl(1-\sigmoid(u)\bigr)$ & 0 から 1 \\
+tanh & $(e^{u}-e^{-u})/(e^{u}+e^{-u})$ & $1-\tanh^{2}(u)$ & $-1$ から 1 \\
+GELU & $u\,\Phi(u)$ & （\figref{fig:nn-activations}の右） & 約 $-0.17$ 以上 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=val,width=68mm,height=40mm,xmin=-4,xmax=4,ymin=-1.3,ymax=3.2,
+  xlabel={$u$},title={活性化関数の値 $\phi(u)$},title style={font=\small},
+  legend pos=north west,legend cell align=left,legend style={font=\scriptsize}]
+\addplot[bookblue,very thick] table[col sep=comma,x=u,y=relu]{code/ch04/out/activations.csv};
+\addplot[bookaccent,dashed,very thick] table[col sep=comma,x=u,y=sigmoid]{code/ch04/out/activations.csv};
+\addplot[bookgreen,dashdotted,very thick] table[col sep=comma,x=u,y=tanh]{code/ch04/out/activations.csv};
+\addplot[bookorange,densely dotted,very thick] table[col sep=comma,x=u,y=gelu]{code/ch04/out/activations.csv};
+\legend{ReLU,シグモイド,tanh,GELU}
+\end{axis}
+\begin{axis}[at={(val.east)},anchor=west,xshift=10mm,width=68mm,height=40mm,xmin=-4,xmax=4,ymin=-0.25,ymax=1.25,
+  xlabel={$u$},title={傾き $\phi'(u)$},title style={font=\small}]
+\addplot[bookblue,very thick] table[col sep=comma,x=u,y=drelu]{code/ch04/out/activations.csv};
+\addplot[bookaccent,dashed,very thick] table[col sep=comma,x=u,y=dsigmoid]{code/ch04/out/activations.csv};
+\addplot[bookgreen,dashdotted,very thick] table[col sep=comma,x=u,y=dtanh]{code/ch04/out/activations.csv};
+\addplot[bookorange,densely dotted,very thick] table[col sep=comma,x=u,y=dgelu]{code/ch04/out/activations.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{4 つの活性化関数（左）と、その傾き（右）。線の種類は左右で共通。
+シグモイドの傾きは最大でも 0.25 しかない。ReLU の傾きは 0 か 1 のどちらかである。
+GELU は、ReLU の角を丸めた形をしている。}
+\label{fig:nn-activations}
+\end{figure}
+
+\textbf{ReLU} の傾きは、$u>0$ で 1、$u<0$ で 0 です（折れ目の $u=0$ では、0 と決めてしまいます）。
+計算が軽く、シグモイドのように傾きが小さくならないので、現在の標準的な選択肢です。
+ただし、重みの初期値が合っていないと、ReLU でも勾配は小さくなります（\secref{sec:nn-deep}）。
+\textbf{シグモイド}は、\chapref{ch:ml}で 2 クラスの分類に使った関数で、どんな数も 0 から 1 の間に押し込めます。
+傾きは $u=0$ のとき最大です。$\sigmoid(0)=1/(1+e^{0})=0.5$ なので、\tabref{tab:nn-activations}の式から、傾きは $0.5\times(1-0.5)=0.25$ です。
+$u$ が 0 から離れると、傾きは急速に 0 に近づきます。
+\textbf{tanh}（ハイパボリックタンジェント）は、シグモイドを上下に引き伸ばし、出力を $-1$ から 1 にした形です。
+
+\textbf{GELU}（Gaussian error linear unit）\cite{hendrycks2016gelu}は、ReLU の角をなめらかにした関数です。
+式の $\Phi(u)$（大文字のファイ）は、平均 0、標準偏差 1 の正規分布（\chapref{ch:math}）から取った値が、$u$ 以下になる確率です。
+0 から 1 へなめらかに増える関数で、活性化関数を表す小文字の $\phi$ とは別のものです。
+GELU の出力は $u<0$ で少しだけ負になり、最小値は $u\approx-0.75$ での約 $-0.17$ です。
+多くの LLM が GELU やその仲間を使っており、本書のミニGPT も GELU を使います。
+
+この章では、手計算がしやすい ReLU を主に使います。
+どれを選んでも、「線形の変換の間に、線形でない関数を挟む」という役割は同じです。
+
+\subsection*{ReLU のニューロン 2 個で XOR を解く}
+
+活性化関数を挟むと、本当に線形モデルの限界を超えられるのでしょうか。
+前節で「線形モデルには解けない」と証明した XOR で確かめます。
+
+同じ入力 $(x_1,x_2)$ を受け取る ReLU のニューロンを、2 個用意します。
+$h_1=\relu(x_1+x_2)$ と $h_2=\relu(x_1+x_2-1)$ です。
+重みはどちらも $(1,1)$ で、バイアスが 0 と $-1$ です。この 2 つの出力を、$z=h_1-2h_2$ と組み合わせます。
+\tabref{tab:nn-xor-hand}が、4 つの入力に対する計算です。
+
+\begin{table}[tbp]
+\centering
+\caption{ReLU のニューロン 2 個による XOR の計算。$u_1=x_1+x_2$、$u_2=x_1+x_2-1$、$h_k=\relu(u_k)$、$z=h_1-2h_2$。
+右から 2 列目の $z$ が、XOR の正解（片方だけが 1 のとき 1）と一致する。}
+\label{tab:nn-xor-hand}
+\small
+\begin{tabular}{cccccccc}
+\toprule
+$x_1$ & $x_2$ & $u_1$ & $u_2$ & $h_1$ & $h_2$ & $z$ & 正解 \\
+\midrule
+0 & 0 & 0 & $-1$ & 0 & 0 & 0 & 0 \\
+0 & 1 & 1 & 0 & 1 & 0 & 1 & 1 \\
+1 & 0 & 1 & 0 & 1 & 0 & 1 & 1 \\
+1 & 1 & 2 & 1 & 2 & 1 & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+1 行目では、$u_2=-1$ を ReLU が 0 にするので、$h_1=h_2=0$ となり、$z=0$ です。
+4 行目では、$h_1=2$、$h_2=1$ なので、$z=2-2\times 1=0$ です。
+4 つの入力すべてで、$z$ は XOR の正解と一致しました（PyTorch での検算は \file{ch04/xor_by_hand.py}）。
+
+なぜ解けたのでしょうか。
+\figref{fig:nn-xor-hidden}の左は元の入力 $(x_1,x_2)$ の平面、右はニューロンの出力 $(h_1,h_2)$ の平面です。
+元の平面では、丸と四角が対角に向かい合っていて、直線では分けられませんでした。
+ところが $(h_1,h_2)$ の平面に移すと、2 つの四角は同じ点 $(1,0)$ に重なり、丸は $(0,0)$ と $(2,1)$ に移ります。
+この配置なら、直線 1 本で分けられます。
+2 個のニューロンは、\textbf{直線で分けられない配置を、直線で分けられる配置へ移し替えた}のです。
+最後の $z=h_1-2h_2$ は、移し替えた後の平面での、ふつうの線形モデルです。
+\tabref{tab:nn-xor-hand}の $z$ は 0 か 1 のどちらかなので、その中間の 0.5 を境目にします。
+図の破線は $z=0.5$ となる場所で、$z$ がそれより大きい側をクラス 1 と予測します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\footnotesize},
+  c0/.style={circle,draw=bookblue,fill=figblue,minimum size=4.5mm,inner sep=0pt},
+  c1/.style={rectangle,draw=bookorange,fill=figorange,minimum size=4.2mm,inner sep=0pt}]
+  % 左: 入力の平面
+  \begin{scope}[scale=1.5]
+    \draw[->,black!60] (-0.3,0) -- (1.5,0) node[right]{$x_1$};
+    \draw[->,black!60] (0,-0.3) -- (0,1.5) node[above]{$x_2$};
+    \node[c0] at (0,0) {0}; \node[c0] at (1,1) {0};
+    \node[c1] at (1,0) {1}; \node[c1] at (0,1) {1};
+    \node[lbl] at (0.6,-0.55) {入力の平面};
+  \end{scope}
+  % 矢印
+  \draw[arr,very thick,bookgreen] (3.0,1.05) -- node[above,align=center,text=bookgreen]{ニューロン 2 個\\で移す} (5.3,1.05);
+  % 右: 隠れ層の平面
+  \begin{scope}[xshift=64mm,scale=1.5]
+    \draw[->,black!60] (-0.3,0) -- (2.6,0) node[right]{$h_1$};
+    \draw[->,black!60] (0,-0.3) -- (0,1.5) node[above]{$h_2$};
+    \draw[dashed,bookaccent,thick] (0.1,-0.2) -- (2.5,1.0);
+    \node[text=bookaccent,anchor=west] at (1.62,0.32) {$h_1-2h_2=0.5$};
+    \node[c0] (p00) at (0,0) {0}; \node[c0] (p11) at (2,1) {0};
+    \node[c1] (p10) at (1,0) {1};
+    \node[lbl,below=1mm of p10,align=center] {$(1,0)$ と $(0,1)$\\が重なる};
+    \node[lbl,above=0.5mm of p11] {$(1,1)$ から};
+    \node[lbl,above left=0mm and -1mm of p00] {$(0,0)$ から};
+    \node[lbl] at (1.2,-0.95) {ニューロンの出力の平面};
+  \end{scope}
+\end{tikzpicture}
+\caption{2 個の ReLU ニューロンによる移し替え。左の配置は直線で分けられないが、
+右の配置では、破線の直線の下側に四角（クラス 1）だけが来る。}
+\label{fig:nn-xor-hidden}
+\end{figure}
+
+ここでは重みを手で決めましたが、実際には学習で決めます。
+「どう移し替えれば分けやすくなるか」を、データから見つけさせるのです。
+
+この節で分かったことをまとめます。
+線形の変換は、いくら重ねても 1 回ぶんと同じです。
+間に活性化関数を挟むと、重ねることに意味が生まれ、線形モデルには解けなかった問題が解けるようになります。
+
+\section{多層パーセプトロン}\label{sec:nn-mlp}
+
+前節では、ニューロン 2 個と線形モデル 1 個を手でつないで、XOR を解きました。
+ニューロンをもっと多く、何段にもつなぐと、どんなモデルになるでしょうか。
+この節では、その式と形を整理し、「どれほど複雑な関数まで表せるのか」という問いに答えます。
+
+同じ入力 $\vx\in\R^{n}$ を受け取るニューロンを、$m$ 個並べます。
+$k$ 番目のニューロンの重みを $\vw_k$、バイアスを $b_k$ とすると、活性化関数に入る前の値は $u_k=\vw_k^\T\vx+b_k$ です。
+この $m$ 本の式は、行列を使うと 1 本にまとまります。
+$\vw_k^\T$ を $k$ 行目に持つ $m\times n$ 行列を $\mW$、$b_k$ を縦に並べたベクトルを $\vb$ とします。
+\begin{equation}
+\vu=\mW\vx+\vb,\qquad \vh=\phi(\vu)
+\label{eq:nn-layer}
+\end{equation}
+$\phi(\vu)$ は、ベクトル $\vu$ の各成分に $\phi$ を別々に適用する、という意味です。
+このひとまとまりを\term{層}{layer}と呼びます。
+入力のすべての成分が、すべてのニューロンにつながっているので、\term{全結合層}{fully connected layer}とも呼びます。
+前節の XOR の例は、$\mW$ の 2 つの行がどちらも $(1,1)$ で、$\vb=(0,-1)^\T$ の層でした。
+
+層の出力 $\vh$ はベクトルです。ですから、そのまま次の層の入力にできます。
+これを繰り返したものが、この章の主役です。
+
+\begin{definition}[多層パーセプトロン]\label{def:nn-mlp}
+入力 $\vx$ に層を順に適用して、出力 $\vz$ を計算するモデルを、
+\term{多層パーセプトロン}{multilayer perceptron, MLP}と呼びます。
+途中の層が 2 枚の場合の式は、次のとおりです。
+\begin{align}
+\vh_1&=\phi(\mW_1\vx+\vb_1) &&\text{（1 層目）}\notag\\
+\vh_2&=\phi(\mW_2\vh_1+\vb_2) &&\text{（2 層目）}\label{eq:nn-mlp}\\
+\vz&=\mW_3\vh_2+\vb_3 &&\text{（出力層。活性化関数は通さない）}\notag
+\end{align}
+学習されるパラメータは、すべての層の重み行列とバイアス $\mW_1,\vb_1,\mW_2,\vb_2,\mW_3,\vb_3$ です。
+\end{definition}
+
+\figref{fig:nn-mlp}に、小さな MLP を描きました。色の付いた丸がニューロン、線が重みです。
+左から右へ、入力が層を通るたびに別のベクトルに変換されていきます。
+この、入力から出力へ向かう計算を\term{順伝播}{forward propagation}と呼びます。
+
+% 図表が説明より前（ページの上）に出ないようにする
+\suppressfloats[t]
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\small},
+  inp/.style={circle,draw=black!60,fill=white,minimum size=6mm,inner sep=0pt},
+  outn/.style={circle,draw=bookorange,fill=figorange,minimum size=6mm,inner sep=0pt}]
+  \foreach \i/\y in {1/0.35,2/-0.35} \node[inp] (x\i) at (0,\y) {};
+  \foreach \i/\y in {1/0.93,2/0.31,3/-0.31,4/-0.93} {
+    \node[neuron] (a\i) at (3.3,\y) {}; \node[neuron] (c\i) at (6.6,\y) {};}
+  \foreach \i/\y in {1/0.62,2/0,3/-0.62} \node[outn] (z\i) at (9.9,\y) {};
+  \foreach \i in {1,2} \foreach \j in {1,...,4} \draw[black!40] (x\i) -- (a\j);
+  \foreach \i in {1,...,4} \foreach \j in {1,...,4} \draw[black!40] (a\i) -- (c\j);
+  \foreach \i in {1,...,4} \foreach \j in {1,...,3} \draw[black!40] (c\i) -- (z\j);
+  \node[align=center] at (0,1.72) {入力\\$\vx\in\R^{2}$};
+  \node[align=center] at (3.3,1.72) {隠れ層 1\\$\vh_1\in\R^{4}$};
+  \node[align=center] at (6.6,1.72) {隠れ層 2\\$\vh_2\in\R^{4}$};
+  \node[align=center] at (9.9,1.72) {出力（ロジット）\\$\vz\in\R^{3}$};
+  \node[lbl,align=center] at (1.65,-1.62) {$\mW_1$: $4\times 2$\\$\vb_1$: 4 個\\そのあと $\phi$};
+  \node[lbl,align=center] at (4.95,-1.62) {$\mW_2$: $4\times 4$\\$\vb_2$: 4 個\\そのあと $\phi$};
+  \node[lbl,align=center] at (8.25,-1.62) {$\mW_3$: $3\times 4$\\$\vb_3$: 3 個\\$\phi$ なし};
+  \draw[arr,bookgray] (0,-2.4) -- node[below,lbl]{順伝播} (9.9,-2.4);
+\end{tikzpicture}
+\caption{多層パーセプトロン（入力 2 次元、隠れ層は幅 4 が 2 枚、出力 3 次元）。
+線 1 本が重み 1 個に対応する。$\mW_1$ は、入力 2 個と隠れ層 1 のニューロン 4 個を結ぶ $4\times 2=8$ 本の線である。
+左端の白い丸は入力の値で、ニューロンではない。バイアスは描いていない。}
+\label{fig:nn-mlp}
+\end{figure}
+
+用語を整理します。
+最後の層を\term{出力層}{output layer}、その手前にある途中の層を\term{隠れ層}{hidden layer}と呼びます。
+「隠れ」という名前は、その値 $\vh_1,\vh_2$ が、データの入力にも正解にも現れないことから来ています。
+隠れ層のニューロンの個数を\term{幅}{width}、層の枚数を\term{深さ}{depth}と呼びます。
+本書では、層の枚数を「パラメータを持つ層」で数えます。式\eqref{eq:nn-mlp}の MLP は 3 層です。
+
+出力層だけ活性化関数を通さないのは、出力 $\vz$ がクラスごとのスコア（ロジット）だからです。
+スコアは、このあと softmax で確率に直します。ReLU を通すと、負のスコアを出せなくなってしまいます。
+
+式\eqref{eq:nn-mlp}の 3 行目は、$\vh_2$ を入力とする softmax 回帰そのものです。
+つまり MLP は、「入力を変換する部分（隠れ層）」と「線形モデル（出力層）」をつなぎ、両方を学習させるモデルです。
+
+\subsection*{形とパラメータ数を数える}
+
+モデルを作るときは、各層の形を確かめる習慣をつけましょう。
+形が合っていないと、行列の積が計算できず、プログラムはエラーで止まるからです。
+パラメータの個数は、モデルの大きさを表す物差しにもなります。
+LLM の規模を表す「何億パラメータ」という数字も、同じ数え方で数えたものです（\tabref{tab:nn-scale}）。
+\tabref{tab:nn-shapes}は、この章の後半で渦巻きデータに使う MLP の形です。
+入力は 2 次元、隠れ層は幅 32 が 2 枚、出力は 3 クラスぶんの 3 次元です。
+
+\begin{table}[tbp]
+\centering
+\caption{入力 2 次元、隠れ層の幅 32（2 枚）、出力 3 次元の MLP の形とパラメータ数。
+重み行列の形は「出力の次元 $\times$ 入力の次元」になる。}
+\label{tab:nn-shapes}
+\small
+\begin{tabular}{llll}
+\toprule
+記号 & 役割 & 形 & パラメータ数 \\
+\midrule
+$\mW_1,\ \vb_1$ & 1 層目の重みとバイアス & $32\times 2$、32 & $64+32=96$ \\
+$\mW_2,\ \vb_2$ & 2 層目の重みとバイアス & $32\times 32$、32 & $1{,}024+32=1{,}056$ \\
+$\mW_3,\ \vb_3$ & 出力層の重みとバイアス & $3\times 32$、3 & $96+3=99$ \\
+\midrule
+合計 & & & $1{,}251$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\mW_2$ は、32 次元の $\vh_1$ を受け取り、32 個のニューロンに渡すので、$32\times 32$ の行列です。
+パラメータの大半（1,251 個のうち 1,024 個）が、この $\mW_2$ にあります。
+隠れ層どうしを結ぶ行列のパラメータ数は、幅の 2 乗で増えます。幅を 2 倍にすると、約 4 倍です。
+たとえば幅を 64 にすると、$\mW_2$ は $64\times 64=4{,}096$ 個で、1,024 個の 4 倍になります。
+
+データが $N$ 個あるときは、\chapref{ch:pytorch}の約束どおり、1 行に 1 個ずつ並べた $N\times 2$ の行列 $\mX$ にまとめます。
+1 層目の結果は、$N\times 32$ の行列になります。データ 1 個につき、32 個のニューロンの出力が 1 行に並ぶからです。
+
+\subsection*{どんな関数まで表せるのか}
+\skimread{結論は「隠れ層の幅を増やせば、MLP は原理的にどんな連続関数にも近づける。ただし、その重みを学習で見つけられる保証はない」です。これを押さえれば、\secref{sec:nn-backprop}へ進めます。}
+
+XOR は、ニューロン 2 個で解けました。
+では、ニューロンを増やせば、渦巻きのような複雑な境界や、もっと込み入った関数も表せるのでしょうか。
+
+入力が 1 個の場合で、直感をつかみましょう。
+関数 $\relu(x-t)$ は、$x$ が $t$ より小さい間は 0 で、$t$ を超えると傾き 1 で立ち上がります。
+ドアの蝶番（ちょうつがい）のように、$x=t$ で折れる関数です。
+これに係数 $c$ を掛けて別の関数に足すと、$x=t$ から先の傾きが $c$ だけ変わります。
+つまり、ReLU を 1 個足すごとに、\textbf{好きな場所に、好きな角度の折れ目を 1 つ作れます}。
+
+例として、$\sin x$ を $0\le x\le 2\pi$ の範囲でなぞってみます。折れ目を $\pi/2$ と $3\pi/2$ に置いた、次の関数を考えます。
+\begin{equation}
+g(x)=0.637\,\relu(x)-1.273\,\relu\Bigl(x-\frac{\pi}{2}\Bigr)+1.273\,\relu\Bigl(x-\frac{3\pi}{2}\Bigr)
+\label{eq:nn-relu-sin}
+\end{equation}
+\figref{fig:nn-relu-approx}(a) が、この式を左の項から順に足していく様子です。
+1 項目だけなら、傾き $0.637$ の直線です（$0.637\approx 2/\pi$ で、$x=\pi/2$ のとき高さがちょうど 1 になります）。
+2 項目の係数 $1.273$ は、その 2 倍の $4/\pi$ です。
+2 項目を足すと、$x=\pi/2$ から先の傾きが $2/\pi-4/\pi=-2/\pi\approx-0.637$ に変わり、下り坂になります。
+3 項目を足すと、$x=3\pi/2$ から先の傾きが $-2/\pi+4/\pi=2/\pi\approx 0.637$ に戻ります。3 個の ReLU で、山と谷を持つ折れ線ができました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=build,width=68mm,height=39mm,xmin=0,xmax=6.2832,ymin=-2.2,ymax=2.2,
+  xtick={0,1.5708,3.1416,4.7124,6.2832},xticklabels={0,$\frac{\pi}{2}$,$\pi$,$\frac{3\pi}{2}$,$2\pi$},
+  xlabel={$x$},title={(a) ReLU を 1 個ずつ足す},title style={font=\small},
+  legend columns=2,legend cell align=left,legend style={font=\scriptsize,at={(0.5,-0.5)},anchor=north,/tikz/every even column/.append style={column sep=2mm}},domain=0:6.2832,samples=200]
+\addplot[black!45,thick] {sin(deg(x))};
+\addplot[bookorange,line width=3.2pt,opacity=0.45] {0.6366*x};
+\addplot[bookgreen,dashed,line width=1.9pt] {0.6366*x-1.2732*max(x-1.5708,0)};
+\addplot[bookblue,line width=0.9pt] {0.6366*x-1.2732*max(x-1.5708,0)+1.2732*max(x-4.7124,0)};
+\legend{$\sin x$,1 項目まで,2 項目まで,3 項目まで}
+\end{axis}
+\begin{axis}[at={(build.east)},anchor=west,xshift=9mm,width=68mm,height=39mm,xmin=0,xmax=6.2832,ymin=-1.3,ymax=1.3,
+  xtick={0,1.5708,3.1416,4.7124,6.2832},xticklabels={0,$\frac{\pi}{2}$,$\pi$,$\frac{3\pi}{2}$,$2\pi$},
+  xlabel={$x$},title={(b) 折れ目を増やす},title style={font=\small},
+  legend columns=2,legend cell align=left,legend style={font=\scriptsize,at={(0.5,-0.5)},anchor=north,/tikz/every even column/.append style={column sep=2mm}}]
+\addplot[black!45,thick] table[col sep=comma,x=x,y=f]{code/ch04/out/relu_approx.csv};
+\addplot[bookblue,very thick] table[col sep=comma,x=x,y=g4]{code/ch04/out/relu_approx.csv};
+\addplot[bookgreen,dashed,very thick] table[col sep=comma,x=x,y=g8]{code/ch04/out/relu_approx.csv};
+\addplot[bookaccent,densely dotted,very thick] table[col sep=comma,x=x,y=g16]{code/ch04/out/relu_approx.csv};
+\legend{$\sin x$,区間 4 つ,区間 8 つ,区間 16}
+\end{axis}
+\end{tikzpicture}
+\caption{ReLU の足し合わせで $\sin x$ をなぞる。(a) 式\eqref{eq:nn-relu-sin}を 1 項ずつ足すと、折れ目が 1 つずつ増える。
+(b) 折れ目を増やすと、折れ線は曲線に近づく。区間 16 個の折れ線は、$\sin x$ とほとんど重なって見える。}
+\label{fig:nn-relu-approx}
+\end{figure}
+
+折れ目を増やせば、もっと細かくなぞれます。
+$0$ から $2\pi$ までを等分し、区間の境目ごとに ReLU を 1 個置いて、$\sin x$ との誤差の最大値を測りました
+（\file{ch04/relu_approx.py}。式\eqref{eq:nn-relu-sin}は、区間 4 個の場合です）。
+区間 4 個なら、境目は $0$、$\pi/2$、$\pi$、$3\pi/2$ の 4 つです。
+このうち $x=\pi$ では、前後の傾きがどちらも $-2/\pi$ で、変わりません。
+折れ目が要らないので、そこに置いた ReLU の係数は 0 になり、式\eqref{eq:nn-relu-sin}には 3 個しか現れません。
+誤差の最大値は、区間 4 個で 0.2105、8 個で 0.0704、16 個で 0.0188、32 個で 0.0048、64 個で 0.0012 でした。
+ReLU の個数を 2 倍にするたびに、誤差は 3 分の 1 から 4 分の 1 になっています（\figref{fig:nn-relu-approx}(b)）。個数を増やせば、誤差はいくらでも小さくできます。
+
+式\eqref{eq:nn-relu-sin}は、実は隠れ層が 1 枚の MLP です。
+隠れ層の $k$ 番目のニューロンが $h_k=\relu(x-t_k)$ を計算します。重みが 1、バイアスが $-t_k$ のニューロンです。
+出力層が、それらに係数 $c_k$ を掛けて足し合わせます。
+$\sin x$ に限らず、グラフが途切れずにつながった関数（\textbf{連続}な関数）なら、同じやり方で折れ線でなぞれます。
+分類でも同じです。境界は、クラスごとのスコアが並ぶ場所でした。
+スコアという関数を自由な形にできれば、境界も自由に曲げられます。
+この性質は入力が何次元でも成り立つことが、数学的に証明されています。
+
+\begin{theorem}[万能近似定理]\label{thm:nn-universal}
+活性化関数 $\phi$ は連続で、多項式ではないとします（ReLU、シグモイド、tanh、GELU はどれも当てはまります）。
+$f$ を、入力の範囲を限った領域（たとえば、どの成分も $-1$ 以上 1 以下）の上の、連続な関数とします。
+このとき、どんなに小さな許容誤差 $\varepsilon>0$ を決めても、隠れ層が 1 枚の MLP $g$ をうまく作れば、
+領域内のすべての $\vx$ で $\abs{f(\vx)-g(\vx)}<\varepsilon$ とできます。
+\end{theorem}
+
+これを\term{万能近似定理}{universal approximation theorem}と呼びます。
+1989 年にシグモイド型の活性化関数について証明され\cite{cybenko1989approximation,hornik1989multilayer}、
+のちに「多項式でなければよい」ところまで広げられました~\cite{leshno1993multilayer}。
+この定理があるので、「MLP では表せないかもしれない」という心配をせずに、学習のしかたに集中できます。
+
+\begin{caution}{万能近似定理が言っていないこと}
+この定理が言うのは、良い重みが\textbf{存在する}ことだけです。「MLP なら何でも学習できる」という意味ではありません。
+ニューロンが何個必要か、その重みを勾配降下法で\textbf{見つけられる}か、
+訓練データにない入力にも正しく答えられるか（\chapref{ch:ml}の汎化）には、何も答えていません。
+「表せる」ことと「学習できる」ことは、別の問題です。本書の残りの多くは、後者のための工夫に費やされます。
+\end{caution}
+
+定理は隠れ層 1 枚で足りると言いますが、実際のモデルは層を何枚も重ねます。
+層を重ねると、前の層が作った折れ線を、次の層がさらに折り曲げます。折れ目の数が、足し算ではなく掛け算で増えていきます。
+そのため、同じパラメータ数なら、幅を広げるより深くするほうが、複雑な関数を効率よく表せることが多いのです\cite{goodfellow2016deep}。
+現在の LLM は、数十から百数十の層を重ねています。
+ただし、深くすると学習が難しくなります。これは\secref{sec:nn-deep}で確かめます。
+
+この節で分かったことをまとめます。
+MLP は、「線形の変換と活性化関数」の層を重ね、最後に線形の出力層を置いたモデルです。
+幅を十分に大きくすれば、原理的にはどんな連続関数にも近づけます。
+残る問題は、その重みをどうやって見つけるかです。
+
+\section{計算グラフと誤差逆伝播法}\label{sec:nn-backprop}
+
+残る問題は、MLP の重みをどうやって見つけるかでした。
+道具は、\chapref{ch:ml}の勾配降下法です。そのために必要なのは、\textbf{すべてのパラメータについての勾配}です。
+この節では、それを効率よく求める方法を学びます。
+
+勾配を求める最も素朴な方法は、\chapref{ch:math}の数値微分です。
+パラメータを 1 個だけ少し動かして、損失がどれだけ変わるかを測ります。
+パラメータが $P$ 個あれば、動かす前の 1 回と合わせて、損失の計算（順伝播）が $P+1$ 回必要です。
+\chapref{ch:intro}で動かした基盤モデルは、パラメータが 2,583,936 個で、順伝播 1 回に本書の CPU で約 57 ミリ秒かかります。
+勾配を 1 回求めるだけで、$0.057\ \text{秒}\times 2{,}583{,}937\approx 14.7$ 万秒かかります。
+1 日は 86,400 秒なので、約 1.7 日です。
+学習ではパラメータを 4,000 回更新したので、全体では $1.7\ \text{日}\times 4{,}000=6{,}800$ 日、つまり 18 年以上かかります。
+しかも、57 ミリ秒は小さめの入力で測った値です。実際の学習では、1 回の順伝播がもっと重い計算でした。
+これでは使えません。
+
+これから学ぶ\textbf{誤差逆伝播法}は、同じ勾配を「順伝播 1 回と、その数倍の手間の計算 1 回」で求めます。
+しくみは、\chapref{ch:math}で学んだ連鎖律を、順序よく使うことに尽きます。
+
+この節は、章でいちばん長い節です。先に道筋を示しておきます。
+まず、パラメータが 2 個だけの小さな例で、勾配を手で 1 ステップずつ求めます。
+次に、その手順を、どんな計算にも使える規則にまとめます。規則は 2 つしかありません。
+最後に、同じ規則を層の単位で使い、手間がどれだけ減ったかを測ります。
+
+\subsection*{計算を小さな部品に分ける：計算グラフ}
+
+小さな例で始めます。
+データは 1 個だけで、入力が $x=2$、正解が $y=5$ です。
+モデルは直線 $\hat y=wx+b$、損失は二乗誤差 $\calL=(\hat y-y)^2$ とします。
+パラメータの現在の値は $w=3$、$b=1$ です。
+知りたいのは、$\pd{\calL}{w}$ と $\pd{\calL}{b}$ です。
+
+まず、損失の計算を、これ以上分けられない小さな演算に分解します。途中の値にも名前を付けます。
+\begin{align*}
+u&=w\times x=3\times 2=6 &&\text{（掛け算）}\\
+\hat y&=u+b=6+1=7 &&\text{（足し算。モデルの予測）}\\
+r&=\hat y-y=7-5=2 &&\text{（引き算。予測と正解のずれ）}\\
+\calL&=r^2=2^2=4 &&\text{（2 乗。損失）}
+\end{align*}
+この手順を図にしたものが、\figref{fig:nn-graph}です。
+値を四角、演算を丸で描き、計算の流れを矢印で結びます。
+このような図を\term{計算グラフ}{computational graph}と呼びます。四角や丸の一つひとつを、\textbf{ノード}と呼びます。
+図の黒い数字を、左から右へ目で追ってください。上の 4 行と同じ順に、値が決まっていきます。これが順伝播です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=0.97cm,every node/.append style={font=\small},
+  val/.style={plainbox,minimum width=10mm,minimum height=6.5mm,inner sep=1.5pt},
+  par/.style={box,minimum width=10mm,minimum height=6.5mm,inner sep=1.5pt},
+  g/.style={font=\footnotesize,text=bookaccent,inner sep=1pt}]
+  \node[par] (w) at (0,0.75) {$w=3$};
+  \node[val] (x) at (0,-0.75) {$x=2$};
+  \node[op] (mul) at (1.55,0) {$\times$};
+  \node[val] (u) at (3.0,0) {$u=6$};
+  \node[par] (b) at (3.0,-1.5) {$b=1$};
+  \node[op] (add) at (4.55,0) {$+$};
+  \node[val] (yh) at (6.0,0) {$\hat y=7$};
+  \node[val] (y) at (6.0,-1.5) {$y=5$};
+  \node[op] (sub) at (7.55,0) {$-$};
+  \node[val] (r) at (9.0,0) {$r=2$};
+  \node[op,inner sep=0pt] (sq) at (10.55,0) {\footnotesize $(\cdot)^2$};
+  \node[orangebox,minimum width=10mm,minimum height=6.5mm,inner sep=1.5pt] (L) at (12.1,0) {$\calL=4$};
+  \draw[arr] (w) -- (mul); \draw[arr] (x) -- (mul); \draw[arr] (mul) -- (u);
+  \draw[arr] (u) -- (add); \draw[arr] (b) -- (add); \draw[arr] (add) -- (yh);
+  \draw[arr] (yh) -- (sub); \draw[arr] (y) -- (sub); \draw[arr] (sub) -- (r);
+  \draw[arr] (r) -- (sq); \draw[arr] (sq) -- (L);
+  % 勾配
+  \node[g,above=0.5mm of w] {$\displaystyle\pd{\calL}{w}=8$};
+  \node[g,below=0.5mm of x] {$\displaystyle\pd{\calL}{x}=12$};
+  \node[g,above=0.5mm of u] {$\displaystyle\pd{\calL}{u}=4$};
+  \node[g,below=0.5mm of b] {$\displaystyle\pd{\calL}{b}=4$};
+  \node[g,above=0.5mm of yh] {$\displaystyle\pd{\calL}{\hat y}=4$};
+  \node[g,above=0.5mm of r] {$\displaystyle\pd{\calL}{r}=4$};
+  \node[g,above=0.5mm of L] {$\displaystyle\pd{\calL}{\calL}=1$};
+  \draw[arr,bookgray] (0,-2.75) -- node[below,lbl]{順伝播：左から右へ、値（黒）を計算する} (5.6,-2.75);
+  \draw[arr,bookaccent] (12.1,-2.75) -- node[below,font=\footnotesize,text=bookaccent]{逆伝播：右から左へ、勾配（赤）を計算する} (6.5,-2.75);
+\end{tikzpicture}
+\caption{$\calL=(wx+b-y)^2$ の計算グラフ。四角が値、丸が演算。色の付いた四角 $w$、$b$ がパラメータである。
+黒い数字は順伝播で求めた値、赤い数字は逆伝播で求めた勾配を表す。}
+\label{fig:nn-graph}
+\end{figure}
+
+\subsection*{出力側から 1 ステップずつ戻る}
+
+勾配は、順伝播とは逆に、右端の $\calL$ から左へ向かって求めていきます。
+各ステップで求めるのは、「その値を少し動かすと、$\calL$ がどれだけ変わるか」です。
+
+\textbf{ステップ 0（出発点）}\quad
+$\calL$ を $\calL$ 自身で微分すると 1 です。$\calL$ が 0.01 増えれば、$\calL$ は 0.01 増えるからです。
+出発点は、いつでも $\pd{\calL}{\calL}=1$ です。
+
+\textbf{ステップ 1（2 乗をさかのぼる）}\quad
+$\calL=r^2$ を $r$ で微分すると $2r$ です。$r=2$ を代入して、$\pd{\calL}{r}=2\times 2=4$ です。
+$r$ を 0.01 増やすと、$\calL$ は約 $4\times 0.01=0.04$ 増える、という意味です。
+
+\textbf{ステップ 2（引き算をさかのぼる）}\quad
+$r=\hat y-y$ なので、$\hat y$ を 1 増やすと $r$ も 1 増えます。つまり $\pd{r}{\hat y}=1$ です。
+$\hat y$ は、$r$ を通じてだけ $\calL$ に影響します。
+連鎖律によれば、このときの微分は、2 つの微分の掛け算です。
+\[
+\pd{\calL}{\hat y}=\pd{r}{\hat y}\times\pd{\calL}{r}=1\times 4=4
+\]
+右辺の $\pd{\calL}{r}=4$ は、ステップ 1 で求めたばかりの値です。
+
+\textbf{ステップ 3（足し算をさかのぼる）}\quad
+$\hat y=u+b$ なので、$\pd{\hat y}{u}=1$、$\pd{\hat y}{b}=1$ です。ステップ 2 の結果に、これを掛けます。
+$\pd{\calL}{u}=1\times 4=4$、$\pd{\calL}{b}=1\times 4=4$ です。パラメータ $b$ の勾配が求まりました。
+
+\textbf{ステップ 4（掛け算をさかのぼる）}\quad
+$u=w\times x$ を $w$ で微分すると、相手の $x$ が残ります。$\pd{u}{w}=x=2$ です。同じように、$\pd{u}{x}=w=3$ です。
+\[
+\pd{\calL}{w}=\pd{u}{w}\times\pd{\calL}{u}=2\times 4=8,\qquad
+\pd{\calL}{x}=\pd{u}{x}\times\pd{\calL}{u}=3\times 4=12
+\]
+パラメータ $w$ の勾配も求まりました。
+$x$ はデータなので更新しませんが、勾配は同じ手順で求まります。
+層を重ねたモデルでは、これが手前の層へ渡す勾配になります。
+
+\figref{fig:nn-graph}の赤い数字が、こうして求めた勾配です。\tabref{tab:nn-backward-steps}に、全ステップをまとめます。
+どのステップも、「1 つ前のステップで求めた勾配」に「その演算だけの微分」を掛けています。
+
+% 図表が説明より前（ページの上）に出ないようにする
+\suppressfloats[t]
+\begin{table}[tbp]
+\centering
+\caption{逆伝播の全ステップ。各行で、右隣（出力側）から届いた勾配に、その演算だけを見て求めた微分を掛ける。}
+\label{tab:nn-backward-steps}
+\small
+\begin{tabular}{clllc}
+\toprule
+ステップ & さかのぼる演算 & その演算だけの微分 & 届いた勾配 & 求まる勾配 \\
+\midrule
+1 & $\calL=r^2$ & $\pd{\calL}{r}=2r=4$ & $\pd{\calL}{\calL}=1$ & $\pd{\calL}{r}=4$ \\[1mm]
+2 & $r=\hat y-y$ & $\pd{r}{\hat y}=1$ & $\pd{\calL}{r}=4$ & $\pd{\calL}{\hat y}=1\times 4=4$ \\[1mm]
+3 & $\hat y=u+b$ & $\pd{\hat y}{u}=1$、$\pd{\hat y}{b}=1$ & $\pd{\calL}{\hat y}=4$ & $\pd{\calL}{u}=4$、$\pd{\calL}{b}=4$ \\[1mm]
+4 & $u=w\times x$ & $\pd{u}{w}=x=2$、$\pd{u}{x}=w=3$ & $\pd{\calL}{u}=4$ & $\pd{\calL}{w}=8$、$\pd{\calL}{x}=12$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+答えを 2 通りの方法で確かめます。
+式を直接微分すると、$\pd{\calL}{w}=2(wx+b-y)\times x=2\times 2\times 2=8$ で、一致します。
+実際に $w$ を 3 から 3.01 に増やすと、ずれは $r=3.01\times 2+1-5=2.02$ で、$\calL=2.02^2=4.0804$ になります。増えた量 0.0804 は、勾配からの予想 $8\times 0.01=0.08$ とほぼ一致します。
+
+\subsection*{一般の形：局所勾配 $\times$ 上流の勾配}
+
+4 つのステップは、どれも同じ形をしていました。これを一般の形で書きます。
+ある演算が、入力 $a$、$b$ から出力 $c$ を計算するとします（\figref{fig:nn-local}(a)）。
+$a$、$b$、$c$ は、どんな値にも当てはまる仮の名前です（この $b$ は、バイアスとは限りません）。
+出力側の逆伝播が済んでいて、$\pd{\calL}{c}$ が分かっていれば、入力 $a$ の勾配は次の式で求まります（$b$ も同じです）。
+\begin{equation}
+\pd{\calL}{a}=\underbrace{\pd{c}{a}}_{\text{局所勾配}}\times\underbrace{\pd{\calL}{c}}_{\text{上流の勾配}}
+\label{eq:nn-local-rule}
+\end{equation}
+$\pd{c}{a}$ は、その演算だけを見れば分かる微分で、\term{局所勾配}{local gradient}と呼びます。
+$\pd{\calL}{c}$ は、出力側から届く勾配で、\term{上流の勾配}{upstream gradient}と呼びます。
+逆伝播では勾配が出力側から入力側へ流れるので、その流れの上流が出力側です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\small},
+  g/.style={font=\footnotesize,text=bookaccent,inner sep=1.5pt}]
+  % (a) 局所勾配 × 上流の勾配
+  \node[plainbox,minimum width=8mm] (a) at (0,0.95) {$a$};
+  \node[plainbox,minimum width=8mm] (b) at (0,-0.95) {$b$};
+  \node[op,minimum size=9mm] (f) at (2.5,0) {$f$};
+  \node[plainbox,minimum width=8mm] (c) at (4.4,0) {$c$};
+  \draw[arr] (a) -- (f); \draw[arr] (b) -- (f); \draw[arr] (f) -- (c);
+  \draw[->,thick,dashed,bookaccent] (6.0,0) -- (4.95,0);
+  \node[g,align=center] at (5.6,0.75) {上流の勾配\\[0.5mm]$\displaystyle\pd{\calL}{c}$};
+  \node[g] at (1.9,1.55) {$\displaystyle\pd{\calL}{a}=\pd{c}{a}\times\pd{\calL}{c}$};
+  \node[g] at (1.9,-1.55) {$\displaystyle\pd{\calL}{b}=\pd{c}{b}\times\pd{\calL}{c}$};
+  \draw[->,thick,dashed,bookaccent] (2.15,0.5) -- (0.6,1.12);
+  \draw[->,thick,dashed,bookaccent] (2.15,-0.5) -- (0.6,-1.12);
+  \node[lbl] at (2.6,-2.3) {(a) 1 つのノードの仕事};
+  % (b) 枝分かれ
+  \begin{scope}[xshift=80mm]
+  \node[plainbox,minimum width=11mm] (r) at (0,0) {$r=2$};
+  \node[op,minimum size=7mm] (m) at (2.2,0) {$\times$};
+  \node[orangebox,minimum width=11mm] (L) at (4.1,0) {$\calL=4$};
+  \draw[arr] (r.north east) to[bend left=30] node[above,g]{経路 1: $2\times 1=2$} (m.north west);
+  \draw[arr] (r.south east) to[bend right=30] node[below,g]{経路 2: $2\times 1=2$} (m.south west);
+  \draw[arr] (m) -- (L);
+  \node[g] at (0.6,-1.55) {$\displaystyle\pd{\calL}{r}=2+2=4$};
+  \node[g] at (4.1,0.85) {$\displaystyle\pd{\calL}{\calL}=1$};
+  \node[lbl] at (2.0,-2.3) {(b) 枝分かれした値には、勾配を足す};
+  \end{scope}
+\end{tikzpicture}
+\caption{逆伝播の 2 つの規則。(a) ノードは、出力側から届いた勾配に自分の局所勾配を掛けて、入力側へ渡す。
+(b) $\calL=r\times r$ のように同じ値が 2 か所で使われるときは、それぞれの経路から届いた勾配を足し合わせる。}
+\label{fig:nn-local}
+\end{figure}
+
+大事なのは、各ノードが\textbf{自分の演算のことだけ知っていればよい}点です。
+掛け算のノードは「局所勾配は相手の値」とだけ知っていて、届いた勾配にそれを掛けて入力側へ渡します。
+ですから、演算の種類ごとに局所勾配を一度決めておけば、どんなに大きな計算グラフでも同じ手順で処理できます。
+\tabref{tab:nn-local-grads}が、この章で使う演算の局所勾配です。
+
+\begin{table}[tbp]
+\centering
+\caption{この章で使う演算の局所勾配。逆伝播では、届いた勾配にこれを掛けて入力側へ渡す。}
+\label{tab:nn-local-grads}
+\small
+\begin{tabular}{lll}
+\toprule
+演算 & 局所勾配 & 逆伝播での働き \\
+\midrule
+$c=a+b$ & $\pd{c}{a}=1$、$\pd{c}{b}=1$ & 届いた勾配を、両方の入力へそのまま渡す \\[0.3mm]
+$c=a\times b$ & $\pd{c}{a}=b$、$\pd{c}{b}=a$ & 相手の値を掛けて渡す \\[0.3mm]
+$c=a^{k}$ & $\pd{c}{a}=k\,a^{k-1}$ & $k=2$ なら $2a$ を掛けて渡す \\[0.3mm]
+$c=\relu(a)$ & $a>0$ なら 1、それ以外は 0 & 正なら通し、負なら止める \\[0.5mm]
+$c=e^{a}$ & $\pd{c}{a}=e^{a}=c$ & 出力の値を掛けて渡す \\[0.3mm]
+$c=\log a$ & $\pd{c}{a}=1/a$ & 入力の逆数を掛けて渡す \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{枝分かれした値には、勾配を足す}
+
+上の例では、どの値も 1 か所でしか使われませんでした。同じ値が 2 か所以上で使われると、どうなるでしょうか。
+
+$r^2$ を、わざと $r\times r$ という掛け算で書いてみます（\figref{fig:nn-local}(b)）。
+$r$ から掛け算のノードへ、矢印が 2 本出ます。
+掛け算の局所勾配は「相手の値」なので、どちらの経路から届く勾配も $2\times 1=2$ です
+（相手の値 $r=2$ に、上流の勾配 $\pd{\calL}{\calL}=1$ を掛けました）。
+一方、正しい答えは $\pd{\calL}{r}=2r=4$ です。これは、2 つの経路の勾配を\textbf{足した}値 $2+2=4$ と一致します。
+
+$r$ を少し動かすと、その影響は 2 本の経路の両方を通って $\calL$ に届きます。
+$\calL$ の変化は、それぞれの経路を通った変化の合計です（\chapref{ch:math}の、「道ごとに掛け算し、最後に足し合わせる」連鎖律です）。
+一般に、値 $a$ が複数の演算に使われ、それぞれの出力が $c_1,c_2,\dots$ のとき、勾配は次のようになります。
+\begin{equation}
+\pd{\calL}{a}=\sum_{i}\pd{c_i}{a}\times\pd{\calL}{c_i}
+\label{eq:nn-fanout}
+\end{equation}
+ニューラルネットワークでは、枝分かれはいたるところにあります。
+1 層目のニューロンの出力は、2 層目のすべてのニューロンに使われるからです。
+
+式\eqref{eq:nn-fanout}から、計算の順番についての約束が出てきます。
+あるノードの勾配を入力側へ渡してよいのは、そのノードに届くべき勾配を\textbf{すべて足し終えてから}です。
+そのためには、順伝播で計算した順番を、ちょうど逆にたどれば十分です。
+順伝播では、どの値も、自分を使う演算より先に計算されているからです。
+
+\begin{definition}[誤差逆伝播法]\label{def:nn-backprop}
+次の手順で、損失 $\calL$ の勾配をすべての値について求める方法を、\term{誤差逆伝播法}{backpropagation}と呼びます。
+\begin{enumerate}
+\item \textbf{順伝播}: 入力から出力へ順に値を計算する。途中の値はすべて覚えておく。
+\item 出発点として $\pd{\calL}{\calL}=1$ と置く。その他の値の勾配は 0 にしておく。
+\item \textbf{逆伝播}: 順伝播と逆の順にノードを訪ねる。
+各ノードで「局所勾配 $\times$ 上流の勾配」を計算し、入力の勾配に足し込む。
+\end{enumerate}
+\end{definition}
+
+以下では、手順 3 を単に\term{逆伝播}{backward pass}と呼びます。
+この方法は、1986 年のラメルハートらの論文\cite{rumelhart1986learning}によって広く知られるようになりました。
+局所勾配を掛けてつないでいくこの計算は、プログラムで書ける計算なら何にでも使えます。
+これをプログラムに自動で行わせる技法を、一般に\term{自動微分}{automatic differentiation}と呼びます\cite{baydin2018automatic}。
+誤差逆伝播法は、自動微分のうち、出力側から逆向きにたどるやり方にあたります。
+
+\begin{quiz}
+$p=2$、$q=3$ として、$c=p\times q$、$\calL=c+p$ を計算します。
+計算グラフを描き、逆伝播で $\pd{\calL}{p}$ と $\pd{\calL}{q}$ を求めてください。
+$p$ が 2 か所で使われていることに注意しましょう。
+\end{quiz}
+
+答えを確かめます。順伝播は $c=6$、$\calL=8$ です。
+足し算は勾配をそのまま渡すので、$\pd{\calL}{c}=1$ で、$p$ にも直接 1 が届きます。
+掛け算は相手の値を掛けるので、$c$ を通る経路から $p$ に届く勾配は $q\times 1=3$ です。
+2 本の経路を足して $\pd{\calL}{p}=1+3=4$ です。$q$ は 1 か所だけなので、$\pd{\calL}{q}=p\times 1=2$ です。
+
+\subsection*{層をまとめて扱う}
+
+ここまでは、数を 1 個ずつ扱いました。
+実際のニューラルネットワークでは、層ごとに、ベクトルや行列のまま逆伝播を計算します。規則は同じです。
+
+線形の層 $\vu=\mW\vh+\vb$ を考えます。$\vh$ が入力、$\vu$ が出力で、成分で書くと $u_k=\sum_j W_{kj}h_j+b_k$ です。
+出力側から届いた上流の勾配を、$\vdelta$（デルタ）と書きます。
+$\vdelta$ は $\vu$ と同じ形のベクトルで、$k$ 番目の成分は $\delta_k=\pd{\calL}{u_k}$ です。
+ここに、数 1 個ずつのときの規則を当てはめます。
+\begin{itemize}
+\item 重み $W_{kj}$ は、$u_k$ にだけ使われ、$h_j$ と掛け合わされています。
+掛け算の局所勾配は相手の値なので、$\pd{\calL}{W_{kj}}=h_j\,\delta_k$ です。
+\item バイアス $b_k$ は、$u_k$ に足されているだけです。局所勾配は 1 なので、$\pd{\calL}{b_k}=\delta_k$ です。
+\item 入力 $h_j$ は、すべての $u_k$ に使われています。枝分かれなので、足し合わせます。
+$u_k$ への経路の局所勾配は $W_{kj}$ なので、$\pd{\calL}{h_j}=\sum_k W_{kj}\,\delta_k$ です。
+\end{itemize}
+これらを行列でまとめて書くと、次のようになります。
+\begin{equation}
+\pd{\calL}{\mW}=\vdelta\,\vh^\T,\qquad
+\pd{\calL}{\vb}=\vdelta,\qquad
+\pd{\calL}{\vh}=\mW^\T\vdelta
+\label{eq:nn-layer-backward}
+\end{equation}
+$\vdelta\,\vh^\T$ は、縦ベクトルと横ベクトルの積で、$k$ 行 $j$ 列の成分が $\delta_k h_j$ の行列です。
+$\mW$ が $m\times n$ なら、$\vdelta$ は $m$ 次元、$\vh$ は $n$ 次元なので、$\vdelta\,\vh^\T$ も $m\times n$ です。
+\textbf{勾配の形は、元のパラメータの形と必ず同じ}になります。
+3 つ目の式は、$\sum_k W_{kj}\,\delta_k$ を縦に並べたものです。
+これは $\mW$ の $j$ 列目と $\vdelta$ の内積なので、列を行に直した $\mW^\T$ を使って、$\mW^\T\vdelta$ と書けます。
+この $\pd{\calL}{\vh}$ が、手前の層へ渡す勾配です。
+
+活性化関数 $\vh=\relu(\vu)$ は、成分ごとの計算です。
+$\vh$ の勾配のうち、$u_k>0$ の成分はそのまま残し、それ以外の成分を 0 にしたものが、$\vu$ の勾配です。
+出力層の先にある softmax と交差エントロピーの勾配は、\chapref{ch:ml}で求めました。
+予測の確率を $\vp$ とし、正解のクラスだけが 1 で他が 0 のベクトルを $\vy$ とすると、$\pd{\calL}{\vz}=\vp-\vy$ でした。
+
+\figref{fig:nn-layer-backward}が、これらをつないだ全体の流れです。上段を左から右へ計算したあと、下段を右から左へたどります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1cm,every node/.append style={font=\small},
+  g/.style={font=\footnotesize,text=bookaccent,inner sep=1.5pt},
+  v/.style={font=\small,inner sep=1.5pt}]
+  \node[v] (x) at (0,0) {$\vx$};
+  \node[box,minimum width=17mm,align=center] (l1) at (1.9,0) {線形\\[-1mm]{\footnotesize $\mW_1,\vb_1$}};
+  \node[greenbox,minimum width=12mm] (act) at (4.9,0) {ReLU};
+  \node[box,minimum width=17mm,align=center] (l2) at (7.9,0) {線形\\[-1mm]{\footnotesize $\mW_2,\vb_2$}};
+  \node[orangebox,minimum width=17mm,align=center] (ce) at (10.9,0) {softmax と\\[-1mm]交差エントロピー};
+  \node[v] (L) at (12.75,0) {$\calL$};
+  \draw[arr] (x) -- (l1);
+  \draw[arr] (l1) -- node[above,v]{$\vu_1$} (act);
+  \draw[arr] (act) -- node[above,v]{$\vh_1$} (l2);
+  \draw[arr] (l2) -- node[above,v]{$\vz$} (ce);
+  \draw[arr] (ce) -- (L);
+  % 逆伝播
+  \node[g,align=center] (dz) at (9.4,-1.35) {$\vz$ の勾配\\$\vdelta_2=\vp-\vy$};
+  \node[g,align=center] (dh) at (6.4,-1.35) {$\vh_1$ の勾配\\$\mW_2^\T\vdelta_2$};
+  \node[g,align=center] (du) at (3.4,-1.35) {$\vu_1$ の勾配 $\vdelta_1$\\（$u_k\le 0$ の成分を 0 に）};
+  \draw[->,thick,dashed,bookaccent] (ce.south) |- (dz);
+  \draw[->,thick,dashed,bookaccent] (dz) -- (dh);
+  \draw[->,thick,dashed,bookaccent] (dh) -- (du);
+  \node[g,align=center] (p2) at (7.9,-2.55) {$\mW_2$ の勾配 $\vdelta_2\vh_1^\T$\\$\vb_2$ の勾配 $\vdelta_2$};
+  \node[g,align=center] (p1) at (1.9,-2.55) {$\mW_1$ の勾配 $\vdelta_1\vx^\T$\\$\vb_1$ の勾配 $\vdelta_1$};
+  \draw[->,thick,dashed,bookaccent] (dz) -- (p2);
+  \draw[->,thick,dashed,bookaccent] (du) -- (p1);
+\end{tikzpicture}
+\caption{層を単位にした逆伝播（隠れ層が 1 枚で、$\mW_2$ が出力層の MLP）。上段の黒い矢印が順伝播、下段の赤い破線が逆伝播である。
+勾配 $\vdelta$ は、右から左へ 1 段ずつ形を変えながら伝わる。その途中で、各層のパラメータの勾配が求まる。}
+\label{fig:nn-layer-backward}
+\end{figure}
+
+この流れをそのまま行列演算で書いたプログラムが、\file{ch04/backprop_layer.py} です。
+入力 4 次元、隠れ層の幅 3、出力 2 クラスの小さな MLP に、乱数で決めた重みと入力を与えて実行しました。
+\tabref{tab:nn-layer-numbers}が、その途中の値です。上から順に読みます。
+
+\begin{table}[tbp]
+\centering
+\caption{層を単位にした逆伝播を、数字でたどる（\file{ch04/backprop_layer.py} の出力）。
+$u$ が負のニューロンでは、$\vdelta_1$ の成分も、$\mW_1$ の勾配の行も 0 になる。}
+\label{tab:nn-layer-numbers}
+\small
+\begin{tabular}{lll}
+\toprule
+量 & 求め方 & 値 \\
+\midrule
+入力 $\vx$ & （乱数で決めた） & $(1.541,\ -0.293,\ -2.179,\ 0.568)$ \\
+$\vu_1$ & $\mW_1\vx+\vb_1$ & $(-2.23,\ 0.787,\ -0.131)$ \\
+$\vz$ の勾配 $\vdelta_2$ & $\vp-\vy$ & $(0.903,\ -0.903)$ \\
+$\vh_1$ の勾配 & $\mW_2^\T\vdelta_2$ & $(-2.212,\ -0.365,\ 1.143)$ \\
+$\vu_1$ の勾配 $\vdelta_1$ & $u_k\le 0$ の成分を 0 に & $(0,\ -0.365,\ 0)$ \\
+$\mW_1$ の勾配の 2 行目 & $-0.365\times\vx$ & $(-0.563,\ 0.107,\ 0.796,\ -0.208)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+$\vu_1$ は、1 番目と 3 番目の成分が負です。この 2 個のニューロンは、ReLU を通ると出力が 0 になります。
+出力側から戻ってきた $\mW_2^\T\vdelta_2$ は 3 成分とも 0 ではありませんが、ReLU をさかのぼるときに、1 番目と 3 番目が 0 にされます。
+すると、$\mW_1$ の勾配 $\vdelta_1\vx^\T$ も、1 行目と 3 行目がすべて 0 になります。
+\textbf{出力が 0 だったニューロンの重みには、勾配が届きません}。
+残った 2 行目は、$\vdelta_1$ の 2 番目の成分 $-0.365$ に、$\vx$ の各成分を掛けたものです。
+たとえば 2 列目は、$-0.365\times(-0.293)\approx 0.107$ です。
+表の値は小数第 3 位までに丸めてあります。そのため、ほかの列を表の数字で掛け直すと、最後の桁が 1 だけずれることがあります。
+こうして求めた勾配を PyTorch の自動微分の結果と比べると、4 つのパラメータすべてで差は 0 でした。
+
+\subsection*{逆伝播にかかる手間}
+
+式\eqref{eq:nn-layer-backward}を見ると、線形の層の逆伝播で手間がかかるのは、$\vdelta\,\vh^\T$ と $\mW^\T\vdelta$ の 2 つです。
+どちらも、順伝播の $\mW\vh$ と同じ程度の手間です。
+他の演算でも同様なので、全体でも「順伝播の数倍」に収まります。パラメータの個数 $P$ を掛ける必要はありません。
+
+基盤モデルで実測した結果が、\tabref{tab:nn-cost}です。
+逆伝播は、順伝播の約 3 倍の時間で終わります（混み具合によって、測るたびに少し変わります）。
+数値微分なら 1.7 日かかる勾配が、合わせて約 0.2 秒で求まります。
+1.7 日は約 14.7 万秒でした。$14.7\ \text{万秒}\div 0.212\ \text{秒}\approx 70$ 万なので、約 70 万倍の差です。
+
+\begin{table}[tbp]
+\centering
+\caption{基盤モデル（パラメータ 2,583,936 個）の勾配を 1 回求める手間。
+入力は 128 トークンの系列 8 本（\file{ch04/cost_compare.py}）。}
+\label{tab:nn-cost}
+\small
+\begin{tabular}{lll}
+\toprule
+方法 & 必要な計算 & 所要時間 \\
+\midrule
+数値微分 & 順伝播 2,583,937 回 & 約 1.7 日（1 回 57 ミリ秒から換算） \\
+誤差逆伝播法 & 順伝播 1 回と逆伝播 1 回 & $57+155=212$ ミリ秒（実測） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+ただし、逆伝播では順伝播の途中の値（$\vu_1$ や $\vh_1$）を使うので、それらをすべてメモリに残しておく必要があります。
+学習のときに、推論のときより多くのメモリが必要になるのは、このためです。
+
+この節で分かったことをまとめます。
+誤差逆伝播法は、計算グラフを出力側から逆にたどり、各ノードで「局所勾配 $\times$ 上流の勾配」を計算し、枝分かれでは足します。
+これだけで、すべてのパラメータの勾配が、順伝播の数倍の手間で求まります。
+
+\subsection*{ここまでの道のり}
+
+章の半分を過ぎました。ここまでの流れを 3 行で振り返ります。
+\begin{itemize}
+\item 線形モデルは直線の境界しか作れません。線形の変換は、重ねても線形のままです（\secref{sec:nn-linear-limit}、\secref{sec:nn-neuron}）。
+\item 活性化関数を挟んで層を重ねた MLP は、原理的にはどんな連続関数にも近づけます（\secref{sec:nn-mlp}）。
+\item その重みを学習するための勾配は、誤差逆伝播法で、順伝播の数倍の手間で求まります（\secref{sec:nn-backprop}）。
+\end{itemize}
+ここからは手を動かします。
+誤差逆伝播法を自分でプログラムにし、MLP を学習させ、最後に PyTorch に置き換えます。
+
+%======================================================================
+\section{自動微分エンジンを自作する}\label{sec:nn-value}
+%======================================================================
+
+誤差逆伝播法の手順は分かりました。
+では、\chapref{ch:ml}で使った \code{loss.backward()} という 1 行の裏では、何が起きているのでしょうか。
+この節では、その中身を自分の手で作ります。
+作るのは、式を書くだけで勾配まで求めてくれる、小さな自動微分エンジンです。
+設計は、Karpathy の micrograd\cite{karpathy2022micrograd}にならいます。
+
+設計の考え方は、次の 3 つです。
+\begin{enumerate}
+\item 数を、\code{Value} というオブジェクトで包みます。\code{Value} は、値のほかに、勾配と「自分がどう作られたか」を覚えます。
+\item 足し算や掛け算をするたびに、結果を新しい \code{Value} として作ります。そのとき、「逆伝播で何をするか」も小さな関数にして持たせます。
+\item \code{backward()} が呼ばれたら、出力側から順に、その小さな関数を実行します。
+\end{enumerate}
+つまり、ふつうに式を計算するだけで、計算グラフが勝手に記録されます。順に作っていきましょう。
+
+まず、計算グラフのノード 1 個を表すクラスです。
+
+\snippet{\code{Value} クラスの骨組み}{code:nn-value-init}{ch04/value.py}{value-init}
+
+5〜9 行目が、ノードが持つ 5 つの情報です。
+\code{data} は、順伝播で求めた値です。
+\code{grad} は、損失をこの値で微分したもの $\pd{\calL}{v}$ です。逆伝播をするまでは 0 にしておきます。
+\code{_prev} は、このノードを作るのに使った入力ノードの組です。計算グラフの矢印を逆向きにたどる手がかりになります。
+\code{_op} は、演算の名前です。表示にしか使いません。
+\code{_backward} は、「自分の勾配を、入力ノードに配る関数」です。
+最初は、何もしない関数を入れておきます。\code{lambda: None} は、\code{def f(): pass} と同じ働きの、名前のない関数です。
+$x$ や $w$ のように、計算で作られたのではないノードには、配る相手がいないからです。
+名前の先頭の \code{_} は、「クラスの内部で使うもの」という Python の慣習です。
+
+\subsection*{演算に「勾配の配り方」を覚えさせる}
+
+次に、足し算と掛け算を定義します。
+Python は、\code{a + b} という式を見ると \code{a.__add__(b)} を呼びます。\code{a * b} なら \code{a.__mul__(b)} です。
+この 2 つのメソッドを書けば、\code{Value} どうしを \code{+} と \code{*} で計算できます。
+
+% 見出しだけがページ末に残らないよう、残りが少なければ改ページする
+\par\ifdim\dimexpr\pagegoal-\pagetotal\relax<6\baselineskip\newpage\fi
+\snippet{足し算と掛け算}{code:nn-value-add-mul}{ch04/value.py}{value-add-mul}
+
+足し算から読みます。
+2 行目は、相手がふつうの数だったら \code{Value} で包む処理です。これで \code{w + 1.0} のような式も書けます。
+3 行目で、結果のノード \code{out} を作ります。
+値は \code{self.data + other.data} で、入力ノードとして \code{(self, other)} を覚えさせます。ここまでが順伝播です。
+
+5〜7 行目が、この章の核心です。
+関数 \code{_backward} は、式\eqref{eq:nn-local-rule}の「局所勾配 $\times$ 上流の勾配」を、そのまま書いたものです。
+\code{out.grad} が上流の勾配です。足し算の局所勾配は、どちらの入力についても 1 でした（\tabref{tab:nn-local-grads}）。
+代入の \code{=} ではなく \code{+=} で足し込んでいるのは、枝分かれに備えるためです。
+同じノードが 2 か所で使われたら、2 つの経路の勾配を足すのでした（式\eqref{eq:nn-fanout}）。
+
+9 行目で、この関数を \code{out} に持たせます。
+\code{_backward} の後ろに、かっこがないことに注意してください。関数を呼ぶのではなく、関数そのものを代入しています。
+ですから、\code{_backward} の中身は\textbf{この時点ではまだ実行されません}。
+実行されるのは、あとで \code{out._backward()} と、かっこを付けて呼んだときです。
+Python では、関数の中で作った関数は、そのとき見えていた変数（ここでは \code{self}、\code{other}、\code{out}）を覚えています。
+足し算をするたびに、「どのノードを足して、どのノードを作ったか」を覚えた専用の \code{_backward} が、1 つ作られるわけです。
+
+\figref{fig:nn-value-node}は、手計算の例の $\hat y=u+b$ を、\code{y_hat = u + b} と書いて実行した場面です。
+黒い矢印が、この式を計算したときに起きることです。
+値 7.0 を持つ新しいノードが作られ、「\code{u} と \code{b} から作られた」ことと、専用の \code{_backward} を覚えます。
+赤い破線は、あとで逆伝播のときに、この \code{_backward} が呼ばれて行うことです。
+そのとき \code{out.grad} には、出力側から届いた勾配 4.0 が入っています。
+それに局所勾配 1.0 を掛けて、\code{u.grad} と \code{b.grad} に足し込みます。
+\tabref{tab:nn-backward-steps}のステップ 3 と、同じ計算です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\footnotesize},
+  v/.style={plainbox,align=left,inner sep=3pt},
+  g/.style={font=\footnotesize,text=bookaccent,inner sep=1.5pt}]
+  \node[v] (u) at (0,0.95) {\code{u}\\\code{data = 6.0}\\\code{grad = 0.0} \textcolor{bookaccent}{$\rightarrow$ 4.0}};
+  \node[v] (b) at (0,-0.95) {\code{b}\\\code{data = 1.0}\\\code{grad = 0.0} \textcolor{bookaccent}{$\rightarrow$ 4.0}};
+  \node[v,draw=bookorange,fill=figorange,minimum height=27mm] (out) at (8.6,0)
+    {\code{out}（これが \code{y_hat} になる）\\\code{data = 7.0}（$6.0+1.0$）\\\code{grad = 0.0} \textcolor{bookaccent}{$\rightarrow$ 4.0}\\\code{_prev = (u, b)}\\\code{_backward =} 専用の関数};
+  % 矢印はすべて水平に引く（斜めにすると、ラベルと線が重なる）
+  \coordinate (ya) at (0,1.1);
+  \coordinate (yb) at (0,0.55);
+  \coordinate (yc) at (0,-0.55);
+  \coordinate (yd) at (0,-1.1);
+  \draw[arr] (u.east |- ya) -- node[above,lbl]{値 6.0 を渡す} (out.west |- ya);
+  \draw[<-,thick,dashed,bookaccent] (u.east |- yb) -- node[below,g]{\code{u.grad += 1.0 * out.grad}} (out.west |- yb);
+  \draw[arr] (b.east |- yc) -- node[above,lbl]{値 1.0 を渡す} (out.west |- yc);
+  \draw[<-,thick,dashed,bookaccent] (b.east |- yd) -- node[below,g]{\code{b.grad += 1.0 * out.grad}} (out.west |- yd);
+\end{tikzpicture}
+\caption{\code{y_hat = u + b} を実行したときに作られるノード（右）。黒い矢印は、そのときの値の流れである。
+新しいノードは、入力ノードの組 \code{_prev} と、専用の関数 \code{_backward} を覚える。
+赤い破線は、あとで \code{_backward} が呼ばれたときの勾配の流れである。届いていた勾配 4.0 に局所勾配 1.0 を掛け、入力ノードの \code{grad} に足し込む。}
+\label{fig:nn-value-node}
+\end{figure}
+
+掛け算（12〜21 行目）も、形は同じです。違うのは 2 か所だけです。
+14 行目の順伝播が掛け算になり、17〜18 行目の局所勾配が「相手の値」になります。
+$c=a\times b$ なら $\pd{c}{a}=b$、$\pd{c}{b}=a$ だからです。
+
+ほかの演算も、同じ型で書けます。変わるのは、順伝播の式と局所勾配の式だけです。
+入力が 1 個だけの演算の例として、べき乗と ReLU を見ておきます。
+
+\snippet{べき乗と ReLU}{code:nn-value-pow-relu}{ch04/value.py}{value-pow-relu}
+
+べき乗 \code{v ** k} の局所勾配は $k v^{k-1}$ です。
+5 行目が、それに上流の勾配 \code{out.grad} を掛けて、足し込んでいます。
+ReLU（\code{v.relu()}）の局所勾配は、入力が正なら 1、そうでなければ 0 です。
+14 行目の \code{(1.0 if self.data > 0 else 0.0)} は、「正なら 1.0、そうでなければ 0.0」という値になる Python の式です。
+足し算や掛け算との違いは、入力ノードが 1 個しかないことです。
+そのため、2 行目と 11 行目では、入力ノードの組として \code{(self,)} を渡しています。
+このカンマは、書き間違いではありません。Python では、要素が 1 個だけの組をこう書きます。
+その次の引数（\code{"relu"} など）は、表示に使う演算の名前です。
+\code{exp}、\code{log}、\code{tanh} も同じように用意しました（掲載は省きます。\file{ch04/value.py} にあります）。
+引き算と割り算には、新しい \code{_backward} が要りません。
+$a-b=a+(-1)\times b$、$a/b=a\times b^{-1}$ と書き直せば、すでに書いた演算の組み合わせになるからです。
+
+\subsection*{逆伝播を実行する}
+
+最後に、\code{backward()} です。逆伝播には、順番の決まりがありました。
+あるノードが勾配を配るのは、そのノード自身の勾配がすべて集まった後でなければなりません。
+そのために、まずノードを「入力側が先、出力側が後」の順に 1 列に並べます。
+どの矢印も列の前から後ろへ向かうような、この並べ方を、\term{トポロジカル順}{topological order}といいます。
+
+\snippet{逆伝播の実行}{code:nn-value-backward}{ch04/value.py}{value-backward}
+
+3 行目で、空のリスト \code{order} と、空の集合 \code{visited} を用意します。
+5〜10 行目の \code{visit} が、ノードを並べる関数です。
+\code{visit(v)} は、まず \code{v} の入力ノードの一つひとつについて、\code{visit} 自身を呼びます（8〜9 行目）。
+呼ばれた先でも同じことをするので、入力側の行き止まりまで、先にたどり着きます。
+それが済んでから、\code{v} 自身を \code{order} の末尾に加えます（10 行目）。
+こうすると、どのノードも、自分の入力ノードより後ろに並びます。
+\code{visited} は訪問済みのノードの集合で、同じノードを 2 回並べないために使います。
+12 行目で、損失のノードからこの作業を始めます。
+
+13 行目が逆伝播の出発点です。損失を損失自身で微分すると 1 なので、\code{grad} に 1 を入れます。
+14〜15 行目で、\code{order} を後ろから、つまり出力側からたどり、各ノードの \code{_backward} を呼びます。
+
+自動微分エンジンは、これで全部です（\file{ch04/value.py}。掲載を省いた部分を含めても 140 行ほどです）。
+
+\subsection*{手計算と比べる}
+
+\secref{sec:nn-backprop}で手計算した例を、このエンジンで計算してみます。
+
+\snippet{手計算の例を \code{Value} で再現する}{code:nn-value-demo}{ch04/value_demo.py}{demo}
+\outputfile{ch04/out/value_demo_1.txt}
+
+1〜6 行目は、ふつうに式を書いているだけです。微分の式は、どこにも書いていません。
+それでも、7 行目の \code{loss.backward()} を呼ぶと、すべてのノードの \code{grad} が埋まります。
+結果は $\pd{\calL}{w}=8$、$\pd{\calL}{b}=4$ です。\tabref{tab:nn-backward-steps}の手計算と一致しました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\footnotesize},
+  v/.style={plainbox,minimum width=14mm,minimum height=8mm,inner sep=1.5pt,align=center,font=\footnotesize},
+  p/.style={v,draw=bookblue,fill=figblue},
+  o/.style={op,minimum size=6mm,font=\footnotesize,inner sep=0pt},
+  g/.style={text=bookaccent}]
+  \node[p] (w) at (0,0.55) {$w$\quad 3\,{\color{black!45}$|$}\,\textcolor{bookaccent}{8}};
+  \node[v] (x) at (0,-0.55) {$x$\quad 2\,{\color{black!45}$|$}\,\textcolor{bookaccent}{12}};
+  \node[o] (m1) at (1.55,0) {$\times$};
+  \node[v] (u) at (2.8,0) {$u$\quad 6\,{\color{black!45}$|$}\,\textcolor{bookaccent}{4}};
+  \node[p] (b) at (2.8,-1.0) {$b$\quad 1\,{\color{black!45}$|$}\,\textcolor{bookaccent}{4}};
+  \node[o] (a1) at (4.35,0) {$+$};
+  \node[v] (yh) at (5.6,0) {$\hat y$\quad 7\,{\color{black!45}$|$}\,\textcolor{bookaccent}{4}};
+  \node[v] (y) at (2.8,-1.9) {$y$\quad 5\,{\color{black!45}$|$}\,\textcolor{bookaccent}{$-4$}};
+  \node[v] (m) at (2.8,-2.8) {$-1$\,{\color{black!45}$|$}\,\textcolor{bookaccent}{20}};
+  \node[o] (m2) at (4.35,-2.35) {$\times$};
+  \node[v] (ny) at (5.6,-2.35) {$-y$\ \ $-5$\,{\color{black!45}$|$}\,\textcolor{bookaccent}{4}};
+  \node[o] (a2) at (7.15,0) {$+$};
+  \node[v] (r) at (8.4,0) {$r$\quad 2\,{\color{black!45}$|$}\,\textcolor{bookaccent}{4}};
+  \node[o,minimum size=8mm] (sq) at (9.95,0) {\scriptsize 2 乗};
+  \node[orangebox,minimum width=14mm,minimum height=8mm,inner sep=1.5pt,font=\footnotesize] (L) at (11.3,0) {$\calL$\quad 4\,{\color{black!45}$|$}\,\textcolor{bookaccent}{1}};
+  \draw[arr] (w) -- (m1); \draw[arr] (x) -- (m1); \draw[arr] (m1) -- (u);
+  \draw[arr] (u) -- (a1); \draw[arr] (b) -- (a1); \draw[arr] (a1) -- (yh);
+  \draw[arr] (y) -- (m2); \draw[arr] (m) -- (m2); \draw[arr] (m2) -- (ny);
+  \draw[arr] (yh) -- (a2); \draw[arr] (ny) -- (a2); \draw[arr] (a2) -- (r);
+  \draw[arr] (r) -- (sq); \draw[arr] (sq) -- (L);
+  \foreach \n/\k in {w/1,x/2,u/3,b/4,yh/5,y/6,m/7,ny/8,r/9,L/10}
+    \node[circle,fill=bookgray,text=white,font=\tiny\bfseries,inner sep=0.6pt,minimum size=2.9mm] at ([xshift=0.3mm,yshift=-0.3mm]\n.north west) {\k};
+  \node[lbl,anchor=west,align=left] at (7.0,-2.15) {箱の中身は、左から\\ 名前、\code{data}、\textcolor{bookaccent}{\code{grad}}\\ 丸の番号は \code{order} に並ぶ順};
+\end{tikzpicture}
+\caption{\coderef{code:nn-value-demo}を実行したときに、\code{Value} が記録した計算グラフ。
+黒い数字が \code{data}、赤い数字が \code{grad} である。
+引き算が「$-1$ を掛ける」と「足す」に分かれるので、\figref{fig:nn-graph}よりノードが多い。}
+\label{fig:nn-value-graph}
+\end{figure}
+
+\figref{fig:nn-value-graph}は、このとき実際に記録された計算グラフです。
+左から右へ黒い数字（\code{data}）を追うと順伝播が、右端の赤い 1 から左へ赤い数字（\code{grad}）を追うと逆伝播が読み取れます。
+丸の中の番号は、\code{visit} が \code{order} に並べた順番です。どの矢印も、小さい番号から大きい番号へ向かっています。
+逆伝播は、10 番の $\calL$ から 1 番の $w$ へ、番号を逆にたどります。
+下の段では、引き算 $\hat y-y$ が、$y$ に $-1$ を掛けてから足す、という 2 つの演算に分かれています。
+
+枝分かれも確かめておきます。
+\code{r = Value(2.0)} として \code{loss = r * r} を計算し、\code{loss.backward()} を呼ぶと、\code{r.grad} は 4.0 になります。
+同じノード \code{r} が掛け算の両方の入力なので、\code{+=} を \code{=} と書いていたら、片方の経路の 2.0 しか残りません。
+ただし、\code{+=} には副作用があります。\code{backward()} を 2 回呼ぶと、2 回目の勾配が 1 回目の上に足されてしまうのです。
+そのため、\code{backward()} を呼ぶ前には、毎回すべての \code{grad} を 0 に戻します。
+\chapref{ch:ml}で PyTorch の勾配を 0 に戻していたのも、同じ理由です。
+
+\subsection*{PyTorch と比べる}
+
+作った演算を全部使う意地の悪い式で、本物の PyTorch と比べます。
+
+\snippet{検算に使う式}{code:nn-check-expr}{ch04/check_vs_torch.py}{expr}
+
+この関数は、引数が \code{Value} でも PyTorch のテンソルでも、\textbf{同じコードのまま}動きます。
+どちらも \code{+}、\code{*}、\code{tanh()} などを、同じ名前で持っているからです。
+そこで、$a=1.5$、$b=-2.0$、$c=0.7$ を、まず \code{Value} で包んで \code{expr} に渡し、\code{backward()} を呼びます。
+次に、同じ値を PyTorch のテンソルにして、同じことをします。結果を 12 桁まで表示します。
+
+\outputfile{ch04/out/check_vs_torch.txt}
+
+関数の値 $g$ も、3 つの勾配も、12 桁すべてが一致しました。
+途中の \code{d} は 2 か所で、\code{a} は 4 か所で使われています。枝分かれの足し込みも、正しく働いています。
+
+この節で分かったことをまとめます。
+自動微分エンジンの正体は、「値と勾配を持つノード」と「演算ごとの勾配の配り方」、そして「逆順にたどるループ」です。
+\code{loss.backward()} の裏で起きているのは、これだけのことです。
+
+%======================================================================
+\section{自作エンジンで MLP を学習する}\label{sec:nn-mlp-scratch}
+%======================================================================
+\skimread{結果だけ押さえれば先へ進めます。パラメータ 123 個の MLP が、自作エンジンだけで渦巻きデータを正解率 98.9\% まで学習しました。計算は PyTorch と同じですが、約 400 倍遅いので、\secref{sec:nn-pytorch}からは PyTorch を使います。}
+
+自動微分エンジンはできましたが、まだ小さな式でしか試していません。
+この節では、このエンジンだけを使って MLP を組み立て、渦巻きデータを学習させます。
+\secref{sec:nn-linear-limit}で線形モデルが歯の立たなかった、あのデータです。
+使うのは、Python のリストと \code{Value} だけです。
+
+部品はニューロンです。式\eqref{eq:nn-neuron}を、そのままクラスにします。
+
+\snippet{\code{Value} で作るニューロン}{code:nn-scratch-neuron}{ch04/mlp_scratch.py}{neuron}
+
+4 行目の引数 \code{rng} は、乱数を作るオブジェクトです。
+6〜7 行目で、パラメータを \code{Value} として作ります。重み \code{w} が入力の数だけあり、バイアス \code{b} が 1 個です。
+重みの初期値は、$-s$ から $s$ の間の乱数にしています。全部を 0 で始めてはいけません。
+すべてのニューロンが同じ値から始まると、同じ勾配を受け取り、いつまでも同じ動きをするからです。
+重みがばらついていれば動きは別々になるので、バイアスは 0 で始めて構いません。
+5 行目の $s=1/\sqrt{n}$（$n$ は入力の数）は、入力が多いほど重みを小さく始める工夫です。理由は\chapref{ch:training}で扱います。
+
+10〜12 行目が順伝播です。\code{__call__} を定義すると、\code{n(x)} のように関数として呼べます。
+11 行目は、重み付き和 $u=w_1x_1+\dots+w_nx_n+b$ です。\code{zip} は、2 つのリストから 1 個ずつ取り出して組にします。
+\code{sum} の 2 番目の引数 \code{self.b} は、足し始めの値です。
+12 行目で ReLU を通します。出力層では活性化関数を使わないので、\code{use_relu} で切り替えられるようにしました。
+
+残りは、ニューロンを束ねるだけです。どちらも十数行なので掲載は省きますが、\file{ch04/mlp_scratch.py} で読めます。
+\code{Layer} は、同じ入力を受け取るニューロンを並べた層で、\code{MLP} は層を順に適用します。
+\code{MLP([2, 8, 8, 3])} と書くと、入力 2 次元、幅 8 の隠れ層 2 枚、出力 3 次元の MLP ができます。
+どのクラスにも \code{parameters()} というメソッドがあり、配下のパラメータを 1 つのリストに集めて返します。
+
+損失は交差エントロピーです。
+\chapref{ch:ml}で見たとおり、正解のクラス $y$ の確率 $p_y$ の対数に、マイナスを付けた量でした。
+$p_y$ は、ロジット $\vz$ を softmax に通して作ります。
+\begin{equation}
+\calL = -\log p_y = -\log\frac{e^{z_y}}{\sum_k e^{z_k}}
+ = \log\sum_k e^{z_k} - \log e^{z_y}
+ = \log\sum_k e^{z_k} - z_y
+\label{eq:nn-ce-logits}
+\end{equation}
+2 つ目の等号は softmax の定義、3 つ目は「割り算の対数は、対数の引き算」です。
+最後に、$\log$ と $\exp$ が打ち消し合います。
+コードでは、\code{sum(zk.exp() for zk in z).log()} から \code{z[y]} を引くだけです（関数 \code{cross_entropy}）。
+関数 \code{mean_loss} は、これを全データについて平均します。返ってくる \code{Value} 1 個が、計算グラフの終点です。
+
+データは、3 本の腕に 30 点ずつ、合わせて 90 点です（自作エンジンは遅いためです）。
+
+\snippet{自作エンジンによる学習ループ}{code:nn-scratch-train}{ch04/mlp_scratch.py}{train}
+\outputfile{ch04/out/mlp_scratch.txt}
+
+ループの中身は、4 つの作業です。
+3 行目で順伝播をします。このとき計算グラフが作られます。
+4〜5 行目で、前のステップの勾配を 0 に戻します。
+6 行目で逆伝播をし、10〜11 行目で、すべてのパラメータを勾配の逆向きに少し動かします。
+7〜9 行目は、途中経過の表示です。\code{accuracy} は、スコアが最大のクラスが正解と一致した点の割合を返します。
+
+実行結果を上から読みます。
+パラメータは 123 個です。内訳は $(2\times8+8)+(8\times8+8)+(8\times3+3)=24+72+27$ です。
+計算グラフのノードは 22,806 個あります。データ 1 点あたり、およそ 250 個の計算です。
+最初の損失 1.0988 は、$\log 3\approx1.0986$ にほぼ等しい値です。
+これは、3 つのクラスにほぼ同じ確率 $1/3$ を割り当てている状態で、まだ何も学んでいません。
+このときの正解率 0.500 は、乱数で決まった最初の境界が、たまたま半分の点に合っていただけです。
+
+学習が進むと、損失は 0.07 まで下がり、正解率は 98.9\% になりました。90 点のうち 89 点が正解です。
+\secref{sec:nn-linear-limit}の線形モデルは、同じ形のデータで 54\% でした。
+活性化関数を挟んだ層を 2 枚加えただけで、渦巻きが解けたことになります。
+しかも、勾配の式は一度も手で導いていません。123 個の勾配は、すべて \code{loss.backward()} が求めました。
+
+一つ、気になる点があります。ステップ 250 で、損失が 0.17 から 0.31 に戻っています。
+\figref{fig:nn-scratch-loss}は、全ステップの損失を描いたものです。
+実行結果に表示されたのは、50 ステップごとの値（図の丸印）だけでした。
+全ステップを見ると、損失は下がりながら、何度も大きく跳ね上がっています。
+ステップ 210 では、学習前の値より大きい 1.96 まで戻りました。
+学習率 1.0 が少し大きく、谷を飛び越えたのです。学習を安定させる方法は、\chapref{ch:training}の主題です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.74\linewidth,height=42mm,xmin=0,xmax=300,ymin=0,ymax=2.15,
+  xlabel={ステップ},ylabel={損失},xtick={0,50,100,150,200,250,300},
+  legend pos=north west,legend cell align=left,legend style={font=\scriptsize}]
+\addplot[bookblue,thick] table[col sep=comma,x=step,y=loss]{code/ch04/out/mlp_scratch_log.csv};
+\addplot[only marks,mark=*,mark size=1.6pt,bookaccent] coordinates
+  {(0,1.0988) (50,0.7354) (100,0.6769) (150,0.4003) (200,0.1658) (250,0.3145) (300,0.0677)};
+\legend{全ステップの損失,50 ステップごとの表示}
+\end{axis}
+\end{tikzpicture}
+\caption{自作エンジンによる学習の、全ステップの損失（\file{ch04/out/mlp_scratch_log.csv} の記録）。全体としては 1.10 から 0.07 へ下がるが、途中で何度も跳ね上がる。
+50 ステップごとの表示（丸印）だけでは、跳ね上がりのほとんどを見落とす。}
+\label{fig:nn-scratch-loss}
+\end{figure}
+
+同じ初期値、同じ設定で、PyTorch にも学習させました（\file{ch04/scratch_vs_torch.py}）。
+301 ステップを通した損失の差は、最大でも $6\times10^{-11}$ です。丸め誤差の範囲で、同じ計算をしています。
+
+違うのは速さです。1 ステップに、自作エンジンは 149 ミリ秒、PyTorch は 0.38 ミリ秒かかりました。およそ 400 倍の差です。
+自作エンジンは、数 1 個ごとに Python のオブジェクトを作り、関数を 1 つずつ呼びます。
+PyTorch は、行列 1 個をまとめて 1 つのノードとして扱い、中身の計算を、あらかじめ用意された高速なプログラムに任せます。
+アルゴリズムは同じで、扱う単位が違うのです（\chapref{ch:pytorch}で見た、テンソルでまとめて計算する速さです）。
+
+この節で分かったことをまとめます。
+140 行の自作エンジンだけで、MLP を組み立て、線形モデルには解けなかった渦巻きデータを学習できました。
+しくみは分かったので、ここからは速い PyTorch を使うことにします。
+
+%======================================================================
+\section{PyTorch で書き直す}\label{sec:nn-pytorch}
+%======================================================================
+
+自作エンジンは正しく動きました。
+ただ、\secref{sec:nn-mlp-scratch}で同じ MLP を学習させて測ると、PyTorch の約 400 倍も遅いのでした。
+この節では、同じことを PyTorch で書き直します。
+新しい考え方は出てきません。自作した部品の一つ一つに、PyTorch の部品が対応します。
+
+\chapref{ch:ml}では、\code{requires_grad=True} を付けたテンソルから損失を計算し、\code{backward()} を呼びました。
+あのテンソルが、\code{Value} に当たります。
+\secref{sec:nn-value}と同じ例を PyTorch で計算すると、\code{w.grad} は 8.0、\code{b.grad} は 4.0 です（\file{ch04/torch_autograd.py}）。
+このとき \code{loss.grad_fn} を表示すると、\code{PowBackward0} という名前のオブジェクトが入っています。
+これは、「\code{loss} はべき乗（pow）で作られた」という記録と、その逆伝播の関数です。
+\code{Value} でいえば、\code{_prev} と \code{_backward} に当たります。PyTorch のこのしくみは、\textbf{autograd} と呼ばれます。
+
+\tabref{tab:nn-correspondence}に、自作エンジンと PyTorch の対応をまとめました。表の下半分の部品は、これから順に使います。
+下半分の左の列は、\secref{sec:nn-mlp-scratch}の自作の MLP で書いたものです。
+\code{Layer} は、同じ入力を受け取るニューロンを並べた層です。
+勾配を 0 に戻す作業と、パラメータの更新は、全パラメータについての \code{for} 文で書きました（\coderef{code:nn-scratch-train}）。
+
+\begin{table}[tbp]
+\centering
+\caption{自作エンジンと PyTorch の対応。左の列の中身を知っていれば、右の列は「同じことをする速い部品」として読める。}
+\label{tab:nn-correspondence}
+\footnotesize
+\begin{tabular}{lll}
+\toprule
+役割 & 自作エンジン & PyTorch \\
+\midrule
+勾配を求めたい値 & \code{Value(3.0)} & \code{requires_grad=True} のテンソル \\
+作られ方の記録 & \code{v._prev}、\code{v._backward} & \code{t.grad_fn} \\
+逆伝播 & \code{loss.backward()} & \code{loss.backward()} \\
+\midrule
+全結合層 & \code{Layer}（\code{Neuron} の列） & \code{nn.Linear} \\
+勾配を 0 に戻す & \code{p.grad = 0.0} を全部に & \code{optimizer.zero_grad()} \\
+パラメータの更新 & \code{p.data -= eta * p.grad} を全部に & \code{optimizer.step()} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{モデルを \code{nn.Module} で書く}
+
+次に、MLP を PyTorch の部品で組み立てます。
+
+\snippet{PyTorch で書いた MLP}{code:nn-torch-model}{ch04/mlp_torch.py}{model}
+
+1 行目で、\code{nn.Module} というクラスを継承しています。PyTorch でモデルを書くときの決まりです。
+\code{nn} は \code{torch.nn} のことで、ファイルの先頭で \code{import torch.nn as nn} と読み込んでおきます。
+5 行目の \code{super().__init__()} は、\code{nn.Module} 側の準備をする呼び出しです。忘れると、次の行でエラーになります。
+6〜8 行目の \code{nn.Linear(n_in, n_out)} は、全結合層 $\mW\vx+\vb$ です（式\eqref{eq:nn-layer}。活性化関数は含みません）。
+形 $(n_\text{out},n_\text{in})$ の重みと、長さ $n_\text{out}$ のバイアスを持ち、乱数で初期化してくれます。自作の \code{Layer} に当たります。
+後の章では、\code{nn.Linear} の名前にならって、全結合層を\textbf{線形層}とも呼びます。同じものです。
+
+10〜13 行目の \code{forward} に、順伝播を書きます。式\eqref{eq:nn-mlp}を、上から順に書いただけです。
+\code{model(x)} のように呼ぶと、この \code{forward} が実行されます。
+\code{nn.Module} が \code{__call__} を用意していて、その中で \code{forward} を呼ぶからです。
+入力 \code{x} は、データ $N$ 件をまとめた形 $(N, n_\text{in})$ のテンソルです。コメントに、各行の出力の形を書いておきました。
+
+\code{nn.Module} を継承する利点は、パラメータの管理を任せられることです。
+\code{self.fc1 = ...} のように層を属性に入れるだけで、PyTorch がそのパラメータを覚えます。
+\code{model.parameters()} と書けば、全部をまとめて取り出せます。
+\code{model = MLP(2, 32, 3)} として数えると 1,251 個で、\tabref{tab:nn-shapes}の値と一致します。
+
+\subsection*{標準の学習ループ}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[every node/.append style={font=\footnotesize},
+  st/.style={box,minimum width=22mm,minimum height=11mm,align=center,inner sep=1.5pt}]
+  \node[st] (s1) at (0,0) {(1) 順伝播\\\code{model(X)}};
+  \node[st] (s2) at (2.65,0) {(2) 損失\\\code{cross_entropy}};
+  \node[st,draw=bookgreen,fill=figgreen] (s3) at (5.3,0) {(3) 勾配を 0 に\\\code{zero_grad()}};
+  \node[st,draw=bookaccent,fill=figred] (s4) at (7.95,0) {(4) 逆伝播\\\code{backward()}};
+  \node[st,draw=bookorange,fill=figorange] (s5) at (10.6,0) {(5) 更新\\\code{step()}};
+  \draw[arr] (s1) -- (s2); \draw[arr] (s2) -- (s3); \draw[arr] (s3) -- (s4); \draw[arr] (s4) -- (s5);
+  \draw[arr,rounded corners=3pt] (s5.south) -- ++(0,-0.55) -| node[pos=0.25,below,lbl]{新しいパラメータで、次のステップへ} (s1.south);
+\end{tikzpicture}
+\caption{標準の学習ループ。5 つの作業を 1 周すると、パラメータが 1 回更新される。これを何度も繰り返す。}
+\label{fig:nn-loop}
+\end{figure}
+
+モデルができたので、次は学習です。
+自作のループでは、全パラメータの勾配を 0 に戻す \code{for} 文と、全パラメータを動かす \code{for} 文を、自分で書きました。
+PyTorch には、この 2 つの作業を引き受ける部品があります。
+
+パラメータの更新は、\term{オプティマイザ}{optimizer}という部品に任せます。
+ここでは \code{torch.optim.SGD(model.parameters(), lr=0.5)} で作り、\code{optimizer} という変数に入れておきます。
+これは、\chapref{ch:ml}の勾配降下法 $p\leftarrow p-\eta\,\pd{\calL}{p}$ を、渡されたパラメータ全部に行うオプティマイザです。
+\code{lr} が学習率 $\eta$ です。
+名前は SGD ですが、この部品が受け持つのは更新だけです。どのデータで勾配を求めるかは、使う側が決めます。
+ここでは、毎回 300 点すべてを使います。
+これで準備が整いました。学習の 1 ステップは、次の 5 行です。
+
+\snippet{標準の学習ループ（1 ステップ分）}{code:nn-torch-loop}{ch04/mlp_torch.py}{loop}
+
+\figref{fig:nn-loop}と見比べながら、1 行ずつ読みます。
+\begin{enumerate}
+\item \textbf{順伝播}。\code{model(X)} で、全データのロジットを計算します。\code{X} の形は $(300,2)$、\code{logits} の形は $(300,3)$ です。
+\item \textbf{損失}。\code{F.cross_entropy} は、交差エントロピーを各データについて計算し、平均します。ロジットをそのまま渡します。
+中で計算しているのは、交差エントロピーをロジットで書いた式\eqref{eq:nn-ce-logits}、つまり $\log\sum_k e^{z_k}-z_y$ です。
+\item \textbf{勾配を 0 に戻す}。前のステップの勾配が残っているので、消します。
+\item \textbf{逆伝播}。全パラメータの \code{grad} に、勾配が入ります。
+\item \textbf{更新}。オプティマイザが、全パラメータを少し動かします。
+\end{enumerate}
+この 5 行を \code{for step in range(1001):} の中に置けば、学習のプログラムです（\file{ch04/mlp_torch.py}）。
+\coderef{code:nn-scratch-train}の自作のループと、作業の順番まで同じです。
+\chapref{ch:ml}の 4 手順とも、中身は同じです。予測と損失を 2 行に分け、更新と勾配の後始末をオプティマイザに任せただけです。
+
+\textbf{この 5 行は、本書の最後まで変わりません。}
+モデルが Transformer になっても、データが文章になっても、パラメータが何億個になっても、学習はこの 5 行の繰り返しです。
+変わるのは、\code{model} の中身、データの用意のしかた、損失の種類、オプティマイザの種類だけです。
+この先の章で新しい手法に出会ったら、「5 行のうち、どこを変える話か」と考えると、位置づけがつかめます。
+
+では、実行します。訓練データは、\secref{sec:nn-linear-limit}と同じ 300 点です。
+学習に使わないテストデータ（\chapref{ch:ml}）として、乱数を変えて作った別の 300 点も用意しました。
+5 行のループを 1,000 回繰り返し、500 ステップごとに損失と正解率を表示します。
+
+\outputfile{ch04/out/mlp_torch_train.txt}
+
+最初の損失 1.114 は、ここでも $\log3\approx1.099$ に近い値です（正解率 0.220 が $1/3$ より低いのは、偶然です）。
+学習前のモデルは、3 つのクラスにほぼ同じ確率 $1/3$ を割り当てます。そのときの損失が、$-\log(1/3)=\log 3$ です。
+1,000 ステップ後、訓練データの正解率は 100\% になりました。
+テストデータでも 99.7\%、つまり 300 点のうち 299 点が正解です。
+見たことのない点も正しく分類できているので、訓練データの丸暗記ではなく、渦巻きの形をとらえたといえます。
+かかった時間は、スクリプト全体でも、CPU で 10 秒ほどです（計算機の混み具合で変わる、おおよその目安です）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=reg,nn spiral,title={(a) MLP の予測}]
+\addplot[nn regions] table[col sep=comma,x=x1,y=x2,meta=c]{code/ch04/out/mlp_regions.csv};
+\addplot[nn points] table[col sep=comma,x=x1,y=x2,meta=label]{code/ch04/out/spiral_train.csv};
+\end{axis}
+\begin{axis}[at={(reg.east)},anchor=west,xshift=14mm,width=62mm,height=44mm,xmin=0,xmax=1000,ymode=log,ymin=0.01,ymax=2,
+  xlabel={ステップ},ylabel={損失},title={(b) 損失の推移},title style={font=\small,yshift=-1mm},
+  legend pos=north east,legend cell align=left,legend style={font=\footnotesize}]
+\addplot[bookblue,very thick] table[col sep=comma,x=step,y=train_loss]{code/ch04/out/mlp_torch_log.csv};
+\addplot[bookaccent,thick,densely dashed] table[col sep=comma,x=step,y=test_loss]{code/ch04/out/mlp_torch_log.csv};
+\legend{訓練,テスト}
+\end{axis}
+\end{tikzpicture}
+\caption{PyTorch の MLP による渦巻きデータの分類。(a) 背景の色がモデルの予測、点が訓練データ。境界が腕に沿って曲がっている。
+(b) 損失の推移（縦軸は対数目盛り）。訓練とテストの損失が、そろって下がっている。}
+\label{fig:nn-mlp-result}
+\end{figure}
+
+\figref{fig:nn-mlp-result}(a) は、学習後のモデルが平面の各点をどのクラスと予測するかを、色で塗り分けたものです。
+線形モデルの\figref{fig:nn-spiral-linear}では直線で 3 つに切り分けるだけだった境界が、今度は腕に沿って曲がっています。
+(b) の損失は、途中で何度か跳ね上がりながらも、訓練とテストがそろって下がっています。
+
+\begin{caution}{学習ループでよくある間違い}
+\begin{itemize}
+\item \textbf{\code{zero_grad()} を忘れる}。勾配が足し込まれ続け、更新がどんどん大きくなります。
+\item \textbf{softmax を通してから \code{F.cross_entropy} に渡す}。この関数は、中で softmax を計算します。渡すのはロジットです。
+\item \textbf{活性化関数を入れ忘れる}。エラーは出ませんが、全体がただの線形モデルになります（式\eqref{eq:nn-collapse}）。
+\end{itemize}
+\end{caution}
+
+\subsection*{同じしくみで LLM まで}
+
+この章の MLP と実際の LLM は、どのくらい離れているのでしょうか。\tabref{tab:nn-scale}に並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{この章の実験と LLM の規模。基盤モデルの時間は、\tabref{tab:nn-cost}の実測値。
+Llama 3.1 405B の数値は文献\cite{dubey2024llama3}による。「ブロック」は、Transformer で層にあたる単位である。}
+\label{tab:nn-scale}
+\small
+\begin{tabular}{lrll}
+\toprule
+モデル & パラメータ数 & 層の数 & 学習 1 ステップの計算 \\
+\midrule
+自作エンジンの MLP & 123 & 3 & 149 ミリ秒（Python、数 1 個ずつ） \\
+同じ MLP（PyTorch） & 123 & 3 & 0.38 ミリ秒（CPU） \\
+本書の基盤モデル & 約 258 万 & 4 ブロック & 約 0.2 秒（CPU） \\
+Llama 3.1 405B & 約 4,050 億 & 126 ブロック & GPU 最大 1.6 万基で分担 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+パラメータ数は、123 個から 4,050 億個まで、9 桁以上違います。
+しかし、どの行でも、勾配を求める方法は誤差逆伝播法で、回しているのは同じ 5 行のループです。
+違いは、計算グラフの大きさと、それを処理する計算機の規模にあります（\chapref{ch:gpu}と\chapref{ch:pretraining}で扱います）。
+
+MLP そのものも、LLM の中で現役です。
+Transformer（\chapref{ch:transformer}）は「ブロック」という単位を何段も重ねて作り、その各ブロックに MLP が 1 つずつ入っています。
+本書の基盤モデルでは、全パラメータの 46\% がこの MLP のものです（\file{ch04/cost_compare.py} で数えました）。
+この章で作ったものは、練習用の模型ではなく、LLM の部品そのものです。
+
+この節で分かったことをまとめます。
+PyTorch の autograd は、自作エンジンと同じしくみを、テンソル単位で高速に行います。
+モデルは \code{nn.Module} で書き、学習は、順伝播、損失、\code{zero_grad}、\code{backward}、\code{step} の 5 行を繰り返します。
+
+%======================================================================
+\section{深くすると何が起きるか}\label{sec:nn-deep}
+%======================================================================
+\skimread{結論は「層を深くすると、逆伝播の掛け算が重なって勾配が消えたり爆発したりし、同じ 5 行のループでも学習が進まなくなる」です。対策は\chapref{ch:training}で扱います。そこを読むときに、この節の実験を読み直してください。}
+
+\secref{sec:nn-mlp}では、層を深くすると少ないニューロンで複雑な関数を表せる、と述べました。
+それなら、層をどんどん重ねればよいのでしょうか。
+章の最後に、これを実験で確かめます。結果は、次の章への宿題になります。
+
+幅 32 の隠れ層を 2 枚、5 枚、10 枚、20 枚と増やし、3 種類の活性化関数で渦巻きデータを学習させました。
+設定はどれも同じで、学習率 0.5 で 2,000 ステップです（\file{ch04/vanishing.py}）。結果が\tabref{tab:nn-depth}です。
+
+% 図表が説明より前（ページの上）に出ないようにする
+\suppressfloats[t]
+\begin{table}[tbp]
+\centering
+\caption{隠れ層の枚数と、学習後の訓練損失（括弧内は訓練データの正解率）。
+損失 1.099 は $\log 3$ で、何も学んでいないときの値である。}
+\label{tab:nn-depth}
+\small
+\begin{tabular}{rlll}
+\toprule
+隠れ層の枚数 & シグモイド & tanh & ReLU \\
+\midrule
+2 & 0.172（97\%） & 0.010（100\%） & 0.008（100\%） \\
+5 & 1.099（29\%） & 0.000（100\%） & 0.037（99\%） \\
+10 & 1.099（33\%） & 0.000（100\%） & 1.099（33\%） \\
+20 & 1.099（33\%） & 1.099（51\%） & 1.099（33\%） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+2 枚のときは、どの活性化関数でも学習できています。
+ところが、シグモイドは 5 枚以上で、ReLU は 10 枚以上で、tanh は 20 枚で、学習後の損失が 1.099 のままです。
+正解率は偶然で上下するので、損失のほうを見てください。
+深いモデルのほうが表現力は高いはずなのに、学習が進んでいません。
+
+原因を探るために、隠れ層 10 枚のモデルで、学習を始める前の勾配を測りました。
+\figref{fig:nn-grad-norms}は、各層の出力についての勾配の大きさ（ノルム、\chapref{ch:math}）です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.66\linewidth,height=43mm,ymode=log,xmin=0.5,xmax=10.5,ymin=1e-11,ymax=1e6,
+  xtick={1,...,10},ytick={1e-10,1e-8,1e-6,1e-4,1e-2,1,1e2,1e4},
+  xlabel={層の番号（1 が入力側、10 が出力側）},ylabel={勾配の大きさ},
+  legend style={font=\scriptsize,at={(1.03,0.5)},anchor=west},legend cell align=left]
+\addplot[bookaccent,thick,mark=*] table[col sep=comma,x=layer,y=sigmoid]{code/ch04/out/grad_norms.csv};
+\addplot[bookblue,thick,mark=square*] table[col sep=comma,x=layer,y=relu]{code/ch04/out/grad_norms.csv};
+\addplot[bookorange,thick,mark=triangle*] table[col sep=comma,x=layer,y=relu_big]{code/ch04/out/grad_norms.csv};
+\addplot[bookgreen,thick,mark=diamond*] table[col sep=comma,x=layer,y=relu_good]{code/ch04/out/grad_norms.csv};
+\legend{シグモイド,ReLU（標準の初期値）,ReLU（大きな初期値）,ReLU（調整した初期値）}
+\end{axis}
+\end{tikzpicture}
+\caption{隠れ層 10 枚の MLP で、学習前に測った層ごとの勾配の大きさ（縦軸は対数目盛り）。
+逆伝播は右から左へ進む。シグモイドでは入力側ほど勾配が小さくなり、初期値が大きい ReLU では逆に大きくなる。}
+\label{fig:nn-grad-norms}
+\end{figure}
+
+逆伝播は出力側から始まるので、図は右から左へ読みます。
+シグモイド（丸印）の線では、第 10 層で $3\times10^{-2}$ ほどあった勾配が、1 層戻るごとに約 7 分の 1 になり、第 1 層では $6\times10^{-10}$ しかありません。
+パラメータの勾配は、この勾配をもとに作られます（式\eqref{eq:nn-layer-backward}の $\vdelta\,\vh^\T$）。元が小さければ、パラメータの勾配も小さくなります。
+これでは、入力に近い層のパラメータは、ほとんど更新されません。
+この現象を\term{勾配消失}{vanishing gradient}といいます。
+
+理由は、誤差逆伝播法のしくみから分かります。
+逆伝播では、層を 1 枚戻るたびに、活性化関数の微分と重みが掛かります（式\eqref{eq:nn-layer-backward}）。
+シグモイドの微分は、最大でも 0.25 でした（\figref{fig:nn-activations}）。
+1 より小さい数を何度も掛ければ、積は急速に 0 に近づきます。たとえば $0.25^{10}\approx10^{-6}$ です。
+
+逆のことも起きます。
+三角印は、ReLU で重みの初期値を大きく（標準偏差 1.0 に）した場合です。
+今度は 1 層戻るごとに勾配が約 4 倍になり、第 1 層では約 8,000 に達します。
+こちらは\term{勾配爆発}{exploding gradient}といいます。更新が大きすぎて、学習が壊れます。
+四角印は、PyTorch の標準の初期値の ReLU です。シグモイドほどではありませんが、やはり入力側で勾配が小さくなっています。
+ReLU の傾きは 0 か 1 ですが、傾きが 0 のニューロンが半分ほどあり、そこで勾配が止まります。
+そのうえ、標準の初期値は重みが小さめなので、1 層戻るごとの倍率が 1 を下回るのです。
+ひし形は、重みの初期値を少し大きく（標準偏差 0.25 に）調整した場合です。
+勾配は、どの層でもほぼ同じ大きさを保っています（なぜこの値なのかは、次の章で説明します）。
+
+では、初期値を調整すれば、深い ReLU の MLP は学習できるのでしょうか。同じスクリプトで試しました。
+初期値を調整しただけでは、隠れ層 10 枚の損失は 1.099 のままでした。
+さらに学習率を 0.5 から 0.1 に下げると、10 枚でも 20 枚でも損失は 0.000 まで下がり、正解率は 100\% になりました（乱数の種 1 つでの結果です）。
+標準の初期値のまま学習率だけを下げても、損失は 1.099 から動きません。
+深いモデルの学習では、初期値と学習率の両方を合わせる必要があるのです。
+
+つまり、深いネットワークの学習は、「掛け算の繰り返し」との戦いです\cite{glorot2010understanding}。
+1 層あたりの倍率が 1 から少しずれるだけで、深さの分だけ効いてきます。
+100 段を超える実際の LLM が学習できているのは、勾配を保つ工夫が、いくつも組み込まれているからです。
+
+なお、この実験は、乱数の種 1 つ、設定 1 通りの結果です。
+\chapref{ch:training}で種を変えると、20 枚ではうまくいかない回も出てきます。
+「何枚で学習できなくなるか」は設定で変わるので、深くするほど難しくなる、という傾向だけを受け取ってください。
+
+この節で分かったことをまとめます。
+層を深くすると、逆伝播で勾配が消えたり爆発したりして、同じ 5 行のループでも学習できなくなることがあります。
+初期値の選び方ひとつで、状況は変わります。その選び方と、ほかの工夫は、次の章で扱います。
+
+\begin{summary}
+\item 線形の変換は、何枚重ねても 1 枚ぶんと同じで、境界は直線のままです。間に活性化関数を挟んで重ねたものが MLP です。
+\item 万能近似定理は、十分な幅の MLP がどんな連続関数にも近づけることを保証します。学習でたどり着ける保証ではありません。
+\item 誤差逆伝播法は、計算グラフを出力側から逆にたどり、「局所勾配 $\times$ 上流の勾配」を繰り返します。枝分かれでは足します。
+\item 逆伝播の手間は、パラメータの数によらず、順伝播の数倍です。
+\item 自動微分エンジンは 140 行ほどで自作でき、その勾配は PyTorch の autograd と一致します。
+\item 学習は、順伝播、損失、\code{zero_grad}、\code{backward}、\code{step} の 5 行の繰り返しです。この型は LLM でも変わりません。
+\item 層を深くすると、勾配消失や勾配爆発が起き、同じループでも学習できなくなることがあります。
+\end{summary}
+
+\section*{次の章へ}
+
+この章で、表現力のあるモデル（MLP）と、それを学習させる方法（誤差逆伝播法と 5 行のループ）がそろいました。
+しかし最後の実験では、層を 10 枚重ねただけで、それまでの設定では学習が進まなくなりました。
+初期値と学習率を合わせ直すと学習できましたが、なぜその値でよいのかは、まだ説明していません。
+100 段を超える実際の LLM との差を埋めるには、まだ技術が必要です。
+\chapref{ch:training}では、重みの初期化、正規化、残差接続、Adam などのオプティマイザ、学習率の調整を学びます。
+5 行のループはそのままに、勾配を保ち、学習を安定させる工夫を一つずつ加えていきます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Karpathy の micrograd\cite{karpathy2022micrograd}：この章の \code{Value} の手本です。エンジン本体は 100 行ほどで、すぐに読めます。
+\item Karpathy の講義「Neural Networks: Zero to Hero」\cite{karpathy2022zerotohero}：第 1 回で、micrograd を一から作る過程を見られます。
+\item Goodfellow ほか『Deep Learning』\cite{goodfellow2016deep}：第 6 章が、MLP と誤差逆伝播法の標準的な解説です。
+\item Rumelhart らの論文\cite{rumelhart1986learning}：誤差逆伝播法による学習を広めた、歴史的な論文です。
+\item Baydin らの解説論文\cite{baydin2018automatic}：数値微分、記号微分、自動微分の違いを整理しています。
+\end{itemize}
+
+\begin{exercises}
+\exfirst[2 と 5 は、自作エンジン（\secref{sec:nn-value}、\secref{sec:nn-mlp-scratch}）に手を入れる問題です。]{1・3・4}
+\item （手計算）$x=1$、$y=2$、$w=-1$、$b=0.5$ として、$\calL=(wx+b-y)^2$ の計算グラフを描いてください。
+順伝播の値を書き込み、逆伝播で $\pd{\calL}{w}$ と $\pd{\calL}{b}$ を求めてください。
+\item （コード）シグモイド関数の微分が $\sigmoid(u)\,(1-\sigmoid(u))$ であることを使い、\code{Value} に \code{sigmoid} メソッドを加えてください。
+数値微分と比べて、勾配が正しいことを確かめてください。
+\item （コードと考察）\file{ch04/mlp_torch.py} の \code{forward} から \code{torch.relu} を取り除くと、結果はどうなるでしょうか。
+先に予想してから、実行して確かめてください。
+\item （コードと考察）同じスクリプトで \code{optimizer.zero_grad()} の行を消すと、損失の推移はどう変わるでしょうか。
+なぜそうなるのかを、\code{+=} という言葉を使って説明してください。
+\item （発展）\file{ch04/mlp_scratch.py} の部品を使い、XOR の 4 点を学習する MLP を作ってください。
+学習後の重みは、\tabref{tab:nn-xor-hand}の手作りの重みと同じになるでしょうか。乱数の種を変えて、何度か試してください。
+（ヒント：\code{MLP([2, 2, 2])} と書くと、隠れ層の ReLU が 2 個、出力が 2 クラスぶんのロジットの MLP になります。
+\tabref{tab:nn-xor-hand}の出力は $z$ 1 個でしたが、出力を 2 個にすると、同じファイルの損失関数がそのまま使えます。
+学習率 0.5、1,000 ステップが目安です。隠れ層のニューロンを 4 個、8 個に増やした場合も試してみましょう。）
+\end{exercises}

@@ -1,0 +1,12 @@
+ja: 33 字, 99 バイト | 本書 18 | gpt2 46 | cl100k_base 39 | o200k_base 32
+en: 67 字, 67 バイト | 本書 67 | gpt2 21 | cl100k_base 21 | o200k_base 21
+num: 10 字, 10 バイト | 本書 10 | gpt2 4 | cl100k_base 4 | o200k_base 4
+gpt2: 語彙 50,257  123/45/678/90
+cl100k_base: 語彙 100,277  123/456/789/0
+o200k_base: 語彙 200,019  123/456/789/0
+o200k_base '吾輩は猫である。': [129857, 20000, 102, 5205, 48091, 4344, 73977, 788] 吾/<e8 bc>/<a9>/は/猫/で/ある/。
+o200k_base ' world': [2375]  world
+o200k_base 'world': [24169] world
+o200k_base 'strawberry': [302, 1618, 19772] st/raw/berry
+ValueError: Encountered text corresponding to disallowed special token '
+[199999]

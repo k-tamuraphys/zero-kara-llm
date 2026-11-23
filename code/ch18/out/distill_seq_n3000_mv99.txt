@@ -1,0 +1,8 @@
+teacher answers correct: 2730/3000
+cond=seq N=3000 steps=1500 max_value=99 student=627,648 teacher=2,583,936
+step   299 loss 1.1595 acc200 0.030 (50s)
+step   599 loss 0.8777 acc200 0.055 (92s)
+step   899 loss 0.7768 acc200 0.120 (129s)
+step  1199 loss 0.7027 acc200 0.195 (170s)
+step  1499 loss 0.6261 acc200 0.220 (227s)
+final chat accuracy (1000, seed 777): 0.202  time 299s

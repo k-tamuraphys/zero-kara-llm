@@ -1,0 +1,4 @@
+<|user|>37×48は？<|end|><|tool|>37*48<|end|><|result|>1776<|end|><|assistant|>1776です。<|end|>
+<|user|>12+35は？<|end|><|assistant|>47です。<|end|>
+<|user|>3×4×5は？<|end|><|tool|>3*4*45<|end|><|result|>540<|end|><|assistant|>540です。<|end|>
+<|user|>7の2乗は？<|end|><|tool|>72<|end|><|result|>72<|end|><|assistant|>62です。<|end|>

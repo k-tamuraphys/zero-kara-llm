@@ -1,0 +1,1161 @@
+\chapter{埋め込みとニューラル言語モデル}\label{ch:embedding}
+
+\bookmap{3}
+
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:lm}で、言語モデルの仕事は「次のトークンの予測」だと学びました。
+数えて作る表のモデルには、二つの壁（表が爆発する、似た文脈から学べない）がありました。
+\chapref{ch:tokenizer}では、文章をトークンの番号の列に直しました。\\[1mm]
+\textbf{この章の問い}: ただの番号であるトークンを、どうやってニューラルネットワークに入れるのか。
+入れたら、数える方法の壁を越えられるのか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 埋め込みが「学習される表引き」であることを、one-hot 表現との関係から説明できます。
+\item 直前の数個のトークンから次を予測する言語モデルを実装し、バイグラムと比べられます。
+\item 学習した埋め込みで、似た使われ方のトークンが近くに集まることを確かめられます。
+\item 固定窓と RNN の限界を説明し、次章の注意機構がなぜ必要なのかを言えます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:tokenizer}を途中まで読んで来た人は、次の三つを知っていれば読めます。本書の語彙は 4096 個。「先生」のようによく出る並びは、まとめて 1 トークン。数字・記号・改行は、1 文字が 1 トークン。\chapref{ch:training}の用語は、出てきた所で補います。
+\item[\rgmust] \secref{sec:emb-lookup}〜\secref{sec:emb-train}：埋め込みと、最初のニューラル言語モデル。埋め込み表は、\chapref{ch:transformer}のミニGPT でも入口にそのまま置かれます。
+\item[\rgmust] \secref{sec:emb-neighbors}の前半、\secref{sec:emb-window}、\secref{sec:emb-rnn}の最初の小節：学習した埋め込みの観察、固定窓の三つの限界、RNN の考え方。\chapref{ch:attention}の注意機構は、この限界を越えるために作ります。
+\item[\rgskim] \secref{sec:emb-neighbors}の「2 次元の地図にする」：\figref{fig:emb-pca}で、数字・漢数字・人の呼び名が別々の島に分かれているのを見れば足ります。
+\item[\rgskim] \secref{sec:emb-rnn}の「RNN を作って、測る」と「RNN の改良と、「注意」の誕生」：実測と歴史です。「RNN は、古い情報ほど薄れ、順番にしか計算できない」という結論を押さえます。章末の演習は、1・2・4 が紙と鉛筆で解けます。
+\end{readingguide}
+
+\chapref{ch:tokenizer}の終わりで、文章は番号の列になりました。
+たとえば「私はその人を常に先生と呼んでいた。」を本書のトークナイザに通すと、9 個の番号 636, 604, 2850, 1107, 264, 692, 271, 1209, 4031 になります。
+この列をニューラルネットワークに渡して、次の番号を予測させたいのです。
+
+ところが、ここに一つ問題があります。
+「先生」の番号は 692、「奥さん」は 1617 です。
+この数の大きさには、何の意味もありません。
+トークナイザが語彙を作った順に、番号を振っただけです。
+一方、ニューラルネットワークは、入力の数に重みを掛けて足す機械でした（\chapref{ch:nn}）。
+意味のない数を、そのまま掛け算に使うわけにはいきません。
+
+もう一つ、\chapref{ch:lm}からの宿題があります。
+数えて作る表のモデルの、二つの壁です。
+文脈を長くすると表が爆発すること（壁 1）と、似た文脈から学べないこと（壁 2）でした。
+この章では、番号をベクトルに取り替える\textbf{埋め込み}という仕組みを導入します。
+そして、埋め込みを使った最初のニューラル言語モデルを作り、二つの壁がどうなるかを実験で確かめます。
+
+結果を少しだけ先に述べます。
+この章で作るモデルは、数えて作る表の約 20 分の 1 の大きさで、損失は数える方法を下回ります。
+ところが、「\code{25+48=}」の続きには「\code{486}」と答えます。
+なぜ足し算はできないのか。章の後半で、原因を実験で突き止めます。
+
+\section{番号をベクトルにする：埋め込み}\label{sec:emb-lookup}
+
+この節の問いは、「番号を、ネットワークが計算に使える形にするには、どうすればよいか」です。
+案を順に試します。
+
+\subsection*{案 1：番号をそのまま入れる}
+
+いちばん手軽なのは、692 や 1617 を、そのまま入力の数として使うことです。
+しかし、これでは「奥さん」が「先生」の約 2.3 倍の大きさの入力になってしまいます（$1617\div692\approx2.34$）。
+番号が隣の 691 と 692 は、似た入力として扱われます。
+番号の大小や近さには意味がないのに、ネットワークはそれを手がかりにしてしまいます。
+
+\subsection*{案 2：one-hot 表現}
+
+\chapref{ch:ml}で、分類の正解を表すのに \textbf{one-hot 表現}を使いました。
+語彙サイズを $V$ として、長さ $V$ のベクトルを用意し、そのトークンの番号の位置だけを 1、ほかを 0 にします。
+本書の語彙は $V=4096$ なので、「先生」は、番号 692 の位置だけが 1 の、長さ 4096 のベクトルです。
+これなら、大小の問題は消えます。どのトークンも「1 が一つ」で、対等だからです。
+
+ただし、one-hot 表現には二つの弱点があります。
+一つ目は、\textbf{大きくて無駄が多い}ことです。
+トークン 1 個に 4096 個の数を使い、そのうち 4095 個は 0 です。
+二つ目は、\textbf{どのトークンどうしも、同じだけ離れている}ことです。
+異なる二つの one-hot ベクトルは、1 の位置が違うので、内積がかならず 0 になります。
+同じ位置の成分どうしを掛けて足すとき、両方が 1 になる位置がないからです。
+内積が 0 の二つのベクトルは、直角でした（\chapref{ch:math}）。
+「7」と「8」も、「7」と「先生」も、区別なく直角です。
+似たトークンを似たものとして扱えないのですから、壁 2 はそのまま残ります。
+
+\subsection*{案 3：one-hot に行列を掛ける＝表を引く}
+
+one-hot ベクトルをネットワークの最初の層に入れると、何が起きるでしょうか。
+最初の層は、入力に重みの行列を掛けます。
+小さな例で見ます。語彙が 5 個、行列 $\mE$ が 5 行 3 列だとします（\figref{fig:emb-lookup}）。
+行列は、1 行が 1 トークンに対応する向きで持つことにします。
+3 番目のトークンの one-hot ベクトル $\vx=(0,0,1,0,0)^\T$ を横に寝かせて、$\mE$ に左から掛けます。
+$\mE$ の $i$ 行目を $\ve_i$ と書くと、結果は次のとおりです。
+\begin{equation}
+\vx^\T\mE = 0\cdot\ve_1 + 0\cdot\ve_2 + 1\cdot\ve_3 + 0\cdot\ve_4 + 0\cdot\ve_5 = \ve_3
+\label{eq:emb-onehot}
+\end{equation}
+0 を掛けた行は消え、1 を掛けた行だけが残ります。
+
+\figref{fig:emb-lookup}の数で確かめます。
+結果の 1 番目の成分は、$\vx$ の成分と $\mE$ の 1 列目を、上から順に掛けて足したものです。
+$0\times0.2+0\times1.3+1\times(-0.6)+0\times0.8+0\times(-1.2)=-0.6$ で、残るのは 1 を掛けた 3 行目の数だけです。
+2 列目と 3 列目も同じ計算で $0.9$ と $0.1$ になり、並べると $\mE$ の 3 行目 $(-0.6,\ 0.9,\ 0.1)$ です。
+つまり、\textbf{one-hot ベクトルに行列を掛けることは、行列から 1 行を取り出すことと同じ}です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\providecommand{\embcell}[4]{\node[cell,minimum width=9mm,minimum height=5mm,#4] at (#1,#2) {#3};}
+% トークンと番号
+\node[tok] (t) at (0,-10) {先生};
+\node[lbl,anchor=north] at (0,-14) {番号 3};
+% one-hot
+\foreach \v [count=\i from 0] in {0,0,1,0,0} {
+  \ifnum\i=2 \node[cell,minimum size=5mm,fill=figred,draw=bookaccent] (oh\i) at (24,-\i*5) {\v};
+  \else \node[cell,minimum size=5mm,fill=white] (oh\i) at (24,-\i*5) {\v};\fi}
+\node[lbl,anchor=south] at (24,3) {one-hot $\vx$};
+\node at (32,-10) {$\times$};
+% 行列 E
+\foreach \a/\b/\c [count=\i from 0] in {0.2/$-$1.0/0.5, 1.3/0.4/$-$0.7, $-$0.6/0.9/0.1, 0.8/$-$0.3/1.1, $-$1.2/0.0/0.6} {
+  \ifnum\i=2
+    \embcell{44}{-\i*5}{\a}{fill=figblue,draw=bookblue}\embcell{53}{-\i*5}{\b}{fill=figblue,draw=bookblue}\embcell{62}{-\i*5}{\c}{fill=figblue,draw=bookblue}
+  \else
+    \embcell{44}{-\i*5}{\a}{fill=white}\embcell{53}{-\i*5}{\b}{fill=white}\embcell{62}{-\i*5}{\c}{fill=white}
+  \fi}
+\node[lbl,anchor=south] at (53,3) {表 $\mE$（$V\times d = 5\times 3$）};
+\node at (72,-10) {$=$};
+\embcell{83}{-10}{$-$0.6}{fill=figblue,draw=bookblue}\embcell{92}{-10}{0.9}{fill=figblue,draw=bookblue}\embcell{101}{-10}{0.1}{fill=figblue,draw=bookblue}
+\node[lbl,anchor=south] at (92,-7) {「先生」のベクトル（$d=3$）};
+% 経路
+\draw[arr] (t) -- node[above,lbl,pos=0.45] {(a)} (oh2);
+\draw[darr,rounded corners=3pt] (t.south east) -- ++(4,-13) -- node[below,lbl] {(b) 番号で 3 行目を引くだけ} (53,-27) -- (53,-23);
+\end{tikzpicture}
+\caption{one-hot ベクトルに行列を掛けると、行列の 1 行が取り出される（語彙 5 個、3 次元の例）。
+(a) one-hot に直して掛け算をしても、(b) 番号で表の行を引いても、結果は同じである。小さな例なので、「先生」の番号を 3 とした。}
+\label{fig:emb-lookup}
+\end{figure}
+
+それなら、わざわざ 4096 個の数を並べて掛け算をする必要はありません。
+番号を使って、表の行を直接引けば済みます。
+実物の大きさ（$V=4096$）で確かめます。
+
+\snippet{one-hot に行列を掛けることと、行を引くこと}{code:emb-onehot}{ch08/embedding_basics.py}{onehot}
+\outputfile{ch08/out/basics_onehot.txt}
+
+4 行目の \code{.float()} は、整数で作られる one-hot ベクトルを、掛け算に使える小数に直しています。
+6 行目の \code{@} は行列の積で、式\eqref{eq:emb-onehot}の左辺です。7 行目は、行を取り出すだけです。
+出力の 2 行目と 3 行目は、4 個の数がすべて同じです。
+二つの結果は一致しました。
+なお、数式では行を 1 から数えますが、コードでは 0 から数えます。\code{E[692]} が、番号 692 のトークンの行です。
+この「番号で引く表」に名前を付けます。
+
+\begin{definition}[埋め込み]\label{def:emb-embedding}
+語彙サイズを $V$、ベクトルの次元を $d$ とする。
+学習されるパラメータの表 $\mE\in\R^{V\times d}$ を用意し、トークン $x$（番号）を、$\mE$ の $x$ 行目のベクトル $\ve_x\in\R^{d}$ に取り替える。
+この操作と、得られるベクトル $\ve_x$ を\term{埋め込み}{embedding}と呼ぶ。
+表 $\mE$ を\jterm{埋め込み表}と呼ぶ。
+\end{definition}
+
+一言でいえば、埋め込みとは\textbf{トークンの番号ごとに用意された、学習で調整されるベクトル}です。
+「埋め込み」という名前は、ばらばらの番号を $d$ 次元の空間の点として置く（埋め込む）ことから来ています。
+$d$ は設計者が決める数で、この章では $d=64$ を使います。
+
+大事なのは、表の中身が\textbf{パラメータ}だという点です。
+最初は乱数で埋めておき、損失が下がるように、勾配降下法でほかの重みと一緒に動かします。
+どのトークンにどんなベクトルを割り当てるかは、人が決めるのではなく、学習が決めます。
+\tabref{tab:emb-ways}に、三つの案をまとめました。
+
+\begin{table}[tbp]
+\centering
+\caption{トークンの番号をネットワークに入れる三つの方法（$V=4096$、$d=64$ の場合）。「数の個数」は、1 トークンを表すのに使う数の個数。}
+\label{tab:emb-ways}
+\small
+\begin{tabular}{lccc}
+\toprule
+方法 & 数の個数 & 番号の大小の影響 & 似たトークンを近くに置けるか \\
+\midrule
+番号のまま & 1 & 受ける & 置けない \\
+one-hot 表現 & 4096（ほとんど 0） & 受けない & 置けない（どれも直角） \\
+埋め込み & 64 & 受けない & 置ける（学習で決まる） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{PyTorch の \code{nn.Embedding}}
+
+PyTorch では、埋め込み表は \code{nn.Embedding} という部品になっています。
+番号のテンソルを渡すと、番号の一つひとつが、表の行に置き換わります。
+
+\snippet{\code{nn.Embedding} は番号を行に置き換える}{code:emb-embedding}{ch08/embedding_basics.py}{embedding}
+\outputfile{ch08/out/basics_embedding.txt}
+
+形 $(1,3)$ の番号のテンソルが、形 $(1,3,4)$ になりました。
+末尾に、ベクトルの次元の軸が一つ増えます。この形の変化は、このあと何度も出てきます。
+部品の中身は形 $(4096,4)$ の表（\code{emb.weight}）で、出力の先頭のベクトルは、その 692 行目そのものです（出力の 2〜3 行目）。
+
+学習のときの勾配も、表引きらしい流れ方をします。
+上の出力から仮の損失を作って逆伝播すると、勾配が 0 でなかったのは、引いた 3 行（「先生」692、「東京」1306、「奥さん」1617）だけでした（\file{ch08/embedding_basics.py} で確かめられます）。
+引かなかった行は計算に使われていないので、勾配も流れません。
+その行の数をどう動かしても損失は変わらないので、微分は 0 です。
+1 回の更新で動くのは、そのバッチに現れたトークンの行だけです。
+
+じつは、表引きにはすでに出会っています。
+\chapref{ch:lm}のバイグラムモデルは、$V\times V$ のロジットの表から、入力の番号の行を引いていました。
+あれは、行そのものを答え（ロジット）として使う、幅 $V$ の埋め込み表です。
+この章では、表の幅を $V$ から $d$ へ細くします。
+行はもう答えではなく、トークンの「特徴」を表す短いベクトルです。
+そこから答えを計算する仕事は、後ろに続くネットワークに任せます。
+
+\begin{quiz}
+\code{nn.Embedding(4096, 64)} が持つパラメータは何個でしょうか。
+また、番号が 5 個並んだ列を 8 本まとめた、形 $(8,5)$ のテンソルを渡すと、出力の形はどうなるでしょうか。
+\end{quiz}
+
+パラメータは表のマス目の数で、$4096\times 64=262{,}144$ 個です。
+出力の形は、末尾に軸が増えて $(8,5,64)$ です。
+
+\begin{table}[tbp]
+\centering
+\caption{埋め込み表の大きさの比較。仕組みは同じで、違うのは表の行数と幅だけである（GPT-2 は\cite{radford2019language}、Llama 3.1 は\cite{dubey2024llama3}による）。}
+\label{tab:emb-scale}
+\small
+\begin{tabular}{lrrr}
+\toprule
+モデル & 語彙サイズ $V$ & 次元 $d$ & 埋め込み表のパラメータ数 \\
+\midrule
+この章の MLP 言語モデル & 4,096 & 64 & 約 26 万 \\
+本書の基盤モデル & 4,096 & 192 & 約 79 万 \\
+GPT-2（small） & 50,257 & 768 & 約 3,860 万 \\
+Llama 3.1 8B & 128,256 & 4,096 & 約 5.3 億 \\
+Llama 3.1 405B & 128,256 & 16,384 & 約 21 億 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+実際の LLM でも、入口は同じ埋め込み表です。
+\tabref{tab:emb-scale}のとおり、違いは大きさだけです。
+パラメータ数は、どれも $V\times d$ です（GPT-2 なら $50{,}257\times768=38{,}597{,}376$）。
+Llama 3.1 の語彙サイズ 128,256 は、公開されているモデルの設定の値です（BPE のトークン 128,000 個と、制御用に取ってある番号 256 個）。
+次元が大きいほど、トークンの細かな違いを書き分ける余地が増えます。
+
+この節のまとめです。
+番号をそのまま使うと、意味のない大小が計算に混ざります。
+one-hot 表現はそれを防ぎますが、行列を掛けた結果は「行を 1 本取り出す」ことと同じでした。
+そこで、番号で行を引く表を用意し、その中身を学習させます。これが埋め込みです。
+
+\section{意味の近さを、ベクトルの近さで表す}\label{sec:emb-meaning}
+
+埋め込み表の中身は、学習が決めると述べました。
+では、学習が終わったとき、表にはどんなベクトルが入っているのでしょうか。
+この節の問いは、「損失を下げようとすると、埋め込みはどうなるはずか」です。
+
+本書の訓練データには、小説のほかに、「\code{12+35=47}」のような行を並べた計算ドリルが入っています（\chapref{ch:intro}）。
+この計算ドリルに出てくる「7」と「8」を考えます。
+どちらも、数字や「\code{+}」「\code{=}」に囲まれて現れます。
+次に来るのも、数字か記号か改行です。
+モデルから見れば、「7」のあとにすべき予測と、「8」のあとにすべき予測は、よく似ています。
+それなら、二つのベクトルを近くに置いておくと好都合です。
+後ろのネットワークは、入力が少し違うだけなら、出力も少ししか変わりません（掛け算も $\tanh$ も、なめらかな計算だからです）。
+「7」で学んだことが、「8」にもほぼそのまま効きます。
+反対に、「7」と「先生」では、次に来るものがまるで違います。
+ベクトルが近いと予測を作り分けられないので、学習はこの二つを引き離します。
+
+誰も「似たトークンを近づけなさい」とは命じていません。
+あるのは、次のトークンの予測の損失を下げる、という圧力だけです。
+それでも、\textbf{似た使われ方をするトークンは、似たベクトルになっていく}と期待できます。
+
+\figref{fig:emb-expect}は、この期待を絵にしたものです。
+学習前（左）の表は乱数なので、「7」と「8」が近くにある理由は何もありません。
+学習が進むと（右）、次に来るものが似ているトークンどうしが、寄っていくはずです。
+これは模式図です。本当にそうなるかは、\secref{sec:emb-neighbors}で確かめます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\providecommand{\embpt}[4]{\node[tok,minimum width=8mm,minimum height=5mm,font=\footnotesize,#4] at (#1,#2) {#3};}
+% 左: 学習前
+\draw[black!35] (0,0) rectangle (44,25);
+\node[lbl,anchor=south] at (22,25.5) {学習前（乱数のまま）};
+\embpt{8}{20}{7}{fill=figblue}
+\embpt{35}{5}{8}{fill=figblue}
+\embpt{21}{12}{9}{fill=figblue}
+\embpt{33}{20}{先生}{fill=figred}
+\embpt{10}{5}{奥さん}{fill=figred}
+% 矢印
+\draw[arr] (47,12.5) -- node[above,lbl] {学習} node[below,lbl,align=center] {損失を\\下げる} (65,12.5);
+% 右: 学習後
+\begin{scope}[xshift=68mm]
+\draw[black!35] (0,0) rectangle (44,25);
+\node[lbl,anchor=south] at (22,25.5) {学習後（期待される姿）};
+\draw[bookblue,dashed,rounded corners=3pt] (2,10) rectangle (24,24);
+\embpt{7.5}{20.3}{7}{fill=figblue}
+\embpt{18.5}{18.5}{8}{fill=figblue}
+\embpt{8.5}{13.6}{9}{fill=figblue}
+\node[lbl,anchor=west] at (25,18) {数字};
+\draw[bookaccent,dashed,rounded corners=3pt] (19,1.5) rectangle (42.5,9.3);
+\embpt{24.5}{5.5}{先生}{fill=figred}
+\embpt{35.5}{5.5}{奥さん}{fill=figred}
+\node[lbl,anchor=east] at (18,5.5) {人の呼び名};
+\end{scope}
+\end{tikzpicture}
+\caption{埋め込みの学習で起きると期待されること（模式図。64 次元を 2 次元に描いた）。
+学習後は、次に来るものが似ているトークンどうしが近くに集まる。実測の結果は\figref{fig:emb-pca}で見る。}
+\label{fig:emb-expect}
+\end{figure}
+
+言語学には、「単語の意味は、その単語がどんな単語と一緒に現れるかで決まる」という古くからの考え方があります。
+これを\term{分布仮説}{distributional hypothesis}と呼びます（1950 年代のハリス~\cite{harris1954distributional}やファース~\cite{firth1957synopsis}にさかのぼります）。
+「先生」と「奥さん」は、どちらも「〜は言った」のような文脈に現れるので、意味も似ているだろう、というわけです。
+埋め込みは、この仮説を数値で実現する道具だといえます。
+
+ベクトルの近さは、\chapref{ch:math}で学んだ\textbf{コサイン類似度}（式\eqref{eq:math-cosine}）で測ります。
+向きが同じなら 1、直角なら 0 です。
+\chapref{ch:math}の\figref{fig:math-similarity}では、基盤モデルのトークンのベクトルで、「7」と「8」の類似度が 0.88 でした。
+あのベクトルが、埋め込みです。
+この章では、自分で学習させた埋め込み表で、同じことが起きるかを確かめます（\secref{sec:emb-neighbors}）。
+
+\begin{column}{word2vec：埋め込みだけを先に学習する}
+2013 年に発表された word2vec~\cite{mikolov2013efficient}は、単語の埋め込みだけを、大量の文章から高速に学習する手法です。
+「まわりの単語から中央の単語を当てる」という、言語モデルを簡単にした問題を解かせます。
+得られたベクトルでは、「王」$-$「男」$+$「女」の近くに「女王」が来る、といった関係が見つかり、広く注目されました。
+現在の LLM は、埋め込みを別に作りません。モデルの最初の層として、全体と一緒に学習します。
+この章のやり方も、それと同じです。
+\end{column}
+
+この節のまとめです。
+埋め込みは、次のトークンの予測に役立つように学習されます。
+その結果、似た使われ方をするトークンは、近いベクトルを持つようになるはずです。
+
+\section{固定窓のニューラル言語モデル}\label{sec:emb-mlp}
+
+番号をベクトルに取り替える準備ができました。
+この節の問いは、「埋め込みを使って、次のトークンを予測するネットワークをどう組むか」です。
+
+\subsection*{直前の $n$ 個を並べて、MLP に入れる}
+
+答えは、2003 年にベンジオらが提案した形~\cite{bengio2003neural}を使います。
+作りは素直です。
+\begin{enumerate}
+\item 直前の $n$ 個のトークンを、それぞれ埋め込みに取り替える。
+\item $n$ 本のベクトルをつないで、長い 1 本のベクトルにする。
+\item それを、\chapref{ch:nn}の多層パーセプトロン（MLP）に入れ、$V$ 個のロジットを出す。
+\end{enumerate}
+見る範囲を「直前の $n$ 個」に固定するので、この範囲を\jterm{窓}、$n$ を\jterm{窓の幅}と呼ぶことにします。
+\chapref{ch:lm}の $n$ グラムの $n$ は、当てる 1 個も数に入れていたので、窓の幅より 1 大きくなります（バイグラムは、窓の幅 1 です）。
+\figref{fig:emb-mlp}は、$n=3$ のときの計算の流れです。
+「私は」「その」「人を」の 3 個から、次の「常」を当てようとしています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=0.9mm,y=1mm]
+\foreach \w/\id/\s [count=\i from 0] in {私は/636/{t-3}, その/604/{t-2}, 人を/2850/{t-1}} {
+  \node[tok,minimum width=11mm] (t\i) at (0,-\i*11) {\w};
+  \node[lbl,anchor=east] at (-6.5,-\i*11) {\id};
+  \node[box,minimum width=15mm] (e\i) at (25,-\i*11) {$\ve_{x_{\s}}$};
+  \draw[arr] (t\i) -- node[above,lbl] {$\mE$} (e\i);
+}
+\node[graybox,minimum width=11mm,minimum height=31mm] (c) at (48,-11) {$\vc$};
+\foreach \i in {0,1,2} \draw[arr] (e\i.east) -- (c.west|-e\i);
+\node[greenbox,minimum width=11mm,minimum height=22mm] (h) at (69,-11) {$\vh$};
+\draw[arr] (c) -- node[above,lbl] {$\mW_1$} node[below,lbl] {$\tanh$} (h);
+\node[orangebox,minimum width=11mm,minimum height=31mm] (z) at (90,-11) {$\vz$};
+\draw[arr] (h) -- node[above,lbl] {$\mW_2$} (z);
+\node[plainbox,align=left,font=\footnotesize,minimum width=17mm] (p) at (116,-11) {常\ \ 0.03\\に\ \ 0.02\\\ \ $\vdots$};
+\draw[arr] (z) -- node[above,lbl,font=\scriptsize] {softmax} (p);
+\node[lbl] at (0,-29) {番号 $(n,)$};
+\node[lbl] at (25,-29) {$(n,d)$};
+\node[lbl] at (48,-29) {$(nd,)$};
+\node[lbl] at (69,-29) {$(d_h,)$};
+\node[lbl] at (90,-29) {$(V,)$};
+\node[lbl] at (116,-29) {確率 $(V,)$};
+\node[lbl] at (0,-34) {3};
+\node[lbl] at (25,-34) {$3\times 64$};
+\node[lbl] at (48,-34) {192};
+\node[lbl] at (69,-34) {128};
+\node[lbl] at (90,-34) {4096};
+\node[lbl] at (116,-34) {4096};
+\node[lbl,anchor=south] at (25,5) {埋め込み};
+\node[lbl,anchor=south] at (48,5) {並べる};
+\node[lbl,anchor=south] at (69,5) {隠れ層};
+\node[lbl,anchor=south] at (90,5) {ロジット};
+\end{tikzpicture}
+\caption{固定窓の MLP 言語モデル（$n=3$）。直前の 3 個のトークンを、同じ表 $\mE$ で埋め込みに取り替え、1 本に並べて MLP に入れる。
+下の 2 行は、各段階のテンソルの形と、この章の設定での大きさ。確率の数値は説明用。}
+\label{fig:emb-mlp}
+\end{figure}
+
+式で書きます。予測したいトークンを $x_t$、その直前の $n$ 個を $x_{t-n},\dots,x_{t-1}$ とします。
+\begin{align}
+\vc &= [\,\ve_{x_{t-n}};\ \dots;\ \ve_{x_{t-1}}\,] \in\R^{nd} && \text{（並べる）}\label{eq:emb-concat}\\
+\vh &= \tanh(\mW_1\vc+\vb_1) \in\R^{d_h} && \text{（隠れ層）}\label{eq:emb-hidden}\\
+\vz &= \mW_2\vh+\vb_2 \in\R^{V} && \text{（ロジット）}\label{eq:emb-logits}\\
+p(x_t\mid x_{t-n},\dots,x_{t-1}) &= \softmax(\vz)_{x_t} && \text{（確率）}\label{eq:emb-prob}
+\end{align}
+$[\,\cdot\,;\,\cdot\,]$ は、ベクトルをつないで 1 本にする記号です。
+$d_h$ は隠れ層の幅で、この章では 128 にします。
+式\eqref{eq:emb-hidden}と式\eqref{eq:emb-logits}は、\chapref{ch:nn}の MLP（式\eqref{eq:nn-mlp}）そのものです。
+新しいのは、入力を作る式\eqref{eq:emb-concat}だけです。
+
+形を確かめます。
+$d=64$ 次元のベクトルを $n=3$ 本つなぐので、$\vc$ の長さは $3\times64=192$ です。
+$\mW_1$ は、長さ 192 を長さ $d_h=128$ に変える行列なので、形は $128\times192$ です。
+$\tanh$ は\chapref{ch:nn}で見た活性化関数の一つで、どんな数も $-1$ から $1$ の間に収めます。
+$\mW_2$ は、長さ 128 を長さ $V=4096$ に変えるので、形は $4096\times128$ です。
+式\eqref{eq:emb-prob}の右辺の添字は、「$V$ 個の確率のうち、$x_t$ 番目を取り出す」という意味です。
+
+この形には、大事な点が三つあります。
+
+\textbf{同じ表を、窓のどの位置でも使う。}\
+「先生」は、窓の 1 番目にあっても 3 番目にあっても、同じベクトル $\ve_{692}$ になります。
+ある位置で学んだトークンの性質が、ほかの位置でも使えます。
+一方、$\mW_1$ は位置ごとに別の重みを持ちます。この違いは、\secref{sec:emb-window}で効いてきます。
+
+\textbf{出力と損失は、\chapref{ch:lm}と同じ。}\
+出力は $V$ 個のロジットで、softmax で確率に直します。
+損失は、正解のトークンの確率の $-\log$、つまり交差エントロピーです。
+変わったのは、ロジットを作る部分だけです。
+
+\textbf{表ではなく、計算で答えを出す。}\
+数える方法は、文脈が訓練データと一字一句同じでないと、手がかりを持てませんでした。
+このモデルは、初めて見る 3 個の並びにも、計算によって答えを出します。
+しかも、似たトークンの埋め込みが近ければ、似た文脈には似た答えが返ります。
+壁 2 を越える見込みが、ここにあります。
+
+\subsection*{実装}
+
+コードにします。まずデータです。
+訓練データの番号の列から、ランダムな位置の窓（$n$ 個）と、その次の 1 個を取り出します。
+
+\snippet{窓と正解を取り出す}{code:emb-batch}{ch08/mlp_lm.py}{batch}
+\outputfile{ch08/out/mlp_data.txt}
+
+コードの 4 行目が、少し込み入っています。
+窓の先頭の位置 \code{i}（形 $(B,)$）に $0,1,\dots,n-1$ を足して、形 $(B,n)$ の「位置の表」を作り、その位置の番号をまとめて取り出しています。
+
+小さな数で追ってみます。
+$B=2$、$n=3$ で、3 行目の乱数 \code{i} が $[5,\ 20]$ だったとします。
+これを縦に立てた \code{i[:, None]}（形 $(2,1)$）に、\code{torch.arange(n)}、つまり $[0,1,2]$ を足します。
+形の違う二つは、ブロードキャスト（\chapref{ch:pytorch}）で形 $(2,3)$ にそろえてから足されます。
+\[
+\begin{pmatrix}5\\20\end{pmatrix}+\begin{pmatrix}0&1&2\end{pmatrix}
+=\begin{pmatrix}5&6&7\\20&21&22\end{pmatrix}
+\]
+\code{data} にこの表を渡すと、「5 番目から 3 個」と「20 番目から 3 個」の番号が、同じ形 $(2,3)$ で返ります。
+5 行目の正解 \code{y} は、位置 \code{i + n}、つまり 8 番目と 23 番目の番号です。
+3 行目の乱数の上限が \code{len(data) - n} なのは、この位置がデータの外に出ないようにするためです。
+
+実行結果は、冒頭の文から作った入力と正解の例です（表示用のコードは省略しました）。
+窓を 1 つ右へずらすたびに、新しい問題が 1 問できます。
+正解のラベルを人が付ける必要がないのは、\chapref{ch:lm}と同じです。
+
+モデル本体は、式\eqref{eq:emb-concat}〜\eqref{eq:emb-logits}をそのまま書きます。
+
+\snippet{固定窓の MLP 言語モデル}{code:emb-model}{ch08/mlp_lm.py}{model}
+
+\code{emb} が埋め込み表 $\mE$、\code{fc1} が $\mW_1$ と $\vb_1$、\code{fc2} が $\mW_2$ と $\vb_2$ です（\code{nn.Linear} は、重みとバイアスを 1 組にした部品でした）。
+\code{forward} の 1 行目が表引きで、形は $(B,n)$ から $(B,n,d)$ になります（$B$ はバッチサイズ）。
+2 行目の \code{view} が「並べる」操作です。$n$ 本の $d$ 次元ベクトルを、長さ $nd$ の 1 本に並べ直します。
+引数の \code{-1} は「要素の数が合うように決めてほしい」という指定で（\chapref{ch:pytorch}）、ここでは $3\times64=192$ になります。
+残りの 2 行は、\chapref{ch:nn}の MLP と同じです。
+softmax は、損失関数 \code{F.cross_entropy} の中で計算されるので、ここには書きません。
+
+モデルを作り、パラメータを数えます。
+
+\snippet{モデルを作り、パラメータを数える}{code:emb-build}{ch08/mlp_lm.py}{build}
+\outputfile{ch08/out/mlp_build.txt}
+
+出力の各行は、パラメータの名前、形、要素の個数です。
+個数は形の掛け算で、たとえば \code{fc1.weight} は $128\times192=24{,}576$ 個です。
+全部を足すと、$262{,}144+24{,}576+128+524{,}288+4{,}096=815{,}232$ 個で、約 82 万個です。
+内訳を見ると、埋め込み表（\code{emb}）が 26 万個、最後の層（\code{fc2}）が 52 万個で、この二つがほとんどを占めます。
+どちらも、語彙サイズ $V$ に比例する部分です。
+学習前の損失は 8.377 で、でたらめに当てるときの $\log V=8.318$ とほぼ同じです。
+学習前の重みは小さな乱数なので、4096 個の確率はどれも $1/V$ に近く、損失は $-\log(1/V)=\log V$ に近くなります。
+
+ここで、壁 1（表の爆発）を振り返ります。
+数える方法で直前 3 個を見るには、$V^4\approx 2.8\times10^{14}$ マスの表が必要でした。
+直前 3 個の並び方が $V^3$ 通りあり、その一つひとつに、次の 1 個の候補が $V$ 個あるからです。
+バイグラム（直前 1 個）でも、$V^2\approx 1{,}678$ 万マスです。
+MLP 言語モデルは、直前 3 個を見て、82 万個です。
+
+\begin{quiz}
+窓の幅を $n=3$ から $n=4$ に広げると、パラメータは何個増えるでしょうか。
+\coderef{code:emb-model}のどの部品が大きくなるかを考えてください。
+\end{quiz}
+
+大きくなるのは \code{fc1} の重みだけです。入力が $d=64$ 個増えるので、$64\times128=8{,}192$ 個増えます。
+表は $n$ を 1 増やすたびに $V$ 倍（4096 倍）になりましたが、このモデルは約 1\% 増えるだけです（$8{,}192\div815{,}232\approx0.010$）。
+直前 4 個を見るなら、数える表は $V^5\approx1.2\times10^{18}$ マス、このモデルは $815{,}232+8{,}192=823{,}424$ 個です。
+壁 1 は、少なくともパラメータの数の上では、なくなりました。
+
+この節のまとめです。
+直前 $n$ 個の埋め込みを並べて MLP に入れると、次のトークンのロジットが出ます。
+パラメータ数は窓の幅にほとんどよらず、初めて見る文脈にも答えを出せます。
+
+\section{学習させて、バイグラムと比べる}\label{sec:emb-train}
+
+モデルの形はできました。
+この節の問いは、「このネットワークは、数えるだけのバイグラムより良い予測ができるか」です。
+漱石の小説と計算ドリルを混ぜた、本書の訓練データ（約 248 万トークン）で学習させます。
+
+\subsection*{学習ループ}
+
+学習の手順は、\chapref{ch:nn}の標準の形（予測、損失、勾配、更新）から変わりません。
+
+\snippet{MLP 言語モデルの学習}{code:emb-train}{ch08/mlp_lm.py}{train}
+
+オプティマイザは AdamW、学習率はウォームアップとコサイン減衰で動かします（どちらも\chapref{ch:training}）。
+\code{lr_at} に渡している 100 は、ウォームアップの回数です。
+
+\chapref{ch:training}をまだ読んでいない人は、次の二つだけ知っていれば先へ進めます。
+AdamW は勾配降下法の改良版で、動かす幅をパラメータごとに自動で調整します。
+ウォームアップとコサイン減衰は学習率の動かし方で、最初の 100 回で 0.015 まで上げ、そのあとはなめらかに下げます。
+
+コードの 6〜7 行目は、その回の学習率を計算し、オプティマイザに入れ直しています。
+8〜12 行目が標準の形で、窓と正解を取り出し、損失を測り、前の回の勾配を消し、勾配を求め、更新します。
+14 行目の \code{steps // n_eval} は $3000\div8=375$ で、375 回ごとに検証データで損失を測ります。
+そのとき表示する「訓練」は、直前の 375 回の訓練損失の平均です。
+
+学習率 0.015 とバッチサイズ 1024 は、いくつか試して決めました。
+1 回の更新に 1024 個の窓を使い、3000 回更新します。
+全部で $1024\times3000=3{,}072{,}000$、約 307 万個の窓を見る計算です。
+訓練データは約 248 万トークンなので、およそ 1.2 周します（$307\div248\approx1.24$）。
+筆者の PC（CPU）では 2 分半ほどでした。
+
+\outputfile{ch08/out/mlp_train.txt}
+
+損失は 8.38 から順調に下がりました。
+検証データは、小説の末尾（約 6.9 万トークン）と、訓練に使っていないドリル（約 4.6 万トークン）をつないだものです。
+性質がまるで違うので、境目で二つに分けた平均も表示しています（\code{split_mean}）\footnote{訓練損失が検証損失より低いのは、過学習のためだけではありません。訓練データは、損失の低いドリルの割合が検証データより高いのです（約 45\% と 40\%）。}。
+
+ドリルの損失は、最初の 375 回で 2.13 まで下がり、そのあとはほとんど動きません。
+小説の損失は、7.07 から 5.51 へ、最後までゆっくり下がり続けます。
+ドリルの損失がずっと低いのは、出てくるトークンが、数字 10 個と「\code{+}」「\code{-}」「\code{=}」、改行の 14 種類しかないからです。
+14 個からでたらめに選んでも、損失は $\log 14\approx2.64$ で済みます。
+
+\subsection*{基準線と比べる}
+
+比べる相手は、\chapref{ch:lm}の「数えるだけ」のモデルです。
+ただし、\chapref{ch:lm}は文字単位でした。
+ここでは同じ作り方を BPE のトークンに当てはめ、同じ検証データで測り直します（\file{ch08/mlp_lm.py} の \code{bigram_count_losses}）。
+結果が\tabref{tab:emb-compare}と\figref{fig:emb-curve}です。
+
+\begin{table}[tbp]
+\centering
+\caption{検証データでの 1 トークンあたりの損失（実測）。バイグラムは、訓練データの隣どうしの組を数えて作った（平滑化 $\alpha=0.03$）。
+「大きさ」は、表のマス目の数、またはパラメータ数。}
+\label{tab:emb-compare}
+\small
+\begin{tabular}{llrrrr}
+\toprule
+モデル & 見る範囲 & 大きさ & 全体 & 小説 & ドリル \\
+\midrule
+一様（$\log V$） & なし & --- & 8.318 & 8.318 & 8.318 \\
+バイグラム（数える） & 直前 1 個 & 1,678 万 & 4.328 & 5.609 & 2.432 \\
+MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & \textbf{2.059} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.74\linewidth,height=42mm,xlabel={更新の回数},ylabel={検証損失},
+  xmin=0,xmax=3100,ymin=1.5,ymax=7.5,legend pos=outer north east,legend style={font=\scriptsize}]
+\addplot[bookblue,mark=*,mark size=1.5pt] table[col sep=comma,x=step,y=val_novel]{code/ch08/out/mlp_log.csv};
+\addlegendentry{MLP（小説）}
+\addplot[bookblue,dashed,domain=0:3100,samples=2] {5.609};
+\addlegendentry{バイグラム（小説）}
+\addplot[bookorange,mark=square*,mark size=1.5pt] table[col sep=comma,x=step,y=val_drill]{code/ch08/out/mlp_log.csv};
+\addlegendentry{MLP（ドリル）}
+\addplot[bookorange,dashed,domain=0:3100,samples=2] {2.432};
+\addlegendentry{バイグラム（ドリル）}
+\end{axis}
+\end{tikzpicture}
+\caption{MLP 言語モデルの検証損失の推移（実測）。破線は、数えて作ったバイグラムの値。
+ドリルでは学習の初めからバイグラムを下回る。小説では、終盤になってようやく下回る。}
+\label{fig:emb-curve}
+\end{figure}
+
+読み取れることを三つ挙げます。
+
+\textbf{全体では、バイグラムを下回った。}\
+損失は 4.328 から 4.120 に下がりました。
+パープレキシティに直すと、約 76 択が約 62 択に絞られたことになります。
+パープレキシティは $e^{\text{損失}}$ で、「何択で迷っているか」を表すのでした（$e^{4.328}\approx75.8$、$e^{4.120}\approx61.6$）。
+しかも、モデルの大きさは、バイグラムの表の 20 分の 1 です（$16{,}777{,}216\div815{,}232\approx20.6$）。
+
+\textbf{ドリルで大きく下がった。}\
+内訳を見ると、ドリルが 2.43 から 2.06 へ、はっきり下がっています。
+直前の 1 個が「\code{5}」だと分かっても、それが問題の途中なのか、答えの途中なのかは分かりません。
+3 個見えれば、区別できる場面が増えます。
+
+\textbf{小説では、わずかな差にとどまった。}\
+小説の損失は 5.61 から 5.51 で、差は 0.1 です。
+\figref{fig:emb-curve}を見ると、小説でバイグラムを下回ったのは、学習の終盤でした。
+数えるだけのバイグラムは、訓練データを一度見ればその情報を使い切る、手強い相手です。
+ニューラルネットワークは、少しずつしか学べません。
+ただし、曲線はまだ下がり続けています。もっと長く学習させれば、差は広がると見込めます（ここでは確かめていません）。
+
+\begin{caution}{\chapref{ch:lm}の損失とは、直接比べられない}
+\chapref{ch:lm}のバイグラムの検証損失は 3.58 でした。この章の 4.33 より低く見えますが、単位が違います。
+あちらは 1 \textbf{文字}あたり、こちらは 1 \textbf{トークン}あたりの損失です。
+小説の検証データでは、1 トークンは平均 1.75 字なので、1 個を当てる難しさが違います。
+損失を比べてよいのは、同じデータを同じ単位で測ったときだけです。
+
+単位をそろえるには、1 トークンあたりの損失を 1.75 で割ります。
+小説の損失は $5.512\div1.75\approx3.15$ で、1 文字あたり $e^{3.15}\approx23$ 択です。
+文字のバイグラムは $e^{3.58}\approx36$ 択でした（データの切り方が少し違うので、目安です）。
+\end{caution}
+
+\subsection*{文章を書かせてみる}
+
+学習したモデルに、続きを書かせます。
+やり方は\chapref{ch:lm}の自己回帰生成と同じです。
+違いは、モデルに渡すのが末尾の $n$ 個だけ（\code{ids[-n:]}）という点です（\file{ch08/mlp_lm.py} の \code{generate}）。
+
+\outputfile{ch08/out/mlp_generate.txt}
+
+どちらも温度 $\tau=0.8$ で、30 トークン書かせました。
+出力の中の \texttt{\textbackslash n} は、改行です。
+1 行目は、「私はその人を常に」までが与えた書き出しで、その先がモデルの書いた部分です。
+「奇麗な」「だから」のように、日本語らしい切れ端がつながっています。
+しかし、文としての意味は通りません。
+モデルが覚えているのは直前の 3 個だけなので、少し前に何を書いたかを、もう知らないのです。
+
+2 行目は、「\code{25+48=}」までを与えました。
+数字、「\code{=}」、改行が並ぶ「形」は、まねできています。
+しかし答えは「\code{25+48=486}」で、でたらめです。
+正答率は、次のように測ります。
+例題を 1 行見せてから問題を与え、改行が出るまで貪欲法で書かせます。書いた文字列が答えと完全に一致すれば、正解です。
+200 問で測ると、正答率は 2.5\%（5 問）でした（\file{ch08/mlp_lm.py} の \code{drill_accuracy}）。
+本書の基盤モデルは、同じ 200 問で 86.5\% を出します。
+ただし、入力の作り方が少し違います。
+基盤モデルには例題を見せず、改行のあとに問題だけを与えて測りました。
+この大きな差の原因は、\secref{sec:emb-window}で調べます。
+
+この節のまとめです。
+埋め込みと MLP を組み合わせた言語モデルは、バイグラムの 20 分の 1 の大きさで、バイグラムより低い損失に届きました。
+ただし、小説での差はわずかで、計算はまったくできません。
+
+\subsection*{ここまでの道のり}
+
+ここで、いったん振り返ります。
+トークンの番号は、埋め込み表 $\mE$ を引いて、$d$ 次元のベクトルに取り替えます（\secref{sec:emb-lookup}）。
+表の中身は学習で決まり、似た使われ方のトークンは近いベクトルになると期待できます（\secref{sec:emb-meaning}）。
+直前 $n$ 個の埋め込みを並べて MLP に入れると、言語モデルになります（\secref{sec:emb-mlp}）。
+実際に学習させると、数えるだけのバイグラムを下回りました（\secref{sec:emb-train}）。
+
+残っている問いは二つです。
+「期待」と書いた埋め込みの性質は、本当に現れたのでしょうか。
+そして、このモデルはなぜ計算ができないのでしょうか。
+章の後半で、順に確かめます。
+
+\section{学習した埋め込みをのぞく}\label{sec:emb-neighbors}
+
+この節の問いは、「学習した埋め込み表で、似たトークンは本当に近くにあるか」です。
+\secref{sec:emb-train}で学習したモデルから、埋め込み表を取り出して調べます。
+
+\subsection*{近くにあるトークンを探す}
+
+あるトークンを選び、ほかのすべてのトークンとのコサイン類似度を計算して、高い順に並べます。
+コサイン類似度は、内積を二つのベクトルの長さで割った数、$\va^\T\vb/(\norm{\va}\,\norm{\vb})$ でした（\chapref{ch:math}）。
+各行の長さを 1 にそろえておけば、割る数が $1\times1=1$ になり、コサイン類似度は内積そのものです。
+全トークンとの内積は、行列とベクトルの積 1 回で済みます。
+
+\snippet{コサイン類似度が高いトークンを探す}{code:emb-neighbors}{ch08/embedding_neighbors.py}{neighbors}
+\outputfile{ch08/out/nb_table.txt}
+
+\code{table} は、各行の長さを 1 にそろえた埋め込み表です。
+3 行目で、選んだトークンの行（形 $(d,)$）との積を取ると、4096 個のトークンとの類似度が並びます。
+5 行目の \code{topk} は、大きい順に取り出す関数です。先頭はかならず自分自身（類似度 1）なので、$k+1$ 個取って先頭を捨てます。
+
+\code{skip} は、訓練データに 50 回未満しか現れないトークンと、文字の途中で切れたトークン（1 文字に満たないバイトのかけら）の印です。
+行がほとんど学習されていないので、候補から外しました。
+括弧の中がコサイン類似度です。
+「7」の近くには、ほかの数字が並びました。
+「三」の近くは漢数字です。
+「先生」の近くには、「Ｋ」「奥さん」「敬太郎」「代助」と、漱石の小説の登場人物が集まっています。
+「私」の近くは「自分」「僕」「彼」、「です。」の近くは丁寧な文末、「は」の近くは「が」です。
+数字、人、文末、助詞という区別を、誰も教えていません。
+モデルは、次のトークンを当てる練習をしただけです。
+\secref{sec:emb-meaning}の期待どおり、似た使われ方をするトークンが、近いベクトルを持つようになりました。
+
+\begin{caution}{類似度は、数値 1 個ではなく顔ぶれで読む}
+64 次元のベクトルが 4000 個もあると、乱数で作ったベクトルの中にも、たまたま向きの近いものが見つかります。
+学習前の乱数の表で同じ 8 個のトークンを調べると、いちばん近いトークンとの類似度は平均 0.42 でした（学習後は 0.59）。
+ですから、0.4 台の値が 1 個あるだけでは、偶然と区別がつきません。
+一方、「先生」の近く 5 個のうち 4 個が登場人物、というような偏りは、偶然ではまず起きません。
+数値 1 個ではなく、並んだ顔ぶれ全体で判断します。
+\end{caution}
+
+ただし、うまくいった例ばかりではありません。
+「春」のいちばん近くは「秋」ですが、2 番目以降は関係がなさそうです。
+「東京」の近くには、納得のいくトークンが見当たりません。
+\chapref{ch:math}で見た組の類似度も測ると、「7」と「8」は 0.77、「先生」と「奥さん」は 0.52 でした（「7」と「先生」は 0.04）。
+しかし「東京」と「京都」は 0.27 で、基盤モデルの 0.57 に届きません。
+理由の一つは、データの量です。
+「7」は訓練データに約 7.6 万回現れますが、「東京」は 429 回しか現れません。
+現れる回数が少ないトークンの行は、少ししか更新されないのです。
+
+\subsection*{2 次元の地図にする}
+\skimread{\figref{fig:emb-pca}で「数字、漢数字、人の呼び名が、別々の島に分かれた。これが壁 2 への答えである」ことだけ押さえれば、先へ進めます。}
+
+64 次元の空間は、そのままでは目に見えません。
+そこで、ベクトルのばらつきがいちばん大きい方向を 1 本選びます。
+次に、それと直角な方向の中から、ばらつきがいちばん大きいものを選びます。
+この 2 方向の座標（第 1 主成分、第 2 主成分）だけを取り出す方法を、\term{主成分分析}{principal component analysis; PCA}と呼びます。
+数字、漢数字、人、文末、助詞の 5 種類から計 44 個のトークンを選び、2 次元に写した結果が\figref{fig:emb-pca}です。
+5 種類の分類と色分けは、筆者が付けました。モデルが分けたのではありません。
+軸そのものに意味はないので、同じ色の点が固まっているかどうかを見ます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=52mm,xmin=-5.4,xmax=3.6,ymin=-3.8,ymax=3.8,
+  xlabel={第 1 主成分},ylabel={第 2 主成分},legend pos=outer north east,legend style={font=\scriptsize},
+  only marks,mark size=1.8pt]
+\addplot[bookorange,mark=square*] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_digit.csv};
+\addlegendentry{数字（0〜9）}
+\addplot[bookpurple,mark=diamond*,mark size=2.3pt] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_kanji.csv};
+\addlegendentry{漢数字（一、二、…）}
+\addplot[bookaccent,mark=*] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_person.csv};
+\addlegendentry{人（先生、私、…）}
+\addplot[bookgreen,mark=triangle*,mark size=2.3pt] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_ending.csv};
+\addlegendentry{文末（です。…）}
+\addplot[bookblue,mark=x,mark size=2.6pt,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_particle.csv};
+\addlegendentry{助詞（は、が、…）}
+\node[font=\scriptsize,anchor=south] at (axis cs:1.55,3.0) {数字};
+\node[font=\scriptsize,anchor=south] at (axis cs:-3.8,0.5) {漢数字};
+\node[font=\scriptsize,anchor=east] at (axis cs:1.3,-2.3) {人};
+\node[font=\scriptsize,anchor=west] at (axis cs:0.5,0.9) {文末と助詞};
+\end{axis}
+\end{tikzpicture}
+\caption{学習した埋め込みを、主成分分析で 2 次元に写したもの（実測）。数字、漢数字、人を表すトークンが、それぞれ固まっている。
+文末と助詞は中央で重なる。この 2 方向で表せるのは、44 個のベクトルのばらつき全体の約 3 割なので、ここで重なっていても、64 次元の中では離れていることがある。}
+\label{fig:emb-pca}
+\end{figure}
+
+数字、漢数字、人が、三つのはっきりした島に分かれました。
+これが、壁 2（似た文脈から学べない）に対する答えです。
+「先生」と「奥さん」が近くにあるので、「先生は」に続く言葉について学んだことが、「奥さんは」にも効きます。
+数える方法では、二つは別々のマス目で、片方を何回数えても、もう片方には何も伝わりませんでした。
+
+この節のまとめです。
+学習した埋め込み表では、数字や人を表すトークンが、それぞれ近くに集まっていました。
+ただし、データの少ないトークンでは、まだはっきりした構造は見えません。
+
+\section{固定窓の限界}\label{sec:emb-window}
+
+MLP 言語モデルは、計算ドリルをほとんど解けませんでした。
+この節の問いは、「原因は何か。窓を広げれば解決するか」です。
+
+\subsection*{限界 1：窓の外は見えない}
+
+「\code{25+48=}」の続きを当てる場面を考えます。
+本書のトークナイザでは、数字も記号も改行も、1 文字が 1 トークンです（\chapref{ch:tokenizer}）。
+トークンは「\code{2}」「\code{5}」「\code{+}」「\code{4}」「\code{8}」「\code{=}」の 6 個です。
+$n=3$ のモデルに見えるのは、末尾の「\code{4}」「\code{8}」「\code{=}」だけです。
+「\code{25+}」は窓の外にあるので、何に 48 を足すのかが分かりません。
+これでは、どれだけ学習しても正解は出せません。
+\secref{sec:emb-train}の正答率 2.5\% は、当然の結果でした。
+いちばん短い「\code{5+3=}」でも 4 個あるので、当たった 5 問は、たまたま合ったものです。
+
+それなら、窓を広げればよさそうです。
+窓の幅 $n$ だけを 1 から 12 まで変え、ほかは同じ設定で学習し直しました（\file{ch08/window_sweep.py}）。
+結果が\tabref{tab:emb-window}と\figref{fig:emb-window}です。
+
+\begin{table}[tbp]
+\centering
+\caption{窓の幅 $n$ を変えたときの検証損失と、ドリルの正答率（実測。更新はどれも 3000 回）。
+「窓に入る」は、答えの 1 文字目を当てる時点で、問題文（「\code{=}」まで）がすべて窓に入っている問題の割合。}
+\label{tab:emb-window}
+\small
+\begin{tabular}{rrrrrrr}
+\toprule
+窓の幅 $n$ & パラメータ数 & 全体 & 小説 & ドリル & 正答率 & 窓に入る \\
+\midrule
+1 & 798,848 & 4.299 & 5.558 & 2.434 & 0.0\% & 0.0\% \\
+2 & 807,040 & 4.149 & \textbf{5.431} & 2.250 & 2.0\% & 0.0\% \\
+3 & 815,232 & 4.120 & 5.512 & 2.059 & 2.5\% & 0.0\% \\
+4 & 823,424 & \textbf{4.117} & 5.610 & 1.903 & 3.5\% & 14.0\% \\
+6 & 839,808 & 4.164 & 5.795 & 1.748 & \textbf{8.0\%} & 73.5\% \\
+8 & 856,192 & 4.194 & 5.905 & \textbf{1.658} & \textbf{8.0\%} & 100.0\% \\
+12 & 888,960 & 4.307 & 6.078 & 1.683 & 7.5\% & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.7\linewidth,height=40mm,xlabel={窓の幅 $n$},ylabel={検証損失},
+  xmin=0,xmax=13,ymin=1.2,ymax=6.6,xtick={1,2,3,4,6,8,12},
+  legend pos=outer north east,legend style={font=\scriptsize}]
+\addplot[bookblue,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=val_novel]{code/ch08/out/window.csv};
+\addlegendentry{小説}
+\addplot[bookorange,mark=square*,mark size=1.5pt] table[col sep=comma,x=n,y=val_drill]{code/ch08/out/window.csv};
+\addlegendentry{ドリル}
+\end{axis}
+\end{tikzpicture}
+\caption{窓の幅と検証損失（実測）。ドリルの損失は窓を広げると下がるが、小説の損失は $n=2$ を底に、広げるほど上がる。}
+\label{fig:emb-window}
+\end{figure}
+
+まず、表の 1 行目を見ます。
+$n=1$ の MLP が見るのは直前の 1 個だけで、バイグラムと同じ情報です。
+それでも小説の損失は 5.558 で、バイグラムの 5.609 を下回りました。
+似たトークンの間で、学んだことを分け合えるからだと考えられます。壁 2 への答えが、数値にも現れています。
+一方、ドリルは 2.434 と 2.432 で、差がありません。ドリルの損失は、窓を広げて初めて下がります。
+
+そのドリルの損失は、窓を広げるにつれて 2.43 から 1.66 まで下がりました。
+ところが、正答率は 8\% で頭打ちです。
+$n=8$ では、すべての問題が窓にすっぽり入っています。それでも、200 問のうち 16 問しか解けません。
+損失が下がったのに、なぜ解けないのでしょうか。
+
+ドリルの損失は、3 種類のトークンの平均です。
+問題の部分（「\code{=}」まで。全体の 63\%）、答えの数字（26\%）、改行（11\%）です。
+問題の数字はでたらめに作られているので、どんなモデルにも当てようがありません。
+種類ごとに測り直すと（\file{ch08/drill_parts.py}）、$n=3$ から $n=8$ で、改行の損失は 1.03 から 0.06 に下がりました。
+答えが何桁で終わるかは、分かるようになったのです。
+答えの数字も 2.42 から 1.61 に下がりましたが、$e^{1.61}\approx 5$ なので、まだ数字 1 個につき約 5 択で迷っています。
+答えの数字をすべて当てなければ正解にならないので、正答率は低いままです。
+
+しかも、小説の損失は $n=2$ がいちばん良く、窓を広げるほど悪くなりました。
+窓の外が見えないことだけが、問題ではなかったのです。
+
+\subsection*{限界 2：どの位置が大事かが、重みに焼き付けられている}
+
+式\eqref{eq:emb-hidden}を思い出します。
+$\vc$ は $n$ 本の埋め込みをつないだものなので、$\mW_1$ も、列を $d$ 本ずつに切って、$n$ 個の区画に分けられます。
+$n=3$ なら、次のように書けます。
+\begin{equation}
+\mW_1\vc = \mU_3\ve_{x_{t-3}} + \mU_2\ve_{x_{t-2}} + \mU_1\ve_{x_{t-1}}
+\label{eq:emb-blocks}
+\end{equation}
+$\mU_k$ は、$\mW_1$ の 192 列のうち、$k$ 個前の埋め込みに掛かる 64 列です。
+
+なぜ和に分かれるのかを、小さな数で確かめます。
+1 行 4 列の行列 $(1\ \ 2\ \ 3\ \ 4)$ を、2 次元の埋め込み $(5,6)$ と $(7,8)$ をつないだ $(5,6,7,8)^\T$ に掛けます。
+結果は $(1\times5+2\times6)+(3\times7+4\times8)=17+53=70$ です。
+前半の 2 列は 1 本目の埋め込みにだけ、後半の 2 列は 2 本目にだけ掛かっています。式\eqref{eq:emb-blocks}は、これを 64 列ずつでしたものです。
+
+$k$ 個前のトークンには、何が来ても、いつも $\mU_k$ が掛かります。
+埋め込み表 $\mE$ は位置で共通でしたが、$\mW_1$ は位置ごとに別なのです。
+どの位置をどれだけ重く見るかは、学習で $\mU_k$ に焼き付けられます。入力に合わせて変えることはできません。
+
+これが困るのは、大事な情報の位置が、入力ごとにずれるからです（\figref{fig:emb-shift}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\foreach \k [count=\i from 0] in {7,6,5,4,3,2,1} \node[lbl] at (\i*11,8) {\k 個前};
+\foreach \k [count=\i from 1] in {6,5,4,3,2,1} \node[lbl] at (\i*11,13) {$\mU_\k$};
+\node[lbl,anchor=east] at (5,13) {掛かる重み};
+\node[lbl] at (79,8) {次};
+\foreach \c/\s [count=\i from 0] in {\textbackslash n/tok,2/tok,5/redbox,+/tok,4/tok,8/tok,=/tok}
+  \node[\s,minimum width=8mm,minimum height=6mm] at (\i*11,0) {\texttt{\c}};
+\foreach \c/\s [count=\i from 1] in {\textbackslash n/tok,2/tok,5/redbox,+/tok,8/tok,=/tok}
+  \node[\s,minimum width=8mm,minimum height=6mm] at (\i*11,-10) {\texttt{\c}};
+\node[lbl] at (0,-10) {…};
+\node[plainbox,dashed,minimum width=8mm,minimum height=6mm] at (79,0) {？};
+\node[plainbox,dashed,minimum width=8mm,minimum height=6mm] at (79,-10) {？};
+\node[lbl,anchor=west] at (85,0) {答えは \texttt{73}};
+\node[lbl,anchor=west] at (85,-10) {答えは \texttt{33}};
+\draw[bookblue,thick,rounded corners=2pt] (38.5,4.5) rectangle (71.5,-14.5);
+\draw[bookgray,thick,dashed,rounded corners=2pt] (5.5,5.5) rectangle (72.5,-15.5);
+\node[lbl,text=bookblue] at (55,-18.5) {$n=3$ の窓};
+\node[lbl] at (20,-18.5) {$n=6$ の窓（破線）};
+\end{tikzpicture}
+\caption{二つの問題を、当てたい位置（右端の「？」）にそろえて並べたもの。
+一の位の「\texttt{5}」（赤）は、上では 5 個前、下では 4 個前にある。
+固定窓のモデルは位置ごとに別の重み $\mU_k$ を使うので、同じ役割の数字でも、位置が変わると別々に学ぶしかない。}
+\label{fig:emb-shift}
+\end{figure}
+
+「\code{25+48=}」では、足される数の一の位「\code{5}」は 5 個前にあります。
+「\code{25+8=}」では、4 個前です。
+人間なら「一の位どうしを足す」と一言で済ませます。
+しかし固定窓のモデルでは、5 個前の「\code{5}」には $\mU_5$ が、4 個前の「\code{5}」には $\mU_4$ が掛かります。
+二つは別のパラメータなので、片方で学んだことが、もう片方に伝わりません。
+\chapref{ch:lm}の壁 2 と同じ形の問題が、今度は「位置」について起きています。
+
+小説でも事情は同じです。
+主語が 3 個前にあるか 7 個前にあるかは、文によって違います。
+原理的には、広い窓のモデルは、遠い位置の $\mU_k$ を 0 にすれば、狭い窓のモデルと同じ予測ができます。
+それでも損失が上がったのは、学習が足りないからだと考えられます。
+窓を広げるほど $\mU_k$ は増えますが、それぞれが学べる例は薄まります。
+同じ 3000 回の更新では、広い窓を使いこなせませんでした（学習を長くすれば下がるはずですが、ここでは確かめていません）。
+
+\subsection*{限界 3：長さが決め打ち}
+
+窓の幅 $n$ は、モデルを作るときに決めます。
+$n=8$ で学習したモデルに、あとから 20 個前まで見せることはできません。
+小説には、数百トークン前の出来事が効く場面がいくらでもありますが、それを覆う窓を位置ごとの重みで用意するのは、現実的ではありません。
+300 個前まで見るなら、$\mW_1$ だけで $128\times(300\times64)=2{,}457{,}600$ 個になり、いまのモデル全体の約 3 倍です。
+
+この節のまとめです。
+固定窓のモデルには、窓の外が見えない、位置ごとに重みが決め打ち、長さが決め打ち、という三つの限界があります。
+窓を広げるだけでは、計算ドリルの正答率は 8\% までしか上がりませんでした。
+
+\section{可変長の文脈へ：RNN}\label{sec:emb-rnn}
+
+固定窓の三つの限界は、どれも「過去のトークンを、位置ごとに並べて一度に入れる」ことから来ていました。
+この節の問いは、「窓の幅を決めずに、過去を好きなだけ読むモデルは作れるか」です。
+
+\subsection*{メモを書き足しながら読む}
+
+人が長い文を読むとき、すべての語を目の前に並べてはいません。
+読んだ内容を頭の中にまとめ、1 語読むたびに、そのまとめを更新します。
+これをまねたのが、\term{再帰型ニューラルネットワーク}{recurrent neural network; RNN}です\footnote{言語への応用は、1990 年のエルマン（J. Elman）の研究~\cite{elman1990finding}にさかのぼります。}。
+RNN は、\term{隠れ状態}{hidden state}と呼ぶ 1 本のベクトル $\vh$ を「メモ」として持ちます。
+トークンを 1 個読むたびに、いまのメモと新しいトークンから、次のメモを作ります。
+\begin{align}
+\vh_t &= \tanh(\mW_x\ve_{x_t}+\mW_h\vh_{t-1}+\vb), \qquad \vh_0=\vzero \label{eq:emb-rnn}\\
+\vz_t &= \mW_o\vh_t+\vb_o \label{eq:emb-rnn-out}
+\end{align}
+$\ve_{x_t}$ は $t$ 番目のトークンの埋め込み、$\vh_{t-1}$ は 1 つ前までのメモです。
+$\vz_t$ は、$t$ 番目まで読んだ時点での、次のトークンのロジットです。
+$\mW_x$ は $d_h\times d$、$\mW_h$ は $d_h\times d_h$、$\mW_o$ は $V\times d_h$ の行列で、この章では $d=64$、$d_h=128$ です。
+式\eqref{eq:emb-hidden}と比べると、入力が埋め込み 1 本になり、$\mW_h\vh_{t-1}$ の項が増えています。
+この項を通して、過去の情報が先へ運ばれます（\figref{fig:emb-rnn}）。
+
+最初の 2 個ぶんを書き下します。$\vh_0=\vzero$ は、まだ何も読んでいない白紙のメモなので、$\vh_1$ では $\mW_h\vh_0$ の項が消えます。
+\[
+\vh_1 = \tanh(\mW_x\ve_{x_1}+\vb),\qquad
+\vh_2 = \tanh(\mW_x\ve_{x_2}+\mW_h\vh_1+\vb)
+\]
+$\vh_2$ の式に $x_1$ は直接は出てきませんが、$\vh_1$ を通して入っています。
+こうして $\vh_t$ は、$x_1$ から $x_t$ までのすべてに左右されます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=0.9mm,y=1mm]
+\node[graybox,minimum width=10mm] (h0) at (0,14) {$\vh_0$};
+\foreach \w/\nx [count=\i from 1, remember=\i as \j (initially 0)] in {私は/その, その/人を, 人を/常, 常/に} {
+  \node[tok,minimum width=11mm] (x\i) at (\i*25,0) {\w};
+  \node[greenbox,minimum width=10mm] (h\i) at (\i*25,14) {$\vh_\i$};
+  \node[orangebox,minimum width=10mm] (z\i) at (\i*25,28) {$\vz_\i$};
+  \node[lbl] at (\i*25,35) {次は「\nx」？};
+  \draw[arr] (x\i) -- node[right,lbl] {$\mE,\mW_x$} (h\i);
+  \draw[arr] (h\i) -- node[right,lbl] {$\mW_o$} (z\i);
+  \draw[arr] (h\j) -- node[above,lbl] {$\mW_h$} (h\i);
+}
+\draw[arr] (h4) -- ++(14,0) node[right,lbl] {…};
+\node[lbl,anchor=east] at (-7,14) {メモ};
+\node[lbl,anchor=east] at (17,0) {入力};
+\node[lbl,anchor=east] at (17,28) {予測};
+\end{tikzpicture}
+\caption{RNN を時間の方向に開いた図。隠れ状態 $\vh_t$ が、左から右へ情報を運ぶ。
+どの時刻でも、同じ重み $\mW_x$、$\mW_h$、$\mW_o$ を使い回す。}
+\label{fig:emb-rnn}
+\end{figure}
+
+固定窓の限界と見比べます。
+重みは、どの時刻でも同じものを使い回します。「3 個前用」のような、位置ごとの重みはありません。
+列の長さは、いくつでもかまいません。
+そして $\vh_t$ には、原理的には、それまでに読んだすべてのトークンが影響します。
+三つの限界は、形の上ではすべて外れました。
+
+\begin{quiz}
+RNN に読ませる列を、16 個から 32 個に伸ばすとします。パラメータは何個増えるでしょうか。
+固定窓の MLP 言語モデルで、窓の幅を 16 から 32 に広げる場合と比べてください。
+\end{quiz}
+
+RNN のパラメータは、1 個も増えません。どの時刻でも、同じ重みを使い回すからです。
+固定窓の MLP は、窓を 1 広げるたびに 8,192 個、16 広げると $16\times8{,}192=131{,}072$ 個増えます。
+
+\subsection*{RNN を作って、測る}\label{sec:emb-rnn-impl}
+\skimread{結論だけ押さえれば先へ進めます。RNN の正答率は 4\% 止まりです（基盤モデルは 86.5\%）。弱点は、古い情報ほど薄れる、学習の信号が昔まで届かない、順番にしか計算できない、1 本のベクトルに詰め込む、の四つです。}
+
+実装は、式\eqref{eq:emb-rnn}を \code{for} 文で回すだけです。
+
+\snippet{最小の RNN 言語モデル}{code:emb-rnn}{ch08/rnn_lm.py}{model}
+
+\code{fx} が $\mW_x$ と $\vb$、\code{fh} が $\mW_h$、\code{out} が $\mW_o$ と $\vb_o$ です。
+\code{fh} が \code{bias=False} なのは、バイアス $\vb$ を \code{fx} がすでに持っているからです。
+\code{read} の \code{e[:, t]} は、$B$ 本の列それぞれの、$t$ 番目の埋め込みです（形 $(B,d)$）。
+\code{for} 文の中の 1 行が式\eqref{eq:emb-rnn}で、メモの書き足しです。
+各時刻のメモ（形 $(B,h)$）を $T$ 個ためておき、最後に \code{torch.stack} で形 $(B,T,h)$ に積み上げます（$T$ は列の長さ）。
+
+学習では、長さ 16 の列を 64 本ずつ読ませ、16 個の位置それぞれで次のトークンを当てさせます。損失は、その平均です（\file{ch08/rnn_lm.py}）。
+1 回の更新で当てる個数は $64\times16=1024$ 個で、MLP と同じです（筆者の PC では、学習に 3 分あまりかかりました）。
+パラメータ数は、MLP（$n=3$）と同じ 815,232 個です。
+MLP の $\mW_1$（$128\times192$）が、$\mW_x$（$128\times64$）と $\mW_h$（$128\times128$）に、ちょうど分かれた形だからです（$8{,}192+16{,}384=24{,}576$）。
+結果を、これまでのモデルと並べます（\tabref{tab:emb-rnn}）。
+
+\begin{table}[tbp]
+\centering
+\caption{この章のモデルと、本書の基盤モデルの比較（検証損失と、ドリル 200 問の正答率。実測）。
+「うち答え」は、ドリルのうち、答えの数字だけの損失（\file{ch08/drill_parts.py}）。
+RNN は、読む長さを決めなくてよい（学習では 16 個ずつ読ませた）。
+基盤モデル（\chapref{ch:transformer}の Transformer）はパラメータが約 3 倍で、学習時間も 10 倍以上なので、公平な比較ではない。}
+\label{tab:emb-rnn}
+\small
+\begin{tabular}{llrrrrrr}
+\toprule
+モデル & 見る範囲 & パラメータ数 & 全体 & 小説 & ドリル & うち答え & 正答率 \\
+\midrule
+MLP & 直前 3 個 & 82 万 & 4.120 & 5.512 & 2.059 & 2.420 & 2.5\% \\
+MLP & 直前 8 個 & 86 万 & 4.194 & 5.905 & 1.658 & 1.614 & 8.0\% \\
+RNN & 可変 & 82 万 & 4.071 & 5.602 & 1.804 & 2.172 & 4.0\% \\
+\midrule
+基盤モデル & 128 個まで & 258 万 & 3.432 & 4.864 & 1.310 & 0.301 & 86.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+RNN の全体の損失は 4.071 で、この章のモデルの中でいちばん低くなりました。
+更新は 2000 回で、当てた個数は MLP の約 3 分の 2 です（$2000\times1024=2{,}048{,}000$ 個。MLP は $3{,}072{,}000$ 個）。
+MLP は、窓が狭いとドリルが悪く、広いと小説が悪くなりました。
+RNN は、一つのモデルで、どちらもそこそこの値を出しています。
+ただし、小説の損失は MLP（$n=3$）に届かず、正答率は 4\% です。
+基盤モデルとの差は、まだ大きく開いています。
+違いがはっきり出るのは、答えの数字の損失です。この章のモデルは 1.6〜2.4 ですが、基盤モデルは 0.30 で、ほとんど迷っていません。
+ドリル全体の損失の差が小さく見えるのは、当てようのない問題の部分が、どのモデルでも約 1.9〜2.1 のまま平均に入っているからです。
+RNN には、RNN の弱点があるのです。実測しながら、四つ挙げます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=41mm,title={(a) 読ませる個数と損失},title style={font=\footnotesize},
+  xlabel={読ませる個数 $k$},ylabel={損失の変化（下ほど良い）},xmin=0,xmax=33,ymin=-0.75,ymax=0.15,
+  xtick={1,4,8,16,24,32},legend pos=north east,legend style={font=\scriptsize},
+  label style={font=\footnotesize},tick label style={font=\scriptsize}]
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=k,y=d_novel]{code/ch08/out/rnn_context.csv};
+\addlegendentry{小説}
+\addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=k,y=d_drill]{code/ch08/out/rnn_context.csv};
+\addlegendentry{ドリル}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{semilogyaxis}[width=0.5\linewidth,height=41mm,title={(b) 昔のトークンに届く勾配},title style={font=\footnotesize},
+  xlabel={何個前のトークンか},ylabel={勾配の大きさ},xmin=0,xmax=33,ymin=1e-7,ymax=3,
+  xtick={1,8,16,24,32},ytick={1e-6,1e-4,1e-2,1},ymajorgrids,legend pos=north east,legend style={font=\scriptsize},
+  label style={font=\footnotesize},tick label style={font=\scriptsize}]
+\addplot[bookblue,thick] table[col sep=comma,x=dist,y=novel]{code/ch08/out/rnn_grad.csv};
+\addlegendentry{小説}
+\addplot[bookorange,thick,dashed] table[col sep=comma,x=dist,y=drill]{code/ch08/out/rnn_grad.csv};
+\addlegendentry{ドリル}
+\end{semilogyaxis}
+\end{tikzpicture}
+\caption{学習した RNN を調べた結果（実測、\file{ch08/rnn_probe.py}）。
+(a) 直前の $k$ 個だけを読ませたときの検証損失。$k=1$ のときとの差で示す。10 個ほどで下げ止まる。
+(b) 各位置の埋め込みを少し動かしたときの、最後の予測の損失の動きやすさ（勾配の大きさ。1 個前を 1 とする。縦軸は対数）。}
+\label{fig:emb-rnn-probe}
+\end{figure}
+
+\textbf{弱点 1：古い情報ほど薄れる。}\
+隠れ状態は、1 個読むたびに全体が書き換えられます。
+古い情報は、書き換えのたびに少しずつ薄まります。
+\figref{fig:emb-rnn-probe}(a) は、同じ RNN に直前の $k$ 個だけを読ませて、損失を測ったものです。
+学習では 16 個ずつ読ませたので、17 個より前を使えないのは当然です。
+問題は、16 個の中でも、古いほうがほとんど使われていないことです。
+小説では、4 個より前を読ませても、損失は 0.015 しか下がりません（4 個で 5.616、32 個で 5.601）。
+小説には、もっと前の内容が効く場面が多いはずなのに、使えていないのです（2000 回の更新での結果です）。
+ドリルは 12 個まで下がり続けます。1 問は長くても 13 個のトークン（「\code{999+999=1998}」と改行）なので、問題の先頭までは使えているようです。
+離れたトークンどうしの関係を\term{長距離依存}{long-range dependency}と呼びます。RNN はこれが苦手です。
+
+\textbf{弱点 2：学習の信号も、昔までは届かない。}\
+\figref{fig:emb-rnn-probe}(b) は、昔のトークンの埋め込みを少し動かしたとき、最後の予測の損失がどれだけ動くか（勾配の大きさ）を測ったものです。
+小さいほど、そのトークンは予測に効いていません。
+小説では、8 個前で約 40 分の 1、16 個前では約 400 分の 1 に減っています（1 個前を 1 として、0.024 と 0.0024）。ドリルでは、8 個より前でさらに速く減ります。
+理由は式\eqref{eq:emb-rnn}にあります。
+$\vh_{t-1}$ の変化は、$\mW_h$ と $\tanh$ の傾き（1 以下）を掛けられて、$\vh_t$ に伝わります。
+$k$ 個前からだと、この掛け算が $k$ 回重なります。
+1 回ごとの倍率が 1 より小さければ、値は指数的に小さくなります（1 より大きければ、反対に膨らみます）。
+1 次元の場合を、章末の演習で確かめます。
+小説では、8 個前から 16 個前までの 8 歩で約 10 分の 1 なので、1 歩あたり約 0.75 倍です（$0.75^8\approx0.10$）。
+\chapref{ch:nn}で見た勾配消失が、時間の方向に起きているのです\cite{pascanu2013difficulty}。
+学習の信号も同じ道を逆にたどるので、「昔のトークンを覚えておくと得をする」ことを、モデルは学びにくくなります。
+
+\textbf{弱点 3：1 個ずつ、順番にしか計算できない。}\
+MLP は、学習のとき、1024 個の窓を同時に計算できました。
+RNN では、$\vh_t$ を計算するのに $\vh_{t-1}$ が先に要るので、列の中を順番に進むしかありません。
+1000 トークンの文なら、1000 回の順番待ちです。
+多くの計算を同時に行う GPU（\chapref{ch:gpu}）の力を、生かせません。
+
+\textbf{弱点 4：すべてを 1 本のベクトルに詰め込む。}\
+過去の情報の通り道は、隠れ状態 1 本だけです。
+「\code{25+48=}」の答えを書くには、四つの数字を、順番ごと正確にメモに残す必要があります。
+文が長いほど、この細い通り道（ボトルネック）に入りきらなくなります。
+
+\subsection*{RNN の改良と、「注意」の誕生}
+\skimread{押さえるのは、LSTM が「メモのどこを残すかを決める仕組みを足した RNN」であることと、節の最後に出てくる問いです。}
+
+ここからは歴史の話です。細部は覚えなくてかまいません。持ち帰ってほしいのは、最後に出てくる問い一つです。
+
+弱点 1 と 2 を和らげたのが、\term{LSTM}{long short-term memory}です\cite{hochreiter1997long}。
+LSTM は、メモのどこを書き換え、どこを残すかを決める「ゲート」を持ちます。
+残すと決めた情報は、掛け算を重ねずに先へ運ばれるので、勾配が消えにくくなります。
+2017 年ごろまで、言語を扱うニューラルネットワークの主役は LSTM でした。
+しかし、弱点 3 と 4 は残りました。
+
+弱点 4 が表に出たのが、ある言語の文を読んで別の言語の文を書く、機械翻訳です。
+2014 年に、一つの RNN（エンコーダ）で入力文を読み切り、最後の隠れ状態を別の RNN（デコーダ）に渡して訳文を書かせる方法が現れました\cite{sutskever2014sequence}。
+文全体を 1 本のベクトルに詰めるので、文が長いほど訳の質が落ちると指摘されました\cite{bahdanau2015neural}。
+そこでバーダナウ（D. Bahdanau）らは、デコーダが 1 語書くたびに、入力文の\textbf{すべての位置}の隠れ状態を見渡す仕組みを加えました。
+いま必要な位置に大きな重みを付け、そこから情報を直接取り出します。
+この仕組みは、注意（attention）と呼ばれるようになりました。
+
+注意は、RNN の弱点を補う部品として生まれました。
+ここで、一つの問いが浮かびます。
+過去の情報を取り出すのに注意が使えるなら、隠れ状態に詰め込んで運ぶ必要は、そもそもあるのでしょうか。
+\textbf{最初から、全トークンを直接見に行けばよいのでは？}
+
+この節のまとめです。
+RNN は、隠れ状態に書き足しながら読むことで、窓の幅を決めずに文脈を扱えます。
+しかし、古い情報は薄れ、計算は順番待ちになり、すべてを 1 本のベクトルに詰め込まなければなりません。
+この章のモデルを、\tabref{tab:emb-three}に並べました。
+
+\begin{summary}
+\item トークンの番号には大小の意味がありません。埋め込み表 $\mE$ の行を引いて、$d$ 次元のベクトルに取り替えます。これは one-hot ベクトルに行列を掛けるのと同じ計算で、表の中身は学習で決まります。
+\item 次のトークンを当てる学習だけで、似た使われ方をするトークン（数字どうし、登場人物どうし）は、近いベクトルを持つようになりました。
+\item 直前 $n$ 個の埋め込みを並べて MLP に入れると、固定窓の言語モデルになります。バイグラムの表の 20 分の 1 の大きさで、検証損失は 4.328 から 4.120 に下がりました。
+\item 固定窓には、窓の外が見えない、どの位置が大事かが重みに焼き付けられている、長さが決め打ち、という限界があります。窓を広げても、計算ドリルの正答率は 8\% 止まりでした。
+\item RNN は、過去の情報を 1 本の隠れ状態に書き足しながら読み進めます。重みを全時刻で使い回し、長さを決めずに文脈を扱えます。
+\item RNN には、古い情報ほど薄れる（長距離依存、勾配消失）、1 個ずつ順番に計算するので並列化できない、1 本のベクトルがボトルネックになる、という弱点があります。
+\item 機械翻訳では、RNN に「入力の全位置を見渡して、必要な情報を取り出す」注意が加えられました。これが次の章の出発点です。
+\end{summary}
+
+\section*{次の章へ}
+
+固定窓は、窓の外を見られず、見る位置の重みも決め打ちでした。
+RNN は、遠くまで読めるかわりに、古い情報が薄れ、順番待ちが生じました。
+
+\begin{table}[tbp]
+\centering
+\caption{この章のモデルの比較。上の 3 行は、どこかの列に弱みがある。最後の行を次章で作る。}
+\label{tab:emb-three}
+\small
+\begin{tabular}{llll}
+\toprule
+モデル & 見える範囲 & どこを重く見るか & 計算の進め方 \\
+\midrule
+数える表（バイグラム） & 直前 1 個 & 選べない & 表を引くだけ \\
+固定窓の MLP & 直前 $n$ 個だけ & 位置ごとの重みで固定 & 同時にできる \\
+RNN & 自由（古いほど薄れる） & 1 本のメモに混ぜる & 1 個ずつ順番 \\
+\midrule
+欲しいもの（次章） & 過去のすべてを直接 & 内容を見て決める & 同時にできる \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+欲しいのは、\textbf{必要な過去の情報を、必要なときに、直接取りに行く}仕組みです。
+どこを見るかは、位置ではなく、内容で決めたい。しかも、全位置の計算を同時に進めたい（\tabref{tab:emb-three}のいちばん下の行）。
+\chapref{ch:attention}では、この仕組みである注意機構を、一歩ずつ組み立てます。
+\tabref{tab:emb-rnn}の基盤モデルの正答率 86.5\% は、そこから生まれます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Bengio ら\cite{bengio2003neural}：この章の MLP 言語モデルの元になった論文。埋め込みと言語モデルを一緒に学習する発想は、ここから広まった。
+\item Mikolov ら\cite{mikolov2013efficient}：word2vec の論文。単語の埋め込みだけを、速く学習する方法。
+\item Karpathy の講義\cite{karpathy2022zerotohero}：「makemore」の回で、同じ形のモデルを文字単位で作る。
+\item Jurafsky と Martin の教科書\cite{jurafsky2025slp}：埋め込みと RNN・LSTM の章が詳しい。
+\item Pascanu ら\cite{pascanu2013difficulty}：RNN の勾配が消えたり爆発したりする理由の分析。
+\item Bahdanau ら\cite{bahdanau2015neural}：翻訳の RNN に注意を組み込んだ論文。\chapref{ch:attention}に進む前に、図だけでも眺めるとよい。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1・2・4}
+\item （手計算）$V=4$、$d=2$ の埋め込み表 $\mE$ の各行を $(1,0)$、$(0,1)$、$(1,1)$、$(2,-1)$ とします（上から番号 0、1、2、3）。番号の列 $[3,1]$ の埋め込みを書いてください。また、番号 3 の one-hot ベクトルに $\mE$ を掛け、同じ行が出てくることを確かめてください。
+\item （計算）$V=4096$、$n=5$、$d=32$、$d_h=256$ の MLP 言語モデルのパラメータ数を、部品ごとに求めてください。いちばん多いのはどの部品でしょうか。
+\item （コード）\file{ch08/mlp_lm.py} の埋め込みの次元 \code{d} を 16 と 256 に変えて学習し、検証損失を比べてください。小説とドリルで、傾向は同じでしょうか。
+\item （考察）「\code{123+456=}」の答えの 1 文字目を当てるとき、問題文をすべて窓に入れるには、窓の幅はいくつ必要でしょうか。答えの 3 文字目を当てるときはどうでしょうか（数字は 1 文字が 1 トークンです）。
+\item （数理）隠れ状態が 1 個の数だけの RNN、$h_t=\tanh(w\,h_{t-1}+x_t)$ を考えます。$\left|\partial h_t/\partial h_{t-1}\right|\le|w|$ を示し、$k$ 個前までさかのぼった微分の大きさが $|w|^k$ 以下になることを確かめてください。$w=0.5$、$k=20$ のとき、この上限はいくつでしょうか。
+\end{exercises}

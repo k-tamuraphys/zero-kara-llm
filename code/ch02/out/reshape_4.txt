@@ -1,0 +1,6 @@
+torch.Size([2, 4, 3])
+torch.Size([4, 2, 3])
+torch.Size([1, 2, 3, 4]) torch.Size([1, 2, 3, 4])
+torch.Size([2, 3, 4])
+torch.Size([24])
+torch.Size([4, 3, 4])

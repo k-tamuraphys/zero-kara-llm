@@ -1,0 +1,66 @@
+% 表紙と前付け
+\begin{titlepage}
+\centering
+\vspace*{18mm}
+{\sffamily\color{bookgray}\large 機械学習の基礎から自作 LLM・AI エージェントまで\par}
+\vspace{8mm}
+{\sffamily\bfseries\color{bookblue}\fontsize{30pt}{40pt}\selectfont ゼロから作る\par}
+\vspace{3mm}
+{\sffamily\bfseries\color{bookblue}\fontsize{30pt}{40pt}\selectfont 大規模言語モデル\par}
+\vspace{14mm}
+\begin{tikzpicture}[node distance=3mm]
+  \node[tok] (a) {吾輩は};
+  \node[tok,right=of a] (b) {猫};
+  \node[tok,right=of b] (c) {で};
+  \node[tok,right=of c,fill=figgreen,draw=bookgreen] (d) {ある};
+  \node[tok,right=of d,fill=white,draw=black!30,text=black!40] (e) {？};
+  \foreach \x/\y in {a/b,b/c,c/d,d/e} \draw[arr] (\x) -- (\y);
+  \node[box,below=12mm of c,minimum width=70mm,minimum height=12mm] (m)
+    {Transformer\quad $p_\theta(x_t \mid x_{<t})$};
+  \foreach \x in {a,b,c} \draw[arr] (\x.south) -- (\x.south |- m.north);
+  \draw[arr,bookgreen] (d.south |- m.north) -- (d.south);
+\end{tikzpicture}
+\par\vspace{16mm}
+{\large 数式・図・動くコードの三つで学ぶ\par}
+\vspace{2mm}
+{\large 事前学習／分散学習／事後学習／LoRA／蒸留／強化学習／エージェント\par}
+\vfill
+{\sffamily\color{bookgray} PyTorch サンプルコード付き\par}
+\vspace{10mm}
+\end{titlepage}
+
+\chapter*{まえがき}
+\addcontentsline{toc}{chapter}{まえがき}
+
+大規模言語モデル（LLM）は、使うだけなら誰にでもできる道具になりました。
+しかし「作る」となると、急に霧がかかります。
+Transformer、Attention、KV キャッシュ、LoRA、蒸留、強化学習、エージェント。
+用語は次々に現れ、解説は断片的で、論文は予備知識を要求します。
+どこから手を付ければよいのか、分からなくなるのも無理はありません。
+
+本書は、その霧を端から端まで晴らすために書きました。
+機械学習をまったく知らない読者が、一冊を読み通すだけで、
+自分の手で LLM を作り、育て、AI エージェントに仕立てられるようになること。
+それが本書の目標です。
+
+そのために、三つの方針を立てました。
+
+\begin{description}[leftmargin=1em,style=nextline]
+\item[一冊で閉じる]
+必要な数学の言葉から始めて、最新の開発手法まで、使う概念はすべて本書の中で定義します。
+「詳しくは他書を参照」で済ませません。
+\item[行間を埋める]
+新しい概念は、必ず「何に困っているのか」から説き起こします。
+式変形は一行ずつ理由を添え、数式・図・コードを互いに対応づけます。
+\item[動かして確かめる]
+本書のコードはすべて、GPU のない普通の PC で動きます。
+小説と計算ドリルを読ませた小さなモデルを一つ育て、
+その同じモデルを最後まで使い続けます。
+\end{description}
+
+手元で動かせるモデルは小さなものです。
+それでも、行う工程は実際の LLM 開発と同じです。
+読み終えたとき、「あとはデータと GPU を増やせば、同じことをするだけだ」と感じてもらえたなら、
+本書の目的は達せられたことになります。
+
+では、始めましょう。

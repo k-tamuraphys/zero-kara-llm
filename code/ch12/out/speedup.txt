@@ -1,0 +1,4 @@
+SDPA: 素朴 24.1 ms, 融合 28.1 ms, 最大差 9.2e-07
+x*2: 1.4 ms（95.8 GB/s, 12.0 GFLOP/s）, gelu_chain: 76.7 ms
+torch.compile は使えませんでした: InductorError
+勾配累積: 一括との最大差 6.0e-08

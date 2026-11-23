@@ -1,0 +1,3 @@
+<|system|>計算は必ず calculator ツールで行ってください。<|end|><|user|>37×48は？<|end|><|tool|>37×48<|end|><|result|>エラー: 計算できない式です（使える記号は 0-9 + - * のみ）<|end|><|assistant|>エラー: 計算できない式です（使える記号は 0-9 + - * のみ）<|end|>
+<|system|>計算は必ず calculator ツールで行ってください。<|end|><|user|>37×48は？<|end|><|tool|>37×48<|end|><|result|>1776<|end|><|assistant|>37 × 48 = 1776<|end|>
+<|system|>計算は必ず calculator ツールで行ってください。<|end|><|user|>123456×789は？<|end|><|tool|>123456×789<|end|><|result|>97406784<|end|><|assistant|>123456 × 789 = 97406784<|end|>

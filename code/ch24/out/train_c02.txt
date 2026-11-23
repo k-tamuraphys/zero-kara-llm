@@ -1,0 +1,14 @@
+step 10 53s reward 0.534 add_acc 0.40 add_tool 0.29
+step 20 107s reward 0.309 add_acc 0.23 add_tool 0.22
+step 30 164s reward 0.278 add_acc 0.19 add_tool 0.15
+step 40 220s reward 0.188 add_acc 0.03 add_tool 0.56
+step 50 277s reward 0.387 add_acc 0.19 add_tool 0.38
+step 60 337s reward 0.341 add_acc 0.36 add_tool 0.28
+step 70 414s reward 0.425 add_acc 0.36 add_tool 0.29
+step 80 483s reward 0.461 add_acc 0.39 add_tool 0.05
+step 90 545s reward 0.180 add_acc 0.09 add_tool 0.29
+学習 90 ステップ（557 秒）, c=0.2
+  add: 正答率 0.414  電卓使用率 0.166  平均呼び出し 0.17
+  mul: 正答率 0.903  電卓使用率 1.000  平均呼び出し 1.00
+  two: 正答率 0.943  電卓使用率 1.000  平均呼び出し 1.00
+[合計 557 秒]

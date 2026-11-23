@@ -1,0 +1,1426 @@
+\chapter{方策勾配法：REINFORCE から PPO まで}\label{ch:policy-gradient}
+\bookmap{6}
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:rl-basics}で、強化学習の問題をマルコフ決定過程（MDP）として書き、
+価値関数とベルマン方程式、TD 学習と Q 学習を学びました。\\
+\textbf{この章の問い}: 「良い結果につながった行動の確率を上げる」という素朴な考えを、
+勾配降下法として正確に書くにはどうすればよいのでしょうか。
+素朴な方法はなぜ不安定で、現在の標準である PPO は何を直したのでしょうか。\\
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 方策勾配定理を、対数微分のトリックから 1 行ずつ自分で導けます。
+\item REINFORCE が「収益で重み付けした交差エントロピー」であることを説明できます。
+\item ベースラインがなぜ分散を減らし、しかも答えを歪めないのかを証明できます。
+\item GAE と PPO のクリップ付き目的関数を、式・図・コードで説明し、実装できます。
+\item 自作の倒立振子で REINFORCE と PPO を学習させ、学習曲線と診断量を読めます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:rl-basics}の MDP・収益 $G_t$・価値 $V^\pi,Q^\pi$・TD 誤差と、\chapref{ch:ml}の交差エントロピーの勾配 $\vp-\ve_y$ を思い出せれば読めます。
+\item[\rgmust] \secref{sec:pg-param}〜\secref{sec:pg-variance}：方策勾配定理、REINFORCE、ベースライン（\secref{sec:pg-variance}の小節「倒立振子で分散を測る」だけは流し読み可）。\chapref{ch:rl-llm}はこの三つの式をそのまま言語モデルに使います。
+\item[\rgskim] \secref{sec:pg-actor-critic}：「TD 誤差でアドバンテージを推定し、$\lambda$ で偏りと分散を調整するのが GAE」という結論だけで、PPO へ進めます。
+\item[\rgmust] \secref{sec:pg-surrogate}〜\secref{sec:pg-ppo}：確率比 $\rho_t$ とクリップ。次章の GRPO も、このクリップと、同じ形の KL の推定を使います。
+\item[\rgskim] \secref{sec:pg-experiments}：「PPO は少ないデータで学び、学習率に鈍感。クリップを外すと崩れる種が出る」という結論を押さえれば足ります。
+\item[\rgmust] \secref{sec:pg-llm-bridge}：倒立振子の式を言語モデルに読み替える対応表。次章の出発点です。
+\end{readingguide}
+
+\chapref{ch:rl-basics}の Q 学習は、状態と行動の組ごとに「得点の表」を持ちました。
+この表を言語モデルに使えるでしょうか。
+ミニGPT の語彙は 4,096 種類です。
+状態を「ここまでのトークン列」とすると、長さ 10 の列だけでも $4096^{10}\approx10^{36}$ 通りあります（$4096\approx10^{3.6}$ なので、10 回掛けると $10^{36}$）。
+表を埋めることは、とうてい不可能です。
+
+そこで発想を変えます。
+LLM はもともと「次のトークンの確率」を出す関数でした（\chapref{ch:lm}）。
+これは強化学習の言葉でいえば、状態から行動の確率を出す\textbf{方策}そのものです。
+それなら、表を作らずに、\textbf{方策のパラメータを直接動かして}良い結果を増やせばよいはずです。
+計算アシスタントが「12+35は？」に「47です。」と答えて褒められたなら、同じ質問で「47です。」と答える確率を少し上げればよいのです。
+
+この直感を「勾配」として正確に書こうとすると、すぐに壁にぶつかります。
+報酬は、モデルが\textbf{サンプリングした}行動の結果として届きます。
+サンプリングという操作は、微分できません。
+この章では、この壁を一本の恒等式（対数微分のトリック）で乗り越え、
+REINFORCE、ベースライン、アクター・クリティック、GAE、そして PPO までを一本の道としてたどります。
+
+\section{方策をパラメータで表す}\label{sec:pg-param}
+
+\chapref{ch:rl-basics}では、価値を学んでから、価値が最大の行動を選ぶ、という順で方策を作りました。
+この節の問いは、「方策そのものを学習の対象にするとは、何を何の関数として表し、何を最大化することか」です。
+
+\subsection*{価値ベースと方策ベース}
+
+Q 学習は、まず行動価値 $Q(s,a)$ を推定し、「$Q$ が最大の行動を選ぶ」ことで方策を決めました。
+方策は、価値から間接的に作られる脇役です。
+これが、前の章の最後に名前を挙げた\textbf{価値ベース}の方法です。
+これに対して、方策をパラメータ $\vtheta$ を持つ関数 $\pitheta(a\mid s)$ として直接表し、
+$\vtheta$ を勾配で動かして収益を増やすやり方が、\textbf{方策ベース}の方法です。
+その中心にある勾配を\term{方策勾配}{policy gradient}と呼びます（\figref{fig:pg-value-vs-policy}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 6mm]
+  \node[lbl,anchor=west] (h1) at (0,0) {\textbf{価値ベース（Q 学習など、\chapref{ch:rl-basics}）}};
+  \node[box,below=3mm of h1.south west,anchor=north west] (s1) {状態 $s$};
+  \node[box,right=of s1,minimum width=26mm] (q1) {$Q(s,a)$ を推定\\（表・ネット）};
+  \node[box,right=of q1,minimum width=22mm] (am) {$\argmax_a Q(s,a)$};
+  \node[greenbox,right=of am] (a1) {行動 $a$};
+  \draw[arr] (s1) -- (q1); \draw[arr] (q1) -- (am); \draw[arr] (am) -- (a1);
+  \node[lbl,anchor=west] (h2) at (0,-2.3) {\textbf{方策ベース（この章）}};
+  \node[box,below=3mm of h2.south west,anchor=north west] (s2) {状態 $s$};
+  \node[purplebox,right=of s2,minimum width=26mm] (pi) {ネット $\vz_{\vtheta}(s)$\\$\to$ softmax};
+  \node[box,right=14mm of pi,minimum width=22mm] (smp) {確率に従って\\サンプル};
+  \node[greenbox,right=of smp] (a2) {行動 $a$};
+  \draw[arr] (s2) -- (pi); \draw[arr] (pi) -- node[above,lbl]{$\pitheta(a|s)$} (smp); \draw[arr] (smp) -- (a2);
+  \draw[darr,rounded corners=3pt] (a2.south) -- ++(0,-6mm) -| node[pos=0.25,below,lbl]
+    {報酬を見て $\vtheta$ を勾配で直接動かす} (pi.south);
+\end{tikzpicture}
+\caption{価値ベースと方策ベース。上：価値 $Q$ を学び、方策はそこから作る。
+下：方策 $\pitheta$ そのものがパラメータを持ち、報酬を手がかりに勾配で直接良くする。
+LLM はもともと下の形（状態からトークンの確率を出すネット）をしている。}
+\label{fig:pg-value-vs-policy}
+\end{figure}
+
+方策ベースは LLM に向いています。
+価値ベースは $\argmax_a$ のために全行動の $Q$ を比べますが、方策ベースは確率に従って一つサンプルするだけなので、行動が何千種類あっても困りません。
+しかも、SFT を終えたモデルという「すでにそこそこ良い方策」から出発できます。
+
+\subsection*{softmax 方策と目的関数}
+
+方策は、各行動の確率が 0 以上で、和が 1 でなければなりません。
+この条件を自動的に満たす道具が、ロジット $\vz$ を確率に変える softmax 関数（\chapref{ch:math}）です。
+
+\begin{definition}[softmax 方策]\label{def:pg-softmax-policy}
+状態 $s$ から各行動のスコア（ロジット）$\vz_{\vtheta}(s)\in\R^{\abs{\calA}}$ を出す関数を、パラメータ $\vtheta$ で表します。
+その softmax
+\begin{equation}
+\pitheta(a\mid s)=\softmax\bigl(\vz_{\vtheta}(s)\bigr)_a=\frac{\exp z_{\vtheta}(s)_a}{\sum_{a'\in\calA}\exp z_{\vtheta}(s)_{a'}}
+\label{eq:pg-softmax-policy}
+\end{equation}
+を\term{softmax 方策}{softmax policy}と呼びます。
+\end{definition}
+
+$\vz_{\vtheta}$ には、倒立振子では小さな多層パーセプトロン（\chapref{ch:nn}）を、\chapref{ch:rl-llm}ではミニGPT そのものを使います。
+\figref{fig:pg-value-vs-policy}の下段の最後の「サンプル」の箱が、次の節で問題になります。
+
+何を最大化するかを決めます。記号は\chapref{ch:rl-basics}と同じです。
+エピソードの軌跡を $\tau=(s_0,a_0,r_0,s_1,a_1,r_1,\dots,s_{T-1},a_{T-1},r_{T-1})$ と書きます。
+本章では、行動 $a_t$ の直後に受け取る報酬を $r_t$ と書きます\footnote{教科書によっては、この報酬を $r_{t+1}$ と書きます。添字のずらし方が違うだけです。}。
+軌跡全体の収益を $R(\tau)=\sum_{t=0}^{T-1}\gamma^{t}r_t$（$\gamma$ は割引率）とします。
+方策 $\pitheta$ に従って行動すると、軌跡は確率的に決まります。その確率分布を $p_{\vtheta}(\tau)$ と書きます（中身は\secref{sec:pg-theorem}で書き下します）。
+
+\begin{definition}[方策の目的関数]\label{def:pg-objective}
+方策 $\pitheta$ の\term{目的関数}{objective}を、収益の期待値
+\begin{equation}
+J(\vtheta)=\E_{\tau\sim p_{\vtheta}}\bigl[R(\tau)\bigr]
+\label{eq:pg-objective}
+\end{equation}
+とします。方策勾配法は、勾配 $\nabla_{\vtheta}J$ の方向に $\vtheta$ を少しずつ動かす\textbf{勾配上昇法}です
+（$\calL=-J$ を勾配降下で小さくするのと同じことです）。
+\end{definition}
+
+\subsection*{いちばん小さな例：3 択の計算アシスタント}
+
+手で計算できる例を作ります。
+計算アシスタントが「12+35は？」と聞かれ、次の 3 通りの答え方から一つを選ぶとします。
+\[
+a_1=\text{「47です。」},\qquad a_2=\text{「46です。」},\qquad a_3=\text{「わかりません。」}
+\]
+正解の $a_1$ だけに報酬 $r(a_1)=1$ を与え、$r(a_2)=r(a_3)=0$ とします。
+状態は一つで、1 回答えたら終わりです（\chapref{ch:rl-basics}の\textbf{多腕バンディット}）。
+方策のパラメータは 3 つのロジット $\vtheta=(\theta_1,\theta_2,\theta_3)$ そのもので、$\pi_k=\pitheta(a_k)=\softmax(\vtheta)_k$ です。
+すると目的関数は和で書き下せます。
+\begin{equation}
+J(\vtheta)=\sum_{k=1}^{3}\pi_k\,r(a_k)=\pi_1 .
+\label{eq:pg-bandit-J}
+\end{equation}
+期待報酬は正解する確率そのものです。$\vtheta=\vzero$ なら三つの確率はどれも $1/3$ で、$J=1/3$ です。
+
+この $J$ をどちらに動かせば増えるかを、微分で調べます。
+道具は softmax の微分 $\partial\pi_k/\partial\theta_j=\pi_k(\mathbf{1}[j=k]-\pi_j)$ です
+（$\mathbf{1}[\cdot]$ は括弧の中が真なら 1、偽なら 0。\chapref{ch:ml}で softmax と交差エントロピーの勾配を導いたときと同じ計算です）。
+\begin{align}
+\pd{J}{\theta_j}
+&=\sum_{k}r(a_k)\,\pd{\pi_k}{\theta_j}
+&&\text{（$r$ は $\vtheta$ によらない）}\notag\\
+&=\sum_{k}r(a_k)\,\pi_k\bigl(\mathbf{1}[j=k]-\pi_j\bigr)
+&&\text{（softmax の微分）}\notag\\
+&=\pi_j\,r(a_j)-\pi_j\sum_k \pi_k r(a_k)
+&&\text{（$\mathbf{1}[j=k]$ の和は $k=j$ の項だけ残る）}\notag\\
+&=\pi_j\bigl(r(a_j)-J\bigr)
+&&\text{（式\eqref{eq:pg-bandit-J}より $\textstyle\sum_k\pi_kr(a_k)=J$）}.
+\label{eq:pg-bandit-grad}
+\end{align}
+最後の式は、「報酬が平均 $J$ より良い行動のロジットを上げ、悪い行動のロジットを下げる」と読めます。
+$\vtheta=\vzero$ では、$\partial J/\partial\theta_1=\frac13(1-\frac13)=\frac29\approx0.222$、
+$\partial J/\partial\theta_2=\partial J/\partial\theta_3=\frac13(0-\frac13)=-\frac19\approx-0.111$ です。
+PyTorch の自動微分でも確かめます。
+
+\snippet{3 択バンディットの期待報酬を厳密に微分する}{code:pg-bandit-setup}{ch21/bandit_pg.py}{bandit-setup}
+
+5 行目で方策 $\pi$ を作り、6 行目で式\eqref{eq:pg-bandit-J}の和を計算し、7 行目で $J$ を \code{theta} で微分します。
+結果の 3 行目が手計算の $(\frac29,-\frac19,-\frac19)$ と一致します。
+
+\outputfile{ch21/out/bandit_exact.txt}
+
+この節で分かったことをまとめます。
+方策ベースの方法では、方策を softmax 方策としてパラメータで直接表し、期待収益 $J(\vtheta)$ を勾配上昇で最大化します。
+すべての行動を書き出せる小さな例なら、$J$ は厳密に微分できます。
+
+\section{対数微分のトリック}\label{sec:pg-logtrick}
+
+倒立振子や LLM では、起こりうる軌跡の数が天文学的で、和を書き出せません。
+手に入るのは、方策を実際に動かして集めた\textbf{サンプル}だけです。
+この節の問いは、「サンプルだけから $\nabla_{\vtheta}J$ を推定するにはどうすればよいか」です。
+
+\subsection*{サンプルの平均は微分できない}
+
+方策から行動を $N$ 個サンプルすれば、$J(\vtheta)\approx\frac1N\sum_{i=1}^{N}r(a^{(i)})$ です（\chapref{ch:rl-basics}のモンテカルロ法）。
+では、右辺を $\vtheta$ で微分すれば勾配が得られるでしょうか。
+得られません。
+$\vtheta$ を少し動かしてもサンプル済みの $a^{(i)}$ は変わらず、$r(a^{(i)})$ も決まった数のままなので、右辺の微分は 0 です。
+$\vtheta$ の影響は「どの行動が\textbf{どれくらいの確率で}出るか」という分布の側にあり、サンプルを取った時点で消えます。
+\figref{fig:pg-sampling-break}の上段のとおり、$\vtheta$ から報酬への道はサンプリングの箱で切れています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 7mm]
+  \node[purplebox] (th) {$\vtheta$};
+  \node[box,right=of th] (pi) {$\pitheta(a)$};
+  \node[redbox,right=of pi] (smp) {サンプル\\$a\sim\pitheta$};
+  \node[box,right=of smp] (r) {報酬 $r(a)$};
+  \draw[arr] (th) -- (pi); \draw[arr] (pi) -- (smp); \draw[arr] (smp) -- (r);
+  \node[font=\Large,text=bookaccent] at ($(smp.east)!0.5!(r.west)+(0,0.45)$) {$\times$};
+  \node[lbl,anchor=west] at ($(r.east)+(1mm,0)$) {勾配が通らない};
+  \node[purplebox,below=13mm of th] (th2) {$\vtheta$};
+  \node[box,right=16mm of th2] (lp) {$\log\pitheta(a)$};
+  \node[greenbox,right=of lp,minimum width=30mm] (w) {$r(a)\cdot\nabla_{\vtheta}\log\pitheta(a)$};
+  \node[box,above=4mm of w] (r2) {報酬 $r(a)$（ただの数）};
+  \draw[arr] (th2) -- node[below,lbl]{微分できる} (lp);
+  \draw[arr] (lp) -- (w); \draw[arr] (r2) -- (w);
+  \node[lbl,anchor=west,align=left] at ($(w.east)+(1mm,0)$) {これの平均が\\$\nabla_{\vtheta}J$ の推定};
+\end{tikzpicture}
+\caption{上：$\vtheta$ から報酬への道はサンプリングで切れている。サンプル後の $r(a)$ は $\vtheta$ によらない数なので、微分しても 0。
+下：対数微分のトリックを使うと、報酬は「重み」として外に出て、微分するのは $\log\pitheta(a)$ だけになる。}
+\label{fig:pg-sampling-break}
+\end{figure}
+
+\subsection*{トリックの中身}
+
+この切れ目を回避するのが、次の恒等式です。
+$\pitheta(a)>0$ である限り、連鎖律 $\frac{d}{dx}\log f(x)=f'(x)/f(x)$ より
+\begin{equation}
+\nabla_{\vtheta}\log\pitheta(a)=\frac{\nabla_{\vtheta}\pitheta(a)}{\pitheta(a)},
+\qquad\text{すなわち}\qquad
+\nabla_{\vtheta}\pitheta(a)=\pitheta(a)\,\nabla_{\vtheta}\log\pitheta(a)
+\label{eq:pg-log-trick}
+\end{equation}
+です。これを\term{対数微分のトリック}{log-derivative trick}と呼びます。
+$\nabla_{\vtheta}\log\pitheta(a)$ を行動 $a$ の\term{スコア関数}{score function}と呼びます。
+「$a$ の対数確率を増やすには $\vtheta$ をどちらへ動かせばよいか」を表すベクトルです。
+これを $J$ の勾配に使います。
+\begin{align}
+\nabla_{\vtheta}J(\vtheta)
+&=\nabla_{\vtheta}\sum_{a}\pitheta(a)\,r(a)
+&&\text{（期待値の定義）}\notag\\
+&=\sum_{a}\nabla_{\vtheta}\pitheta(a)\,r(a)
+&&\text{（和の微分は微分の和。$r$ は $\vtheta$ によらない）}\notag\\
+&=\sum_{a}\pitheta(a)\,\nabla_{\vtheta}\log\pitheta(a)\,r(a)
+&&\text{（式\eqref{eq:pg-log-trick}）}\notag\\
+&=\E_{a\sim\pitheta}\bigl[\,r(a)\,\nabla_{\vtheta}\log\pitheta(a)\,\bigr]
+&&\text{（$\pitheta(a)$ で重み付けた和は期待値）}.
+\label{eq:pg-score-bandit}
+\end{align}
+3 行目で $\pitheta(a)$ が外に出てきたことが要点です。
+勾配そのものが「$\pitheta$ に従う期待値」になったので、サンプルの平均で推定できます。
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)\approx\hat{\vg}=\frac1N\sum_{i=1}^{N}r\bigl(a^{(i)}\bigr)\,\nabla_{\vtheta}\log\pitheta\bigl(a^{(i)}\bigr),
+\qquad a^{(i)}\sim\pitheta .
+\label{eq:pg-score-estimate}
+\end{equation}
+$\hat{\vg}$ の期待値は真の勾配に等しくなります。このような推定量を\term{不偏推定量}{unbiased estimator}と呼びます。逆に、推定量の期待値が真の値からずれているとき、そのずれを\term{偏り}{bias}（バイアス）と呼びます。
+\figref{fig:pg-sampling-break}の下段のとおり、報酬は微分の対象ではなく、ただの\textbf{重み}になりました。
+報酬は微分しないので、「正解なら 1」のような微分できない採点でもかまいません。
+
+式\eqref{eq:pg-score-estimate}の 1 項 $r(a)\nabla\log\pitheta(a)$ は、「いま出た行動 $a$ の確率を、報酬の分だけ上げる方向に進め」と言っています。
+
+\subsection*{softmax 方策のスコア関数}
+
+$\log\pitheta(a)=z_a-\log\sum_{a'}\exp z_{a'}$ をロジット $z_j$ で微分すると（第 1 項は $z_a$ の微分、第 2 項は $\log\sum\exp$ の微分）
+\begin{equation}
+\pd{\log\pitheta(a)}{z_j}=\mathbf{1}[j=a]-\frac{\exp z_j}{\sum_{a'}\exp z_{a'}}=\mathbf{1}[j=a]-\pitheta(j)
+\label{eq:pg-softmax-score}
+\end{equation}
+です。ベクトルで書けば $\nabla_{\vz}\log\pitheta(a)=\ve_a-\bm{\pi}$（$\ve_a$ は $a$ 番目だけが 1 の one-hot ベクトル、$\bm{\pi}$ は確率のベクトル）です。
+これは、交差エントロピー $-\log p(y)$ のロジットについての勾配 $\vp-\ve_y$（\chapref{ch:ml}）の符号を反転したものです。
+この一致は偶然ではありません。\secref{sec:pg-reinforce}でこの話に戻ります。
+
+3 択の例（$\vtheta=\vzero$）では、正解 $a_1$ が出たときの推定は $\ve_1-\bm{\pi}=(\frac23,-\frac13,-\frac13)$、それ以外は報酬 0 なので $\vzero$ です。
+$a_1$ は確率 $\frac13$ で出るので、推定の期待値は $(\frac29,-\frac19,-\frac19)$ となり、厳密な勾配と一致します。コードでも確かめます。
+
+\snippet{スコア関数による勾配の推定}{code:pg-score-estimate}{ch21/bandit_pg.py}{score-estimate}
+
+4 行目で行動を \code{n} 個サンプルし、5〜6 行目で式\eqref{eq:pg-softmax-score}のスコア $\ve_a-\bm{\pi}$（\code{one_hot} が $\ve_a$）を作り、7 行目で報酬を掛けます（引数 \code{b} は\secref{sec:pg-variance}で使います）。
+各行が 1 サンプルぶんの推定です。\code{n} を変えて平均した結果が次です。
+
+\outputfile{ch21/out/bandit_estimate.txt}
+
+$n=10$ では 10 回中 2 回しか正解が出ず（$\frac{2}{10}\cdot\frac23\approx0.133$）、厳密値 0.222 からかなりずれています。
+サンプルを増やすほど厳密値に近づきます（\figref{fig:pg-bandit-converge}）。
+サンプルが少ないところの大きな揺れ、つまり推定の\textbf{分散}が、方策勾配法の最大の悩みになります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\linewidth,height=0.32\linewidth,xmode=log,xmin=1,xmax=10000,ymin=-0.05,ymax=0.7,
+  xlabel={サンプル数 $n$（対数目盛）},ylabel={$\partial J/\partial\theta_1$ の推定},legend pos=north east]
+\addplot[bookblue,thick] table[col sep=comma,x=n,y=g1]{code/ch21/out/bandit_running.csv};
+\addlegendentry{推定値（$n$ 個の平均）}
+\addplot[bookaccent,dashed,domain=1:10000,samples=2] {2/9};
+\addlegendentry{厳密値 $2/9$}
+\end{axis}
+\end{tikzpicture}
+\caption{スコア関数による推定（式\eqref{eq:pg-score-estimate}）の第 1 成分を、サンプル数 $n$ を増やしながら計算したもの。
+少ないサンプルでは大きく揺れるが、$n$ を増やすと厳密値に近づく。}
+\label{fig:pg-bandit-converge}
+\end{figure}
+
+この節で分かったことをまとめます。
+対数微分のトリック $\nabla\pitheta=\pitheta\nabla\log\pitheta$ を使うと、勾配そのものが期待値の形になり、
+「報酬 $\times$ スコア関数」の平均で推定できます。報酬は重みとして使うだけなので、微分できなくてかまいません。
+
+\section{方策勾配定理}\label{sec:pg-theorem}
+
+前節のトリックは、1 回の行動で終わる問題で働きました。
+倒立振子では何百回も行動し、状態が次々に変わります。
+状態の変わり方は環境（遷移確率 $P$）が決めていて、私たちはその式を知らないかもしれません。
+この節の問いは、「何ステップも続く問題で、環境の仕組みを知らなくても $\nabla J$ を推定できるか」です。
+答えは「できる」です。しかも、遷移確率は式から\textbf{きれいに消えます}。
+
+\subsection*{軌跡の確率を書き下す}
+
+軌跡は次の手順で生まれます。
+初期状態 $s_0$ を分布 $p(s_0)$ から引き、方策から行動 $a_0\sim\pitheta(\cdot\mid s_0)$ を引きます。
+環境が報酬 $r_0=r(s_0,a_0)$ を返し、次の状態 $s_1\sim P(\cdot\mid s_0,a_0)$ を引きます。以下、同じことを繰り返します。
+確率の連鎖律（\chapref{ch:math}）とマルコフ性（\chapref{ch:rl-basics}）より、軌跡の確率はこれらの積です。
+\begin{equation}
+p_{\vtheta}(\tau)=p(s_0)\prod_{t=0}^{T-1}\pitheta(a_t\mid s_t)\,P(s_{t+1}\mid s_t,a_t).
+\label{eq:pg-traj-prob}
+\end{equation}
+報酬は状態と行動で決まる値 $r(s_t,a_t)$ としたので、確率には現れません（最後の $P(s_T\mid\cdot)$ は「終了」に移る確率と読みます）。
+\chapref{ch:rl-basics}では報酬を次の状態にも依存させて $r(s,a,s')$ と書きましたが、本章では簡単のため $r(s,a)$ と書きます。
+$s'$ に依存させても、以下の導出は変わりません。軌跡を一つ固定すれば、報酬はどちらの書き方でも決まった数だからです。
+\figref{fig:pg-traj-factor}のとおり、紫の方策の因子だけが $\vtheta$ を含み、灰色の因子（初期分布と遷移）は含みません。
+この色分けが、次の導出のすべてです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=3mm and 3.5mm,
+  st/.style={draw=black!55,circle,minimum size=8mm,inner sep=0pt,font=\small,fill=white},
+  fpi/.style={purplebox,minimum width=15mm,minimum height=6mm,font=\footnotesize},
+  fp/.style={graybox,minimum width=15mm,minimum height=6mm,font=\footnotesize}]
+  \node[fp] (p0) {$p(s_0)$};
+  \node[st,right=of p0] (s0) {$s_0$};
+  \node[fpi,right=of s0] (pi0) {$\pitheta(a_0|s_0)$};
+  \node[fp,right=of pi0] (P0) {$P(s_1|s_0,a_0)$};
+  \node[st,right=of P0] (s1) {$s_1$};
+  \node[fpi,right=of s1] (pi1) {$\pitheta(a_1|s_1)$};
+  \node[right=2mm of pi1] (dots) {$\cdots$};
+  \draw[arr] (p0) -- (s0); \draw[arr] (s0) -- (pi0); \draw[arr] (pi0) -- (P0);
+  \draw[arr] (P0) -- (s1); \draw[arr] (s1) -- (pi1); \draw[arr] (pi1) -- (dots);
+  \node[lbl,below=2mm of pi0,text=bookpurple] {$\vtheta$ を含む};
+  \node[lbl,below=2mm of P0] {$\vtheta$ を含まない};
+  \node[lbl,below=2mm of pi1,text=bookpurple] {$\vtheta$ を含む};
+  \node[lbl,below=2mm of p0] {$\vtheta$ を含まない};
+  \node[font=\footnotesize,anchor=west] at ($(p0.south west)+(0,-12mm)$)
+   {$\log p_{\vtheta}(\tau)=\underbrace{\log p(s_0)}_{\nabla\text{ で }0}
+    +\sum_t\Bigl[\,\underbrace{\log\pitheta(a_t|s_t)}_{\text{残る}}+\underbrace{\log P(s_{t+1}|s_t,a_t)}_{\nabla\text{ で }0}\,\Bigr]$};
+\end{tikzpicture}
+\caption{軌跡の確率（式\eqref{eq:pg-traj-prob}）の因子。紫の方策の因子だけがパラメータ $\vtheta$ を含む。
+対数をとると積が和になり、$\vtheta$ で微分すると灰色の因子（環境の仕組み）はすべて消える。}
+\label{fig:pg-traj-factor}
+\end{figure}
+
+\subsection*{導出}
+
+\begin{theorem}[方策勾配定理]\label{thm:pg-theorem}
+目的関数 $J(\vtheta)=\E_{\tau\sim p_{\vtheta}}[R(\tau)]$ の勾配は
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)=\E_{\tau\sim p_{\vtheta}}\Biggl[\,\sum_{t=0}^{T-1}\nabla_{\vtheta}\log\pitheta(a_t\mid s_t)\;R(\tau)\Biggr]
+\label{eq:pg-theorem}
+\end{equation}
+で与えられる。右辺には遷移確率 $P$ も初期分布 $p(s_0)$ も現れない。
+\end{theorem}
+
+\begin{proof}
+軌跡が数えられる（離散の）場合を書きます。状態が連続なら、和を積分に置き換えれば同じです。
+\begin{align}
+\nabla_{\vtheta}J(\vtheta)
+&=\nabla_{\vtheta}\sum_{\tau}p_{\vtheta}(\tau)\,R(\tau)
+&&\text{（期待値の定義）}\notag\\
+&=\sum_{\tau}\nabla_{\vtheta}p_{\vtheta}(\tau)\,R(\tau)
+&&\text{（和と微分の交換。$R(\tau)$ は $\vtheta$ によらない）}\notag\\
+&=\sum_{\tau}p_{\vtheta}(\tau)\,\nabla_{\vtheta}\log p_{\vtheta}(\tau)\,R(\tau)
+&&\text{（対数微分のトリック、式\eqref{eq:pg-log-trick}）}\notag\\
+&=\E_{\tau\sim p_{\vtheta}}\bigl[\nabla_{\vtheta}\log p_{\vtheta}(\tau)\,R(\tau)\bigr]
+&&\text{（期待値の定義に戻す）}.
+\label{eq:pg-proof-a}
+\end{align}
+2 行目の「$R(\tau)$ は $\vtheta$ によらない」に注意してください。
+軌跡を一つ固定すれば、その収益は決まった数です。$\vtheta$ が変えるのは、各軌跡が\textbf{出る確率}だけです。
+
+残りは $\nabla_{\vtheta}\log p_{\vtheta}(\tau)$ です。式\eqref{eq:pg-traj-prob}の対数をとると、積が和になります。
+\begin{equation}
+\log p_{\vtheta}(\tau)=\log p(s_0)+\sum_{t=0}^{T-1}\Bigl[\log\pitheta(a_t\mid s_t)+\log P(s_{t+1}\mid s_t,a_t)\Bigr].
+\label{eq:pg-log-traj}
+\end{equation}
+$\log p(s_0)$ と $\log P(s_{t+1}\mid s_t,a_t)$ は $\vtheta$ を含まないので、微分すると 0 です。したがって
+\begin{equation}
+\nabla_{\vtheta}\log p_{\vtheta}(\tau)=\sum_{t=0}^{T-1}\nabla_{\vtheta}\log\pitheta(a_t\mid s_t).
+\label{eq:pg-grad-log-traj}
+\end{equation}
+これを式\eqref{eq:pg-proof-a}の最後の行に代入すると、式\eqref{eq:pg-theorem}が得られます。
+\end{proof}
+
+推定に必要なのは、実際に集めた軌跡と、自分の方策の対数確率の微分だけです。
+環境のモデルを使わないので、これも\chapref{ch:rl-basics}で見たモデルフリーの方法です。
+倒立振子の物理法則も、LLM にとっての「人間の評価のしくみ」も、知らなくてよいのです。
+
+期待値を $N$ 本の軌跡の平均で置き換えると、推定量
+\begin{equation}
+\hat{\vg}=\frac1N\sum_{i=1}^{N}\sum_{t=0}^{T_i-1}\nabla_{\vtheta}\log\pitheta\bigl(a^{(i)}_t\mid s^{(i)}_t\bigr)\,R\bigl(\tau^{(i)}\bigr)
+\label{eq:pg-estimator-total}
+\end{equation}
+が得られます（$T_i$ は $i$ 本目の長さ）。
+エピソードの長さが軌跡ごとに違っても、「終了後は報酬 0 の状態にとどまる」と考えれば、同じ導出が成り立ちます。
+
+1 ステップで終わる問題（$T=1$）なら、右辺は $\E[\nabla\log\pitheta(a_0\mid s_0)\,r_0]$ となり、前節の式\eqref{eq:pg-score-bandit}に戻ります。
+
+式\eqref{eq:pg-theorem}の $R(\tau)$ は、軌跡全体の報酬を足した 1 つの数です。
+\secref{sec:pg-variance}では、この重みを、期待値を変えずにばらつきの小さい量へ取り替えていきます。
+
+この節で分かったことをまとめます。
+軌跡の確率の対数を微分すると環境の因子は消え、方策勾配は「各時刻のスコア関数 $\times$ 収益」の期待値として書けます（方策勾配定理）。
+環境の仕組みを知らなくても、サンプルから推定できます。
+
+\section{REINFORCE：最も素朴な方策勾配法}\label{sec:pg-reinforce}
+
+勾配をサンプルから推定する式（式\eqref{eq:pg-estimator-total}）が手に入りました。
+この節の問いは、「それを実際のコードにするとどうなるか。そのコードは教師あり学習とどう違うのか」です。
+
+\subsection*{アルゴリズムと実験の舞台}
+
+式\eqref{eq:pg-estimator-total}をそのまま使う方法を\term{REINFORCE}{REINFORCE}と呼びます\cite{williams1992simple}。
+(1) 現在の方策でエピソードを $N$ 本、最後まで走らせ、(2) 各エピソードの収益を計算し、(3) 推定 $\hat{\vg}$ で $\vtheta\leftarrow\vtheta+\eta\,\hat{\vg}$ と動かし、(4) 集めたエピソードを捨てて (1) に戻ります（$\eta$ は学習率。\chapref{ch:rl-basics}では強化学習の慣例どおり $\alpha$ と書きましたが、本章からは本書の他の章にそろえて $\eta$ と書きます）。
+(4) の「捨てる」に注意してください。
+推定の期待値は「\textbf{いまの} $\pitheta$ で集めた軌跡」についてのものでした。
+$\vtheta$ を更新すると、古い軌跡はもう「いまの方策のサンプル」ではありません。
+学習中の方策そのもので集めたデータしか使えない方法を\term{オンポリシー}{on-policy}の方法と呼びます。
+\chapref{ch:rl-basics}の Q 学習は、データを集める方策（$\varepsilon$-貪欲）と学習の対象の方策が違うオフポリシーの方法でした。REINFORCE はその反対です。
+この制約は\secref{sec:pg-surrogate}と\secref{sec:pg-ppo}で緩めます。
+
+舞台は強化学習の定番、\term{倒立振子}{CartPole}です\cite{barto1983neuronlike}。
+\figref{fig:pg-cartpole}のように、左右に動く台車の上に棒が蝶番で立っています。
+エージェントは 0.02 秒ごとに、台車を左か右に 10\,N で押します（行動は 2 つ）。
+状態は 4 つの実数で、台車の位置 $x$、速度 $\dot{x}$、棒の角度 $\theta$、角速度 $\dot{\theta}$ です\footnote{角度 $\theta$ はパラメータ $\vtheta$（太字）とは別物です。角度が出てくるのはこの環境の説明の中だけです。}。
+棒が 12 度より大きく傾くか、台車が中心から 2.4\,m より遠くへ出たら失敗で、エピソードは終わります。
+立っている限り、1 ステップごとに報酬 $+1$ です。500 ステップ（10 秒）立ち続けたら成功として打ち切ります。
+つまり\textbf{収益（割引なし）＝エピソードの長さ}で、最高は 500 です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  \draw[black!50,thick] (-4.2,0) -- (4.2,0);
+  \foreach \x in {-2.4,2.4} {\draw[bookaccent,dashed] (\x*1.4,-0.3) -- (\x*1.4,2.9);}
+  \node[font=\footnotesize,text=bookaccent,anchor=north] at (-3.36,-0.3) {$x=-2.4$};
+  \node[font=\footnotesize,text=bookaccent,anchor=north] at (3.36,-0.3) {$x=2.4$};
+  \fill[figblue,draw=bookblue,rounded corners=2pt] (-0.7,0.15) rectangle (0.7,0.65);
+  \fill[black!60] (-0.45,0.12) circle (0.1); \fill[black!60] (0.45,0.12) circle (0.1);
+  \draw[black!35,dashed] (0,0.65) -- (0,3.0);
+  \draw[bookorange,line width=3pt,line cap=round] (0,0.65) -- ++(75:2.4);
+  \fill[black] (0,0.65) circle (0.05);
+  \draw[->,thick,bookgray] (0,2.0) arc (90:76:1.35);
+  \node[font=\small] at (0.28,2.35) {$\theta$};
+  \draw[->,very thick,bookgreen] (-1.9,0.4) -- (-0.75,0.4);
+  \node[font=\footnotesize,text=bookgreen,anchor=south] at (-1.35,0.45) {右へ押す};
+  \draw[->,very thick,bookgreen!60] (1.9,0.4) -- (0.75,0.4);
+  \node[font=\footnotesize,text=bookgreen!60,anchor=south] at (1.35,0.45) {左へ押す};
+  \draw[->,bookblue] (-0.7,-0.55) -- (0.7,-0.55); \node[font=\footnotesize,text=bookblue] at (0,-0.8) {位置 $x$、速度 $\dot{x}$};
+  \node[font=\footnotesize,align=left,anchor=west] at (1.6,2.3) {状態 $s=(x,\dot{x},\theta,\dot{\theta})$\\行動 $a\in\{\text{左},\text{右}\}$\\報酬：立っていれば毎ステップ $+1$\\$\abs{\theta}>12^\circ$ か $\abs{x}>2.4$ で終了};
+\end{tikzpicture}
+\caption{倒立振子（CartPole）。台車を左右に押して棒を立て続ける。
+状態は 4 次元の実数、行動は 2 択。立っている間は 1 ステップごとに報酬 1 なので、収益はエピソードの長さに等しい（最大 500）。}
+\label{fig:pg-cartpole}
+\end{figure}
+
+ライブラリ \code{gymnasium} に同じ環境（\code{CartPole-v1}）がありますが、本書の方針どおり、まず自分で作ります（\file{cartpole.py}）。
+クラス \code{CartPole} は、物理定数（重力 9.8、台車 1.0\,kg、棒 0.1\,kg、棒の長さの半分 0.5\,m、時間刻み 0.02 秒）と終了条件を \code{CartPole-v1} と同じ値で持ち、
+\code{n} 個の環境を一度に動かします（状態は \code{(n, 4)} のテンソル。何本ものエピソードを for 文より速く集めるため）。
+\code{reset()} は状態を $\pm0.05$ の一様乱数から始めます。
+\code{step(a)} は、行動を $\pm10$\,N の力に直し、運動方程式から棒の角加速度と台車の加速度を求め（式は出典\cite{barto1983neuronlike}で摩擦を 0 としたもの。導出は力学の話なので省きます）、
+位置に「速度 $\times$ 0.02 秒」、速度に「加速度 $\times$ 0.02 秒」を足して時間を進め（オイラー法）、失敗の判定と報酬 1 を返します。
+同じ初期状態と同じ行動列で \code{gymnasium} と比べた結果が次です。
+
+\outputfile{ch21/out/cartpole_check.txt}
+
+状態の差は丸め誤差（\code{gymnasium} は 64 ビット、自作は 32 ビット）程度で、終了のタイミングもすべて一致しました。
+でたらめに押すと平均約 22 ステップで倒れます。ここから 500 を目指します。
+
+\subsection*{REINFORCE の実装}
+
+方策ネット \code{PolicyNet}（\file{reinforce.py}）は、状態（4 次元）から「左」「右」のロジット $\vz_{\vtheta}(s)$ を出す MLP（隠れ層 2 つ、各 64 ユニット、tanh）です。
+そのメソッド \code{dist(s)} は \code{torch.distributions.Categorical(logits=...)} を返します。これはロジットから softmax 方策（式\eqref{eq:pg-softmax-policy}）を作る PyTorch の部品で、
+\code{.sample()} で行動をサンプルし、\code{.log_prob(a)} で $\log\pitheta(a\mid s)$ を、\code{.entropy()} でエントロピー（\secref{sec:pg-ppo}）を計算できます。
+
+方策を動かして軌跡を集めることを\term{ロールアウト}{rollout}と呼びます。
+関数 \code{rollout(policy, n)}（\file{reinforce.py}）は、\code{n} 本のエピソードを同時に進め、毎ステップ $a_t\sim\pitheta(\cdot\mid s_t)$ をサンプルして環境を 1 ステップ進めます。
+エピソードごとに終わる時刻が違うので、「まだ倒れていないか」を表す\textbf{マスク} \code{M}（内側なら 1、終わった後なら 0）も記録し、終わった後の報酬は 0 にします。
+
+\snippet{ロールアウト（エピソードを集める）}{code:pg-rollout}{ch21/reinforce.py}{rollout}
+
+6 行目の \code{alive} がマスクのもとで、はじめは全員 1 です。
+9〜11 行目で行動をサンプルし、環境を 1 ステップ進め、記録します。報酬に \code{alive} を掛けるので、すでに倒れたエピソードの報酬は 0 になります。
+12 行目で、このステップで倒れたエピソードの \code{alive} を 0 にします（倒れたステップ自体の報酬 1 は記録済みです）。
+14〜15 行目で、全員が倒れたら打ち切ります。
+返り値の状態 \code{S}、行動 \code{A}、報酬 \code{R}、マスク \code{M} は \code{(T, n)} の形（\code{S} は \code{(T, n, 4)}）です。
+収益 $G_t$ は、関数 \code{reward_to_go}（\file{reinforce.py}）が $G_t=r_t+\gamma G_{t+1}$ を最後の時刻から順に使って計算します。$G_0$ が $R(\tau)$ です。
+
+\snippet{REINFORCE とその改良版の学習ループ}{code:pg-reinforce-update}{ch21/reinforce.py}{reinforce-update}
+
+9 行目でエピソードを 16 本集め、10 行目で $G_t$ を計算します。
+11〜16 行目で、各時刻のスコアに掛ける\textbf{重み} \code{w} を選びます。
+この節の REINFORCE は \code{method == "total"} で、12 行目のとおり全時刻に $R(\tau)=G_0$ を掛けます。
+\code{G[0]} は形 \code{(n,)} の各エピソードの $G_0$ で、\code{.expand_as(G)} はそれを \code{(T, n)} の形に縦に並べてコピーします。
+13〜16 行目は次の節で使います。
+17 行目で全時刻の $\log\pitheta(a_t\mid s_t)$ をまとめて計算し、18 行目が要の 1 行です。
+\begin{equation}
+\calL_{\text{PG}}(\vtheta)=-\frac{1}{N}\sum_{i=1}^{N}\sum_{t}w^{(i)}_t\,\log\pitheta\bigl(a^{(i)}_t\mid s^{(i)}_t\bigr).
+\label{eq:pg-surrogate-loss}
+\end{equation}
+重み $w$ はデータから計算した定数なので、$\nabla_{\vtheta}\calL_{\text{PG}}=-\frac1N\sum_i\sum_t w_t\nabla\log\pitheta(a_t\mid s_t)$ となり、$w_t=R(\tau)$ ならちょうど式\eqref{eq:pg-estimator-total}の $-\hat{\vg}$ です。
+マスク \code{M} は終わった後の時刻を和から除きます。
+19 行目は\chapref{ch:nn}以来の「勾配を消す $\to$ 逆伝播 $\to$ 更新」（Adam、\chapref{ch:training}）、24 行目は学習曲線の縦軸になる平均エピソード長の記録です。
+
+なお、式\eqref{eq:pg-surrogate-loss}は「微分すると方策勾配になる」ように作った式で、その値は方策の良さを表しません。学習の進み具合は必ず収益で見ます。
+
+\subsection*{「収益で重み付けした交差エントロピー」という見方}
+
+教師あり学習の交差エントロピー損失 $-\frac1N\sum_i\log p_{\vtheta}(y^{(i)}\mid\vx^{(i)})$（\chapref{ch:ml}）と並べると、違いは二つしかありません（\tabref{tab:pg-ce-vs-pg}）。
+\textbf{データを誰が作るか}（REINFORCE では方策自身の行動を「仮の正解」にする）と、\textbf{重み}（結果が良かった行動ほど強く確率を上げ、負なら下げる）です。
+つまり REINFORCE は、「自分の行動を正解とみなした交差エントロピーを、収益で重み付けしたもの」です。
+\chapref{ch:rl-llm}では、SFT と REINFORCE の損失をトークン単位でこのとおりに並べます。
+
+\begin{table}[tbp]
+\centering
+\caption{教師あり学習（交差エントロピー）と REINFORCE の損失。式の形は同じで、
+「どの行動の確率を上げるか」と「どれだけ強く上げるか（重み）」の決め方だけが違う。}
+\label{tab:pg-ce-vs-pg}
+\small
+\begin{tabular}{lll}
+\toprule
+ & 教師あり学習（SFT など） & REINFORCE \\
+\midrule
+損失 & $-\sum\log p_{\vtheta}(y\mid\vx)$ & $-\sum w_t\log\pitheta(a_t\mid s_t)$ \\
+確率を上げる対象 & お手本の正解 $y$ & 自分がサンプルした行動 $a_t$ \\
+データを作るのは & 人間（お手本） & 方策自身（ロールアウト） \\
+重み & いつも 1 & 収益 $R(\tau)$（あとで $G_t$、$\hat{A}_t$） \\
+重みが負なら & ― & その行動の確率を\textbf{下げる} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{学習させてみる}
+
+乱数の種を変えて 5 回学習させました（1 回 80 反復、計 1,280 エピソード）。結果の曲線は次の節の\figref{fig:pg-reinforce-curves}に示します。
+
+\outputfile{ch21/out/reinforce.txt}
+
+1 行目が REINFORCE（\code{total}）です。最後の 10 反復の平均エピソード長は種によって 42〜105、平均 79 で、500 にはほど遠い結果でした。
+2 行目と 3 行目は次の節の改良を加えたもので、3 行目は 5 回中 4 回でほぼ 500 に届いています（所要時間は約 3 分）。
+同じデータ量で何がこれほど違うのか。それが次の節の主題です。
+
+この節で分かったことをまとめます。
+REINFORCE は「ロールアウト $\to$ 収益で重み付けした交差エントロピーで 1 回更新 $\to$ データを捨てる」の繰り返しです。
+素朴なままでは学習が遅く、結果も乱数の種に大きく左右されます。
+
+\section{分散を減らす：reward-to-go、ベースライン、アドバンテージ}\label{sec:pg-variance}
+
+REINFORCE は、勾配の推定としては正しい（不偏な）のに、学習はうまく進みませんでした。
+原因は\figref{fig:pg-bandit-converge}で見た推定の揺れ、つまり分散です。
+この節の問いは、「推定の期待値（向き）を変えずに、分散だけを減らすにはどうすればよいか」です。
+答えは、重み $w_t$ から「期待値に影響しない部分」を取り除くことです。
+
+\subsection*{なぜ分散が大きいのか}
+
+倒立振子の報酬はいつも $+1$ なので、どのエピソードの $R(\tau)$ も正で、REINFORCE はすべての行動の確率を多かれ少なかれ\textbf{上げよう}とします。
+「どの行動が良かったか」という本当に欲しい情報は、大きな正の数どうしの\textbf{わずかな差}に埋もれています。
+
+3 択の例で確かめます。すべての報酬に 10 を足して $r=(11,10,10)$ にします。
+最適な方策も、厳密な勾配 $\pi_j(r(a_j)-J)$ も変わりません（$r$ と $J$ が同じだけずれるから）。
+報酬から引く数 \code{b}（\code{score_estimates} の引数）と報酬のずらし方を変えて、20 万サンプルの推定の平均と、1 サンプルあたりの分散（3 成分の合計）を測りました（\file{bandit_pg.py}）。
+
+\outputfile{ch21/out/bandit_variance.txt}
+
+$b=0$ の 1 行目と 3 行目を比べると、報酬に 10 を足しただけで分散が 0.149 から 71.3 へ約 480 倍になりました（3 行目の平均がずれているのも、20 万サンプルでも平均しきれないほど揺れるからです）。
+一方、期待報酬 $b=J$ を引いた 2 行目と 4 行目は、どちらも分散 0.074 で、$b=0$ の半分です。どの行でも平均（推定の向き）は同じ値のまわりにあります。
+学習でも差は歴然です。4 サンプルずつで推定して 100 回更新し、正解の確率を比べました（20 回の試行の平均）。
+下の出力の \code{r} はずらす前、\code{r10} は 10 ずらした場合、\code{r10b} はさらに過去の報酬の移動平均を $b$ として引いた場合です。
+正解の確率は、ずらす前は 0.985、10 ずらすと 0.549 にとどまり、移動平均を引くと 0.985 に戻りました。
+ここで「移動平均」とは、これまでに得た報酬の平均を、新しい報酬が来るたびに少しずつ更新していく値です（\file{bandit_pg.py} では $b\leftarrow0.8\,b+0.2\,\bar r$、$\bar r$ はその回の 4 サンプルの報酬の平均）。
+
+\outputfile{ch21/out/bandit_train.txt}
+
+\subsection*{道具：スコア関数の期待値は 0}
+
+なぜ $b$ を引いても推定の向きが変わらないのでしょうか。鍵は次の性質です。
+
+\begin{theorem}[スコア関数の期待値は 0]\label{thm:pg-score-zero}
+どんな状態 $s$ についても、次が成り立ちます。
+\[
+\E_{a\sim\pitheta(\cdot\mid s)}\bigl[\nabla_{\vtheta}\log\pitheta(a\mid s)\bigr]=\vzero .
+\]
+\end{theorem}
+
+\begin{proof}
+\begin{align*}
+\E_{a\sim\pitheta}\bigl[\nabla_{\vtheta}\log\pitheta(a\mid s)\bigr]
+&=\sum_{a}\pitheta(a\mid s)\,\nabla_{\vtheta}\log\pitheta(a\mid s)
+&&\text{（期待値の定義）}\\
+&=\sum_{a}\nabla_{\vtheta}\pitheta(a\mid s)
+&&\text{（対数微分、式\eqref{eq:pg-log-trick}）}\\
+&=\nabla_{\vtheta}\sum_{a}\pitheta(a\mid s)
+&&\text{（和と微分の交換）}\\
+&=\nabla_{\vtheta}1=\vzero
+&&\text{（確率の和は 1）}.
+\end{align*}
+\end{proof}
+
+「各行動の確率を上げる向き」を確率で重み付けて足すと、確率の和が 1 に固定されているので打ち消し合うのです。
+3 択の例では、$\sum_k\ve_k=(1,1,1)$ で、$\bm{\pi}$ を 3 回足すと $3\bm{\pi}$ なので、$\frac13\sum_k(\ve_k-\bm{\pi})=\frac13(1,1,1)-\bm{\pi}=\vzero$ です。
+
+\subsection*{改良 1：reward-to-go（過去の報酬を掛けない）}
+
+時刻 $t$ の行動 $a_t$ は、過去の報酬 $r_0,\dots,r_{t-1}$ に影響できません（\figref{fig:pg-causality}）。
+それなのに式\eqref{eq:pg-theorem}は、$a_t$ のスコアに過去の報酬を含む $R(\tau)$ を掛けています。この部分はばらつきを増やすだけのはずです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=11mm,y=1mm]
+  \foreach \t in {0,...,7} {
+    \ifnum\t<3
+      \node[cell,fill=figgray,text=black!50,minimum width=9mm] (r\t) at (\t,0) {$r_{\t}$};
+    \else
+      \node[cell,fill=figgreen,minimum width=9mm] (r\t) at (\t,0) {$r_{\t}$};
+    \fi
+  }
+  \node[cell,fill=figpurple,minimum width=9mm] (a3) at (3,12) {$a_3$};
+  \draw[arr,bookpurple] (a3.south) -- (r3.north);
+  \draw[arr,bookpurple] (a3.south) -- (r5.north);
+  \draw[arr,bookpurple] (a3.south) -- (r7.north);
+  \draw[darr,bookaccent] (a3.south) -- (r1.north) node[midway,font=\Large,text=bookaccent]{$\times$};
+  \node[lbl,anchor=east] at (-0.6,0) {報酬};
+  \node[lbl,anchor=north] at (1,-5) {過去：$a_3$ は影響できない};
+  \node[lbl,anchor=north,text=bookgreen] at (5,-5) {未来：$G_3=r_3+\gamma r_4+\cdots$};
+\end{tikzpicture}
+\caption{因果性。時刻 3 の行動 $a_3$ が影響できるのは、時刻 3 以降の報酬（緑）だけである。
+過去の報酬（灰色）を $a_3$ のスコアに掛けても期待値は変わらず、ばらつきだけが増える。}
+\label{fig:pg-causality}
+\end{figure}
+
+これを確かめます。$t'<t$ とします。
+時刻 $t$ までの履歴 $h_t=(s_0,a_0,\dots,a_{t-1},s_t)$ が決まれば、過去の報酬 $r_{t'}$ は決まった数です。
+そこで期待値を「まず $h_t$ を固定して $a_t$ について平均し、次に $h_t$ について平均する」と二段に分けます（下の式の $\E_{h_t}$ は、方策と環境に従って時刻 $t$ まで進めたときに出る履歴 $h_t$ についての期待値です）\footnote{和で書けば $\sum_{h_t}p(h_t)\sum_{a_t}\pitheta(a_t\mid s_t)f(h_t,a_t)$ と並べ替えるだけです（確率の連鎖律 $p(h_t,a_t)=p(h_t)\pitheta(a_t\mid s_t)$）。}。
+\begin{align}
+\E\bigl[\nabla\log\pitheta(a_t\mid s_t)\,r_{t'}\bigr]
+&=\E_{h_t}\Bigl[\,r_{t'}\;\E_{a_t\sim\pitheta(\cdot\mid s_t)}\bigl[\nabla\log\pitheta(a_t\mid s_t)\bigr]\Bigr]
+&&\text{（$r_{t'}$ は $h_t$ で決まる）}\notag\\
+&=\E_{h_t}\bigl[\,r_{t'}\cdot\vzero\,\bigr]=\vzero
+&&\text{（定理\ref{thm:pg-score-zero}）}.
+\label{eq:pg-causality}
+\end{align}
+期待値の線形性（式\eqref{eq:math-linearity}）で $R(\tau)$ を報酬 1 個ずつの期待値に分けると、時刻 $t$ より前の部分は落としてよく、残るのは $\sum_{t'\ge t}\gamma^{t'}r_{t'}=\gamma^{t}G_t$ です（$\gamma^{t'}=\gamma^{t}\gamma^{t'-t}$ と分けて $\gamma^{t}$ をくくり出すと、残りの和が $G_t$ の定義になります）。
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)=\E\Biggl[\,\sum_{t=0}^{T-1}\gamma^t\,\nabla_{\vtheta}\log\pitheta(a_t\mid s_t)\;G_t\Biggr],
+\qquad G_t=\sum_{t'=t}^{T-1}\gamma^{t'-t}r_{t'} .
+\label{eq:pg-rtg}
+\end{equation}
+$G_t$（時刻 $t$ から先に得た収益）は、英語で\term{reward-to-go}{reward-to-go}と呼ばれます。
+
+\begin{caution}{実装では $\gamma^t$ を落とす}
+ほとんどの実装（本章のコードも PPO の論文も）は式\eqref{eq:pg-rtg}の $\gamma^t$ を落とし、各時刻のスコアに $G_t$ だけを掛けます。
+これは、本当に最大化したいのは割引のない収益（倒立振子ならエピソード長）で、
+$\gamma<1$ は「遠い未来の報酬ほど今の行動との関係が薄いので軽く見る」ための\textbf{分散を減らす工夫}（少しの偏りと引き換え）だ、という立場です\cite{schulman2016high}。
+本章も、学習には $\gamma=0.99$ を使い、性能は割引なしのエピソード長で測ります。手法どうしの比較はすべて同じ扱いなので、結論には影響しません。
+\end{caution}
+
+\subsection*{改良 2：ベースライン}
+
+状態 $s_t$ だけで決まる（行動 $a_t$ によらない）任意の関数 $b(s_t)$ について、式\eqref{eq:pg-causality}と同じ論法で
+\begin{align}
+\E\bigl[\nabla\log\pitheta(a_t\mid s_t)\,b(s_t)\bigr]
+&=\E_{h_t}\Bigl[\,b(s_t)\;\E_{a_t\sim\pitheta(\cdot\mid s_t)}\bigl[\nabla\log\pitheta(a_t\mid s_t)\bigr]\Bigr]
+=\vzero
+&&\text{（定理\ref{thm:pg-score-zero}）}
+\label{eq:pg-baseline-zero}
+\end{align}
+です。したがって $G_t$ から $b(s_t)$ を引いても、勾配の期待値は変わりません。
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)=\E\Biggl[\,\sum_{t=0}^{T-1}\nabla_{\vtheta}\log\pitheta(a_t\mid s_t)\,\bigl(G_t-b(s_t)\bigr)\Biggr]
+\label{eq:pg-baseline}
+\end{equation}
+（$\gamma^t$ は前の注意のとおり落としました）。この $b$ を\term{ベースライン}{baseline}と呼びます。
+不偏性を壊さないことが、いま証明されました。
+大事な条件は「$b$ が $a_t$ によらない」ことです。
+$a_t$ に依存する量を引くと、式\eqref{eq:pg-baseline-zero}で $b$ を外に出せず、証明が成り立ちません。
+
+期待値は変わらないのに、分散は変わります（3 択の例では半減。手計算は演習問題\ref{ex:pg-bandit-var}）。
+重み $G_t-b$ は「平均より良かったか」を表し、平均より悪かった行動の確率は\textbf{下げる}ようになるからです。
+
+\subsection*{良いベースライン＝状態価値、そしてアドバンテージ}
+
+$b(s)$ の自然な候補は、状態 $s$ からいまの方策で期待できる収益、つまり状態価値 $V^{\pitheta}(s)$（\chapref{ch:rl-basics}）です。
+さらに $G_t$ を、その期待値 $Q^{\pitheta}(s_t,a_t)=\E[G_t\mid s_t,a_t]$（\chapref{ch:rl-basics}の行動価値）に置き換えても、勾配の期待値は変わりません。
+式\eqref{eq:pg-causality}と同じく期待値を二段に分け、「$(s_t,a_t)$ までを固定して、その先の乱数について平均する」と、内側で $G_t$ の平均、つまり $Q^{\pitheta}(s_t,a_t)$ が現れるからです（スコア $\nabla\log\pitheta(a_t\mid s_t)$ は $(s_t,a_t)$ で決まるので外に出せます）\cite{sutton1999policy}。
+こうして重みが $Q^{\pitheta}(s_t,a_t)-V^{\pitheta}(s_t)$ になり、次の量が現れます。
+
+\begin{definition}[アドバンテージ]\label{def:pg-advantage}
+方策 $\pi$ の\term{アドバンテージ}{advantage}を $A^{\pi}(s,a)=Q^{\pi}(s,a)-V^{\pi}(s)$ と定義します。
+状態 $s$ で行動 $a$ をとることが、方策どおりに行動する平均と比べてどれだけ得かを表します。
+\end{definition}
+
+$V^{\pi}(s)=\sum_a\pi(a\mid s)Q^{\pi}(s,a)$ なので、アドバンテージの方策についての平均は 0 です。
+実際、$\sum_a\pi(a\mid s)A^{\pi}(s,a)=\sum_a\pi(a\mid s)Q^{\pi}(s,a)-V^{\pi}(s)\sum_a\pi(a\mid s)=V^{\pi}(s)-V^{\pi}(s)=0$ です（確率の和は 1）。
+3 択の例では $A=r-J=(\frac23,-\frac13,-\frac13)$ で、式\eqref{eq:pg-bandit-grad}の $\pi_j(r(a_j)-J)$ には最初からアドバンテージが現れていました。
+方策勾配の式は、こうして
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)=\E\Biggl[\,\sum_{t}\nabla_{\vtheta}\log\pitheta(a_t\mid s_t)\,\Psi_t\Biggr]
+\label{eq:pg-general}
+\end{equation}
+と一般化されます（$\Psi_t$ は $R(\tau)$, $G_t$, $G_t-b(s_t)$, $Q^{\pi}(s_t,a_t)$, $A^{\pi}(s_t,a_t)$ のどれか）。どの $\Psi_t$ でも（$\gamma^t$ の扱いを除けば）期待値は同じで、分散が違います\cite{schulman2016high}。
+\tabref{tab:pg-psi}に、ここまでの候補と、次の節で作る候補を並べました。
+この先の話は、すべて「良い $\Psi_t$ を、少ないサンプルで、どう作るか」です。
+
+\begin{table}[tbp]
+\centering
+\caption{方策勾配の重み $\Psi_t$（式\eqref{eq:pg-general}）の候補。下の行ほど、重みに含まれる乱数が少なく、分散が小さくなる傾向がある。
+ただし $V$ を未来の予想に使う下の 2 行は、$V$ が不正確な分だけ偏る。}
+\label{tab:pg-psi}
+\small
+\begin{tabularx}{\linewidth}{llXX}
+\toprule
+$\Psi_t$ & 偏り & 分散 & 本章で使う場所 \\
+\midrule
+$R(\tau)$ & なし & 大きい & REINFORCE（\secref{sec:pg-reinforce}） \\
+$G_t$（reward-to-go） & なし & 倒立振子で 0.29 倍 & この節の改良 1 \\
+$G_t-b(s_t)$ & なし & 同じく 0.10〜0.16 倍 & この節の改良 2 \\
+$Q^{\pi}$, $A^{\pi}$ & なし & ― & 真の値は未知。推定して使う \\
+TD 誤差 $\delta_t$ & $V$ の誤差のぶん & 小さい & \secref{sec:pg-actor-critic} \\
+GAE $\hat{A}_t$ & $\lambda$ で調整 & $\lambda$ で調整 & \secref{sec:pg-actor-critic}、PPO（\secref{sec:pg-ppo}） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection*{倒立振子で分散を測る}
+\skimread{結論は「4 つの重みは同じ勾配を推定し、分散は reward-to-go で 0.29 倍、ベースラインを引くと 0.10〜0.16 倍」です。測り方の細部は 2 周目で十分です。}
+
+本当に分散が減るのかを測りました（\file{grad_variance.py}、約 50 秒）。
+少しだけ学習した方策（平均エピソード長 約 150）を固定し、1,000 本のエピソードそれぞれで勾配の推定ベクトル（パラメータ 4,610 個ぶん）を計算します。
+重みは $R(\tau)$、$G_t$、$G_t-b_t$（$b_t$ は時刻 $t$ における $G_t$ の平均）、$G_t-V_\phi(s_t)$（価値ネット）の 4 種類です。
+$b_t$ と $V_\phi$ は、推定に使うのとは\textbf{別に集めた} 400 本から作ります（同じデータから作ると、平均 $b_t$ の中にそのエピソード自身の $G_t$ が混ざり、ベースラインがそのエピソードの行動に依存してしまうから。演習問題 4 の \code{b = r[a]} はその極端な場合です）。
+4 つが同じ勾配の不偏推定になるように、ここでは割引を使いません（$\gamma=1$）。
+結果の読み方を先に述べます。「平均の長さ」は 1,000 本の推定を平均したベクトルの長さ、「基準との cos」はそれと価値ネット版の平均ベクトルとのなす角の余弦（内積を長さの積で割ったもの。1 なら同じ向き）です。
+この 2 つがそろっていれば 4 つは同じものを推定しています。「分散の合計」は 1 本ぶんの推定のばらつきで、小さいほど少ないエピソードで済みます。
+
+\outputfile{ch21/out/grad_variance.txt}
+
+4 つとも長さが 750〜780、cos が 0.998 以上で、\textbf{同じ勾配}を推定しています。
+ところが分散は、reward-to-go で 0.29 倍、ベースラインを引くと 0.10〜0.16 倍です（\figref{fig:pg-grad-variance}）。
+互いに独立な $N$ 本の推定を平均すると、平均の分散は 1 本の分散の $1/N$ になります（独立な量の和の分散は分散の和で、それを $N$ で割ると分散は $1/N^2$ 倍になるからです）。
+ですから、1 本の分散が 1/10 になれば、同じ精度に必要なエピソードも 1/10 で済みます。
+（$b_t$ の方が価値ネットより良かったのは、$b_t$ が「いま何ステップ目か」ごとの平均なのに対し、価値ネットの入力の状態には時刻が含まれず、500 ステップの打ち切りまであと何ステップあるかが分からないことが一因と考えられます。）
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,width=0.66\linewidth,height=0.32\linewidth,ymin=0,ymax=1.15,bar width=10mm,
+  xtick={1,2,3,4},xticklabels={$R(\tau)$,$G_t$,$G_t-b_t$,$G_t-V_\phi(s_t)$},
+  xmin=0.4,xmax=4.6,ylabel={分散の比},
+  nodes near coords,nodes near coords style={font=\footnotesize,/pgf/number format/fixed,/pgf/number format/precision=2},
+  xmajorgrids=false]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=idx,y=ratio]{code/ch21/out/grad_variance.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{倒立振子での方策勾配の推定の分散（$R(\tau)$ を 1 とした比。エピソード 1,000 本、パラメータ 4,610 個の分散の合計）。
+4 つとも同じ勾配の不偏推定だが、過去の報酬を落とすと約 0.3 倍、さらにベースラインを引くと 0.1〜0.16 倍になる。}
+\label{fig:pg-grad-variance}
+\end{figure}
+
+\subsection*{学習曲線で比べる}
+
+学習ループ（\coderef{code:pg-reinforce-update}）の 14 行目の \code{rtg} は重みを $G_t$ に、16 行目の \code{baseline} は $G_t-V_\phi(s_t)$ にしたものです。
+\code{.detach()} は、方策の損失から価値ネットへ勾配が流れないようにする指定です。
+価値ネット $V_\phi$（パラメータを $\phi$ と書きます）は、20〜23 行目で $G_t$ を目標とする二乗誤差の回帰（\chapref{ch:ml}）で学習します。
+
+\figref{fig:pg-reinforce-curves}が学習曲線です。
+REINFORCE（灰色）は平均 79 止まり、reward-to-go（橙）は平均 148 ですが帯がとても広く、
+種ごとの値（実行結果の 2 行目）を見ると 500 に届いた種がある一方で、9.3 と 9.4 で止まった種が二つあります。
+でたらめに押すよりも悪い値です。この二つの方策を調べました（\file{collapse_check.py}）。
+
+\outputfile{ch21/out/collapse_check.txt}
+
+エントロピー（最大値 $\log2\approx0.693$）はほぼ 0 で、種 1 はいつも左へ、種 2 はほとんどいつも右へ押しています。
+方策が一つの行動に決めつけ、もう他の行動を試さないので、抜け出せなくなったのです。
+ベースライン付き（緑）は、5 回中 4 回でほぼ 500 に届き、残りの 1 回も平均 460 でした。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.84\linewidth,height=0.34\linewidth,xmin=0,xmax=1280,ymin=0,ymax=520,
+  xlabel={使ったエピソードの数},ylabel={平均エピソード長},legend pos=north west,legend cell align=left]
+\addplot[name path=blo,draw=none,forget plot] table[col sep=comma,x=episodes,y=baseline_lo]{code/ch21/out/reinforce_curves.csv};
+\addplot[name path=bhi,draw=none,forget plot] table[col sep=comma,x=episodes,y=baseline_hi]{code/ch21/out/reinforce_curves.csv};
+\addplot[figgreen,opacity=0.8,forget plot] fill between[of=blo and bhi];
+\addplot[name path=rlo,draw=none,forget plot] table[col sep=comma,x=episodes,y=rtg_lo]{code/ch21/out/reinforce_curves.csv};
+\addplot[name path=rhi,draw=none,forget plot] table[col sep=comma,x=episodes,y=rtg_hi]{code/ch21/out/reinforce_curves.csv};
+\addplot[figorange,opacity=0.5,forget plot] fill between[of=rlo and rhi];
+\addplot[black!50,thick] table[col sep=comma,x=episodes,y=total_mean]{code/ch21/out/reinforce_curves.csv};
+\addlegendentry{REINFORCE（重み $R(\tau)$）}
+\addplot[bookorange,thick] table[col sep=comma,x=episodes,y=rtg_mean]{code/ch21/out/reinforce_curves.csv};
+\addlegendentry{reward-to-go（重み $G_t$）}
+\addplot[bookgreen,thick] table[col sep=comma,x=episodes,y=baseline_mean]{code/ch21/out/reinforce_curves.csv};
+\addlegendentry{ベースライン付き（重み $G_t-V_\phi(s_t)$）}
+\end{axis}
+\end{tikzpicture}
+\caption{倒立振子での REINFORCE とその改良（各 5 個の乱数の種の平均。帯は最小〜最大）。
+重みの分散を減らすほど、同じエピソード数でより速く、より確実に学習する。
+reward-to-go（橙）の帯が広いのは、5 個中 2 個の種で方策が崩れたためである。}
+\label{fig:pg-reinforce-curves}
+\end{figure}
+
+\begin{quiz}
+価値ネット $V_\phi(s)$ が学習の途中でまだ不正確だとします。それでも式\eqref{eq:pg-baseline}の推定は不偏でしょうか。
+\end{quiz}
+
+不偏のままです。
+式\eqref{eq:pg-baseline-zero}の証明で使ったのは「$b$ が $a_t$ によらない」ことだけで、$b$ が $V^{\pi}$ にどれだけ近いかは一度も出てきません。
+ベースラインの良し悪しは\textbf{分散}にだけ影響します。
+
+\begin{column}{ここまでの道のり}
+\textbf{\secref{sec:pg-param}〜\secref{sec:pg-theorem}}：方策を softmax で表し、対数微分のトリックで $\nabla J=\E[\sum_t\nabla\log\pitheta(a_t\mid s_t)\,R(\tau)]$ を導いた（環境の仕組みは消える）。\\
+\textbf{\secref{sec:pg-reinforce}}：それをそのまま実装したのが REINFORCE。「収益で重み付けした交差エントロピー」。\\
+\textbf{\secref{sec:pg-variance}}：重みを $R(\tau)\to G_t\to G_t-b(s_t)$ と取り替えても期待値は変わらず、分散は 1/10 程度になる。\\
+\textbf{この先}：$V$ を未来の予想にも使って良いアドバンテージを作る（\secref{sec:pg-actor-critic}）。データを使い回し（\secref{sec:pg-surrogate}）、更新の大きさを抑える（\secref{sec:pg-ppo}）。
+\end{column}
+
+この節で分かったことをまとめます。
+スコア関数の期待値は 0 なので、行動によらない量を重みから引いても勾配の期待値は変わりません。
+過去の報酬を落とし、状態価値を引いた「アドバンテージ」を重みにすると、分散が 1/10 程度になり、学習が速く安定しました。
+
+\section{アクター・クリティックと GAE}\label{sec:pg-actor-critic}
+\skimread{押さえる結論は二つです。TD 誤差 $\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)$ がアドバンテージの推定になること。GAE はそれを $(\gamma\lambda)^l$ で割り引いて足し、$\lambda$ で偏りと分散を調整すること。導出と手計算は 2 周目に。}
+
+前節の重み $G_t-V_\phi(s_t)$ の $G_t$ は、エピソードの最後までの報酬をすべて足した量です。
+倒立振子なら何百個、LLM の長い推論なら何千個もの乱数の結果が積み重なっていて、まだ揺れが残っています。
+この節の問いは、「価値ネットをもっと積極的に使って、より揺れの小さいアドバンテージを作れないか。そのとき何を犠牲にするのか」です。
+
+\subsection*{TD 誤差はアドバンテージの推定になる}
+
+\chapref{ch:rl-basics}の \textbf{TD 誤差}
+\begin{equation}
+\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)
+\label{eq:pg-td-error}
+\end{equation}
+は、「1 ステップ進んでみたら、予想 $V(s_t)$ より良かったか」を表す量でした（$s_{t+1}$ が終端状態なら $V(s_{t+1})=0$）。
+$V$ が真の状態価値 $V^{\pi}$ なら、$\delta_t$ はアドバンテージの不偏な推定です。
+\begin{align}
+\E\bigl[\delta_t\mid s_t,a_t\bigr]
+&=\E\bigl[r_t+\gamma V^{\pi}(s_{t+1})\mid s_t,a_t\bigr]-V^{\pi}(s_t)
+&&\text{（$V^\pi(s_t)$ は $s_t$ で決まる）}\notag\\
+&=Q^{\pi}(s_t,a_t)-V^{\pi}(s_t)=A^{\pi}(s_t,a_t)
+&&\text{（ベルマン期待方程式）}.
+\label{eq:pg-td-adv}
+\end{align}
+$\delta_t$ が含む乱数は報酬 1 個と次の状態だけなので、何百個もの報酬を足した $G_t$ より揺れがずっと小さくなります。
+その代わり、$V_\phi$ が不正確なら $\delta_t$ は\textbf{偏り}ます。
+ベースラインと違い、$V_\phi$ を「未来の報酬の代わり」に使うので、その誤差がそのまま答えのずれになるのです。
+
+\subsection*{アクター・クリティック}
+
+方策（行動する役）と価値ネット（批評する役）を同時に学習する方法を\term{アクター・クリティック}{actor-critic}と呼び、
+方策を\term{アクター}{actor}、価値ネットを\term{クリティック}{critic}と呼びます（\figref{fig:pg-actor-critic}）。
+アクターは、クリティックが作ったアドバンテージの推定 $\hat{A}_t$ を重みにして学習します。
+A2C／A3C\cite{mnih2016asynchronous}がこの形の代表で、次節の PPO もこの形をしています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=6mm and 12mm]
+  \node[greenbox,minimum width=26mm,minimum height=10mm] (env) {環境};
+  \node[purplebox,above left=8mm and 4mm of env,minimum width=30mm,minimum height=10mm] (actor) {\textbf{アクター}\\方策 $\pitheta(a\mid s)$};
+  \node[box,above right=8mm and 4mm of env,minimum width=30mm,minimum height=10mm] (critic) {\textbf{クリティック}\\価値 $V_\phi(s)$};
+  \draw[arr] (actor.south) |- node[pos=0.25,left,lbl]{行動 $a_t$} (env.west);
+  \draw[arr] (env.east) -| node[pos=0.75,right,lbl]{$s_{t+1},\,r_t$} (critic.south);
+  \draw[arr] (critic.west) -- node[above,lbl,align=center]{アドバンテージ $\hat{A}_t$\\（「平均より良かった？」）} (actor.east);
+  \node[lbl,below=1mm of actor,xshift=-16mm,align=center,text=bookpurple] {$\hat{A}_t$ を重みに\\方策勾配で更新};
+  \node[lbl,below=1mm of critic,xshift=16mm,align=center,text=bookblue] {$V_\phi(s_t)$ を\\収益に回帰};
+\end{tikzpicture}
+\caption{アクター・クリティック。アクター（方策）が行動し、クリティック（価値ネット）がその結果を
+「予想より良かったか」で採点してアドバンテージ $\hat{A}_t$ を作る。アクターは $\hat{A}_t$ を重みとして確率を上げ下げする。}
+\label{fig:pg-actor-critic}
+\end{figure}
+
+\subsection*{偏りと分散の綱引き：$n$ ステップのアドバンテージ}
+
+報酬を全部使う $G_t-V(s_t)$（偏らないが分散が大きい）と、1 個だけ使う $\delta_t$（分散は小さいが偏る）の中間として、
+「報酬を $n$ 個だけ実際に使い、その先は $V$ で予想する」推定が考えられます。
+\begin{equation}
+\hat{A}^{(n)}_t=r_t+\gamma r_{t+1}+\cdots+\gamma^{n-1}r_{t+n-1}+\gamma^{n}V(s_{t+n})-V(s_t).
+\label{eq:pg-nstep}
+\end{equation}
+$n=1$ なら $\delta_t$、$n$ がエピソードの残りの長さ以上なら $G_t-V(s_t)$ です。
+これは TD 誤差の和で書けます。$n=2$ で確かめます。
+\begin{align*}
+\delta_t+\gamma\delta_{t+1}
+&=\bigl(r_t+\gamma V(s_{t+1})-V(s_t)\bigr)+\gamma\bigl(r_{t+1}+\gamma V(s_{t+2})-V(s_{t+1})\bigr)\\
+&=r_t+\gamma r_{t+1}+\gamma^2V(s_{t+2})-V(s_t)=\hat{A}^{(2)}_t .
+\end{align*}
+（1 行目は式\eqref{eq:pg-td-error}の代入、2 行目で $\gamma V(s_{t+1})$ が打ち消し合います。）
+同じように隣り合う $V$ が次々に打ち消し合うので、一般に
+\begin{equation}
+\hat{A}^{(n)}_t=\sum_{l=0}^{n-1}\gamma^{l}\delta_{t+l}
+\label{eq:pg-nstep-delta}
+\end{equation}
+が成り立ちます。
+
+\subsection*{GAE：すべての $n$ を混ぜる}
+
+どの $n$ がよいかは問題によります。そこで、すべての $n$ の推定を重み $(1-\lambda)\lambda^{n-1}$（$0\le\lambda\le1$。合計は等比級数で 1）で平均します。
+これを\term{一般化アドバンテージ推定}{generalized advantage estimation, GAE}と呼びます\cite{schulman2016high}。
+エピソードが十分長いとして計算します。
+\begin{align}
+\hat{A}^{\mathrm{GAE}}_t
+&=(1-\lambda)\sum_{n=1}^{\infty}\lambda^{n-1}\hat{A}^{(n)}_t
+=(1-\lambda)\sum_{n=1}^{\infty}\lambda^{n-1}\sum_{l=0}^{n-1}\gamma^{l}\delta_{t+l}
+&&\text{（1）}\notag\\
+&=(1-\lambda)\sum_{l=0}^{\infty}\gamma^{l}\delta_{t+l}\sum_{n=l+1}^{\infty}\lambda^{n-1}
+&&\text{（2）}\notag\\
+&=(1-\lambda)\sum_{l=0}^{\infty}\gamma^{l}\delta_{t+l}\cdot\frac{\lambda^{l}}{1-\lambda}
+=\sum_{l=0}^{\infty}(\gamma\lambda)^{l}\,\delta_{t+l}
+&&\text{（3）}.
+\label{eq:pg-gae}
+\end{align}
+（1）は定義と式\eqref{eq:pg-nstep-delta}の代入、（2）は和の順序の入れ替え（$\delta_{t+l}$ は $n\ge l+1$ の項に現れる）、
+（3）は等比級数 $\sum_{n=l+1}^{\infty}\lambda^{n-1}=\lambda^l/(1-\lambda)$ です。
+GAE は、未来の TD 誤差を $(\gamma\lambda)^l$ で割り引いて足したものです。
+$\lambda=0$ なら $l=0$ の項だけが残って $\delta_t$、$\lambda=1$ なら式\eqref{eq:pg-nstep-delta}で $n\to\infty$ とした $G_t-V(s_t)$ です。
+$\lambda$ は偏りと分散のあいだを連続的に動かすつまみです（\tabref{tab:pg-lambda}）。
+$\gamma=0.99$, $\lambda=0.95$ なら、20 ステップ先の TD 誤差にも $(0.99\times0.95)^{20}\approx0.29$ の重みが残ります。
+
+\begin{table}[tbp]
+\centering
+\caption{GAE の $\lambda$ による推定の性質。PPO の論文などでよく使われる値は $\gamma=0.99$, $\lambda=0.95$\cite{schulman2017proximal}。}
+\label{tab:pg-lambda}
+\small
+\begin{tabular}{llll}
+\toprule
+$\lambda$ & 推定 $\hat{A}_t$ & 偏り（$V$ が不正確なとき） & 分散 \\
+\midrule
+0 & $\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)$ & 大きい & 小さい \\
+0.9〜0.97 & $\sum_l(\gamma\lambda)^l\delta_{t+l}$ & 中くらい & 中くらい \\
+1 & $G_t-V(s_t)$（モンテカルロ） & なし & 大きい \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{手で計算してみる}
+
+3 ステップで終わり、最後にだけ報酬 1 がもらえるエピソードを考えます（LLM の「最後に正解なら 1」と同じ形です）。
+$\gamma=0.9$、価値ネットの予測は $V(s_0)=0.5$, $V(s_1)=0.6$, $V(s_2)=0.8$、終端状態 $s_3$ では $V(s_3)=0$ とします。
+TD 誤差は
+$\delta_2=1+0-0.8=0.2$、$\delta_1=0+0.9\times0.8-0.6=0.12$、$\delta_0=0+0.9\times0.6-0.5=0.04$ です。
+式\eqref{eq:pg-gae}は、後ろ向きの漸化式 $\hat{A}_t=\delta_t+\gamma\lambda\,\hat{A}_{t+1}$ で計算できます（$l\ge1$ の部分が $\gamma\lambda\hat{A}_{t+1}$ です）。
+$\lambda=0.5$ なら $\gamma\lambda=0.45$ で、$\hat{A}_2=0.2$、$\hat{A}_1=0.12+0.45\times0.2=0.21$、$\hat{A}_0=0.04+0.45\times0.21=0.1345$ です。
+\tabref{tab:pg-gae-example}に $\lambda=0,0.5,1$ をまとめました。
+$\lambda=1$ の $\hat{A}_0=0.31$ は、モンテカルロの $G_0-V(s_0)=0.9^2\times1-0.5=0.31$ と一致します。
+$\lambda$ が大きいほど、最後の報酬の「手柄」が前の時刻まで強く伝わります。
+
+\begin{table}[tbp]
+\centering
+\caption{GAE の手計算の例（$\gamma=0.9$、報酬 $(0,0,1)$、$V=(0.5,0.6,0.8)$）。
+$\lambda=0$ は TD 誤差そのもの、$\lambda=1$ はモンテカルロの $G_t-V(s_t)$ になる。}
+\label{tab:pg-gae-example}
+\small
+\begin{tabular}{lccc}
+\toprule
+ & $t=0$ & $t=1$ & $t=2$ \\
+\midrule
+TD 誤差 $\delta_t$ ＝ $\hat{A}_t$（$\lambda=0$） & 0.04 & 0.12 & 0.2 \\
+$\hat{A}_t$（$\lambda=0.5$） & 0.1345 & 0.21 & 0.2 \\
+$\hat{A}_t$（$\lambda=1$） ＝ $G_t-V(s_t)$ & 0.31 & 0.30 & 0.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\snippet{GAE を後ろ向きの漸化式で計算する}{code:pg-gae}{ch21/gae.py}{gae}
+
+入力はどれも \code{(T, n)} の形で、6 行目の \code{last} が一つ後ろの $\hat{A}_{t+1}$ を覚えます。
+8 行目の \code{m_next} は次の時刻がエピソードの内側なら 1、終わっていれば 0 で、終わった後の価値を 0 にし（9 行目）、次のエピソードの値が混ざるのを防ぎます。
+10 行目が TD 誤差、11 行目が漸化式です。
+\file{gae.py} を直接実行すると、手計算の例（\tabref{tab:pg-gae-example}）と同じ値が出力されます（\file{out/gae.txt}）。
+
+なお、500 ステップでの\textbf{打ち切り}は棒が倒れた\textbf{終了}と違い、その先にも本当は報酬が続くので、正確には $V(s_{t+1})=0$ とせず価値ネットの予測で補うべきです。
+本章のコードは簡単のため区別していません（\code{gymnasium} は両者を \code{terminated} と \code{truncated} で区別します）。
+
+この節で分かったことをまとめます。
+価値ネットを未来の予想に使うと、TD 誤差 $\delta_t$ という分散の小さいアドバンテージの推定が得られますが、価値ネットの誤差の分だけ偏ります。
+GAE は TD 誤差を $(\gamma\lambda)^l$ で割り引いて足し、$\lambda$ で偏りと分散を連続的に調整します。
+
+\section{データを使い回す：重点サンプリングと代理目的関数}\label{sec:pg-surrogate}
+
+ここまでの方法には、まだ二つの弱点があります。
+一つは\textbf{データの無駄}です。何百ステップもかけて集めたエピソードを、勾配 1 回分に使っただけで捨てていました。
+もう一つは\textbf{更新の大きさ}です。1 回の更新で方策が大きく変わりすぎると、\figref{fig:pg-reinforce-curves}の崩れた種のように、立ち直れなくなることがあります。
+この節では一つ目の弱点を扱い、「古い方策で集めたデータから、新しい方策の良さを見積もるにはどうすればよいか」を問います。二つ目の弱点は次の節で扱います。
+
+\subsection*{重点サンプリング}
+
+手元にあるのは少し前の方策 $\pi_{\text{old}}=\pi_{\vtheta_{\text{old}}}$ のサンプルですが、欲しいのは「いまの方策の下での」期待値です。
+この食い違いを埋める道具が\term{重点サンプリング}{importance sampling}です。分布 $q$ のサンプルで分布 $p$ の下での期待値を計算するには、$q(x)>0$ である限り
+\begin{equation}
+\E_{x\sim p}[f(x)]=\sum_x p(x)f(x)=\sum_x q(x)\,\frac{p(x)}{q(x)}\,f(x)=\E_{x\sim q}\!\left[\frac{p(x)}{q(x)}f(x)\right]
+\label{eq:pg-importance}
+\end{equation}
+です（$q(x)/q(x)=1$ を掛けただけ）。$q$ のサンプルに比 $p/q$ を掛けて平均すれば、$p$ の下での期待値になります。
+3 択の例で、$q=(\frac13,\frac13,\frac13)$ のサンプルから $p=(0.5,0.25,0.25)$ の期待報酬（正解は 0.5）を求めると、
+$a_1$ が確率 $\frac13$ で出て重み $p/q=1.5$、報酬 1 なので、$\E_q[(p/q)\,r]=\frac13\times1.5\times1=0.5$ と一致します。
+
+\subsection*{代理目的関数}
+
+古い方策のデータから新しい方策の良さを見積もります。出発点は、次の恒等式です\cite{kakade2002approximately}。
+\begin{equation}
+J(\vtheta)-J(\vtheta_{\text{old}})=\E_{\tau\sim p_{\vtheta}}\Biggl[\,\sum_{t}\gamma^t A^{\pi_{\text{old}}}(s_t,a_t)\Biggr].
+\label{eq:pg-perf-diff}
+\end{equation}
+「新しい方策の改善分は、新しい方策で行動したとき、古い方策の目で見て平均より良い行動をどれだけ選んだかの合計」という意味です。
+なぜこれが出発点になるのかというと、左辺がちょうど「知りたいもの（どれだけ良くなったか）」で、右辺が「前節までで推定のしかたを学んだアドバンテージ」でできているからです。
+証明は、$A^{\pi_{\text{old}}}$ を TD 誤差 $r_t+\gamma V^{\pi_{\text{old}}}(s_{t+1})-V^{\pi_{\text{old}}}(s_t)$ の期待値（式\eqref{eq:pg-td-adv}）に書き直して和をとると、
+$V$ の項が隣どうしで打ち消し合い（式\eqref{eq:pg-nstep-delta}と同じ打ち消し合い）、報酬の和 $-V^{\pi_{\text{old}}}(s_0)$ だけが残る、というものです。
+細部は本章の先の話には使わないので、ここでは意味だけを押さえて進みます（詳しくは\cite{kakade2002approximately}）。
+
+右辺は新しい方策 $\pitheta$ で走らせた軌跡についての期待値なので、手元の古いデータからはまだ計算できません。そこで次の三つの近似をします。
+\begin{enumerate}
+\item \textbf{行動}：$a_t\sim\pitheta$ を、重点サンプリング（式\eqref{eq:pg-importance}）で $a_t\sim\pi_{\text{old}}$ のサンプルに比を掛けたものに書き換える（これは近似ではなく等式）。
+\item \textbf{状態}：$\pitheta$ で走らせたときに出会う状態 $s_t$ の顔ぶれを、$\pi_{\text{old}}$ で走らせたときに実際に出会った状態で代用する。新旧の方策が近ければ、出会う状態もほぼ同じはずだからです。\textbf{この近似が崩れないようにするのが、次の節の信頼領域の話です。}
+\item \textbf{重みなど}：$A^{\pi_{\text{old}}}$ を GAE の推定 $\hat{A}_t$（TD 誤差を $(\gamma\lambda)^l$ で割り引いて足したアドバンテージの推定、式\eqref{eq:pg-gae}）で置き換え、前節までと同じく $\gamma^t$ を落とす。
+\end{enumerate}
+こうして得られるのが\term{代理目的関数}{surrogate objective}です。
+\begin{equation}
+L_{\vtheta_{\text{old}}}(\vtheta)=\E_{(s_t,a_t)\sim\pi_{\text{old}}}\Bigl[\,\rho_t(\vtheta)\,\hat{A}_t\,\Bigr],\qquad
+\rho_t(\vtheta)=\frac{\pitheta(a_t\mid s_t)}{\pi_{\text{old}}(a_t\mid s_t)} .
+\label{eq:pg-surrogate}
+\end{equation}
+$\rho_t$ は、集めたときに比べて行動 $a_t$ の確率が何倍になったかを表す\term{確率比}{probability ratio}です。
+$L$ は古いデータだけで何回でも計算でき、しかも $\vtheta=\vtheta_{\text{old}}$ ではその勾配がこれまでの方策勾配と一致します。
+\[
+\nabla_{\vtheta}L\big|_{\vtheta=\vtheta_{\text{old}}}
+=\E\left[\frac{\nabla_{\vtheta}\pitheta(a_t\mid s_t)}{\pi_{\text{old}}(a_t\mid s_t)}\hat{A}_t\right]_{\vtheta=\vtheta_{\text{old}}}
+=\E\bigl[\nabla_{\vtheta}\log\pitheta(a_t\mid s_t)\,\hat{A}_t\bigr]_{\vtheta=\vtheta_{\text{old}}}
+\]
+（1 つ目の等号は分母が $\vtheta$ によらないから、2 つ目は $\vtheta=\vtheta_{\text{old}}$ で分母が $\pitheta$ になり式\eqref{eq:pg-log-trick}が使えるから）。
+最初の 1 歩は前節までと同じで、2 歩目以降も同じデータで $L$ を上り続けられる点が違います。
+
+この節で分かったことをまとめます。重点サンプリングを使うと、古い方策のデータで新しい方策を採点する代理目的関数 $L$ を作れ、同じデータで何度も勾配を上れます。
+ただし途中で「出会う状態は新旧でほぼ同じ」という近似（上の 2 番目）を使いました。
+
+\section{信頼領域から PPO へ}\label{sec:pg-ppo}
+
+前節の代理目的関数は、上り続けてよいのでしょうか。
+答えは「近くでなら」です。その「近く」をどう守るかを工夫したのが PPO で、\secref{sec:pg-experiments}で見るように学習率などの設定に鈍感で扱いやすく、LLM の強化学習（RLHF）でも標準の手法になりました\cite{ouyang2022training}。
+この節の問いは、「同じデータで何回も更新しつつ、方策が一度に変わりすぎないようにするにはどうすればよいか」です。
+
+\subsection*{大きすぎる更新の危険と信頼領域}
+
+ただし $L$ を信用してよいのは、$\pitheta$ が $\pi_{\text{old}}$ に近いあいだだけです（状態の分布を代用した近似が崩れるため）。
+しかも $L$ は $\hat{A}_t>0$ の行動の $\rho_t$ を大きくすればいくらでも大きくなるので、最大化しすぎると、$L$ の上では改善したのに本当の $J$ は下がる、ということが起こります（\figref{fig:pg-trust-region}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\linewidth,height=0.34\linewidth,xmin=-2.2,xmax=3.2,ymin=-1.6,ymax=2.3,
+  xlabel={パラメータ $\vtheta$（1 次元の模式図）},ylabel={目的関数の値},
+  xtick={0},xticklabels={$\vtheta_{\text{old}}$},ytick=\empty,legend style={at={(0.5,1.03)},anchor=south,legend columns=2,font=\scriptsize},legend cell align=left,samples=120,domain=-2.2:3.2]
+\fill[figgreen,opacity=0.6] (axis cs:-0.8,-1.6) rectangle (axis cs:0.8,2.3);
+\addplot[bookblue,very thick] {0.8*x - 0.35*x^2};
+\addlegendentry{本当の改善 $J(\vtheta)-J(\vtheta_{\text{old}})$}
+\addplot[bookaccent,thick,dashed] {0.8*x - 0.05*x^2};
+\addlegendentry{代理目的関数 $L_{\vtheta_{\text{old}}}(\vtheta)$}
+\node[font=\footnotesize,text=bookgreen,align=center] at (axis cs:0,1.85) {信頼領域\\（ここなら $L\approx J$）};
+\end{axis}
+\end{tikzpicture}
+\caption{代理目的関数と本当の改善の関係（概念図）。$\vtheta_{\text{old}}$ の近くでは両者は同じ値・同じ傾きを持つ。
+離れるほど食い違い、$L$ を上り続けると本当の $J$ はかえって下がる。「近く」にとどまって $L$ を上るのが信頼領域の考え方である。}
+\label{fig:pg-trust-region}
+\end{figure}
+
+「近い」をパラメータの距離で測るのは不適切です。
+3 択の例でロジットを $(0,0,0)$ から $(3,0,0)$ に動かすと、正解の確率は $\frac13$ から $e^3/(e^3+2)\approx20.1/22.1\approx0.91$ に跳ね上がります。
+ところが、同じ長さ 3（$\sqrt{3+3+3}=3$）だけ $(\sqrt3,\sqrt3,\sqrt3)$ に動かしても、確率は変わりません。
+softmax は、すべてのロジットに共通に足した数を無視するからです。
+測りたいのは\textbf{確率分布}としての近さで、その物差しが KL ダイバージェンス（\chapref{ch:math}）です。
+
+\term{TRPO}{trust region policy optimization}\cite{schulman2015trust}は、これを制約付きの最適化問題として書きました。
+\begin{equation}
+\max_{\vtheta}\ L_{\vtheta_{\text{old}}}(\vtheta)\qquad\text{ただし}\qquad
+\E_{s\sim\pi_{\text{old}}}\Bigl[\KL{\pi_{\text{old}}(\cdot\mid s)}{\pitheta(\cdot\mid s)}\Bigr]\le\delta .
+\label{eq:pg-trpo}
+\end{equation}
+「古い方策から KL で $\delta$（たとえば 0.01）以内」の範囲を\term{信頼領域}{trust region}と呼びます。
+TRPO の論文は、KL が小さければ、$L$ の改善から本当の改善の下限が決まることを示しました。ただ、「制約を守りながら最大化する」には普通の勾配上昇とは違う特別な解き方が要り、計算も実装も重くなります。
+
+\subsection*{PPO：比をクリップする}
+
+\term{PPO}{proximal policy optimization}\cite{schulman2017proximal}は、制約を解く代わりに、目的関数を細工して「方策を変えすぎても得をしない」ようにしました。
+\begin{definition}[PPO のクリップ付き目的関数]\label{def:pg-ppo-clip}
+小さな定数 $\epsilon$（標準は 0.2）に対して
+\begin{equation}
+L^{\mathrm{CLIP}}(\vtheta)=\E_{t}\Bigl[\min\bigl(\rho_t(\vtheta)\hat{A}_t,\ \operatorname{clip}(\rho_t(\vtheta),1-\epsilon,1+\epsilon)\,\hat{A}_t\bigr)\Bigr]
+\label{eq:pg-ppo-clip}
+\end{equation}
+を最大化します。$\E_t$ は、集めたデータのすべての時刻 $t$（すべてのエピソードのすべてのステップ）についての平均です。$\operatorname{clip}(x,l,u)$ は、$x$ を区間 $[l,u]$ に押し込む関数（$l$ 未満なら $l$、$u$ を超えたら $u$）です。
+\end{definition}
+
+$\hat{A}_t$ の符号で場合分けすると分かりやすくなります（\figref{fig:pg-ppo-clip}）。
+\textbf{$\hat{A}_t>0$（良い行動）}では、確率を上げたい（$\rho_t$ を大きくしたい）場面です。
+$\rho_t\le1+\epsilon$ では値は $\rho_t\hat{A}_t$ ですが、$\rho_t>1+\epsilon$ になると $(1+\epsilon)\hat{A}_t$ で頭打ちになり、勾配は 0 です。
+「確率を 1.2 倍より上げても、もう得にならない」ようにしてあるのです。
+\textbf{$\hat{A}_t<0$（悪い行動）}では、確率を下げたい場面です。
+$\rho_t<1-\epsilon$ になると $(1-\epsilon)\hat{A}_t$ で頭打ちになり、「0.8 倍より下げても、もう得にならない」ようになります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=left,width=0.50\linewidth,height=0.34\linewidth,xmin=0,xmax=2,ymin=-0.1,ymax=2.1,
+  xlabel={確率比 $\rho_t$},ylabel={$L^{\mathrm{CLIP}}$ の 1 項},title={\small $\hat{A}_t=+1$（良い行動）},
+  xtick={0,0.8,1,1.2,2},xticklabels={0,$1-\epsilon$,1,$1+\epsilon$,2},x tick label style={font=\scriptsize}]
+\addplot[black!35,dashed,domain=0:2] {x};
+\addplot[bookblue,very thick] coordinates {(0,0) (1.2,1.2) (2,1.2)};
+\addplot[only marks,mark=*,bookaccent] coordinates {(1,1)};
+\node[font=\scriptsize,anchor=south east,text=bookgray] at (axis cs:1.95,1.75) {$\rho_t\hat{A}_t$};
+\node[font=\scriptsize,anchor=north,text=bookblue,align=center] at (axis cs:1.65,0.75) {頭打ち\\（勾配 0）};
+\addplot[only marks,mark=o,mark size=2.2pt,bookblue,thick] coordinates {(0.5,0.5) (1.5,1.2)};
+\node[font=\scriptsize,anchor=south east,text=bookblue] at (axis cs:0.5,0.55) {$\rho_t=0.5$};
+\node[font=\scriptsize,anchor=north,text=bookblue] at (axis cs:1.5,1.12) {$\rho_t=1.5$};
+\end{axis}
+\begin{axis}[at={(left.east)},xshift=14mm,anchor=west,width=0.50\linewidth,height=0.34\linewidth,xmin=0,xmax=2,ymin=-2.1,ymax=0.1,
+  xlabel={確率比 $\rho_t$},title={\small $\hat{A}_t=-1$（悪い行動）},
+  xtick={0,0.8,1,1.2,2},xticklabels={0,$1-\epsilon$,1,$1+\epsilon$,2},x tick label style={font=\scriptsize}]
+\addplot[black!35,dashed,domain=0:2] {-x};
+\addplot[bookaccent,very thick] coordinates {(0,-0.8) (0.8,-0.8) (2,-2)};
+\addplot[only marks,mark=*,bookaccent] coordinates {(1,-1)};
+\node[font=\scriptsize,anchor=south,text=bookaccent,align=center] at (axis cs:0.4,-0.75) {頭打ち\\（勾配 0）};
+\node[font=\scriptsize,anchor=north east,text=bookgray] at (axis cs:1.95,-1.6) {$\rho_t\hat{A}_t$};
+\end{axis}
+\end{tikzpicture}
+\caption{PPO のクリップ付き目的関数の 1 項（$\epsilon=0.2$）。赤い点 $\rho_t=1$ が出発点（データを集めた方策）。左図の白丸は本文の数値例の 2 点（$\hat{A}_t=+1$ に縮めたもの）。
+左：良い行動は確率を 1.2 倍まで上げると頭打ち。右：悪い行動は 0.8 倍まで下げると頭打ち。
+頭打ちでない側（左図の $\rho_t<1$、右図の $\rho_t>1$）では灰色の破線 $\rho_t\hat{A}_t$ と同じ傾きが残り、方策を元に戻す向きの勾配が働く。}
+\label{fig:pg-ppo-clip}
+\end{figure}
+
+頭打ちに\textbf{ならない}側では、良い行動なのに確率が下がった（左図の $\rho_t<1$）、悪い行動なのに上がった（右図の $\rho_t>1$）ときに、元に戻す勾配が働きます。
+min をとることで、「得をする方向には $\epsilon$ までしか進ませないが、損をした方向の誤りは必ず直させる」という安全側の見積もりになっているのです。
+数値例（$\epsilon=0.2$、$\hat{A}_t=2$）：$\rho_t=1.5$ なら $\min(3.0,\,1.2\times2)=2.4$ で頭打ち（勾配 0）、$\rho_t=0.5$ なら $\min(1.0,\,0.8\times2)=1.0$ で傾き 2 が残ります。
+
+\begin{quiz}
+同じデータでの 1 回目の勾配計算では、すべての時刻で $\rho_t=1$ です。このときの $L^{\mathrm{CLIP}}$ の勾配は何と一致するでしょうか。
+\end{quiz}
+
+$\rho_t=1$ はクリップの区間の内側なので、クリップは何もせず、勾配は $L$ の $\vtheta_{\text{old}}$ での勾配、
+つまりアドバンテージを重みにした方策勾配 $\E[\nabla\log\pitheta(a_t\mid s_t)\hat{A}_t]$ です。
+PPO の 1 歩目はアクター・クリティックの方策勾配そのもので、クリップが効くのは同じデータで何度も更新して方策が動いてからです。
+
+\subsection*{価値ネットの損失とエントロピー項}
+
+PPO ではアクターとクリティックを一緒に学習します。最小化する損失は次の三つの和です（$c_V$, $c_H$ は係数）。
+\begin{equation}
+\calL^{\mathrm{PPO}}(\vtheta,\phi)=-L^{\mathrm{CLIP}}(\vtheta)
++c_V\,\E_t\Bigl[\bigl(V_\phi(s_t)-\hat{G}_t\bigr)^2\Bigr]
+-c_H\,\E_t\Bigl[H\bigl(\pitheta(\cdot\mid s_t)\bigr)\Bigr].
+\label{eq:pg-ppo-total}
+\end{equation}
+第 1 項はクリップ付き目的関数の符号を反転したものです。
+第 2 項は価値ネットの回帰で、目標 $\hat{G}_t=\hat{A}_t+V_\phi(s_t)$ は GAE の推定に予測値を足し戻したもの（$\lambda=1$ なら $G_t$）です。
+第 3 項の $H(\pi(\cdot\mid s))=-\sum_a\pi(a\mid s)\log\pi(a\mid s)$ は方策のエントロピー（\chapref{ch:math}）です。
+これを大きくする向きに少し押すことで、reward-to-go で崩れた種のように方策が早く決めつけて\textbf{探索}（\chapref{ch:rl-basics}）をやめてしまうのを防ぎます。
+
+\subsection*{PPO のアルゴリズムと実装}
+
+PPO の 1 反復は\figref{fig:pg-ppo-flow}のとおりで、REINFORCE との違いは、集めたデータをミニバッチに分けて $K$ エポック使い回すことです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 6mm]
+  \node[box,minimum width=24mm] (roll) {\textbf{集める}\\$\pi_{\text{old}}$ で\\エピソード $N$ 本};
+  \node[box,right=of roll,minimum width=24mm] (adv) {\textbf{採点する}\\$\log\pi_{\text{old}}(a_t|s_t)$\\GAE で $\hat{A}_t,\hat{G}_t$};
+  \node[purplebox,right=of adv,minimum width=34mm,minimum height=16mm] (upd) {\textbf{$K$ エポック繰り返す}\\ミニバッチごとに\\$\calL^{\mathrm{PPO}}$ で 1 歩更新};
+  \node[graybox,right=of upd,minimum width=18mm] (drop) {捨てる\\$\pi_{\text{old}}\leftarrow\pitheta$};
+  \draw[arr] (roll) -- (adv); \draw[arr] (adv) -- (upd); \draw[arr] (upd) -- (drop);
+  \draw[arr,rounded corners=3pt] (drop.south) -- ++(0,-6mm) -| (roll.south);
+  \draw[arr,rounded corners=3pt,bookpurple] (upd.north east) ++(-3mm,0) -- ++(0,4mm) -| ($(upd.north west)+(3mm,0)$);
+  \node[lbl,above=4.5mm of upd,text=bookpurple] {同じデータを使い回す（クリップが暴走を防ぐ）};
+\end{tikzpicture}
+\caption{PPO の 1 反復。REINFORCE と同じくロールアウトから始まるが、集めたデータをミニバッチに分けて $K$ エポック使い回す。
+使い回しても方策が離れすぎないのは、クリップ付き目的関数のおかげである。}
+\label{fig:pg-ppo-flow}
+\end{figure}
+
+\snippet{PPO の損失}{code:pg-ppo-loss}{ch21/ppo.py}{ppo-loss}
+
+4 行目で確率比 $\rho_t$ を、対数確率の差の \code{exp} として計算します（小さな確率どうしの割り算で桁があふれるのを避けるため）。
+\code{logp_old} は集めたときの $\log\pi_{\text{old}}(a_t\mid s_t)$ で、定数です。
+5〜7 行目が式\eqref{eq:pg-ppo-clip}（符号を反転）、8 行目が価値ネットの二乗誤差、9 行目がエントロピーで、10 行目で式\eqref{eq:pg-ppo-total}のとおりに組み合わせます（$c_V=0.5$, $c_H=0.01$）。
+
+\snippet{PPO の学習ループ}{code:pg-ppo-train}{ch21/ppo.py}{ppo-train}
+
+5 行目で方策と価値ネットを一つの Adam でまとめて更新するよう設定し、8 行目で REINFORCE と同じロールアウト（16 エピソード）を行います。
+9〜12 行目は集めた時点の値の記録です（\code{logp_old}、GAE（$\gamma=0.99$, $\lambda=0.95$）の $\hat{A}_t$、目標 $\hat{G}_t$）。
+13〜15 行目でデータを 1 列に並べ、エピソードの外側の時刻を除きます。
+16 行目でアドバンテージを平均 0・標準偏差 1 に\textbf{正規化}します。理論にはない実装上の工夫で、報酬の大きさによらず学習率の効き方をそろえるために、ほとんどの PPO の実装が行っています。
+17〜21 行目が使い回しの部分で、同じデータを 10 エポック、毎回 4 つのミニバッチに分けて更新します（1 回のロールアウトで 40 回。REINFORCE は 1 回でした）。
+22〜25 行目で\textbf{診断量}を記録します。関数 \code{diagnostics}（\file{ppo.py}）は、更新後の方策で $\rho_t$ を計算し直し、次の三つを返します。
+一つ目は、古い方策からの KL の推定 $\E_{\pi_{\text{old}}}[\rho_t-1-\log\rho_t]$ です。
+$\E_{\pi_{\text{old}}}[\rho_t]=1$ なので、その平均は $\E_{\pi_{\text{old}}}[-\log\rho_t]=\KL{\pi_{\text{old}}}{\pitheta}$ と同じになります。しかも 1 本ずつの値が常に 0 以上なので扱いやすいのです（演習問題\ref{ex:pg-kl-estimator}）。
+二つ目は、$\rho_t$ がクリップの区間の外に出た時刻の割合（\textbf{クリップ率}）、三つ目はエントロピーです。
+
+この節で分かったことをまとめます。
+前節の代理目的関数の見積もりは、新旧の方策が近いときしか信用できません。
+TRPO は KL の制約で、PPO は確率比のクリップで、方策が一度に変わりすぎないようにします。
+
+\section{実験：PPO を動かし、壊し、診断する}\label{sec:pg-experiments}
+\skimread{結論は「PPO は REINFORCE より少ないデータで学び、学習率に鈍感。クリップを外すと崩れる種が出る」です。図 2 枚と各小節の最後の段落を見れば先へ進めます。}
+
+道具がすべてそろいました。
+この節の問いは、「PPO は実際に REINFORCE より良いのか。何が効いていて、何を変えると壊れるのか。うまくいかないとき、どこを見ればよいのか」です。
+
+\subsection*{PPO とベースライン付き REINFORCE}
+
+\file{ppo.py} で、REINFORCE と同じ条件（1 反復 16 エピソード、80 反復、5 個の種）で PPO を学習させました（約 3 分）。
+
+\outputfile{ch21/out/ppo.txt}
+
+最後の行のとおり、5 個の種すべてで最後の 10 反復の平均エピソード長が 489〜500 になりました。
+ベースライン付き REINFORCE と並べると（\figref{fig:pg-ppo-curves}(a)）、5 個の種の平均が 450 を超えたのは PPO が 480 エピソード目、REINFORCE が 704 エピソード目でした。
+PPO の方が少ないデータで学習しますが、この易しい問題では、よく調整した REINFORCE も最終的には同じところに届きます。
+PPO の本当の強みは、次の二つの実験で見えてきます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=top,width=0.84\linewidth,height=0.34\linewidth,xmin=0,xmax=1280,ymin=0,ymax=520,
+  ylabel={平均エピソード長},title={(a) PPO とベースライン付き REINFORCE},title style={font=\small},
+  legend style={at={(0.98,0.04)},anchor=south east,font=\scriptsize},legend cell align=left]
+\addplot[name path=plo,draw=none,forget plot] table[col sep=comma,x=episodes,y=ppo_lo]{code/ch21/out/ppo_curves.csv};
+\addplot[name path=phi,draw=none,forget plot] table[col sep=comma,x=episodes,y=ppo_hi]{code/ch21/out/ppo_curves.csv};
+\addplot[figpurple,opacity=0.8,forget plot] fill between[of=plo and phi];
+\addplot[bookgreen,thick] table[col sep=comma,x=episodes,y=baseline_mean]{code/ch21/out/reinforce_curves.csv};
+\addlegendentry{ベースライン付き REINFORCE（平均）}
+\addplot[bookpurple,very thick] table[col sep=comma,x=episodes,y=ppo_mean]{code/ch21/out/ppo_curves.csv};
+\addlegendentry{PPO（平均。帯は最小〜最大）}
+\end{axis}
+\begin{axis}[at={(top.below south west)},anchor=north west,yshift=-10mm,width=0.84\linewidth,height=0.34\linewidth,xmin=0,xmax=1280,ymin=0,ymax=520,
+  xlabel={使ったエピソードの数},ylabel={平均エピソード長},title={(b) クリップを外した PPO（種ごと）},title style={font=\small},
+  legend style={at={(0.98,0.04)},anchor=south east,font=\scriptsize},legend cell align=left]
+\addplot[bookpurple,very thick] table[col sep=comma,x=episodes,y=ppo_mean]{code/ch21/out/ppo_curves.csv};
+\addlegendentry{PPO（クリップあり、平均）}
+\addplot[black!45,thin] table[col sep=comma,x=episodes,y=s0]{code/ch21/out/noclip_seeds.csv};
+\addlegendentry{クリップなし（種 0〜3）}
+\addplot[black!45,thin,forget plot] table[col sep=comma,x=episodes,y=s1]{code/ch21/out/noclip_seeds.csv};
+\addplot[black!45,thin,forget plot] table[col sep=comma,x=episodes,y=s2]{code/ch21/out/noclip_seeds.csv};
+\addplot[black!45,thin,forget plot] table[col sep=comma,x=episodes,y=s3]{code/ch21/out/noclip_seeds.csv};
+\addplot[red!80!black,very thick] table[col sep=comma,x=episodes,y=s4]{code/ch21/out/noclip_seeds.csv};
+\addlegendentry{クリップなし（種 4）}
+\end{axis}
+\end{tikzpicture}
+\caption{(a) PPO（紫）とベースライン付き REINFORCE（緑）の学習曲線（各 5 個の種の平均）。PPO はデータを使い回すぶん早く上がる。
+(b) クリップを外した PPO の種ごとの曲線。種 4（赤）は崩れて戻らず、他の種（灰色）も何度も大きく落ち込む。}
+\label{fig:pg-ppo-curves}
+\end{figure}
+
+出力の各行は種 0 の診断量です。
+KL は 0.0007〜0.0052 で、1 回の反復で方策はわずかしか動いていません。
+クリップ率は 0.2〜5\% で、クリップは動きすぎた一部の時刻だけを抑えています。
+エントロピーは 0.55〜0.59 と高いままで、方策は確率的なまま 500 ステップ立てるようになりました。
+
+\subsection*{クリップを外すと何が起きるか}
+
+\file{sensitivity.py}（約 7 分。結果は \file{out/sensitivity.txt}）の前半では、PPO のクリップを外しました（$\epsilon$ を事実上無限大にし、ほかは同じ）。
+最後の 10 反復の平均エピソード長は、5 個中 4 個の種で 450〜482 まで届きましたが、種 4 は 9.3 に崩れました（reward-to-go と同じ「決めつけ」）。
+種ごとの曲線（\figref{fig:pg-ppo-curves}(b) の灰色と赤）を見ると、崩れなかった種も 500 に届いた後に何度も大きく落ち込んでいます。
+クリップのない代理目的関数を 40 歩も上ると、方策が信頼領域の外へ出てしまうことがあるのです。
+
+\subsection*{学習率への敏感さ}
+
+後半では、学習率を 4 通りに変え、ベースライン付き REINFORCE と PPO を各 3 個の種で 40 反復学習させました（\figref{fig:pg-lr-sweep}）。
+REINFORCE は、学習率が小さすぎると（$10^{-3}$）遅く、大きすぎると（$3\times10^{-2}$）3 個中 2 個の種で崩れました（73 と 27）。
+PPO は 4 通りすべてで平均 450 以上でした。1 回の更新の大きさがクリップで抑えられるので、学習率を大きくしても一気に壊れにくいのです。
+強化学習ではハイパーパラメータの調整に何度も学習を回す必要があり、それ自体が大きなコストです。
+「設定に鈍感であること」が、PPO が標準になった大きな理由の一つです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.70\linewidth,height=0.34\linewidth,xmode=log,xmin=7e-4,xmax=4.5e-2,ymin=0,ymax=530,
+  xtick={1e-3,3e-3,1e-2,3e-2},xticklabels={$10^{-3}$,$3\times10^{-3}$,$10^{-2}$,$3\times10^{-2}$},
+  xlabel={学習率},ylabel={最後の 10 反復の平均長},legend style={at={(0.5,1.03)},anchor=south,legend columns=2,font=\scriptsize},legend cell align=left]
+\addplot[bookgreen,thick,mark=*,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=lr,y=reinforce,
+  y error plus expr=\thisrow{reinforce_hi}-\thisrow{reinforce},y error minus expr=\thisrow{reinforce}-\thisrow{reinforce_lo}]{code/ch21/out/lr_sweep.csv};
+\addlegendentry{ベースライン付き REINFORCE}
+\addplot[bookpurple,thick,mark=square*,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=lr,y=ppo,
+  y error plus expr=\thisrow{ppo_hi}-\thisrow{ppo},y error minus expr=\thisrow{ppo}-\thisrow{ppo_lo}]{code/ch21/out/lr_sweep.csv};
+\addlegendentry{PPO}
+\end{axis}
+\end{tikzpicture}
+\caption{学習率への敏感さ（各 3 個の種の平均。縦線は最小〜最大）。REINFORCE は学習率が合わないと遅いか崩れる。
+PPO は試した範囲のすべてで安定して高い。}
+\label{fig:pg-lr-sweep}
+\end{figure}
+
+\subsection*{gymnasium で評価する}
+
+最後に、自作の環境で学習した方策（種 0、\file{checkpoints/ch21_ppo.pt}）を、\code{gymnasium} の \code{CartPole-v1} で評価しました（\file{eval_gym.py}）。
+\code{gymnasium} では、\code{env = gym.make("CartPole-v1")} で環境を作り、\code{s, _ = env.reset(seed=...)} で初期状態を得て、
+\code{s, r, terminated, truncated, _ = env.step(a)} で 1 ステップ進めます（\code{terminated} は倒れた、\code{truncated} は 500 で打ち切り）。
+確率に従ってサンプルする場合（\code{sample}）と、確率が最大の行動を選ぶ場合（\code{greedy}）の両方を試しました。
+
+\outputfile{ch21/out/eval_gym.txt}
+
+どちらも 20 エピソードすべてで 500 ステップ立ち続け、自作の環境で学んだことがそのまま通用しました。
+
+\subsection*{強化学習のデバッグ術}
+
+強化学習のコードは、間違っていても「少しは学習する」ことが多く、バグに気づきにくいのが特徴です。
+
+\begin{practice}{うまく学習しないときに見るもの}
+\begin{enumerate}[leftmargin=1.5em]
+\item \textbf{でたらめな方策の収益}を先に測る（倒立振子なら約 22）。学習後がこれを下回ったら、方策が崩れている。
+\item \textbf{種を 3 個以上}で回す。1 個の種の成功・失敗は偶然かもしれない（\figref{fig:pg-reinforce-curves}の帯の広さ）。
+\item \textbf{エントロピー}を記録する。急に 0 に近づいたら決めつけの兆候。学習率を下げるか、エントロピー項を強める。
+\item PPO では \textbf{KL とクリップ率}を見る。KL が 0.02〜0.05 を大きく超えたり、クリップ率が数十\% になったりしたら、学習率かエポック数が大きすぎる。
+\item \textbf{損失の値ではなく収益}で判断する（\secref{sec:pg-reinforce}の注意）。
+\item \textbf{マスクと符号}を確かめる。終わった後の時刻が和に入っていないか。勾配上昇のつもりで降下していないか。
+\end{enumerate}
+\end{practice}
+
+\subsection*{本書の実験と実際の LLM の強化学習}
+
+この章の実験は LLM の強化学習より何桁も小さいものの（\tabref{tab:pg-scale}）、ロールアウト $\to$ アドバンテージの推定 $\to$ クリップ付きの更新という手順は同じです。
+大きく違うのはロールアウトのコストで、LLM では応答の生成そのものが重く、学習時間の多くを占めます。データを使い回せる PPO の性質が、そこで効いてきます。
+
+\begin{table}[tbp]
+\centering
+\caption{本章の倒立振子の実験と、LLM の強化学習の規模の比較。右の列は次章で扱う代表的な事例（InstructGPT、DeepSeek-R1-Zero、GRPO）から取った。ここでは「何桁違うか」だけを見ればよい。DeepSeek-R1-Zero の値は\cite{guo2025deepseekr1}による。}
+\label{tab:pg-scale}
+\small
+\begin{tabularx}{\linewidth}{lXX}
+\toprule
+ & 本章（倒立振子、PPO） & LLM の強化学習 \\
+\midrule
+方策 & MLP、4,610 パラメータ & 数十億〜数千億パラメータの言語モデル（InstructGPT の PPO は最大 1,750 億\cite{ouyang2022training}） \\
+行動の種類 & 2（左・右） & 語彙の大きさ（数万〜十数万。本書のミニGPT は 4,096） \\
+1 エピソード & 最大 500 ステップ & 1 応答。R1-Zero では最大 32,768 トークン（8,200 ステップ以降は 65,536） \\
+1 反復のデータ & 16 エピソード & R1-Zero では 32 問 $\times$ 16 回答 $=$ 512 応答 \\
+価値ネット & 小さな MLP & PPO では方策と同規模のモデル。GRPO では使わない \\
+計算 & CPU で約 3 分 & 多数の GPU で数日以上（生成が大きな割合を占める） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+この節で分かったことをまとめます。
+PPO は少ないエピソードで学習し、何より学習率への敏感さが小さいことが分かりました。クリップを外すと崩れる種が出ます。
+うまくいかないときは、収益・エントロピー・KL・クリップ率を、複数の種で見ます。
+
+\section{LLM への橋渡し：トークンは行動である}\label{sec:pg-llm-bridge}
+
+最後に、章の冒頭の問題に戻ります。この章の式は、言語モデルの何に当てはまるのでしょうか（実装は\chapref{ch:rl-llm}で行います）。
+言語モデルが応答を 1 トークンずつ生成する過程は、そのまま MDP として読めます（\tabref{tab:pg-llm-map}）。
+状態は「プロンプトと生成済みのトークン列」、行動は「次のトークン」、方策は次トークン分布 $\pitheta(x_t\mid\text{プロンプト},x_{<t})$ です。
+遷移は「選んだトークンを付け足す」だけで決まっており、\code{<|end|>} を出したら 1 本のエピソードが終わります。
+報酬は多くの場合、応答の最後に一度だけ与えられます（計算問題なら「正解なら 1」）。
+
+\begin{table}[tbp]
+\centering
+\caption{倒立振子と言語モデルの対応。この章の式は、表の右の列に読み替えるだけで LLM の強化学習の式になる。}
+\label{tab:pg-llm-map}
+\small
+\begin{tabular}{lll}
+\toprule
+ & 倒立振子（この章） & 計算アシスタント（\chapref{ch:rl-llm}） \\
+\midrule
+状態 $s_t$ & 台車と棒の 4 つの数 & プロンプト＋生成済みのトークン列 \\
+行動 $a_t$ & 左か右（2 通り） & 次のトークン（4,096 通り） \\
+方策 $\pitheta$ & 小さな MLP（4,610 パラメータ） & ミニGPT（約 260 万パラメータ） \\
+遷移 $P$ & 物理法則（確率的な初期値） & トークンを末尾に付け足す（決定的） \\
+エピソード & 倒れるか 500 ステップまで & \code{<|end|>} を出すまでの 1 応答 \\
+報酬 & 毎ステップ $+1$ & 最後に一度（正解なら 1） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+この読み替えで、方策勾配定理（式\eqref{eq:pg-theorem}）とベースライン（式\eqref{eq:pg-baseline}）は
+\begin{equation}
+\nabla_{\vtheta}J(\vtheta)=\E\Biggl[\,\sum_{t}\nabla_{\vtheta}\log\pitheta(x_t\mid\text{プロンプト},x_{<t})\;\bigl(r-b\bigr)\Biggr]
+\label{eq:pg-llm}
+\end{equation}
+になります（報酬が最後の 1 回だけで $\gamma=1$ なら、どの時刻の $G_t$ も最終報酬 $r$ に等しくなります）。
+損失にすれば、生成した応答のトークンの交差エントロピーを、$r-b$ で重み付けしたものです。
+\tabref{tab:pg-ce-vs-pg}で見た「SFT と REINFORCE の違いは、データを誰が作るかと重みだけ」という見方が、そのまま当てはまります。
+
+\chapref{ch:rl-llm}では、LLM ならではの事情も扱います。
+人間の好みを報酬にする RLHF は、この章の PPO をそのまま使います\cite{ouyang2022training}。
+正解を自動判定できる問題では、同じ質問への複数の回答の平均報酬をベースラインにし、価値ネットを使わない GRPO が広く使われています\cite{shao2024deepseekmath}。
+また、方策が元のモデルから離れすぎないように KL ダイバージェンスの罰則を加えます。信頼領域の考え方の親戚です。
+
+\begin{summary}
+\item 方策ベースの方法は、方策 $\pitheta(a\mid s)$ を softmax で直接パラメータ化し、期待収益 $J(\vtheta)=\E[R(\tau)]$ を勾配上昇で最大化します。
+\item サンプルの平均はそのままでは微分できません。対数微分のトリック $\nabla\pitheta=\pitheta\nabla\log\pitheta$ で、勾配を「重み $\times$ スコア関数」の期待値に書き換えます。
+\item 方策勾配定理：$\nabla J=\E[\sum_t\nabla\log\pitheta(a_t\mid s_t)R(\tau)]$。軌跡の確率の対数をとると、環境の遷移確率は微分で消えます。
+\item REINFORCE は「自分の行動を正解とみなした交差エントロピーを収益で重み付けしたもの」で、SFT とは重みとデータの出どころだけが違います。
+\item スコア関数の期待値は 0 なので、reward-to-go やベースライン $b(s_t)$ で重みを取り替えても勾配は不偏のままで、分散だけが減ります。倒立振子では分散が約 1/10 になりました。
+\item アドバンテージ $A^\pi=Q^\pi-V^\pi$ は「平均より良かったか」を表します。GAE は TD 誤差を $(\gamma\lambda)^l$ で足し、$\lambda$ で偏りと分散を調整します。
+\item PPO は、重点サンプリングで作った代理目的関数の確率比をクリップし、同じデータを何度も使い回しながら方策が変わりすぎないようにします。
+\item 言語モデルの生成は「トークン＝行動」の MDP で、この章の式がそのまま使えます。
+\end{summary}
+
+\section*{次の章へ}
+
+この章で、「良い結果につながった行動の確率を上げる」という直感が、方策勾配という正確な勾配になりました。
+REINFORCE からベースライン、GAE、PPO へと、分散を減らし、データを使い回し、更新を安定させる工夫を積み重ねてきました。
+次の\chapref{ch:rl-llm}では、方策をミニGPT に、行動をトークンに置き換えます。
+計算問題の正誤を報酬にして \file{sft.pt} を鍛えるとき、語彙 4,096 の行動空間と、最後にしか届かない報酬は、どんな新しい難しさを生むでしょうか。
+そして、人間の「好み」のように、プログラムで採点できない報酬からは、どう学べばよいのでしょうか。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Sutton と Barto の教科書\cite{sutton2018rl}の第 13 章は、方策勾配定理とベースライン付き REINFORCE、アクター・クリティックの標準的な解説です。
+\item OpenAI の Spinning Up\cite{achiam2018spinningup}の “Intro to Policy Optimization” は、本章と同じ順序（対数微分 $\to$ reward-to-go $\to$ ベースライン）で導出を丁寧に追っています。
+\item Berkeley の CS 185/285\cite{cs285}は、方策勾配・アクター・クリティック・発展的な方策勾配（TRPO・PPO）の講義と、LLM の強化学習の回を含みます。
+\item 原論文：REINFORCE\cite{williams1992simple}、方策勾配定理\cite{sutton1999policy}、GAE\cite{schulman2016high}（$\gamma,\lambda$ を偏りと分散のつまみと見る）、TRPO\cite{schulman2015trust}、PPO\cite{schulman2017proximal}（短く読みやすい）。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 6}
+\item\label{ex:pg-bandit-var} （手計算）3 択バンディットで $\vtheta=\vzero$、報酬 $r=(1,0,0)$ とします。
+1 サンプルの推定 $\hat{\vg}=(r(a)-b)(\ve_a-\bm{\pi})$ の分散の合計 $\E\norm{\hat{\vg}}^2-\norm{\E\hat{\vg}}^2$ を、$b=0$ と $b=\frac13$ のそれぞれについて分数で求め、
+実行結果の 0.1487 と 0.0741 に（サンプルによる誤差を除いて）一致することを確かめてください（ヒント：$\norm{\ve_a-\bm{\pi}}^2=\frac69$）。
+\item\label{ex:pg-kl-estimator} （証明）$\rho=\pitheta(a\mid s)/\pi_{\text{old}}(a\mid s)$ とします。
+(a) $\E_{a\sim\pi_{\text{old}}}[\rho]=1$ を示してください。
+(b) これを使って $\E_{a\sim\pi_{\text{old}}}[\rho-1-\log\rho]=\KL{\pi_{\text{old}}}{\pitheta}$ を示してください。
+(c) すべての $x>0$ で $x-1-\log x\ge0$ であることを示してください（$x=1$ で最小）。
+\item （手計算）\tabref{tab:pg-gae-example}の例で、$\gamma=1$, $\lambda=0.8$ のときの $\hat{A}_0,\hat{A}_1,\hat{A}_2$ を求めてください（$\gamma$ が変わるので、TD 誤差 $\delta_t$ から計算し直します）。
+\item （コード改造）\file{bandit_pg.py} の \code{score_estimates} で、ベースラインを「そのサンプル自身の報酬」\code{b = r[a]} にしてみてください。
+推定の平均はどうなりますか。式\eqref{eq:pg-baseline-zero}の証明のどこが成り立たなくなったのかを説明してください。
+\item （コード改造）\file{ppo.py} で \code{epochs=1, n_mb=1} とすると、PPO は何と同じアルゴリズムになりますか。
+実際に学習曲線を描いて、\figref{fig:pg-ppo-curves}と比べてください。$\epsilon$ を 0.05 や 0.5 にした場合も試してください。
+\item （考察）報酬が応答の最後に一度だけ与えられ、$\gamma=1$ のとき、reward-to-go（式\eqref{eq:pg-rtg}）は REINFORCE（式\eqref{eq:pg-theorem}）と比べて分散を減らすでしょうか。
+LLM の強化学習で、トークンごとの価値ネットを使わずに「回答ごとのベースライン」がよく使われる理由を、この観点から考えてください。
+\end{exercises}

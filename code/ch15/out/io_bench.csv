@@ -1,0 +1,7 @@
+place,fs,method,ms,us_per_file
+local,ext4,small,86.15,43.07
+local,ext4,one,38.57,19.29
+local,ext4,memmap,21.40,10.70
+shared,nfs4,small,4328.75,2164.38
+shared,nfs4,one,381.86,190.93
+shared,nfs4,memmap,66.47,33.23

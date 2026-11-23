@@ -1,0 +1,7 @@
+cond=soft N=300 steps=1500 max_value=99 student=627,648 teacher=2,583,936
+step   299 loss 1.7066 acc200 0.035 (61s)
+step   599 loss 0.9548 acc200 0.080 (119s)
+step   899 loss 0.3857 acc200 0.075 (180s)
+step  1199 loss 0.1196 acc200 0.080 (241s)
+step  1499 loss 0.0910 acc200 0.080 (303s)
+final chat accuracy (1000, seed 777): 0.093  time 352s

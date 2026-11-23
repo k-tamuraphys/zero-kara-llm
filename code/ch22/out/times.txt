@@ -1,0 +1,28 @@
+実行時間（CPU 1 スレッド、4〜5 本を同時実行した混雑時。単独なら概ね 1/2〜1/3）
+rl_arith.py grpo --save            601 s（80 ステップ）
+rl_arith.py baseline --steps 60    544 s
+rl_arith.py reinforce --steps 60   552 s
+rl_arith.py grpo --lr 1e-4 --steps 30 --tag highlr  344 s
+reward_model.py                    60 s
+dpo.py 0.1 (alpha 0)               475 s
+dpo.py 0.1 0.2                     500 s
+eval_compare.py                    150 s
+単独実行の目安: GRPO 1 ステップ約 3 秒、200 問の評価約 5 秒。
+rl_*_kl.csv は rl_*.csv から kl>0 の行を awk で抜き出したもの（図 22.6 用）。
+dpo_beta0.1_alpha0.0.txt の「?」は、壊れた応答の中の文字にならないバイト列（U+FFFD）を組版のために置き換えたもの。
+
+--- 続きのタスク（2026-11-22 05:51〜）: rl_long.py（CPU 4 コアの機械）
+rl_long.py q32（--Q 32 --threads 4、単独）  439 s（250 ステップ、評価 11 回込み。1 ステップ約 1.6 秒）
+rl_long.py long / hard（--Q 16 --threads 2、2 本並行） 約 2.4 秒/ステップ。long は 175、hard は 150 ステップで打ち切り（kill）
+rl_long.py t07 / t05（--Q 16 --lr 5e-5 --temp 0.7/0.5、2 本並行） 75 ステップで打ち切り
+eval_compare.py sft.pt ch22_rl_grpo80.pt ch22_rl.pt   176 s（3 モデル、2 スレッド）
+rl_{long,hard,t07,t05}.csv は打ち切ったため rl_*.txt の「step N acc1000 X」行から作った（step,acc のみ）。rl_q32.csv はスクリプトが書いたもの。
+eval_compare_grpo80.txt は初稿の eval_compare.txt（sft.pt と 80 ステップ版の比較）を改名したもの。
+checkpoints: ch22_rl.pt = q32 の最後（250 ステップ）、ch22_rl_grpo80.pt = 初稿の ch22_rl.pt（GRPO 80 ステップ）。
+--- 第 3 タスク（2026-11-22 06:37〜）---
+rl_ppo.py 試走（4 生成、64×8、K=4、4 スレッド単独）: 1 生成あたり約 5 秒（評価 1 回: 検証 500 問＋テスト 1,000 問で約 6 秒）
+rl_ppo.py ppo_a（lr 1e-4, β=0）: 10 生成（39 更新）で test 0.763、251 s 時点で手で停止（ログ rl_ppo_a_killed.txt、CSV なし）
+rl_ppo.py ppo_b（lr 3e-5, β=0.04）: 60 生成 240 更新 1216 s（2 本並走、2 スレッドずつ。1 生成約 20 s）
+rl_ppo.py ppo_c（lr 5e-5, β=0.04, std で割らない）: 61 生成 244 更新 1090 s（max_time で終了）
+sft_ceiling.py 400 ステップ 298 s / 600 ステップ 443 s（1 スレッド、混雑時。同じ種なので 400 までは同じ値）
+rl_ppo_{b,c}_eval.csv は rl_ppo_{b,c}.csv から test の入った行を抜き出したもの（図 22.4 用）

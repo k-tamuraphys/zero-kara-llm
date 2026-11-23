@@ -1,0 +1,1304 @@
+\chapter{現代の LLM アーキテクチャ}\label{ch:modern-arch}
+\bookmap{3}
+
+\begin{chapterlead}
+\textbf{ここまで}: 注意機構を部品として、GPT-2 と同じ設計のミニGPT を組み立て、学習させ、文章を生成させました（\chapref{ch:transformer}）。\\[1mm]
+\textbf{この章の問い}: 2019 年の GPT-2 から現在の LLM までに、設計のどこが、なぜ変わったのでしょうか。
+KV キャッシュや MoE とは何でしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item RMSNorm、RoPE、SwiGLU、GQA が「何に困って生まれたか」を説明し、PyTorch で実装できます。
+\item KV キャッシュを自作し、生成が何倍速くなるかを測り、必要なメモリを式で見積もれます。
+\item 混合エキスパート（MoE）の層を実装し、総パラメータとアクティブパラメータの違いを説明できます。
+\item Llama 3、Qwen3、DeepSeek-V3、gpt-oss などの公開された設定を読み、パラメータ数とメモリを計算できます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] 要るのは、\chapref{ch:attention}の注意の式と因果マスク、\chapref{ch:transformer}のブロックと \code{generate} です。初めて本書を読む人は、この章を後に回して\chapref{ch:pretraining}へ進めます。その場合も、KV キャッシュ（\secref{sec:ma-kvcache}の\figref{fig:ma-kvcache}まで）と MoE（\secref{sec:ma-moe}の最初の小節）だけは、先に読んでおくと安心です。
+\item[\rgmust] \secref{sec:ma-diff}と、\secref{sec:ma-rope}の前半（2 次元の回転まで）：差分の地図と、この章の数学の核である「内積が位置の差だけで決まる」ことの導出。
+\item[\rgmust] \secref{sec:ma-kvcache}、\secref{sec:ma-gqa}の前半、\secref{sec:ma-moe}（実装と実験を除く）：KV キャッシュ、メモリの式\eqref{eq:ma-kv-mem}、MoE。\chapref{ch:infra}と\chapref{ch:eval-serving}が、そのまま使います。
+\item[\rgskim] \secref{sec:ma-rmsnorm}、\secref{sec:ma-swiglu}、\secref{sec:ma-bias}、\secref{sec:ma-assemble}、\secref{sec:ma-models}と、実装の小節：見出しの下に、押さえる結論を書きました。
+\item[\rglater] FlashAttention（\secref{sec:ma-gqa}の最後）と\secref{sec:ma-beyond}：\chapref{ch:gpu}で高速化を学ぶときや、読み物として。
+\end{readingguide}
+
+前の章の最後で、本書のミニGPT は 2019 年の GPT-2 と同じ設計だと述べました。
+では、2025 年や 2026 年に公開された LLM の中身は、どれほど違うのでしょうか。
+意外なことに、骨組みはほとんど同じです。
+埋め込み、ブロックの積み重ね、注意と FFN、残差接続、出力ヘッド。
+この流れは今も変わっていません。
+FFN（feed-forward network）は、第 10 章で MLP と呼んだ部品のことです。
+現在の LLM の論文や設定ファイルではこの名前がよく使われるので、本章ではこちらで呼びます。
+
+変わったのは、ブロックの中の部品です。
+正規化の式、位置の教え方、FFN の形、注意のヘッドの持ち方。
+一つひとつは小さな変更ですが、どれにも「大きくしたときに困ったこと」への答えという理由があります。
+もう一つ大きく変わったのが、\textbf{推論の効率}への配慮です。
+LLM は学習の後に、何億回も文章を生成するのに使われます。
+生成を速く、安くする工夫が、設計そのものに入り込みました。
+その効き目は、この章で数字として確かめます。
+過去の計算を取っておく「KV キャッシュ」を自作すると、本書の小さなモデルでも、長い生成が約 8 倍速くなります。
+ヘッドの持ち方を変えるだけで、会話 1 本のメモリが 4 分の 1 に減ることも計算します。
+
+この章では、GPT-2 型から現代の標準形への差分を一つずつ取り上げます。
+それぞれについて「何に困っていたか → どう変えたか → コードではどう書くか」を確かめます。
+最後に、それらをすべて入れた「現代版ミニGPT」を作り、基本版と同じ条件で学習させて比べます。
+
+\section{GPT-2 から何が変わったか：差分の地図}\label{sec:ma-diff}
+
+細部に入る前に、変更点の全体を一枚の表で眺めておきましょう。
+この節の問いは、「GPT-2 と現代の LLM は、部品ごとに見ると何が違うのか」です。
+
+\tabref{tab:ma-diff}が差分の一覧です。
+左の列が本書のミニGPT と GPT-2 の部品、右の列が Llama 3 や Qwen3 など現在の公開モデルの多くが採用している部品です。
+「現代の標準」は \cite{touvron2023llama} の LLaMA がまとめた形が出発点で、その後のモデルの多くがこれを受け継いでいます。
+
+\begin{table}[tbp]
+\centering
+\caption{GPT-2 型（第 10 章のミニGPT）と現代の標準的な LLM の差分。上から順に本章で一つずつ扱う。}
+\label{tab:ma-diff}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+部品 & GPT-2 型 & 現代の標準 & 本章 \\
+\midrule
+正規化 & LayerNorm（Pre-LN） & RMSNorm（Pre-Norm） & \ref{sec:ma-rmsnorm}節 \\
+位置の情報 & 学習型の位置埋め込み & RoPE（回転） & \ref{sec:ma-rope}節 \\
+FFN & GELU の 2 層 MLP（$4d$） & SwiGLU（約 $\tfrac{8}{3}d$〜$3.5d$） & \ref{sec:ma-swiglu}節 \\
+バイアス & あり & なし & \ref{sec:ma-bias}節 \\
+埋め込みと出力 & 重み共有 & 小さいモデルは共有、大きいと別 & \ref{sec:ma-bias}節 \\
+生成 & 毎回すべて計算し直す & KV キャッシュ & \ref{sec:ma-kvcache}節 \\
+注意のヘッド & マルチヘッド（MHA） & GQA（キー・バリューを共有） & \ref{sec:ma-gqa}節 \\
+FFN の規模 & 1 つ（密） & 大きいモデルは MoE & \ref{sec:ma-moe}節 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表の上の 4 行は、\textbf{学習をうまく、安くする}ための変更です。
+5 行目の重み共有は、パラメータを節約するかどうかの選択で、モデルの大きさによって答えが分かれます。
+下の 4 行のうち KV キャッシュと GQA は、\textbf{生成を速くする}ための変更です。
+最後の MoE は、\textbf{計算量を増やさずにパラメータを増やす}ための変更です。
+
+\figref{fig:ma-block}は、1 つのブロックを左右に並べて比べたものです。
+データの流れ（残差ストリームに注意と FFN が足し込む）は同じで、箱の中身だけが入れ替わっていることを確かめてください。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  b/.style={box,font=\footnotesize,minimum width=30mm,minimum height=6mm},
+  n/.style={graybox,font=\footnotesize,minimum width=30mm,minimum height=5.5mm}]
+\begin{scope}
+\node[font=\small\bfseries] at (0,62) {GPT-2 型};
+\draw[arr] (0,-4) -- (0,57);
+\node[n] (a1) at (14,8) {LayerNorm};
+\node[b] (a2) at (14,17) {注意（MHA）};
+\node[op] (p1) at (0,24) {$+$};
+\node[n] (a3) at (14,33) {LayerNorm};
+\node[b] (a4) at (14,42) {MLP（GELU, $4d$）};
+\node[op] (p2) at (0,49) {$+$};
+\draw[arr] (0,2) -| (a1.south);
+\draw[arr] (a1) -- (a2); \draw[arr] (a2.north) |- (p1);
+\draw[arr] (0,27) -| (a3.south);
+\draw[arr] (a3) -- (a4); \draw[arr] (a4.north) |- (p2);
+\end{scope}
+\begin{scope}[xshift=62mm]
+\node[font=\small\bfseries] at (0,62) {現代の標準};
+\draw[arr] (0,-4) -- (0,57);
+\node[n,fill=figgreen,draw=bookgreen] (b1) at (14,8) {RMSNorm};
+\node[b,fill=figgreen,draw=bookgreen] (b2) at (14,17) {注意（GQA＋RoPE）};
+\node[op] (q1) at (0,24) {$+$};
+\node[n,fill=figgreen,draw=bookgreen] (b3) at (14,33) {RMSNorm};
+\node[b,fill=figgreen,draw=bookgreen] (b4) at (14,42) {SwiGLU（または MoE）};
+\node[op] (q2) at (0,49) {$+$};
+\draw[arr] (0,2) -| (b1.south);
+\draw[arr] (b1) -- (b2); \draw[arr] (b2.north) |- (q1);
+\draw[arr] (0,27) -| (b3.south);
+\draw[arr] (b3) -- (b4); \draw[arr] (b4.north) |- (q2);
+\node[lbl,align=left,anchor=west] at (31,17) {KV キャッシュ\\を持つ};
+\end{scope}
+\end{tikzpicture}
+\caption{1 つのブロックの比較。左が GPT-2 型（第 10 章）、右が現代の標準形。縦の矢印は残差ストリームで、注意と FFN の出力を足し込む流れは同じ。緑の箱が入れ替わった部品。}
+\label{fig:ma-block}
+\end{figure}
+
+この節で分かったのは、現代の LLM が GPT-2 と「同じ骨組みに、別の部品」を入れたものだということです。
+次の節から、表の上から順に部品を交換していきます。
+
+\section{RMSNorm：平均を引くのをやめる}\label{sec:ma-rmsnorm}
+\skimread{押さえる結論は「RMSNorm は、LayerNorm から『平均を引く』と『ずらし $\bm\beta$』を取り除き、大きさだけをそろえる軽い正規化」です。}
+
+最初の差分は正規化です。
+レイヤー正規化（LayerNorm、\chapref{ch:transformer}）は、各位置のベクトルを平均 0・分散 1 にそろえ、深いネットワークの学習を安定させる部品でした。
+この節の問いは、「LayerNorm の計算のうち、本当に必要なのはどこか」です。
+
+\subsection*{LayerNorm の 2 つの仕事}
+
+LayerNorm は、$d$ 次元のベクトル $\vx$ に対して次の計算をしました。
+\begin{equation}
+\mathrm{LayerNorm}(\vx)=\bm{\gamma}\odot\frac{\vx-\mu}{\sqrt{\sigma^2+\epsilon}}+\bm{\beta},\qquad
+\mu=\frac1d\sum_{i=1}^d x_i,\quad \sigma^2=\frac1d\sum_{i=1}^d(x_i-\mu)^2 .
+\label{eq:ma-layernorm}
+\end{equation}
+ここで $\odot$ は成分ごとの積、$\epsilon$ は 0 で割らないための小さな数です。
+この式は 2 つの仕事をしています。
+一つは平均 $\mu$ を引いて\textbf{中心をそろえる}こと、もう一つは標準偏差で割って\textbf{大きさをそろえる}ことです。
+
+Zhang と Sennrich\cite{zhang2019root}は、学習を安定させているのは主に後者だと考えました。
+値が層を通るたびに大きくなったり小さくなったりするのを止められれば、中心は多少ずれていても困らない、という見立てです。
+それなら、平均を計算して引く手間を省けます。
+そこで生まれたのが、\term{RMSNorm}{root mean square normalization}です。
+
+\begin{definition}[RMSNorm]
+$d$ 次元のベクトル $\vx$ の 2 乗平均平方根（root mean square）を $\mathrm{RMS}(\vx)=\sqrt{\frac1d\sum_{i=1}^d x_i^2+\epsilon}$ とします。RMSNorm は
+\begin{equation}
+\mathrm{RMSNorm}(\vx)=\bm{\gamma}\odot\frac{\vx}{\mathrm{RMS}(\vx)}
+\label{eq:ma-rmsnorm}
+\end{equation}
+です。学習するパラメータは倍率 $\bm{\gamma}\in\R^d$ だけで、ずらし $\bm{\beta}$ はありません。
+\end{definition}
+
+\begin{example}[3 次元の手計算]
+$\vx=(1,2,3)$、$\bm{\gamma}=(1,1,1)$、$\epsilon=0$ とします。
+2 乗の平均は $(1+4+9)/3=14/3\approx4.667$ なので、$\mathrm{RMS}(\vx)=\sqrt{4.667}\approx2.160$ です。
+したがって、各成分を 2.160 で割って $\mathrm{RMSNorm}(\vx)\approx(1/2.160,\,2/2.160,\,3/2.160)=(0.463,\,0.926,\,1.389)$ になります。
+一方 LayerNorm では、まず平均 $\mu=(1+2+3)/3=2$ を引いて $(-1,0,1)$ にします。
+分散は $\bigl((-1)^2+0^2+1^2\bigr)/3=2/3$ なので、標準偏差 $\sqrt{2/3}\approx0.816$ で割って $(-1.225,\,0,\,1.225)$ です。
+RMSNorm の出力は平均が 0 ではありませんが、2 乗平均はちょうど 1 になっています（$0.463^2+0.926^2+1.389^2\approx3.0$、3 で割って 1）。
+\end{example}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.7\linewidth,height=42mm,ybar,bar width=5.5mm,ymin=-1.9,ymax=3.8,
+  xmin=0.5,xmax=3.5,xtick={1,2,3},xticklabels={第 1 成分,第 2 成分,第 3 成分},ylabel={値},
+  grid=none,ymajorgrids,extra y ticks={0},extra y tick labels={},extra y tick style={grid style={black!55}},
+  legend pos=outer north east,legend style={font=\scriptsize},legend cell align=left,
+  nodes near coords,nodes near coords style={font=\tiny,text=black,/pgf/number format/.cd,fixed,precision=3}]
+\addplot[fill=bookgray!60,draw=none] coordinates {(1,1) (2,2) (3,3)};
+\addlegendentry{入力 $\vx$}
+\addplot[fill=bookblue,draw=none] coordinates {(1,-1.225) (2,0) (3,1.225)};
+\addlegendentry{LayerNorm}
+\addplot[fill=bookaccent,draw=none] coordinates {(1,0.463) (2,0.926) (3,1.389)};
+\addlegendentry{RMSNorm}
+\end{axis}
+\end{tikzpicture}
+\caption{$\vx=(1,2,3)$ を 2 つの正規化に通した結果（上の例の数値）。LayerNorm（青）は平均を引くので、棒が 0 の上下に分かれる。RMSNorm（赤）は全体を同じ倍率 $1/2.160$ で縮めるだけなので、$1:2:3$ の比と符号がそのまま残る。}
+\label{fig:ma-norm}
+\end{figure}
+
+\figref{fig:ma-norm}は、この例を棒グラフにしたものです。
+青の LayerNorm は「中心を 0 に動かしてから縮める」、赤の RMSNorm は「その場で縮めるだけ」であることを見てください。
+
+つまり RMSNorm は「大きさだけをそろえ、向きはそのまま残す」正規化です。
+2 乗平均が 1 ということは 2 乗の和が $d$、つまりベクトルの長さが $\sqrt d$ だということです（上の例では長さ $\sqrt3$）。
+そこで、$\bm\gamma$ がすべて 1 なら、RMSNorm はベクトルを原点からの距離 $\sqrt{d}$ の球面に乗せる操作だと考えることもできます。
+計算は平均を求める 1 回分だけ軽くなり、パラメータは半分になります。
+LayerNorm は $\bm\gamma$ と $\bm\beta$ で $2d$ 個、RMSNorm は $\bm\gamma$ の $d$ 個だけだからです。
+Zhang と Sennrich の実験では、精度を落とさずに正規化の計算時間を減らせました\cite{zhang2019root}。
+LLaMA\cite{touvron2023llama}がこれを採用して以来、ほぼすべての公開 LLM が RMSNorm を使っています。
+
+\subsection*{コード}
+
+\snippet{RMSNorm}{code:ma-rmsnorm}{ch11/modern_gpt.py}{rmsnorm}
+
+5 行目の \code{weight} が $\bm{\gamma}$ で、初期値はすべて 1 です。
+8 行目が $\mathrm{RMS}(\vx)$ の計算で、\code{x.pow(2).mean(dim=-1)} が最後の軸（$d$ 個の成分）の 2 乗平均、\code{.add(self.eps).sqrt()} が $\epsilon$ を足して平方根をとる部分です。
+\code{keepdim=True} で形を $(B,T,1)$ に保つので、9 行目の割り算はブロードキャスト（\chapref{ch:pytorch}）で各位置のベクトル全体に効きます。
+PyTorch にも同じ働きの \code{nn.RMSNorm} がありますが、本章では式との対応を見るために自分で書きました。
+
+正規化を置く場所は、GPT-2 と同じく注意と FFN の\textbf{前}です（\figref{fig:ma-block}）。
+正規化が LayerNorm ではなくなったので、Pre-LN ではなく Pre-Norm と呼ばれます。
+Gemma のように、部品の前と後の両方に RMSNorm を置くモデルもあります。
+
+この節で分かったのは、RMSNorm が LayerNorm から「平均を引く」と「ずらし $\bm\beta$」を取り除いた、より軽い正規化だということです。
+
+\section{RoPE：位置を「回転」で教える}\label{sec:ma-rope}
+
+次は位置の情報です。
+この節は本章でいちばん数学が多い節ですが、使うのは 2 次元の回転行列と三角関数の加法定理だけです。
+この節の問いは、「学習型の位置埋め込みの何が困るのか、そして回転でどう解決するのか」です。
+
+\subsection*{何に困っているか}
+
+GPT-2 型のモデルは、位置 $t$ ごとに学習したベクトル $\vp_t$ をトークンの埋め込みに足していました（\chapref{ch:transformer}）。
+この方法には 2 つの弱点があります。
+
+一つ目は、\textbf{表にない位置を扱えない}ことです。
+位置の表 $\mP$ の行数は文脈長の上限 $T_{\max}$ で決まります。
+本書の基盤モデルなら 128 行です。
+129 番目の位置のベクトルは学習されていないので、文脈長を後から伸ばすことができません。
+
+二つ目は、\textbf{本当に知りたいのは相対的な位置}だということです。
+「直前のトークン」「3 つ前のトークン」という関係は、文のどこに現れても同じ意味を持ちます。
+ところが絶対位置の埋め込みでは、位置 5 と位置 2 の関係も、位置 105 と位置 102 の関係も、別々のベクトルの組み合わせとして学ぶしかありません。
+
+そこで欲しいのは、「クエリとキーの内積が、2 つのトークンの\textbf{位置の差}だけで決まる」仕組みです。
+内積は注意のスコア（\chapref{ch:attention}）なので、そうなれば注意が自然に相対位置を見ることになります。
+
+\subsection*{2 次元の回転から始める}
+
+まず、クエリとキーが 2 次元のベクトルだとしましょう。
+平面のベクトルを角度 $\phi$ だけ回す行列は
+\begin{equation}
+\mR(\phi)=\begin{pmatrix}\cos\phi & -\sin\phi\\ \sin\phi & \cos\phi\end{pmatrix}
+\label{eq:ma-rot}
+\end{equation}
+です。
+これを使って、位置 $m$ のクエリ $\vq$ を角度 $m\omega$ だけ、位置 $n$ のキー $\vk$ を角度 $n\omega$ だけ回します。
+$\omega$ は回る速さを決める定数です。
+回した後の内積を計算してみましょう。
+\begin{align}
+\bigl(\mR(m\omega)\vq\bigr)^\T\bigl(\mR(n\omega)\vk\bigr)
+&=\vq^\T\mR(m\omega)^\T\mR(n\omega)\vk && \text{転置の性質 $(\mA\vx)^\T=\vx^\T\mA^\T$}\nonumber\\
+&=\vq^\T\mR(-m\omega)\mR(n\omega)\vk && \text{回転の転置は逆回転}\nonumber\\
+&=\vq^\T\mR\bigl((n-m)\omega\bigr)\vk . && \text{回転を続けると角度が足される}
+\label{eq:ma-rope-rel}
+\end{align}
+2 行目は、$\mR(\phi)^\T$ の成分を見ると $\cos(-\phi)=\cos\phi$、$\sin(-\phi)=-\sin\phi$ より $\mR(-\phi)$ に等しいことから分かります。
+3 行目は、三角関数の加法定理から $\mR(\alpha)\mR(\beta)=\mR(\alpha+\beta)$ となることを使いました。
+たとえば積の左上の成分は $\cos\alpha\cos\beta-\sin\alpha\sin\beta=\cos(\alpha+\beta)$ です（ほかの成分も同様）。
+結果には $m$ と $n$ が\textbf{差 $n-m$ の形でしか現れません}。
+これが求めていた性質です。
+しかも回転はベクトルの長さを変えないので、$\vq$ と $\vk$ の大きさの情報はそのまま残ります。
+
+\begin{example}[角度が見える数値例]
+$\omega=1$（ラジアン）、$\vq=\vk=(1,0)$ とします。
+式\eqref{eq:ma-rope-rel}の最後の形 $\vq^\T\mR(\phi)\vk$ にこの $\vq,\vk$ を入れると、残るのは $\mR(\phi)$ の左上の成分 $\cos\phi$ だけです（$\phi=(n-m)\omega$）。
+同じ位置 $m=n=3$ なら、両方とも同じ角度だけ回るので $\phi=0$ で、内積は $\cos 0=1$ のままです。
+$m=5,\,n=3$ なら $\phi=(3-5)\times1=-2$ で、内積は $\cos(-2)=\cos 2\approx-0.416$ です。
+$m=7,\,n=5$ でも差は同じなので、やはり $-0.416$ になります。
+\end{example}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[scale=1.1]
+\foreach \cx/\m/\n/\ttl in {0/5/3/{$m=5,\ n=3$}, 4.6/7/5/{$m=7,\ n=5$}} {
+  \begin{scope}[xshift=\cx cm]
+  \draw[black!25] (0,0) circle (1.3);
+  \draw[->,black!40] (-1.6,0) -- (1.6,0); \draw[->,black!40] (0,-1.6) -- (0,1.6);
+  \pgfmathsetmacro{\aq}{\m*57.2958}\pgfmathsetmacro{\ak}{\n*57.2958}
+  \draw[->,very thick,bookblue] (0,0) -- (\aq:1.3) node[pos=1.18,font=\footnotesize] {$\vq$};
+  \draw[->,very thick,bookaccent] (0,0) -- (\ak:1.3) node[pos=1.18,font=\footnotesize] {$\vk$};
+  \draw[bookgreen,thick] (\ak:0.55) arc[start angle=\ak,end angle=\aq,radius=0.55];
+  \node[font=\footnotesize] at (0,-1.95) {\ttl};
+  \end{scope}
+}
+\end{tikzpicture}
+\caption{2 次元の RoPE（$\omega=1$、回す前の $\vq,\vk$ はともに $(1,0)$）。$\vq$ を $m$ ラジアン、$\vk$ を $n$ ラジアン回す。左右で絶対的な向きは違うが、間の角度（緑の弧）はどちらも $m-n=2$ ラジアンなので、内積 $\cos2$ は同じになる。}
+\label{fig:ma-rope2d}
+\end{figure}
+
+\figref{fig:ma-rope2d}は、この 2 つの場合を図にしたものです。
+左と右で $\vq$ と $\vk$ の向きはまったく違いますが、2 本の間の角度（緑の弧）は同じです。
+内積は 2 本の長さと間の角度だけで決まるので、同じ値になります。
+
+このように、クエリとキーを位置に比例した角度だけ回してから内積をとる方法を、RoPE（回転位置埋め込み）\cite{su2024roformer}と呼びます。
+注意のスコアは位置の差だけで決まり、角度は式で計算できるので、学習する位置の表も要りません。
+残りの 2 つの小節は、これを実際のヘッドの次元に広げ、コードにする話です。
+
+\subsection*{$d$ 次元への拡張}
+\skimread{押さえる結論は「実際の RoPE は、ヘッドの成分を 2 つずつの組に分け、組ごとに違う速さで回す。速い組は近くの位置を、遅い組は遠くの位置を見分ける」です。}
+
+実際のヘッドの次元 $\dhead$ は 64 や 128 です。
+RoPE（rotary position embedding、回転位置埋め込み）\cite{su2024roformer}は、$\dhead$ 個の成分を 2 つずつの組に分け、組ごとに別の速さで回します。
+第 $i$ 組（$i=0,1,\dots,\dhead/2-1$）の速さは
+\begin{equation}
+\omega_i=\theta^{-2i/\dhead},\qquad \theta=10000
+\label{eq:ma-rope-freq}
+\end{equation}
+です。
+$\theta=10000$ と指数の形は、原論文の正弦波の位置エンコーディング（\chapref{ch:transformer}）と同じ慣習の値です。
+$i=0$ の組は $\omega_0=1$ で、1 トークン進むごとに 1 ラジアン回ります。
+$i$ が大きくなるほどゆっくり回り、最後の組はほとんど回りません。
+たとえば $\dhead=64$ のまん中の組（$i=16$）は $\omega_{16}=10000^{-1/2}=0.01$ で、1 周に $2\pi/0.01\approx628$ トークンかかります。
+\term{RoPE}{rotary position embedding}とは、各ヘッドのクエリとキーを、位置 $m$ に応じてこの組ごとの角度 $m\omega_i$ だけ回してから内積をとる方法です。
+バリューは回しません。
+各組で式\eqref{eq:ma-rope-rel}が成り立つので、組の内積の和である全体の内積も、位置の差だけで決まります。
+
+なぜ速さを変えるのでしょうか。
+時計の針にたとえると分かりやすくなります。
+秒針（速い組）は近い位置の細かな違いを区別できますが、60 秒で一周してしまうので遠い位置は区別できません。
+時針（遅い組）は細かな違いは苦手ですが、長い時間を区別できます。
+いろいろな速さの針を並べることで、近い距離も遠い距離も表せるのです。
+ただし、このたとえは「位置を読み取る」部分だけの話で、モデルがどの針をどう使うかは学習で決まります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.48\linewidth,height=0.42\linewidth,
+  xlabel={組の番号 $i$},ylabel={1 周の長さ（トークン）},ymode=log,
+  title={\footnotesize (a) 組ごとの周期 $2\pi/\omega_i$},title style={yshift=-1mm}]
+\addplot[bookblue,mark=*,mark size=1pt] table[col sep=comma,x=i,y=period]{code/ch11/out/rope_freq.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.48\linewidth,height=0.42\linewidth,
+  xlabel={位置の差 $m-n$},ylabel={内積 / $\dhead$},
+  title={\footnotesize (b) 同じ向きの $\vq,\vk$ の内積},title style={yshift=-1mm}]
+\addplot[bookaccent] table[col sep=comma,x=dist,y=score]{code/ch11/out/rope_decay.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{RoPE の性質（$\dhead=64$、$\theta=10000$）。(a) 最初の組は約 6 トークンで 1 周し、最後の組は約 4.7 万トークンかかる。縦軸は対数。(b) すべての成分が 1 の $\vq$ と $\vk$ を位置の差だけ離して回したときの内積。縦軸は最大値が 1 になるよう $\dhead$ で割った。差が大きいほど内積はおおむね小さくなる。}
+\label{fig:ma-rope}
+\end{figure}
+
+\figref{fig:ma-rope}(a) は式\eqref{eq:ma-rope-freq}の周期を描いたものです。
+左端の組は約 6.3 トークンで一周し、右端の組は約 4.7 万トークンかけて一周します。
+(b) は、同じ向きのクエリとキーを、位置の差だけ離して回したときの内積です。
+差が 0 のとき最大で、離れるほどおおむね小さくなっていきます。
+これは「近くのトークンほど注意が向きやすい」という傾向を、学習の前から与えていると解釈できます\cite{su2024roformer}。
+
+\subsection*{実装}
+\skimread{押さえる結論は「回転は、前もって作った cos と sin の表との積で計算できる。位置の表がないので、学習時より長い文脈にも計算としては使える（ただし、そのままでは性能が落ちる）」です。}
+
+回転行列をそのまま掛けると、ほとんどが 0 の大きな行列積になって無駄です。
+式\eqref{eq:ma-rot}を成分で書くと、組 $(x_1,x_2)$ は
+$y_1=x_1\cos\phi-x_2\sin\phi$、$y_2=x_1\sin\phi+x_2\cos\phi$
+になるので、これを成分ごとの積で計算します。
+
+\snippet{RoPE の前計算と適用}{code:ma-rope}{ch11/modern_gpt.py}{rope}
+
+3〜4 行目が式\eqref{eq:ma-rope-freq}で、\code{omega} の形は $(\dhead/2,)$ です。
+5 行目で位置 $0,1,\dots$ の列と掛け合わせ、すべての位置と組の角度 $m\omega_i$ を $(T,\dhead/2)$ の表にします。
+\code{[:, None]} で位置の列を形 $(T,1)$ にしてあるので、\code{omega} との積はブロードキャストでこの形になります。
+この表は学習しないので、一度だけ計算して持っておきます。
+11 行目の \code{x[..., 0::2]} は偶数番目の成分、\code{x[..., 1::2]} は奇数番目の成分で、隣り合う 2 成分が 1 組になります。
+12〜13 行目が上の回転の式そのものです。
+14 行目で $(y_1,y_2)$ を交互に並べ直して元の形に戻します。
+
+実際に性質を確かめましょう。
+
+\snippet{RoPE の相対位置の性質を確かめる}{code:ma-rope-check}{ch11/rope.py}{rope-relative}
+\outputfile{ch11/out/rope.txt}
+
+実行結果の前半 5 行は、上の数値例を同じ関数で計算したものです（\file{ch11/rope.py} の前半）。
+$m-n=+2$ の 2 行がどちらも $-0.4161\approx\cos2$ になっています。
+$m=3,n=5$（差が $-2$）でも同じ値なのは、$\cos$ が偶関数だからです（2 次元で $\vq=\vk$ の特別な場合です）。
+後半は 64 次元のランダムな $\vq,\vk$ です。
+位置 (10, 7)、(110, 107)、(1000, 997) のスコアは、どれも差が 3 なので $-8.281$ でそろっています。
+最後の桁の小さな違いは、角度 $m\omega_i$ が大きくなったときの浮動小数点の丸め誤差です。
+また、回す前と回した後でノルムが 8.3705 のまま変わらないことも確かめられます。
+
+RoPE には位置の表がないので、学習に使った長さより長い文脈にも\textbf{計算としては}適用できます。
+ただし、学習で見たことのない大きな角度ではモデルの性能が落ちます。
+そのため実際の LLM は、$\theta$ を 50 万（Llama 3）や 100 万（Qwen2.5、Mixtral）のように大きくして、ゆっくり回します。
+学習の後半で長い文書を使い、文脈長を伸ばすこともします（\secref{sec:ma-beyond}）。
+
+この節で分かったのは、RoPE がクエリとキーを位置に比例した角度だけ回すことで、注意のスコアを「位置の差」だけの関数にする方法だということです。
+
+\section{SwiGLU：ゲート付きの FFN}\label{sec:ma-swiglu}
+\skimread{押さえる結論は「SwiGLU は、ゲートの枝が中身の枝を成分ごとに開け閉めする FFN。行列は 3 枚で、中間次元を約 $\tfrac83d$ にすれば、パラメータ数は GPT-2 型の MLP とそろう」です。}
+
+3 つ目の差分は、各位置で「考える」部品である FFN（第 10 章の MLP）です。
+この節の問いは、「GELU の 2 層 MLP を、なぜ行列が 3 枚の形に置き換えたのか」です。
+
+\subsection*{ゲートという考え方}
+
+第 10 章の MLP は $\vx\mapsto\mW_2^\T\gelu(\mW_1^\T\vx)$ でした。
+中間の $4d$ 個の値は、それぞれ活性化関数を通って「どれだけ出力に効くか」が決まります。
+ここで、出力を通す量を\textbf{別の線形変換で調整する}ことを考えます。
+2 つの線形変換 $\va=\mW_g^\T\vx$ と $\vb=\mW_u^\T\vx$ を作り、片方を活性化関数に通して、もう片方と成分ごとに掛けるのです。
+活性化関数を通した $\va$ の成分が 0 に近ければ、対応する $\vb$ の成分は止められ、大きければ通されます。
+水道の蛇口（ゲート、gate）のように、入力に応じて情報の流れを開け閉めする仕組みです。
+このような層を GLU（gated linear unit）と呼びます。
+
+Shazeer\cite{shazeer2020glu}は、GLU を Transformer の FFN に入れて活性化関数をいくつか比べ、SiLU（Swish とも呼ぶ）を使ったものが良い結果を出すことを示しました。
+SiLU は $\mathrm{SiLU}(u)=u\,\sigmoid(u)$ で、$\sigmoid$ はシグモイド関数です。
+形は GELU とよく似た、0 付近でなめらかに曲がる関数です。
+たとえば $\mathrm{SiLU}(2)=2\times0.881=1.762$、$\mathrm{SiLU}(-2)=-2\times0.119=-0.238$ です。
+
+\begin{definition}[SwiGLU の FFN]
+入力 $\vx\in\R^d$、中間次元を $\dff$ とし、$\mW_g,\mW_u\in\R^{d\times\dff}$、$\mW_d\in\R^{\dff\times d}$ とします。
+\begin{equation}
+\mathrm{SwiGLU}(\vx)=\mW_d^\T\bigl(\mathrm{SiLU}(\mW_g^\T\vx)\odot\mW_u^\T\vx\bigr).
+\label{eq:ma-swiglu}
+\end{equation}
+$\mW_g$ がゲート（gate）、$\mW_u$ が上げる（up）射影、$\mW_d$ が下げる（down）射影です。
+\end{definition}
+
+\subsection*{パラメータ数をそろえる}
+
+行列が 2 枚から 3 枚に増えたので、同じ $\dff=4d$ のままではパラメータが 1.5 倍になります。
+GPT-2 型の MLP は $2\cdot d\cdot4d=8d^2$、SwiGLU は $3d\,\dff$ です。
+両者を等しくするには
+\[
+3d\,\dff=8d^2 \quad\Longrightarrow\quad \dff=\tfrac{8}{3}d\approx2.67d
+\]
+とすればよいことが分かります。
+LLaMA はこの $\tfrac{8}{3}d$ を使いました\cite{touvron2023llama}。
+実際の設定値は、計算の効率のために切りのよい数に丸められます。
+Llama 2 7B は $d=4096$ に対して $\dff=11008$（$11008/4096\approx2.69$ で $2.69d$）、Llama 3 8B は $14336$（$3.5d$）、Qwen3-8B は $12288$（$3d$）です。
+Llama 2 は $\tfrac83d$ に近く、Llama 3 と Qwen3 は、そろえる値より大きめに取っています。
+本章の現代版ミニGPT では、$d=128$ に対して $\tfrac83\times128\approx341$ を 8 の倍数に丸めた 344 を使います。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,b/.style={box,font=\footnotesize,minimum width=17mm,minimum height=6mm}]
+\node[b] (x) at (0,0) {$\vx$ \scriptsize$(d)$};
+\node[b] (g) at (-16,13) {$\mW_g$ \scriptsize$d\!\to\!\dff$};
+\node[b] (u) at (16,13) {$\mW_u$ \scriptsize$d\!\to\!\dff$};
+\node[greenbox,font=\footnotesize,minimum width=14mm,minimum height=6mm] (s) at (-16,25) {SiLU};
+\node[op] (m) at (0,34) {$\odot$};
+\node[b] (d) at (0,45) {$\mW_d$ \scriptsize$\dff\!\to\! d$};
+\draw[arr] (x) -- (g); \draw[arr] (x) -- (u);
+\draw[arr] (g) -- (s); \draw[arr] (s) |- (m); \draw[arr] (u) |- (m);
+\draw[arr] (m) -- (d); \draw[arr] (d) -- ++(0,9);
+\node[lbl,anchor=east] at (-24,25) {ゲート（開け閉め）};
+\node[lbl,anchor=west] at (17,25) {中身};
+\end{tikzpicture}
+\caption{SwiGLU の FFN。左の枝がゲートで、SiLU を通した値が右の枝の各成分を何倍で通すかを決める。行列は 3 枚。}
+\label{fig:ma-swiglu}
+\end{figure}
+
+\figref{fig:ma-swiglu}の左の枝が「開け閉め」、右の枝が「中身」です。
+2 つの枝が同じ $\vx$ から作られているので、モデルは「入力のこの特徴があるときだけ、この中身を通す」という掛け算の関係を、1 層で表せます。
+なぜこれがよく効くのかについて、Shazeer 自身は論文で「説明はできない」と率直に書いています\cite{shazeer2020glu}。
+SwiGLU は理論からではなく、比較実験の結果として標準になった部品です。
+
+\snippet{SwiGLU}{code:ma-swiglu}{ch11/modern_gpt.py}{swiglu}
+
+4〜6 行目が 3 枚の行列で、すべてバイアスなしです。
+9 行目が式\eqref{eq:ma-swiglu}そのもので、\code{F.silu(self.w_gate(x))} がゲート、\code{self.w_up(x)} が中身、\code{*} が成分ごとの積 $\odot$ です。
+Gemma 系は SiLU の代わりに GELU を使う GeGLU を採用しています。
+
+この節で分かったのは、SwiGLU が「ゲートで中身を開け閉めする」FFN で、中間次元を約 $\tfrac83 d$ にすればパラメータ数を GPT-2 型とそろえられることです。
+
+\section{バイアスと重み共有}\label{sec:ma-bias}
+\skimread{押さえる結論は「現代のモデルは、線形層と正規化のバイアスをほぼ一律に取り除く。埋め込みと出力の重み共有は、小さいモデルでは使い、大きいモデルでは使わない」です。}
+
+4 つ目の差分は小さな整理です。
+この節の問いは、「線形層のバイアスと、埋め込みと出力の重み共有は、現代のモデルでどう扱われているか」です。
+
+\textbf{バイアスなし}。
+GPT-2 の線形層と LayerNorm には、バイアス（ずらし）の項がありました。
+現代の多くのモデルは、これをすべて取り除いています。
+理由は主に 2 つです。
+一つは、取り除いても性能がほとんど変わらないことが、経験的に知られていることです。nanoGPT の実装にも、バイアスなしのほうが「少し良く、少し速い」という注記があります\cite{karpathy2022nanogpt}。
+もう一つは、部品が減るぶん、モデルが単純になり、計算もわずかに軽くなることです。
+実は本書の \code{llmbook} のミニGPT も、線形層はすでにバイアスなしで作ってあります（\chapref{ch:transformer}）。
+Qwen3 は前の世代にあったクエリ・キー・バリューのバイアスを外しました\cite{yang2025qwen3}。
+例外もあり、gpt-oss は注意の線形層にバイアスを持っています。
+
+\textbf{重み共有}。
+第 10 章では、出力ヘッドがトークン埋め込みと同じ行列 $\mE$ を使う重み共有（weight tying）\cite{press2017using}を説明しました。
+現代では、これはモデルの大きさで分かれます。
+小さなモデルでは、語彙が 15 万〜26 万と大きいので、$Vd$ の埋め込みが全体のかなりの割合を占めます。
+共有すれば、その分を節約できます。
+Gemma や、Qwen3 の 4B 以下のモデルは共有しています。
+一方、Llama 3 や Qwen3 の 8B 以上、DeepSeek-V3 は共有していません。
+モデルが大きいと埋め込みの割合が小さくなり、入力側と出力側で別の行列を持つ自由度のほうが役立つと判断されているのです。
+本章の比較実験では、第 10 章のモデルと条件をそろえるため、共有したまま比べます。
+
+この節で分かったのは、バイアスはほぼ一律に取り除かれ、重み共有はモデルの大きさに応じて選ばれていることです。
+
+\begin{quiz}
+\tabref{tab:ma-diff}の上の 4 行（RMSNorm、RoPE、SwiGLU、バイアスなし）は、それぞれモデルのパラメータ数を増やすでしょうか、減らすでしょうか、それともほぼ変えないでしょうか。
+\end{quiz}
+
+答え合わせをしましょう。
+RoPE は位置の表 $\mP$（$T_{\max}d$ 個）をなくすので、パラメータは減ります。
+RMSNorm は $\bm\beta$ がなくなる分、バイアスなしはバイアスの分だけ減ります。
+SwiGLU は、$\dff=\tfrac83 d$ にそろえれば\textbf{ほぼ変わりません}。
+つまり、減るものはあっても増えるものはなく、どれもパラメータ数を大きくは変えません。
+現代の設計の改良の多くは、同じパラメータ数で「より学習しやすく、より長い文脈を扱える」形を探したものなのです。
+
+\subsection*{ここまでの道のり}
+
+ここで一度、現在地を確かめておきます。
+\begin{itemize}
+\item 正規化は RMSNorm に、位置の情報は RoPE に、FFN は SwiGLU に置き換えました。
+\item どれもパラメータ数はほとんど変えずに、学習のしやすさや長い文脈への対応を改善する変更でした。
+\item ここからは\textbf{生成を速くする}工夫（KV キャッシュと GQA）と、\textbf{パラメータを安く増やす}工夫（MoE）に進みます。
+\end{itemize}
+
+\section{KV キャッシュ：生成の無駄をなくす}\label{sec:ma-kvcache}
+
+ここからは、学習ではなく\textbf{生成}の話です。
+第 10 章の \code{generate} は、1 トークンを生成するたびに、それまでの系列全体をモデルに入れ直していました。
+この節の問いは、「その計算のうち、どこが無駄で、どうすれば省けるのか」です。
+
+\subsection*{何が無駄なのか}
+
+プロンプトが「吾輩は」の 3 トークンだとして、生成の様子を順に追ってみましょう。
+1 回目は 3 トークンを入れて、4 個目のトークンを得ます。
+2 回目は 4 トークンを入れて、5 個目を得ます。
+3 回目は 5 トークンを入れて……と続きます。
+
+ここで、2 回目の計算の中身を考えます。
+因果マスク（\chapref{ch:attention}）があるので、位置 1〜3 の計算は、位置 4 のトークンが何であっても変わりません。
+各層の位置 1〜3 のキーとバリューは、1 回目に計算したものとまったく同じなのです。
+それなのに、毎回すべての位置について計算し直しています。
+$n$ 個のトークンを生成すると、モデルに通すトークンの数は、合わせて $T_0+(T_0+1)+\dots+(T_0+n-1)=nT_0+n(n-1)/2$ になります（$T_0$ はプロンプトの長さ）。
+$n$ 個の項のそれぞれに $T_0$ があり、残りの $0+1+\dots+(n-1)$ が $n(n-1)/2$ だからです。
+第 2 項があるので、長く生成すると、この数はほぼ $n$ の 2 乗に比例して増えていきます。
+
+では、新しい位置の計算に、過去のどの量が必要でしょうか。
+位置 $t$ の注意の出力は、クエリ $\vq_t$ と、過去すべての位置のキー $\vk_1,\dots,\vk_t$、バリュー $\vv_1,\dots,\vv_t$ から計算されます。
+過去の位置のクエリは使いません。
+過去の位置の FFN の出力も、新しい位置には直接は影響しません（残差ストリームは位置ごとに独立に流れ、位置の間をつなぐのは注意だけでした）。
+したがって、\textbf{各層の過去のキーとバリューだけを取っておけば}、新しいトークン 1 個分の計算で済みます。
+
+\begin{definition}[KV キャッシュ]
+\term{KV キャッシュ}{key--value cache}とは、自己回帰生成の間、各層・各位置で計算したキーとバリューを保存しておき、
+次のステップでは新しいトークンの分だけキーとバリューを計算して保存済みのものに追加し、注意を計算する仕組みです。
+\end{definition}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  c/.style={cell,minimum width=9mm,minimum height=5.5mm,fill=figblue},
+  nw/.style={cell,minimum width=9mm,minimum height=5.5mm,fill=figorange}]
+\node[font=\footnotesize\bfseries,anchor=west] at (-4,30) {(a) キャッシュなし：毎回すべて計算し直す};
+\foreach \r/\n in {0/3,1/4,2/5} {
+  \pgfmathtruncatemacro{\last}{\n}
+  \foreach \i in {1,...,\last} {
+    \node[nw] at (\i*10,22-\r*7) {\scriptsize $k_\i,v_\i$};
+  }
+  \node[lbl,anchor=east] at (4,22-\r*7) {\scriptsize \pgfmathtruncatemacro{\s}{\r+1}\s 回目};
+}
+\begin{scope}[yshift=-32mm]
+\node[font=\footnotesize\bfseries,anchor=west] at (-4,30) {(b) キャッシュあり：新しい 1 個だけ計算して足す};
+\foreach \r/\n in {0/3,1/4,2/5} {
+  \pgfmathtruncatemacro{\last}{\n}
+  \foreach \i in {1,...,\last} {
+    \ifnum\i=\last \node[nw] at (\i*10,22-\r*7) {\scriptsize $k_\i,v_\i$};
+    \else \ifnum\r=0 \node[nw] at (\i*10,22-\r*7) {\scriptsize $k_\i,v_\i$};
+    \else \node[c] at (\i*10,22-\r*7) {\scriptsize $k_\i,v_\i$}; \fi\fi
+  }
+  \node[lbl,anchor=east] at (4,22-\r*7) {\scriptsize \pgfmathtruncatemacro{\s}{\r+1}\s 回目};
+}
+\node[nw,minimum width=4mm] at (62,18) {}; \node[lbl,anchor=west] at (65,18) {\scriptsize その回に計算した};
+\node[c,minimum width=4mm] at (62,11) {}; \node[lbl,anchor=west] at (65,11) {\scriptsize キャッシュから読んだ};
+\end{scope}
+\end{tikzpicture}
+\caption{プロンプト 3 トークンから 3 回生成するときの、1 つの層のキーとバリューの計算。(a) では毎回すべての位置を計算する（橙）。(b) では過去の分はキャッシュから読み（青）、新しい位置の 1 個だけを計算する。}
+\label{fig:ma-kvcache}
+\end{figure}
+
+\figref{fig:ma-kvcache}の橙のマスが、その回に計算する量です。
+(a) では橙のマスが毎回増えていきますが、(b) では 2 回目以降、各行に橙が 1 つしかありません。
+橙のマスを数えると、(a) は $3+4+5=12$ 個、(b) は $3+1+1=5$ 個です。
+青のマスは、メモリから読むだけです。
+つまり KV キャッシュは、\textbf{計算を減らす代わりにメモリを使う}取引です。
+
+\subsection*{実装}
+
+キャッシュの箱は簡単です。
+層ごとに 1 つ用意し、新しいキーとバリューを時刻の軸につないでいくだけです。
+
+\snippet{KV キャッシュの箱}{code:ma-kvcache}{ch11/modern_gpt.py}{kvcache}
+
+箱は最初は空（4 行目の \code{None}）で、1 回目の \code{update} では渡されたものをそのまま入れます（7〜8 行目）。
+10〜11 行目の \code{torch.cat(..., dim=2)} が、形 $(B,H_{\mathrm{kv}},t,\dhead)$ の時刻の軸（左から 3 番目。0 から数えて 2 なので \code{dim=2}）にキーとバリューを追加する部分です。
+$H_{\mathrm{kv}}$ はキーとバリューのヘッドの数で、次の節で説明します（今はヘッド数 $H$ と同じだと思って構いません）。
+
+これを使うのが注意の層（次の節の\coderef{code:ma-gqa}の 16〜17 行目）です。
+新しいトークンのキーとバリューを計算した直後に、過去の分とつなぎ、つないだもの全体に対してクエリで注意をとります。
+RoPE はキャッシュに入れる\textbf{前}にかけてあるので、過去のキーを回し直す必要はありません。
+ここで、モデルに「いま何番目の位置か」を教える必要があります。
+新しく入れるのは 1 トークンだけなので、そのままでは位置 0 だと誤解されてしまうからです。
+それが次の \code{forward} の引数 \code{start} です。
+
+\snippet{現代版ミニGPT の順伝播}{code:ma-forward}{ch11/modern_gpt.py}{forward}
+
+これは、本章の部品で組んだ現代版ミニGPT（\code{ModernGPT}）の順伝播です（組み立ては\secref{sec:ma-assemble}）。
+\code{self.cos} と \code{self.sin} は、RoPE で回す角度の cos と sin を前もって計算した表で、1 行が 1 つの位置に対応します（\coderef{code:ma-rope}）。
+3〜4 行目で、この表から位置 \code{start} から \code{start+T-1} の行だけを取り出しています。
+キャッシュを使う生成では \code{start} に「これまでのトークン数」を渡すので、新しいトークンは正しい位置の角度で回されます。
+5 行目はトークン埋め込みです。
+第 10 章の \code{GPT} と違って、位置埋め込みを足していません。
+位置の情報は、各ブロックの注意の中で RoPE が与えるからです。
+6〜7 行目で、各ブロックに角度の表と、その層のキャッシュ \code{caches[i]} を渡します。
+8 行目の最後の正規化と出力ヘッド、9〜12 行目の損失は、第 10 章の \code{GPT} と同じ形です。
+もし位置の表 $\mP$ を足す GPT-2 型でも、同じように \code{start} から位置埋め込みを引けば KV キャッシュは使えます。
+
+生成の関数は次のとおりです。
+
+\snippet{キャッシュあり・なしの貪欲生成}{code:ma-generate}{ch11/modern_gpt.py}{generate}
+
+1 行目の \code{@torch.no_grad()} は、第 10 章の \code{generate} と同じく、勾配のための記録をとらない指定です。
+4 行目で、層の数だけ空の箱を用意します。
+5 行目で、まずプロンプト全体を一度に処理します。
+このときキャッシュには、プロンプトの全位置のキーとバリューがたまります。
+7 行目は、ロジットが最大のトークンを選ぶ貪欲法（\chapref{ch:lm}）で、8 行目でそれを系列 \code{idx} の末尾につなぎます。
+その後、キャッシュありなら 10 行目で新しい 1 トークン（\code{nxt}、形 $(B,1)$）だけを入れ、なしなら 12 行目で系列全体を入れ直します。
+10 行目の \code{start=idx.shape[1] - 1} は、新しいトークンの位置です。
+\code{idx} にはもう新しいトークンをつないであるので、長さから 1 を引くと、0 から数えた位置になります。
+プロンプトが 16 トークン（位置 0〜15）なら、最初の新しいトークンは位置 16 で、そのとき \code{idx} の長さは 17 です。
+
+\subsection*{正しさと速さを測る}
+
+キャッシュは「計算のやり方」を変えるだけなので、結果は同じになるはずです。
+まずそれを確かめ、それから速さを比べます。
+モデルは学習前の現代版ミニGPT（4 層、$d=192$、4 ヘッド）で、プロンプトは 16 トークンです（$T_0=16$）。
+速さを測るだけなら、学習済みである必要はありません。
+\file{ch11/kv_cache.py} の前半では、キャッシュありとなしで 64 トークンを生成して列を比べ、さらに 1 トークンずつ追加して計算したロジットと、全体を一度に計算したロジットを比べます。
+後半が次の時間の測定です。
+
+\snippet{キャッシュの有無で時間を比べる}{code:ma-kv-bench}{ch11/kv_cache.py}{kv-bench}
+\outputfile{ch11/out/kv_cache.txt}
+
+1 行目と 2 行目が正しさの確認です。
+生成したトークン列は完全に一致し、1 トークンずつ追加して計算したロジットと、全体を一度に計算したロジットの差は最大でも $8\times10^{-7}$ でした。
+これは浮動小数点の足し算の順序が違うことによる丸め誤差の大きさで、計算としては同じものだと言えます。
+
+3 行目以降が速さです（各 3 回の中央値）。
+\figref{fig:ma-kv-speed}にグラフにしました。
+キャッシュありの時間は、新しいトークンの数にほぼ比例しています（32 個で 74 ms、480 個で 1,171 ms。1 トークンあたり約 2.3〜2.4 ms）。
+キャッシュなしの時間は、それより速く増えています。
+新しいトークンの数が 15 倍（32 → 480）になると、時間は約 36 倍（267 ms → 9,553 ms）になりました。
+前に見たとおり、キャッシュなしでモデルに通すトークンの数は、ほぼ $n$ の 2 乗に比例して増えるからです。
+その結果、速度の比は 32 個の 3.6 倍から 480 個の 8.2 倍へと、長く生成するほど大きくなります。
+
+\begin{table}[tbp]
+\centering
+\caption{モデルに通すトークンの数（本文の式で数えた値）と、測った時間。$T_0=16$。キャッシュなしは $nT_0+n(n-1)/2$ 個、ありは $T_0+(n-1)$ 個。数の比は 21〜248 倍あるのに、時間の比は 3.6〜8.2 倍にとどまる。}
+\label{tab:ma-kv-count}
+\small
+\begin{tabular}{@{}rrrrrrr@{}}
+\toprule
+ & \multicolumn{3}{c}{通すトークンの数} & \multicolumn{3}{c}{時間（ms）} \\
+\cmidrule(lr){2-4}\cmidrule(l){5-7}
+新しいトークン $n$ & なし & あり & 比 & なし & あり & 比 \\
+\midrule
+32 & 1,008 & 47 & 21 & 267 & 74 & 3.6 \\
+64 & 3,040 & 79 & 38 & 564 & 147 & 3.8 \\
+128 & 10,176 & 143 & 71 & 1,328 & 290 & 4.6 \\
+256 & 36,736 & 271 & 136 & 3,592 & 606 & 5.9 \\
+480 & 122,640 & 495 & 248 & 9,553 & 1,171 & 8.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\tabref{tab:ma-kv-count}の左半分は、通すトークンの数を先ほどの式で数えたものです。
+キャッシュなしは、$n=32$ なら $32\times16+32\times31/2=512+496=1{,}008$ 個、$n=480$ なら $7{,}680+114{,}960=122{,}640$ 個です。
+キャッシュありは、プロンプトの 16 個の後は 1 個ずつなので、$16+(n-1)$ 個で済みます。
+ところが、右半分の時間は、数ほどには違いません。
+$n=32$ では、数は 21 倍違うのに、時間は 3.6 倍「しか」違いません。
+$n$ を 32 から 480 にしたときも、キャッシュなしの数は約 122 倍になるのに、時間は約 36 倍です。
+これは、本書のモデルが小さいためです。
+小さなモデルでは、30 トークンを処理するのも 1 トークンを処理するのも、Python や PyTorch の呼び出しの手間が時間の大半を占め、計算量の差がそのまま時間に出ません。
+大きなモデルで長い文章を生成する場合は、計算量の差がそのまま効くので、キャッシュなしの生成は現実的ではありません。
+実際の LLM の推論は、ほぼ例外なく KV キャッシュを使っています。
+なお、CPU は他の作業と共有しているので、測るたびに数割ぶれることがあります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xlabel={生成した新しいトークンの数},ylabel={時間（ms）},legend pos=north west]
+\addplot[bookgray,mark=*,mark size=1.3pt] table[col sep=comma,x=n,y=nocache]{code/ch11/out/kv_speed.csv};
+\addlegendentry{キャッシュなし}
+\addplot[bookaccent,mark=square*,mark size=1.3pt] table[col sep=comma,x=n,y=cache]{code/ch11/out/kv_speed.csv};
+\addlegendentry{キャッシュあり}
+\end{axis}
+\end{tikzpicture}
+\caption{KV キャッシュの有無による生成時間（4 層・$d=192$ のモデル、プロンプト 16 トークン、CPU 2 スレッド、3 回の中央値）。キャッシュありはほぼ直線、キャッシュなしは長くなるほど急に増える。}
+\label{fig:ma-kv-speed}
+\end{figure}
+
+この節で分かったのは、KV キャッシュが「過去のキーとバリューは変わらない」ことを利用して、生成の計算を新しいトークンの分だけにする仕組みであり、結果を変えずに速さを大きく改善することです。
+
+\section{GQA：キャッシュを小さくする}\label{sec:ma-gqa}
+
+KV キャッシュで計算は減りました。
+代わりに、キャッシュがメモリを使います。
+この節の問いは、「キャッシュはどれくらい大きくなるのか、そしてどうすれば小さくできるのか」です。
+
+\subsection*{キャッシュの大きさを数える}
+
+1 トークンあたり、各層でキーとバリューを 1 本ずつ保存します。
+キーのヘッドが $H_{\mathrm{kv}}$ 個、1 ヘッドの次元が $\dhead$、層が $L$ 個、1 つの数を $b$ バイトで保存するとすると、
+\begin{equation}
+\text{1 トークンあたりの KV キャッシュ}=2\times L\times H_{\mathrm{kv}}\times\dhead\times b\ \text{バイト}
+\label{eq:ma-kv-mem}
+\end{equation}
+です。
+先頭の 2 は、キーとバリューの 2 つ分です。
+これに文脈のトークン数と、同時に処理する系列の数（バッチサイズ）を掛けたものが、キャッシュ全体の大きさになります。
+
+数値を入れてみましょう。
+Llama 2 7B は $L=32$、$H_{\mathrm{kv}}=32$、$\dhead=128$ で、bf16（1 つの数が 2 バイト）で保存すると
+$2\times32\times32\times128\times2=524{,}288$ バイト、つまり 1 トークンあたり 512 KiB です。
+bf16 は 1 つの数を 16 ビットで表す形式で、通常の 32 ビット（4 バイト）の半分の大きさです（詳しくは\chapref{ch:gpu}）。
+KiB は $2^{10}=1024$ バイト、GiB は $2^{30}$ バイトで、GB（$10^9$ バイト）とは約 7\% 違います。
+文脈 8,192 トークン（Llama 2 自身の上限は 4,096 ですが、後で Llama 3 と比べるための長さ）なら 4 GiB になります。
+モデルの重み（約 67 億パラメータ × 2 バイト ≈ 13 GB）の 3 分の 1 近くを、たった 1 本の会話のキャッシュが使うのです。
+同時に 10 人の利用者に応えれば 40 GiB です。
+GPU のメモリは限られているので（\chapref{ch:gpu}）、キャッシュの大きさが、同時に処理できる利用者の数と文脈の長さを直接制限します。
+
+\subsection*{キーとバリューのヘッドを共有する}
+
+式\eqref{eq:ma-kv-mem}のうち、設計で減らせるのは $H_{\mathrm{kv}}$ です。
+$L$ や $\dhead$ を減らすとモデルそのものが小さくなり、$b$ は数の形式で決まってしまうからです。
+マルチヘッド注意（\chapref{ch:attention}）では、クエリ・キー・バリューのヘッドの数はどれも $H$ でした。
+では、キーとバリューのヘッドを減らし、複数のクエリのヘッドで共有したらどうでしょうか。
+
+極端な例が、キーとバリューのヘッドを 1 つにする \term{MQA}{multi-query attention}\cite{shazeer2019fast}です。
+キャッシュは $1/H$ になりますが、表現力が落ちて性能が下がることがありました。
+その中間が \term{GQA}{grouped-query attention}\cite{ainslie2023gqa}です。
+クエリのヘッドを $H_{\mathrm{kv}}$ 個のグループに分け、同じグループのクエリのヘッドは同じキー・バリューのヘッドを使います。
+$H_{\mathrm{kv}}=H$ なら普通のマルチヘッド注意（MHA）、$H_{\mathrm{kv}}=1$ なら MQA です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  q/.style={cell,minimum width=3.6mm,minimum height=4.5mm,fill=figblue},
+  kv/.style={cell,minimum width=3.6mm,minimum height=4.5mm,fill=figorange}]
+\foreach \name/\x/\g in {MHA ($H_{\mathrm{kv}}=8$)/0/1, GQA ($H_{\mathrm{kv}}=2$)/40/4, MQA ($H_{\mathrm{kv}}=1$)/80/8} {
+  \node[font=\footnotesize\bfseries] at (\x+13.3,22) {\name};
+  \foreach \i in {0,...,7} { \node[q] (q\x-\i) at (\x+\i*3.8,12) {}; }
+  \pgfmathtruncatemacro{\nk}{8/\g-1}
+  \foreach \j in {0,...,\nk} {
+    \pgfmathsetmacro{\cx}{\x+(\j*\g+(\g-1)/2)*3.8}
+    \node[kv] (k\x-\j) at (\cx,0) {};
+    \pgfmathtruncatemacro{\lo}{\j*\g}\pgfmathtruncatemacro{\hi}{\j*\g+\g-1}
+    \foreach \i in {\lo,...,\hi} { \draw[black!50] (k\x-\j.north) -- (q\x-\i.south); }
+  }
+}
+\node[lbl,anchor=east] at (-4,12) {Q};
+\node[lbl,anchor=east] at (-4,0) {K, V};
+\end{tikzpicture}
+\caption{クエリのヘッド 8 個（青）と、キー・バリューのヘッド（橙）の対応。線でつながったクエリのヘッドは、同じキーとバリューを使う。キャッシュに保存するのは橙の分だけなので、GQA（中央）ではキャッシュが MHA の 1/4 になる。}
+\label{fig:ma-gqa}
+\end{figure}
+
+\figref{fig:ma-gqa}で、キャッシュに入るのは下段の橙のマスだけです。
+中央の GQA では、4 個のクエリのヘッドが 1 組のキーとバリューを共有するので、キャッシュは MHA の 4 分の 1 になります。
+クエリのヘッドは 8 個のままなので、「8 通りの見方で文脈を探す」という能力はある程度保たれます。
+Ainslie らは、GQA が MQA に近い速さで MHA に近い品質を出すことを示しました\cite{ainslie2023gqa}。
+
+Llama 3 8B は、クエリのヘッド 32 個に対して $H_{\mathrm{kv}}=8$ を使います。
+式\eqref{eq:ma-kv-mem}に入れると $2\times32\times8\times128\times2=131{,}072$ バイト、1 トークンあたり 128 KiB で、Llama 2 7B の 4 分の 1 です。
+文脈 8,192 トークンでも 1 GiB で済みます。
+
+\subsection*{実装}
+\skimread{押さえる結論は「キーとバリューは $H_{\mathrm{kv}}$ ヘッド分だけ作ってキャッシュに保存し、注意をとる直前に、クエリのヘッドの数まで複製する」です。}
+
+\snippet{GQA（RoPE と KV キャッシュつき）}{code:ma-gqa}{ch11/modern_gpt.py}{gqa}
+
+6〜7 行目で、クエリの射影は $H$ ヘッド分、キーとバリューの射影は $H_{\mathrm{kv}}$ ヘッド分の出力を持ちます。
+キーとバリューは、1 つの線形層 \code{self.kv} でまとめて 1 回の行列積で作ります（2 つの層に分けても結果は同じです）。
+13 行目の \code{view(B, T, 2, self.hkv, self.dh)} でその出力を「キーかバリューか」の軸を含む形に分け、\code{unbind(2)} でその軸に沿って 2 つのテンソルに取り出します。
+14 行目で形を $(B,H_{\mathrm{kv}},T,\dhead)$ にそろえます。
+15 行目で、クエリとキーにだけ RoPE をかけます。
+18〜20 行目が GQA の要で、\code{repeat_interleave} で各キー・バリューのヘッドを \code{rep} $=H/H_{\mathrm{kv}}$ 回ずつ複製し、クエリのヘッドの数にそろえています。
+複製はキャッシュに保存した\textbf{後}に行うので、保存されるのは $H_{\mathrm{kv}}$ ヘッド分だけです。
+21 行目は第 9 章で紹介した \code{F.scaled_dot_product_attention} です。
+\code{is_causal=True} は、第 9 章で見たとおり、因果マスクをかけて未来の位置を見せない指定です。
+プロンプトを一度に処理するとき（$T=16$ など）は、各位置が自分より後ろを見てはいけないのでマスクが要ります。
+生成中に 1 トークンだけを入れるとき（$T=1$）は、過去をすべて見てよいので要りません。
+そのため \code{is_causal=(T > 1)} としています。
+ただしこの書き方は、「キャッシュがあるときは 1 トークンずつ入れる」使い方を前提にしています。
+キャッシュがある状態で 2 トークン以上をまとめて入れると、マスクの位置がずれて正しく計算できません。
+
+なお、実際の高速な実装は、複製せずに同じキーとバリューを複数のヘッドから読みます。
+ここでは式との対応を分かりやすくするために、素直に複製しました。
+
+\subsection*{FlashAttention：注意の計算そのものを速くする}
+\laterread{\secref{sec:gpu-speedup}で高速化の定石を学ぶときに、戻ってくれば足ります。飛ばしても、この章の残りは読めます。}
+
+KV キャッシュと GQA は「何を計算し、何を保存するか」を変える工夫でした。
+最後に、「同じ計算をどう実行するか」を変える工夫に一言触れておきます。
+
+第 9 章で見たように、注意は $T\times T$ の重み行列を作るので、長い文脈ではメモリと時間が $T^2$ で増えます。
+GPU では、計算そのものよりも、この大きな行列を遅いメモリに書いて読み戻す\textbf{データの移動}に時間がかかります。
+FlashAttention\cite{dao2022flashattention}は、クエリとキーを小さなブロックに分け、softmax を少しずつ更新しながら計算することで、$T\times T$ の行列を一度もメモリに書き出さずに、\textbf{数学的に同じ}出力を得ます。
+結果は変わらず、速さとメモリだけが改善されるのです。
+PyTorch の \code{F.scaled_dot_product_attention} は、GPU では条件が合えばこの種の実装を自動で選びます（\chapref{ch:gpu}）。
+
+この節で分かったのは、KV キャッシュの大きさが式\eqref{eq:ma-kv-mem}で決まり、GQA はキーとバリューのヘッドを共有して、それを $H_{\mathrm{kv}}/H$ 倍に縮めることです。
+
+\section{組み立てる：現代版ミニGPT}\label{sec:ma-assemble}
+\skimread{押さえる結論は「部品を入れ替えた現代版ミニGPT は、パラメータが 6\% 少なくても、GPT-2 型と同じくらいには学習できた（検証損失 4.546 と 4.775）。ただし本書の規模では、この差は測定のぶれと同じ程度」です。}
+
+部品がそろったので、組み立てて学習させてみましょう。
+この節の問いは、「GPT-2 型と現代版を同じ条件で学習させると、本書の小さな規模で違いは見えるのか」です。
+
+\subsection*{ブロックとモデル}
+
+\snippet{現代版のブロック}{code:ma-block}{ch11/modern_gpt.py}{block}
+
+構造は第 10 章の \code{Block} と同じで、14〜15 行目の 2 本の残差接続も変わりません。
+違いは、正規化が RMSNorm に（4、6 行目）、注意が GQA に（5 行目）、FFN が SwiGLU に（11 行目）なったことです。
+設定で \code{n_expert} を 1 以上にすると、FFN が次の節で作る MoE に替わります（7〜9 行目）。
+モデル全体（\file{ch11/modern_gpt.py} の \code{ModernGPT}）では、位置埋め込みの表がなくなり、代わりに RoPE の角度の表を \code{register_buffer} で持ちます。
+\code{register_buffer} は、学習はしないが、モデルと一緒に \code{.to(device)} などで運ばれる値の登録です（第 9 章で因果マスクに使いました）。
+表は文脈長の 4 倍の長さまで作ってあるので、学習時より長い系列も計算できます。
+初期化は第 10 章と同じく標準偏差 0.02 の正規分布で、残差に足し込む射影（\code{proj} と \code{w_down}）だけを $1/\sqrt{2L}$ 倍に小さくしました。
+
+\subsection*{同じ条件で比べる}
+
+比べる 2 つのモデルの設定は次のとおりです。
+どちらも 4 層、4 ヘッド、$d=128$、文脈長 128、語彙 4096（本書の BPE）で、埋め込みと出力の重みは共有します。
+
+\snippet{比較する 2 つのモデル}{code:ma-configs}{ch11/compare_train.py}{configs}
+
+現代版はキー・バリューのヘッドを 2 個（GQA、\code{n_kv_head=2}）、SwiGLU の中間次元を 344 にしました。
+パラメータ数は GPT-2 型が 1,329,408、現代版が 1,250,432 です。
+現代版のほうが $1{,}329{,}408-1{,}250{,}432=78{,}976$ 少なくなっています。
+内訳は 4 つあります。
+位置埋め込みの表がなくなります（$128\times128=16{,}384$ の減）。
+GQA でキー・バリューの射影が半分になります（1 層あたり $2\times128\times64=16{,}384$、4 層で 65,536 の減）。
+正規化のずらし $\bm\beta$ がなくなります（各層に 2 個と最後に 1 個で計 9 個、$9\times128=1{,}152$ の減）。
+逆に FFN は少し増えます。
+SwiGLU は 1 層 $3\times128\times344=132{,}096$ で、GELU の MLP の $8\times128^2=131{,}072$ より 1,024 多いからです（4 層で 4,096 の増）。
+合わせると $16{,}384+65{,}536+1{,}152-4{,}096=78{,}976$ で、差とぴったり合います。
+学習は \code{llmbook.train.train_lm} で、800 ステップ、バッチ 16、最大学習率 $2\times10^{-3}$、ウォームアップ 50 ステップです。
+データは基盤モデル（\file{base.pt}）と同じ \file{train.bin} と \file{val.bin} を使います。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xlabel={ステップ},ylabel={検証損失},ymin=4.2,ymax=6,legend pos=north east]
+\addplot[bookgray,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch11/out/compare_gpt2.csv};
+\addlegendentry{GPT-2 型（1,329,408）}
+\addplot[bookaccent,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch11/out/compare_modern.csv};
+\addlegendentry{現代版（1,250,432）}
+\end{axis}
+\end{tikzpicture}
+\caption{GPT-2 型と現代版ミニGPT の検証損失（800 ステップ、各 1 回の学習）。ステップ 0 の 8.3 は縦軸の範囲外。測定のぶれが大きく、曲線は上下に揺れている。}
+\label{fig:ma-compare}
+\end{figure}
+
+\figref{fig:ma-compare}が結果です。
+最後の 800 ステップの検証損失は、GPT-2 型が 4.775、現代版が 4.546 でした。
+ステップ 200 以降の 7 点のうち 5 点で、現代版のほうが低くなっています。
+ただし、この比較から「現代版が 0.2 良い」と結論するのは早すぎます。
+曲線は 100 ステップごとに 0.2〜0.3 も上下しており、1 回ずつの学習ではこの程度の差は乱数の偶然でも生じうるからです。
+言えるのは、「パラメータが 6\% 少ない現代版が、少なくとも同じくらいには学習できた」ことまでです。
+大規模なモデルで現代の部品が優れていることは、多くの比較実験で確かめられています\cite{shazeer2020glu,su2024roformer,touvron2023llama}。
+しかし本書の規模の CPU の数分の学習で、その差をはっきり示すのは困難です。
+
+現代版の利点がはっきり出るのは、むしろ損失以外の面です。
+現代版は位置の表を持たないので、学習時より長い文脈も計算できます。
+KV キャッシュのメモリは GQA で半分です。
+これらは小さなモデルでも確かめられる、設計そのものの性質です。
+
+この節で分かったのは、現代版ミニGPT は部品を入れ替えるだけで組み立てられ、本書の規模では損失の差は測定のぶれと同じ程度だということです。
+
+\section{MoE：計算を増やさずにパラメータを増やす}\label{sec:ma-moe}
+
+最後の差分は、FFN の「大きさ」の扱いです。
+2025 年以降の大きな公開モデルの多くは、\term{混合エキスパート}{mixture of experts; MoE}という形の FFN を使っています。
+この節の問いは、「パラメータ数と 1 トークンあたりの計算量を切り離すには、どうすればよいか」です。
+
+\subsection*{何に困っているか}
+
+スケーリング則（\chapref{ch:pretraining}で詳しく扱います）によれば、十分なデータがあれば、モデルのパラメータを増やすほど損失は下がります。今はこの一点だけを使います。
+これまでの、すべてのトークンがすべてのパラメータを通るモデルを、MoE と区別して\textbf{密な}（dense）モデルと呼びます。
+ところが密なモデルでは、パラメータを 2 倍にすると、1 トークンを処理する計算量もほぼ 2 倍になります。
+すべてのトークンが、すべてのパラメータを通るからです。
+学習の費用も、生成の費用も、パラメータ数に比例して増えてしまいます。
+
+ここで、人間の組織を考えてみましょう。
+大きな病院には、多くの専門医がいます。
+しかし一人の患者を診るのは、そのうちの数人だけです。
+病院全体の知識は医師の人数に比例して増えますが、一人の患者にかかる手間は増えません。
+受付が症状を見て、適切な科に振り分けるからです。
+
+MoE は、FFN をこの病院のように作ります。
+FFN を $E$ 個の\textbf{エキスパート}（expert、それぞれが普通の FFN）に分け、\textbf{ルータ}（router、受付）が各トークンを $k$ 個のエキスパートにだけ送ります。
+パラメータは $E$ 個分ありますが、1 トークンが通るのは $k$ 個分だけです。
+ただし、このたとえには限界があります。
+実際のエキスパートは「数学の専門家」「文法の専門家」のように人間に分かる分担をしているとは限らず、どう分担するかは学習で勝手に決まります。
+
+\subsection*{ルータと top-$k$ ゲーティング}
+
+位置 $t$ の入力 $\vx\in\R^d$ に対し、ルータは線形変換 $\mW_r\in\R^{d\times E}$ と softmax で、各エキスパートへの「適性」を確率として出します。
+\begin{equation}
+\vp=\softmax(\mW_r^\T\vx)\in\R^E .
+\label{eq:ma-router}
+\end{equation}
+このうち上位 $k$ 個のエキスパートの番号の集合を $\mathcal{T}$ とし、その確率を足して 1 になるように割り直したものを重み $g_e=p_e/\sum_{j\in\mathcal{T}}p_j$ とします。
+MoE の出力は、選ばれたエキスパートの出力の重み付き和です。
+\begin{equation}
+\mathrm{MoE}(\vx)=\sum_{e\in\mathcal{T}} g_e\,\mathrm{FFN}_e(\vx).
+\label{eq:ma-moe}
+\end{equation}
+選ばれなかったエキスパートは計算しません。
+この「上位 $k$ 個だけを使う」仕組みを、\term{top-$k$ ゲーティング}{top-$k$ gating}と呼びます\cite{shazeer2017outrageously}。
+
+\begin{example}[4 エキスパート・top-2]
+$E=4$ で、あるトークンのルータの出力が $\vp=(0.1,\,0.5,\,0.3,\,0.1)$ だったとします。
+エキスパートの番号は、コードと同じく 0 から数えます。
+上位 2 個はエキスパート 1 と 2 なので、$g_1=0.5/0.8=0.625$、$g_2=0.3/0.8=0.375$ です。
+出力は $0.625\,\mathrm{FFN}_1(\vx)+0.375\,\mathrm{FFN}_2(\vx)$ で、エキスパート 0 と 3 は計算されません。
+\end{example}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,e/.style={box,font=\footnotesize,minimum width=15mm,minimum height=6mm}]
+\node[box,font=\footnotesize] (x) at (0,0) {$\vx$（1 トークン）};
+\node[purplebox,font=\footnotesize] (r) at (0,12) {ルータ $\softmax(\mW_r^\T\vx)$};
+\node[e,fill=figgray,draw=black!40,text=black!50] (e1) at (-36,28) {FFN$_0$};
+\node[e] (e2) at (-12,28) {FFN$_1$};
+\node[e] (e3) at (12,28) {FFN$_2$};
+\node[e,fill=figgray,draw=black!40,text=black!50] (e4) at (36,28) {FFN$_3$};
+\node[op] (s) at (0,42) {$\Sigma$};
+\draw[arr] (x) -- (r);
+\draw[darr,black!30] (r) -- node[lbl,left,pos=0.6] {0.1} (e1);
+\draw[arr] (r) -- node[lbl,left,pos=0.6] {0.5} (e2);
+\draw[arr] (r) -- node[lbl,right,pos=0.6] {0.3} (e3);
+\draw[darr,black!30] (r) -- node[lbl,right,pos=0.6] {0.1} (e4);
+\draw[arr] (e2) -- node[lbl,left] {$\times0.625$} (s);
+\draw[arr] (e3) -- node[lbl,right] {$\times0.375$} (s);
+\draw[arr] (s) -- ++(0,9);
+\end{tikzpicture}
+\caption{MoE の層（$E=4$、top-2）。ルータが各エキスパートの確率を出し、上位 2 個（エキスパート 1 と 2）だけを計算して、割り直した重みで足し合わせる。灰色のエキスパートはこのトークンでは計算されない。}
+\label{fig:ma-moe}
+\end{figure}
+
+\figref{fig:ma-moe}は上の数値例を図にしたものです。
+トークンごとに選ばれるエキスパートは変わるので、同じ文の中でも、あるトークンは 1 と 2、次のトークンは 0 と 3、ということが起きます。
+
+\subsection*{負荷分散：一部のエキスパートに偏らせない}
+
+MoE をそのまま学習させると、困ったことが起きやすくなります。
+学習の初めに少し多く選ばれたエキスパートは、多く学習するので少し賢くなり、さらに多く選ばれるようになります。
+「金持ちがますます金持ちになる」循環で、最後には一部のエキスパートだけが働き、残りは遊んでしまいます。
+これではパラメータを増やした意味がありません。
+しかも複数の GPU にエキスパートを分けて置く実際の学習では、混んだエキスパートの GPU が全体の足を引っ張ります。
+
+そこで、偏りに罰を与える\term{負荷分散損失}{load-balancing loss}を、言語モデルの損失に小さな係数で足します。
+これまでの次のトークン予測の損失を $\calL_{\mathrm{LM}}$、負荷分散損失を $\calL_{\mathrm{aux}}$ と書くと、学習で下げるのは $\calL_{\mathrm{LM}}+c\,\calL_{\mathrm{aux}}$ です。
+係数 $c$ は 0.01 のような小さな値にして、本来の目的である $\calL_{\mathrm{LM}}$ を邪魔しすぎないようにします。
+Switch Transformer\cite{fedus2022switch}の形は次のとおりです。
+バッチ内の $N$ 個のトークンについて、
+\begin{equation}
+\calL_{\mathrm{aux}}=E\sum_{e=0}^{E-1}f_e\,P_e,\qquad
+f_e=\frac{1}{N}\sum_{t=1}^{N}\mathbb{1}[\text{トークン $t$ の 1 位が $e$}],\quad
+P_e=\frac{1}{N}\sum_{t=1}^{N}p_{t,e}.
+\label{eq:ma-aux}
+\end{equation}
+$f_e$ はエキスパート $e$ が実際に 1 位に選ばれた割合、$P_e$ はルータが $e$ に与えた確率の平均です。
+$\mathbb{1}[\cdot]$ は、中の条件が成り立てば 1、そうでなければ 0 を表します。
+両方が均等（どちらも $1/E$）なら、$\calL_{\mathrm{aux}}=E\cdot E\cdot(1/E)^2=1$ です。
+1 つのエキスパートに集中すると（$f_e=P_e=1$）、$\calL_{\mathrm{aux}}=E$ と大きくなります。
+たとえば $E=2$ で $f=(0.9,0.1)$、$P=(0.8,0.2)$ と偏っていれば、$2\times(0.9\times0.8+0.1\times0.2)=1.48$ です。
+
+$f_e$ は数を数えるだけなので微分できず、定数として扱います。
+一方 $P_e$ はルータの出力の平均なので微分でき、
+\[
+\pd{\calL_{\mathrm{aux}}}{P_e}=E f_e
+\]
+です。
+混んでいるエキスパート（$f_e$ が大きい）ほどこの勾配が大きいので、勾配降下法で損失を下げると、そのエキスパートの確率 $P_e$ が強く押し下げられます。
+これが「混んだエキスパートを避けさせる」仕組みです。
+
+\subsection*{実装}
+\skimread{押さえる結論は「エキスパートごとに、自分を選んだトークンだけを計算し、重みを掛けて足す。式\eqref{eq:ma-router}〜\eqref{eq:ma-aux}が、そのまま 20 行ほどのコードになる」です。}
+
+\snippet{小さな MoE 層}{code:ma-moe}{ch11/moe.py}{moe}
+
+5 行目がルータ $\mW_r$、6〜7 行目が $E$ 個のエキスパートで、それぞれが前節の SwiGLU です。
+13 行目で $(B,T,C)$ を $(N,C)$ の行列にし、トークンを 1 列に並べます。
+14 行目が式\eqref{eq:ma-router}、15〜16 行目が上位 $k$ 個の選択と重みの割り直しです。
+\code{topk} は値 \code{w} と番号 \code{idx} を返し、どちらも形は $(N,k)$ です。
+18〜21 行目がエキスパートごとのループです。
+\code{(idx == e).nonzero(as_tuple=True)} は、エキスパート \code{e} を選んだ行の番号 \code{tok} と、それが何番目の候補だったか \code{slot} を返します。
+そのトークンだけをエキスパートに通し、重みを掛けて \code{y}（17 行目で 0 に初期化した、\code{x} と同じ形の入れ物）に足し込みます。
+\code{w[tok, slot, None]} の \code{None} は長さ 1 の軸を足して形を $(n,1)$ にする書き方で、ブロードキャストで $(n,C)$ の出力の各行に重みを掛けるためのものです。
+23〜25 行目が式\eqref{eq:ma-aux}です。
+\code{F.one_hot(idx[:, 0], ...)} が 1 位のエキスパートを 1 にしたベクトルで、その平均が $f_e$、\code{probs.mean(0)} が $P_e$ です。
+26 行目では、後で偏りを調べるために、各エキスパートが選ばれた回数を記録しています。
+損失と回数は層の属性（8〜9 行目で用意した \code{aux_loss} と \code{usage}）に残すので、学習ループから後で読み出せます。
+27 行目で、形を元の $(B,T,C)$ に戻します。
+
+実際の大規模な実装では、このループの代わりに、トークンをエキスパートごとに並べ替えてまとめて行列積をする工夫や、各エキスパートが受け付けるトークン数に上限（capacity）を設ける工夫が入ります。
+
+\subsection*{実験：負荷分散損失の効果}
+\skimread{押さえる結論は「負荷分散損失がないと、4\% しか使われないエキスパートが現れる。足すと、どれも 13\% 以上使われる。ただし本書の規模では、MoE の検証損失（4.896。補助損失なしで 4.800）は、密なモデル（4.793）より良くならなかった」です。}
+
+小さなモデル（2 層、$d=96$）で、次の 3 つを同じ条件（800 ステップ、バッチ 16、系列長 64）で学習させます。
+\begin{itemize}
+\item \textbf{密}: 普通の SwiGLU（中間次元 256）。
+\item \textbf{MoE}: 同じ大きさの SwiGLU を 4 個のエキスパートにし、top-1 で選ぶ。負荷分散損失の係数 0.01。
+\item \textbf{MoE（補助損失なし）}: 上と同じで、負荷分散損失を足さない。
+\end{itemize}
+top-1 なので、1 トークンあたりの FFN の計算量は 3 つとも同じです（ルータの分だけ MoE がわずかに多い）。
+一方、FFN のパラメータは MoE が 4 倍です。
+SwiGLU 1 個は $3\times96\times256=73{,}728$ 個で、MoE では各層に 3 個分が増えます（2 層で $442{,}368$ 個）。
+ルータ（$96\times4=384$ 個）も 2 層で 768 個増えるので、総パラメータは $596{,}448+442{,}368+768=1{,}039{,}584$ になります。
+
+\snippet{MoE の実験の学習ループ（抜粋）}{code:ma-moe-loop}{ch11/moe_experiment.py}{moe-loop}
+
+学習ループは第 10 章の \code{train_lm} とほぼ同じで、違いは 16〜17 行目で負荷分散損失を足しているところです。
+4〜6 行目では、直前の学習ステップで最も多くのトークンを受け持ったエキスパートの割合を記録しています。
+均等なら 0.25 です。
+
+\begin{table}[tbp]
+\centering
+\caption{MoE の実験の結果（\file{ch11/out/moe_*.txt}）。エキスパートの割合は、学習後に検証データの 1 バッチ（1,024 トークン）で各エキスパートが 1 位に選ばれたトークンの割合。均等なら 0.25。割合はエキスパート 0〜3 の順。}
+\label{tab:ma-moe}
+\small
+\begin{tabular}{@{}lrrll@{}}
+\toprule
+モデル & 総パラメータ & 検証損失 & 層 0 の割合 & 層 1 の割合 \\
+\midrule
+密（SwiGLU） & 596,448 & 4.793 & --- & --- \\
+MoE（補助損失 0.01） & 1,039,584 & 4.896 & 0.30 0.23 0.13 0.34 & 0.31 0.24 0.22 0.22 \\
+MoE（補助損失なし） & 1,039,584 & 4.800 & 0.11 0.34 0.39 0.16 & 0.04 0.41 0.40 0.15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\tabref{tab:ma-moe}が結果です。
+検証損失は、学習の最後に 100 バッチで丁寧に測った値です。
+エキスパートの割合は、\figref{fig:ma-moe-share}に棒グラフでも示しました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=40mm,ybar,bar width=3.2mm,ymin=0,ymax=0.62,ytick={0,0.2,0.4,0.6},xmin=-0.6,xmax=3.6,
+  xtick={0,1,2,3},xlabel={エキスパートの番号},ylabel={選ばれた割合},grid=none,ymajorgrids,
+  legend pos=north west,legend style={font=\scriptsize},legend columns=2,
+  title={\footnotesize (a) 補助損失なし},title style={yshift=-1mm}]
+\addplot[fill=bookblue,draw=none] coordinates {(0,0.11) (1,0.34) (2,0.39) (3,0.16)};
+\addlegendentry{層 0}
+\addplot[fill=bookaccent,draw=none] coordinates {(0,0.04) (1,0.41) (2,0.40) (3,0.15)};
+\addlegendentry{層 1}
+\draw[black!70,dashed,thick] (axis cs:-0.6,0.25) -- (axis cs:3.6,0.25);
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=40mm,ybar,bar width=3.2mm,ymin=0,ymax=0.62,ytick={0,0.2,0.4,0.6},xmin=-0.6,xmax=3.6,
+  xtick={0,1,2,3},xlabel={エキスパートの番号},grid=none,ymajorgrids,
+  title={\footnotesize (b) 補助損失あり（係数 0.01）},title style={yshift=-1mm}]
+\addplot[fill=bookblue,draw=none] coordinates {(0,0.30) (1,0.23) (2,0.13) (3,0.34)};
+\addplot[fill=bookaccent,draw=none] coordinates {(0,0.31) (1,0.24) (2,0.22) (3,0.22)};
+\draw[black!70,dashed,thick] (axis cs:-0.6,0.25) -- (axis cs:3.6,0.25);
+\end{axis}
+\end{tikzpicture}
+\caption{各エキスパートが 1 位に選ばれたトークンの割合（\tabref{tab:ma-moe}の数値）。破線は均等な場合の 0.25。(a) 補助損失なしでは、エキスパート 1 と 2 に集中し、層 1 のエキスパート 0 はほとんど使われない。(b) 補助損失を足すと、棒の高さが破線の近くにそろう。}
+\label{fig:ma-moe-share}
+\end{figure}
+
+まず、エキスパートの使われ方を見ましょう。
+補助損失なしでは、層 1 のエキスパート 0 が 4\% しか使われず、エキスパート 1 と 2 が 4 割ずつを受け持っています。
+予想した「偏り」が、800 ステップの短い学習でもすでに現れています。
+補助損失ありでは、最も少ないエキスパートでも 13\%、層 1 では 22〜31\% と、均等の 25\% に近づきました。
+式\eqref{eq:ma-aux}の罰が、狙いどおりに働いています。
+
+次に損失です。
+ここは正直に書く必要があります。
+MoE は FFN のパラメータが 4 倍あるのに、検証損失は密なモデル（4.793）より良くなりませんでした（4.896 と 4.800）。
+理由として考えられるのは、各エキスパートが全トークンの約 4 分の 1 しか見ないので、800 ステップでは一つひとつのエキスパートの学習が足りないことです。
+また、補助損失ありのほうが損失が少し高いのは、均等に振り分けることを優先した分、言語モデルとしての最適な振り分けから離れたためかもしれません。
+いずれにせよ、この規模の 1 回ずつの比較では、0.1 程度の差は誤差の範囲だと考えるべきです。
+
+大規模では事情が違います。
+Switch Transformer は、同じ計算量の密なモデルと比べて、同じ損失に達するまでの学習を数倍速くできたと報告しています\cite{fedus2022switch}。
+Mixtral 8x7B は、総パラメータ 467 億のうち 1 トークンあたり 129 億しか使わずに、当時の 700 億パラメータ級の密なモデルに匹敵する性能を示しました\cite{jiang2024mixtral}。
+MoE の利点は、十分なデータと学習量があって初めて引き出せるものなのです。
+
+\subsection*{総パラメータとアクティブパラメータ}
+
+MoE のモデルを語るときは、2 つのパラメータ数を区別します。
+\textbf{総パラメータ}は、すべてのエキスパートを含めた数で、メモリに置く必要がある量です。
+\textbf{アクティブパラメータ}は、1 トークンの計算で実際に使われる数で、計算量（したがって速さと費用）を決める量です。
+たとえば Qwen3-30B-A3B という名前は、「総パラメータ 300 億、アクティブ 30 億」を表しています（A は active）。
+128 個のエキスパートから 8 個を選ぶので、FFN のうち使われるのは 16 分の 1 だけです\cite{yang2025qwen3}。
+
+DeepSeek-V3\cite{liu2024deepseekv3}は、総パラメータ 6,710 億、アクティブ 370 億です。
+256 個の「ルーティングされる」エキスパートから 8 個を選び、さらに全トークンが必ず通る\textbf{共有エキスパート}を 1 個持ちます。
+負荷分散は、補助損失に頼る代わりに、各エキスパートのルータのスコアに足すずらしの値を、混み具合に応じて少しずつ調整する方法を主に使います（補助損失なしの負荷分散）。
+補助損失が言語モデルの学習を邪魔する、という問題を避けるための工夫です。
+本章の実験で、補助損失ありのほうが検証損失がやや高かったこと（\tabref{tab:ma-moe}の 4.896 と 4.800）と、同じ方向の問題意識です。
+
+この節で分かったのは、MoE がルータで各トークンを一部のエキスパートにだけ送ることで、計算量を増やさずにパラメータを増やす仕組みであり、偏りを防ぐ負荷分散が欠かせないことです。
+
+\section{実在のモデルの設計図を読む}\label{sec:ma-models}
+\skimread{押さえる結論は「設定ファイルの数個の値（層の数、次元、ヘッドの数、FFN の中間次元）から、パラメータ数と KV キャッシュの大きさを自分で計算できる」です。表とコードには、\chapref{ch:infra}で戻ってきます。}
+
+ここまでの部品で、公開されている LLM の設計図（設定ファイル）がほとんど読めるようになりました。
+この節の問いは、「Llama 3 や DeepSeek-V3 の設定を見て、何が分かるのか。パラメータ数やメモリは自分で計算できるのか」です。
+
+\subsection*{代表的なモデルの構成}
+
+\tabref{tab:ma-models}に、代表的な公開モデルの構成をまとめました。
+数値は各モデルの公開された設定ファイルと技術報告によります\cite{radford2019language,dubey2024llama3,jiang2024mixtral,yang2025qwen3,liu2024deepseekv3}。
+Gemma 4 と gpt-oss は、モデルの公開ページに置かれた設定ファイルの値です。
+表の Llama 3.1 8B は、文脈長（Llama 3 は 8,192）を除いて、Llama 3 8B と同じ構成です。
+本章のほかの場所にある「Llama 3 8B」の計算は、Llama 3.1 8B にもそのまま当てはまります。
+
+\begin{table}[tbp]
+\centering
+\caption{代表的な公開モデルの構成。「Q/KV」はクエリとキー・バリューのヘッド数（等しければ MHA、KV が少なければ GQA）。MoE の行の FFN は「エキスパート数・選ぶ数（1 個の中間次元）」で、DeepSeek-V3 の「＋1」は共有エキスパート。MLA は表の後で説明する。文脈長は扱える最大の長さ。}
+\label{tab:ma-models}
+\footnotesize
+\setlength{\tabcolsep}{2.2pt}
+\begin{tabular}{@{}lrrrllr@{}}
+\toprule
+モデル（公開年） & 総／アクティブ & $L$ & $d$ & Q/KV & FFN & 文脈長 \\
+\midrule
+GPT-2（2019） & 1.24 億 & 12 & 768 & 12/12 & 3072, GELU & 1,024 \\
+Llama 3.1 8B（2024） & 80 億 & 32 & 4096 & 32/8 & 14336, SwiGLU & 131,072 \\
+Llama 3.1 405B（2024） & 約 4,050 億 & 126 & 16384 & 128/8 & 53248, SwiGLU & 131,072 \\
+Mixtral 8x7B（2023） & 467 億／129 億 & 32 & 4096 & 32/8 & 8・2（14336） & 32,768 \\
+Qwen3-8B（2025） & 82 億 & 36 & 4096 & 32/8 & 12288, SwiGLU & 約 128K \\
+Qwen3-235B-A22B（2025） & 2,350 億／220 億 & 94 & 4096 & 64/4 & 128・8（1536） & 約 128K \\
+DeepSeek-V3（2024） & 6,710 億／370 億 & 61 & 7168 & MLA & 256・8＋1（2048） & 約 128K \\
+gpt-oss-120b（2025） & 1,168 億／51 億 & 36 & 2880 & 64/8 & 128・4（2880） & 131,072 \\
+Gemma 4 12B（2026） & 120 億 & 48 & 3840 & 16/8 & 15360, GeGLU & 262,144 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表を縦に読むと、本章で学んだ流れがそのまま見えます。
+GPT-2 だけが Q/KV が等しく（MHA）、FFN が GELU です。
+2024 年以降のモデルはすべて GQA かそれに代わる仕組みを持ち、FFN はゲート付きです。
+正規化はどのモデルも RMSNorm（GPT-2 だけ LayerNorm）、位置は GPT-2 以外すべて RoPE です。
+2025 年以降の大きなモデルは、ほとんどが MoE です。
+100B（1,000 億）を超える密なモデルは、2024 年の Llama 3.1 405B が最後の代表例になりつつあります。
+
+いくつか、本章で扱わなかった工夫も表に現れています。
+DeepSeek-V3 の \textbf{MLA}（multi-head latent attention）は、キーとバリューを 512 次元の小さなベクトルに圧縮してキャッシュし、使うときに展開する方法です。
+GQA とは別のやり方で、KV キャッシュを小さくします\cite{liu2024deepseekv3}。
+gpt-oss や Gemma は、一部の層で「直近の百数十〜数千トークンだけを見る」\textbf{スライディングウィンドウ注意}を使い、長い文脈での計算とキャッシュを抑えています。
+Qwen3 や Gemma 4 は、内積の前にクエリとキーを RMSNorm で正規化する \textbf{QK-norm} を入れて、注意のスコアが大きくなりすぎるのを防いでいます。
+
+なお、\tabref{tab:ma-models}は 1 行に収めるために、細部を省いています。
+Gemma 4 12B の「16/8」は直近だけを見る層の値で、6 層に 1 層ある、文脈全体を見る層では、キー・バリューのヘッドは 1 個です。
+DeepSeek-V3 は、最初の 3 層だけ、FFN が MoE ではなく密です。
+Qwen3-8B の「約 128K」は技術報告の値で、設定ファイルに書かれた位置の数は 40,960 です。
+設定ファイルを開いて表と違う数字を見つけたら、こうした層ごとの違いや数え方の違いを疑ってください。
+
+\subsection*{設定からパラメータ数とメモリを計算する}
+
+第 10 章でミニGPT のパラメータを数えたのと同じ方法で、実在のモデルも数えられます。
+現代の標準形の 1 層には、注意の 4 つの射影と、SwiGLU の 3 枚の行列と、RMSNorm が 2 つあります。
+
+\snippet{設定からパラメータ数と KV キャッシュを計算する}{code:ma-count}{ch11/param_count.py}{count}
+
+3 行目が注意の射影で、$\mW_q$ と $\mW_o$ は $d\times H\dhead$、$\mW_k$ と $\mW_v$ は $d\times H_{\mathrm{kv}}\dhead$ です。
+GQA の効果は、この $H_{\mathrm{kv}}$ の項に現れます。
+4 行目が SwiGLU の $3d\,\dff$ です。
+7 行目は埋め込みで、重みを共有しなければ入力側と出力側の 2 つ分になります。
+MoE なら、FFN がエキスパートの数（と共有エキスパートの数）だけ並び、ルータ（$dE$、5 行目）が加わります（8 行目）。
+アクティブパラメータ（9 行目）では、エキスパートの数の代わりに選ぶ数 $k$ を掛けます。
+最後の \code{+ d} は最終の RMSNorm です。
+\code{kv_bytes_per_token} は式\eqref{eq:ma-kv-mem}そのものです。
+
+\outputfile{ch11/out/param_count.txt}
+
+計算結果は、公開されているパラメータ数とよく一致しています。
+Llama 3 8B は 8.03B、Mixtral 8x7B は総数 46.70B・アクティブ 12.88B で、名前の「8x7B」から想像する 56B より少ないことが分かります。
+エキスパートになっているのは FFN だけで、注意や埋め込みは 8 個に増えていないからです。
+Qwen3-30B-A3B は総数 30.53B・アクティブ 3.35B で、モデルカードの「総 30.5B・アクティブ 3.3B」と一致します（このモデルは埋め込みと出力の重みを共有しない設定です）\cite{yang2025qwen3}。
+Qwen3-8B の計算値 8.19B も公開値と一致しますが、QK-norm の小さなパラメータは数えていません。
+
+右の 2 列が KV キャッシュです。
+Llama 2 7B と Llama 3 8B を比べると、パラメータ数はほぼ同じなのに、キャッシュは 512 KiB と 128 KiB で 4 倍違います。
+これが GQA（$H_{\mathrm{kv}}$ が 32 → 8）の効果です。
+Llama 3 70B は $L=80$ と層が多いので、1 トークンあたり 320 KiB になります。
+
+\begin{practice}{推論に必要なメモリの見積もり}
+推論に必要な GPU のメモリは、おおよそ「重み ＋ KV キャッシュ」です。
+重みは総パラメータ数 × 1 つの数のバイト数（bf16 なら 2 バイト）、KV キャッシュは式\eqref{eq:ma-kv-mem} × 文脈長 × 同時に処理する系列の数です。
+たとえば Llama 3 8B を bf16 で動かすと重みが約 16 GB、文脈 8,192 トークンの会話を 8 本同時に処理すると KV キャッシュが 8 GiB です。
+MoE では、計算はアクティブパラメータ分でも、\textbf{メモリには総パラメータ分}が必要なことに注意してください。
+量子化で重みを小さくする方法は\chapref{ch:distillation}、推論サーバの工夫は\chapref{ch:eval-serving}で扱います。
+\end{practice}
+
+この節で分かったのは、公開モデルの設定ファイルの数個の値から、パラメータ数・アクティブパラメータ・KV キャッシュの大きさを自分で計算できることです。
+
+\section{長い文脈、マルチモーダル、思考するモデル}\label{sec:ma-beyond}
+\laterread{読み物です。飛ばしても、次の章は読めます。思考するモデルの学習を扱う\chapref{ch:rl-llm}の前に、戻ってくれば足ります。}
+
+ここからは手を動かす部分を終えて、読み物になります。
+アーキテクチャの周辺で起きている大きな流れを 3 つ、概観だけしておきます。名前が出てくる工夫は、今は「そういうものがある」と知っておけば十分です。
+この節の問いは、「本章の部品の上に、現代の LLM はさらに何を積み重ねているのか」です。
+
+\textbf{長い文脈}。
+文脈長は、GPT-2 の 1,024 から、2024〜2025 年の 128K（約 13 万）、2026 年には 256K〜100 万トークンへと伸びました。
+その鍵の一つが RoPE です。
+位置の表がないので、学習の後半に長い文書で追加の学習をすれば、文脈を伸ばせます。
+そのとき、RoPE の $\theta$ を大きくしたり、YaRN~\cite{peng2024yarn} のように周波数ごとに角度の伸ばし方を変えたりして、学習で見たことのない大きな角度が現れないように調整します。
+Llama 3 も、短い文脈で大部分を学習した後、最後の段階で 128K まで伸ばしています\cite{dubey2024llama3}。
+もう一つの鍵は、全トークンを見る注意の $T^2$ の費用を抑えることです。
+スライディングウィンドウ注意と通常の注意を交互に重ねる方法や、計算量が $T$ に比例する「線形注意」の層を混ぜる方法が使われています。
+
+\textbf{マルチモーダル}。
+画像や音声を扱うモデルも、基本の考え方は「何でもトークンの列にして、同じ Transformer に入れる」です。
+画像の場合は、画像を 14×14 画素や 16×16 画素の小さな正方形（パッチ）に切り分け、各パッチを線形変換や小さな画像用のネットワークで $d$ 次元のベクトルにします。
+こうしてできた「画像のトークン」を、文章のトークンの埋め込みと同じ列に並べれば、注意は画像と文章の間でも情報をやり取りできます。
+Gemma 3、Qwen3.5、Llama 4 などは、こうして画像を直接扱います。
+
+\textbf{思考（推論）するモデル}。
+2024 年以降、答えの前に長い「考える過程」を生成してから答えるモデルが広まりました。
+本書の特殊トークン \code{<|think|>} も、そのための席です。
+アーキテクチャ自体は本章のものと同じで、違いは\textbf{学習のさせ方}にあります。
+正解を確かめられる問題で強化学習を行うと、モデルは長く考えるほど正答率が上がるように振る舞いを変えていきます\cite{guo2025deepseekr1}。
+これは\chapref{ch:rl-llm}の主題です。
+生成するトークンが長くなるので、本章の KV キャッシュや GQA の重要性はさらに増しています。
+
+\begin{table}[tbp]
+\centering
+\caption{本章の現代版ミニGPT と、実際の LLM の規模の対比。}
+\label{tab:ma-scale}
+\small
+\begin{tabular}{@{}lp{34mm}p{58mm}@{}}
+\toprule
+項目 & 本章（現代版ミニGPT） & 実際の LLM（例） \\
+\midrule
+パラメータ & 約 125 万 & 80 億（Llama 3 8B）〜 6,710 億（DeepSeek-V3） \\
+層・次元 & 4 層、$d=128$ & 32〜126 層、$d=4096$〜16384 \\
+ヘッド Q/KV & 4/2 & 32/8、128/8 など \\
+MoE & 4 エキスパート、top-1 & 128〜256 エキスパート、top-8 など \\
+文脈長 & 128 & 128K〜100 万 \\
+KV キャッシュ & 1 トークン数 KiB & 1 トークン 100〜500 KiB 程度 \\
+学習 & CPU で約 8 分、約 160 万トークン & GPU 数千〜1.6 万枚で数か月、約 15 兆トークン \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\tabref{tab:ma-scale}は、本章で作ったモデルと実際の LLM の規模を並べたものです。
+パラメータ数は 4〜6 桁違いますが、部品の種類と組み方は同じです。
+本章の \file{modern_gpt.py} の設定の数字を表の右の列に置き換えれば、そのまま Llama 3 と同じ形のモデルになります。
+足りないのは、それを学習させるための計算機とデータだけです。
+
+この節で分かったのは、長い文脈・マルチモーダル・思考の能力が、本章の部品の上に「学習のさせ方」と「入力の作り方」を重ねて実現されていることです。
+
+\begin{summary}
+\item 現代の LLM は GPT-2 と同じ骨組み（埋め込み → ブロック × $L$ → 出力）で、ブロックの部品が入れ替わったもの。
+\item RMSNorm は平均を引かずに 2 乗平均平方根で割る正規化。軽く、ずらし $\bm\beta$ を持たない。
+\item RoPE はクエリとキーを位置に比例した角度だけ回し、内積を位置の差だけの関数にする。位置の表がないので文脈を伸ばしやすい。
+\item SwiGLU はゲートで中身を開け閉めする FFN。中間次元を約 $\tfrac83 d$ にすればパラメータ数は GPT-2 型とほぼ同じ。
+\item KV キャッシュは過去のキーとバリューを保存して、生成の計算を新しいトークンの分だけにする。メモリは 1 トークンあたり $2LH_{\mathrm{kv}}\dhead b$ バイト。
+\item GQA はキーとバリューのヘッドを共有して、KV キャッシュを $H_{\mathrm{kv}}/H$ 倍に縮める。
+\item MoE はルータで各トークンを一部のエキスパートにだけ送り、計算量を増やさずにパラメータを増やす。偏りを防ぐ負荷分散が必要。
+\item 公開モデルの設定の数個の値から、パラメータ数・アクティブパラメータ・KV キャッシュを計算できる。
+\end{summary}
+
+\section*{次の章へ}
+
+本章で、現代の LLM の設計図はすべてそろいました。
+現代版ミニGPT の設定の数字を大きくすれば、Llama 3 や Qwen3 と同じ形のモデルになります。
+では、なぜ本書ではそれを学習させないのでしょうか。
+本章の小さなモデルですら、CPU では数分かかりました。
+80 億パラメータのモデルを 15 兆トークンで学習させるのに、どれだけの計算が必要なのでしょうか。
+次の\chapref{ch:gpu}では、LLM の計算の正体を数え、なぜ GPU が必要なのか、GPU から最大の性能を引き出すにはどうすればよいのかを考えます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Touvron ら「LLaMA」\cite{touvron2023llama}：RMSNorm・RoPE・SwiGLU をまとめた「現代の標準形」の出発点。短く読みやすい。
+\item Su ら「RoFormer」\cite{su2024roformer}：RoPE の原論文。回転による相対位置の導出が丁寧に書かれている。
+\item Shazeer「GLU Variants Improve Transformer」\cite{shazeer2020glu}：SwiGLU を含むゲート付き FFN の比較。5 ページの短い論文。
+\item Ainslie ら「GQA」\cite{ainslie2023gqa}：MHA と MQA の中間としての GQA と、既存のモデルを GQA に変換する方法。
+\item Fedus ら「Switch Transformers」\cite{fedus2022switch}：top-1 の MoE と負荷分散損失。MoE の実践的な入門に最適。
+\item DeepSeek-AI「DeepSeek-V3 Technical Report」\cite{liu2024deepseekv3}：MLA、共有エキスパート、補助損失なしの負荷分散など、現代の大規模 MoE の設計がすべて載っている。
+\item Grattafiori ら「The Llama 3 Herd of Models」\cite{dubey2024llama3}：密なモデルの設計・学習・文脈の延長の詳細な記録。
+\item Raschka『Build a Large Language Model (From Scratch)』\cite{raschka2024build}：GPT-2 型から Llama 型への書き換えを、コードで追える。
+\end{itemize}
+
+\begin{exercises}
+\exfirst[どちらも、必読の節の式に数を入れて確かめる問題です。]{2 と 5}
+\item （手計算）$\vx=(2,-2,1,-1)$、$\bm\gamma=(1,1,1,1)$、$\epsilon=0$ のとき、RMSNorm と LayerNorm（$\bm\beta=\vzero$）の出力をそれぞれ求めてください。平均が 0 のベクトルでは、2 つはどんな関係になりますか。
+\item （手計算）2 次元の RoPE で $\omega=0.5$、$\vq=(1,0)$、$\vk=(0,1)$ とします。$m=4,\,n=2$ と $m=10,\,n=8$ のスコアを計算し、一致することを確かめてください。
+\item （計算）$d=4096$ で、GPT-2 型の MLP（$\dff=4d$）と同じパラメータ数になる SwiGLU の $\dff$ を求めてください。Llama 2 7B の 11008 と比べてどうですか。
+\item （コード）\file{ch11/kv_cache.py} で \code{n_kv_head} を 4 から 1（MQA）に変えて、速度を測り直してください。また、\code{KVCache} に保存されたテンソルの形を表示して、メモリが何分の 1 になったか確かめてください。
+\item （計算）Llama 3.1 405B（$L=126$、$H_{\mathrm{kv}}=8$、$\dhead=128$）で、bf16 の KV キャッシュは 1 トークンあたり何 KiB ですか。文脈 131,072 トークンの会話 1 本では何 GiB になりますか。 同じ計算を gpt-oss-120b（$L=36$、$H_{\mathrm{kv}}=8$、$\dhead=64$）でも行い、比べてください。
+\item （コード）\file{ch11/moe_experiment.py} で top-1 を top-2 に変えて学習し、損失とエキスパートの割合がどう変わるか調べてください。1 トークンあたりの FFN の計算量は何倍になりますか。
+\item （考察）MoE では、アクティブパラメータが小さくても、総パラメータ分のメモリが必要です。手元の GPU 1 枚で動かしたいとき、密な 80 億パラメータのモデルと、総 300 億・アクティブ 30 億の MoE の、どちらが向いているでしょうか。速さとメモリの両面から考えてください。
+\end{exercises}

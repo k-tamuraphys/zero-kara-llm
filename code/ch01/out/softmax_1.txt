@@ -1,0 +1,6 @@
+[0.66524096 0.24472847 0.09003057]
+ch01/softmax.py:8: RuntimeWarning: overflow encountered in exp
+  e = np.exp(z)  # 各成分を e の肩に乗せる（必ず正になる）
+ch01/softmax.py:9: RuntimeWarning: invalid value encountered in divide
+  return e / e.sum()  # 合計で割る（和が 1 になる）
+[nan nan nan]

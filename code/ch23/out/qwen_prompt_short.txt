@@ -1,0 +1,12 @@
+<|im_start|>system
+計算は必ず calculator ツールで行ってください。
+# Tools
+You may call one or more functions to assist with the user query.
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "calculator", "description": "整数の足し算・引き算・掛け算をする", "parameters": {"type": "object", "properties": {"expression": {"type": "string", "description": "例: 37*48"}}, "required": ["expression"]}}}
+</tools>
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call><|im_end|>

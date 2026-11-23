@@ -1,0 +1,1046 @@
+\chapter{トークン化：文字列を数の列にする}\label{ch:tokenizer}
+\bookmap{3}
+
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:lm}で、言語モデルとは「次のトークンの確率を予測するモデル」だと学びました。
+そこでは、1 文字を 1 トークンとして扱いました。\\[1mm]
+\textbf{この章の問い}: 文章を、どんな単位に切って番号にすればよいのでしょうか。
+学習のときに見なかった文字が来たら、どうすればよいのでしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 文字・単語・サブワードという切り方の違いを説明できます。
+\item どんな文字列も 0〜255 の数の列（UTF-8 のバイト列）に直せることを、手元で確かめられます。
+\item BPE というアルゴリズムの学習・エンコード・デコードを、自分で書けます。
+\item 本書のトークナイザ（語彙 4,096）の中身と、実務のトークナイザの落とし穴を説明できます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] この章は 2 周目に回してかまいません。ただし\chapref{ch:embedding}へ進む前に、「必読」の節だけは読んでください。この先のすべての章が、「トークン」「語彙」という言葉と、本書のトークナイザの切り方を使います。
+\item[\rgmust] \secref{sec:tok-units}と\secref{sec:tok-bpe-hand}：トークンとは何か、BPE がどう切り方を決めるか。22 文字の例文を紙の上で切れば分かります。
+\item[\rgmust] \secref{sec:tok-explore}の冒頭と「数字と、知らない文字」：本書のトークナイザが、小説と計算ドリルをどう切るか。
+\item[\rgskim] \secref{sec:tok-utf8}、\secref{sec:tok-bpe-code}、\secref{sec:tok-explore}の「語彙の大きさと列の長さ」、\secref{sec:tok-special}：見出しの下の札に書いた結論だけ押さえれば、先へ進めます。
+\item[\rglater] \secref{sec:tok-practice}：既製のトークナイザの話。既製の LLM を自分で使うときに戻れば足ります。
+\end{readingguide}
+
+ニューラルネットワークは、数を受け取って数を返す関数でした（\chapref{ch:nn}）。
+文章を読ませるには、どこかで「文字の並び」を「数の並び」に直さなければなりません。
+\chapref{ch:lm}では、コーパスに現れる 4,078 種類の文字に番号を振り、1 文字を 1 個の数にしました。
+ところが\chapref{ch:intro}で動かした基盤モデルは、「どうも仕方が」の次に、3 文字の「ない。」を予測していました。
+1 文字ずつ予測するモデルなら、「な」「い」「。」と 3 回かかるはずです。
+なぜ、1 回で済んだのでしょうか。
+基盤モデルは、文字より大きな単位で文章を読み書きしているからです。
+
+\figref{fig:tok-pipeline}が、この章で作るものの全体像です。
+文字列を数の列に直し、数の列を文字列に戻す道具を\textbf{トークナイザ}と呼びます。
+図の「どうも仕方がない。」は 9 文字ですが、基盤モデルが見ているのは 3 個の数です。
+この切り方を決める方法を、この章で一から作ります。
+
+切り方が分かると、LLM の振る舞いにも説明が付きます。
+LLM は、大きな数の計算や、「\code{strawberry}」に r がいくつあるかという問いを苦手とします。
+どちらも、トークンの切り方が原因の一つです。章の最後の「落とし穴」で確かめます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+  \node[plainbox,minimum width=30mm,minimum height=8mm] (s) {どうも仕方がない。};
+  \node[tok,right=19mm of s] (t1) {どうも};
+  \node[tok,right=1mm of t1] (t2) {仕方が};
+  \node[tok,right=1mm of t2] (t3) {ない。};
+  \node[lbl,below=0.3mm of t1] {1434};
+  \node[lbl,below=0.3mm of t2] {1394};
+  \node[lbl,below=0.3mm of t3] {433};
+  \node[box,right=17mm of t3,minimum width=21mm,minimum height=10mm] (lm) {言語モデル};
+  \draw[arr] ([yshift=1.5mm]s.east) -- node[above,lbl]{エンコード} ([yshift=1.5mm]t1.west);
+  \draw[arr] ([yshift=-1.5mm]t1.west) -- node[below,lbl]{デコード} ([yshift=-1.5mm]s.east);
+  \draw[arr] ([yshift=1.5mm]t3.east) -- node[above,lbl]{入力} ([yshift=1.5mm]lm.west);
+  \draw[arr] ([yshift=-1.5mm]lm.west) -- node[below,lbl]{次の ID} ([yshift=-1.5mm]t3.east);
+  \node[lbl,above=4.5mm of s] {文字列（人が読む）};
+  \node[lbl,above=4.5mm of t2] {トークン ID の列（モデルが読む）};
+\end{tikzpicture}
+\caption{トークナイザの仕事。文字列をトークンに切って番号（ID）の列に直し（エンコード）、
+モデルが出した番号を文字列に戻す（デコード）。番号は本書のトークナイザの実際の値。}
+\label{fig:tok-pipeline}
+\end{figure}
+
+\section{どの単位で切るか：文字・単語・サブワード}\label{sec:tok-units}
+
+最初の問いは、文章を\textbf{どの単位で}切るかです。
+候補は、文字、単語、その中間の三つです。
+順に試して、それぞれの困りごとを確かめます。
+先に言葉をそろえておきます。
+
+\begin{definition}[トークン化]\label{def:tok-tokenization}
+文章を切り分けた一つ一つの単位を\term{トークン}{token}と呼びます。
+使ってよいトークンをすべて集めたものが\term{語彙}{vocabulary}$\calV$ で、その個数を $V=\abs{\calV}$ と書きます。
+語彙の各トークンには、$0$ から $V-1$ までの番号（\jterm{トークン ID}）を振ります。
+文字列をトークン ID の列 $x_1,\dots,x_T$ に直す操作を\term{エンコード}{encode}、逆に戻す操作を\term{デコード}{decode}と呼びます。
+この二つを行う道具が\term{トークナイザ}{tokenizer}で、文章をトークンに切ること全体を\term{トークン化}{tokenization}と呼びます。
+\end{definition}
+
+\subsection*{文字で切る}
+
+\chapref{ch:lm}の「1 文字 = 1 トークン」は、共有ライブラリの \code{CharTokenizer} にまとめてあります。
+中身は単純です。
+文章に現れる文字を重複なく集めて、番号を振ります。
+エンコードは「文字 $\to$ 番号」の辞書を、デコードは「番号 $\to$ 文字」の辞書を引くだけです。
+漱石のコーパス（変数 \code{text}）で使ってみます。
+
+\snippet{文字単位のトークナイザを使う}{code:tok-char-demo}{ch07/units.py}{char-demo}
+\outputfile{ch07/out/char_demo.txt}
+
+「吾輩は猫である。」の 8 文字が 8 個の番号になり、デコードすると元に戻りました。
+語彙も 4,078 個と小さく済みます。
+しかし、困りごとが三つあります。
+
+\begin{itemize}
+\item \textbf{知らない文字で止まる}。出力の最後の行では、「\code{12+35=47}」のエンコードがエラーになりました。
+「\code{+}」が漱石の小説に一度も現れず、番号を持たないからです。
+\item \textbf{列が長い}。本書の基盤モデルは、直前の 128 トークンまでを見て次を予測するように作ってあります（\chapref{ch:transformer}）。文字単位では 128 文字、つまり 2〜3 文しか見えません。
+\item \textbf{まとまりを一から学ぶことになる}。「吾輩」や「である」が一まとまりだということを、モデルは自力で見つけなければなりません。
+しかも 4,078 種類の文字のうち 470 種類は、コーパスに 1 回しか現れません。1 回しか見ない文字について学べることは、わずかです。
+\end{itemize}
+
+\subsection*{単語で切る}
+
+では、単語を単位にしたらどうでしょうか。
+英語なら「\code{I am a cat.}」を空白で切れば、単語の列になります。
+1 トークンが意味のまとまりになり、列も短くなります。
+しかし、こちらにも困りごとがあります。
+
+\begin{itemize}
+\item \textbf{語彙が際限なく増える}。「食べる」「食べた」「食べない」「食べさせられた」は、すべて別の単語です。
+人名、新語、打ち間違いも次々に現れます。語彙は数十万個あっても足りません。
+\item \textbf{知らない単語がなくならない}。語彙にない単語（\jterm{未知語}）は、「不明」という 1 個のトークンに置き換えるしかなく、元の単語の情報が失われます。
+\item \textbf{日本語には切れ目がない}。「吾輩は猫である」には空白がありません。単語に切るには、辞書を使った別の仕組みが要ります。
+\end{itemize}
+
+\subsection*{中間で切る：サブワード}
+
+文字は小さすぎ、単語は大きすぎました。
+そこで、その中間を取ります。
+\textbf{よく出る並びは長いまま 1 トークンにし、珍しい言葉は短い部品に分ける}のです。
+この中間の単位を\term{サブワード}{subword}と呼びます。
+たとえば「である。」は丸ごと 1 トークンにし、珍しい漢字は小さな部品の組み合わせで表します。
+部品さえ語彙にあれば、どんな言葉も表せるので、未知語は生まれません。
+
+\tabref{tab:tok-units}に、切り方の違いをまとめました（「バイト」は次節で説明する、文字より細かい単位です）。
+最下行の本書のトークナイザは、語彙の大きさが文字単位とほぼ同じなのに、列は 6 割の長さになっています（$1{,}432{,}060\div2{,}407{,}914\approx0.59$）。
+
+\begin{table}[tbp]
+\centering
+\caption{切る単位の比較。数値は漱石のコーパス（約 240 万字）での実測（\file{ch07/units.py}）。単語単位は切り方で変わるので、性質だけを示す。}
+\label{tab:tok-units}
+\small
+\begin{tabular}{lrrl}
+\toprule
+単位 & 語彙の大きさ & 列の長さ & 未知の言葉 \\
+\midrule
+バイト（\secref{sec:tok-utf8}） & 256 & 7,163,834 & 起きない \\
+文字 & 4,078 & 2,407,914 & 知らない文字で止まる \\
+単語 & 数万〜数十万以上 & 短い & 知らない単語が必ず残る \\
+サブワード（本書の BPE） & 4,096 & 1,432,060 & 起きない \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+まとめると、切る単位を小さくすれば列が長くなり、大きくすれば語彙が膨らんで未知語が出ます。
+サブワードは、その両方を避ける中間の単位です。
+これをどう作るのかが、この章の本題です。
+
+\section{すべての文字列はバイトの列である：Unicode と UTF-8}\label{sec:tok-utf8}
+\skimread{結論は「どんな文字列も、0〜255 の数（バイト）の列に直せる。日本語の 1 文字は 3 バイトで、列は文字単位の約 3 倍になる」です。ビットの詰め替えは 2 周目でかまいません。}
+
+サブワードを作る前に、「知らない文字で止まる」問題を片付けます。
+世界中のどんな文字が来ても止まらないようにするには、何を出発点にすればよいでしょうか。
+答えは、コンピュータが文字をしまう方法の中にあります。
+
+コンピュータの中では、文字も数として記録されています。
+世界中の文字に一つずつ番号を割り当てた共通の表が、\term{Unicode}{ユニコード}です。
+割り当てられた番号を\term{符号位置}{code point}と呼びます。
+「A」は 65 番、「あ」は 12354 番、「吾」は 21566 番です。
+符号位置は、\code{U+} の後に 16 進法で書く習慣があります。
+16 進法は、0〜9 と a〜f の 16 種類の記号で数を書く方法です（a が 10、f が 15。大文字で書いても同じです）。
+「吾」の 21566 を 16 のべき乗に分けると、$5\times16^3+4\times16^2+3\times16+14$ です（$20480+1024+48+14=21566$）。
+各桁の 5、4、3、14 を順に並べ、14 を E と書くので、\code{U+543E} になります。
+
+符号位置をそのままトークン ID にする手は、うまくいきません。
+Unicode には 15 万を超える文字があり、そのほとんどは学習データに一度も現れないからです。
+
+そこで、もう一段細かく見ます。
+ファイルや通信路の上では、データはすべて\term{バイト}{byte}の列です。
+1 バイトは 8 桁の 2 進数（8 ビット）で、0 から 255 までの $2^8=256$ 通りの値を表します。
+符号位置は、「吾」の 21566 のように 255 を超えるものがほとんどで、1 バイトには収まりません。
+そこで、一つの符号位置を 1〜4 個のバイトで表す決まりが使われます。
+これが \term{UTF-8}{ユーティーエフエイト}で、現在のウェブで最も広く使われている方式です。
+バイト数は、\tabref{tab:tok-utf8}のように符号位置の大きさで決まります。
+
+範囲の境目は、表の「バイトの形」にある x の個数で決まります。
+1 バイトの形は x が 7 個なので、$2^7=128$ 通り（\code{U+007F} まで）です。
+2 バイトは $5+6=11$ 個で $2^{11}=2{,}048$ 通り（\code{U+07FF} まで）、3 バイトは $4+6+6=16$ 個で $2^{16}=65{,}536$ 通り（\code{U+FFFF} まで）です。
+「吾」の \code{U+543E} は \code{U+0800} と \code{U+FFFF} の間なので、3 バイトの行に当たります。
+
+\begin{table}[tbp]
+\centering
+\caption{UTF-8 のバイト数。「バイトの形」の x の位置に、符号位置のビットが入る。日本語の文字は、ほとんどが 3 バイトになる。}
+\label{tab:tok-utf8}
+\small
+\begin{tabular}{llll}
+\toprule
+符号位置の範囲 & バイト数 & バイトの形 & 例 \\
+\midrule
+\code{U+0000}〜\code{U+007F} & 1 & \code{0xxxxxxx} & 英数字 \\
+\code{U+0080}〜\code{U+07FF} & 2 & \code{110xxxxx 10xxxxxx} & é、× \\
+\code{U+0800}〜\code{U+FFFF} & 3 & \code{1110xxxx 10xxxxxx 10xxxxxx} & かな、漢字 \\
+\code{U+10000}〜 & 4 & \code{11110xxx 10xxxxxx 10xxxxxx 10xxxxxx} & 絵文字 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Python で確かめましょう。
+\code{ord} が符号位置を返し、文字列の \code{encode("utf-8")} が文字列をバイトの列に直します。
+
+\snippet{文字を UTF-8 のバイト列にする}{code:tok-utf8}{ch07/units.py}{utf8}
+\outputfile{ch07/out/utf8.txt}
+
+各行は、符号位置、バイト数、バイト列の 16 進表示、同じバイト列の 10 進表示です。
+「A」は 1 バイト、「é」は 2 バイト、「あ」と「吾」は 3 バイト、絵文字は 4 バイトになりました。
+\textbf{日本語の 1 文字は、3 個の数}になるのです。
+
+「吾」が \code{e5 90 be} になる仕組みを、\figref{fig:tok-utf8-bits}で追ってみます。
+16 進法の 1 桁は、2 進数のちょうど 4 桁に当たります（5 は \code{0101}、4 は \code{0100}、3 は \code{0011}、E は \code{1110}）。
+そこで \code{U+543E} は、2 進数では 16 桁の \code{0101 0100 0011 1110} です。
+これを上から 4 桁、6 桁、6 桁に分け、\tabref{tab:tok-utf8}の 3 バイトの形の x の位置に流し込みます。
+各バイトの先頭の \code{1110} は「ここから 3 バイトで 1 文字」、\code{10} は「前のバイトの続き」を意味する目印です。
+この目印のおかげで、バイトの列のどこからどこまでが 1 文字なのかが、必ず分かります。
+
+できた 3 バイトを、4 桁ずつ 16 進法で読みます。
+1 個目の \code{1110 0101} は、\code{1110} が e、\code{0101} が 5 なので \code{e5}、10 進法では $14\times16+5=229$ です。
+同じように、2 個目は \code{90}（$9\times16+0=144$）、3 個目は \code{be}（$11\times16+14=190$）で、先ほどの実行結果と一致します。
+
+符号位置の上の桁は先頭のバイトに入るので、番号の近い文字どうしは、先頭のバイトが同じになります。
+たとえば、ひらがなの多くは \code{e3 81} で始まります。この性質は、後で BPE を動かすときに顔を出します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=4.2mm,y=1mm,
+  b/.style={cell,minimum size=4.2mm,font=\footnotesize\ttfamily}]
+  % 上段：符号位置の 16 ビット
+  \foreach \v [count=\i from 5] in {0,1,0,1} \node[b,fill=figblue] (ua\i) at (\i-0.6,0) {\v};
+  \foreach \v [count=\i from 9] in {0,1,0,0,0,0} \node[b,fill=figgreen] (ub\i) at (\i,0) {\v};
+  \foreach \v [count=\i from 15] in {1,1,1,1,1,0} \node[b,fill=figorange] (uc\i) at (\i+0.6,0) {\v};
+  \node[lbl,anchor=east] at (3.6,0) {「吾」\ \texttt{U+543E}};
+  % 下段：3 バイト
+  \foreach \v [count=\i from 0] in {1,1,1,0} \node[b,fill=figgray] at (\i,-15) {\v};
+  \foreach \v [count=\i from 4] in {0,1,0,1} \node[b,fill=figblue] (ba\i) at (\i,-15) {\v};
+  \foreach \v [count=\i from 9] in {1,0} \node[b,fill=figgray] at (\i,-15) {\v};
+  \foreach \v [count=\i from 11] in {0,1,0,0,0,0} \node[b,fill=figgreen] (bb\i) at (\i,-15) {\v};
+  \foreach \v [count=\i from 18] in {1,0} \node[b,fill=figgray] at (\i,-15) {\v};
+  \foreach \v [count=\i from 20] in {1,1,1,1,1,0} \node[b,fill=figorange] (bc\i) at (\i,-15) {\v};
+  \draw[arr] (5.9,-2.6) -- (5.5,-12.4);
+  \draw[arr] (11.5,-2.6) -- (13.5,-12.4);
+  \draw[arr] (18.1,-2.6) -- (22.5,-12.4);
+  \node[lbl] at (3.5,-20) {\texttt{e5} = 229};
+  \node[lbl] at (12.5,-20) {\texttt{90} = 144};
+  \node[lbl] at (21.5,-20) {\texttt{be} = 190};
+  \node[lbl,anchor=west] at (22.1,0) {4・6・6 桁に分ける};
+\end{tikzpicture}
+\caption{「吾」の符号位置（上）が、UTF-8 の 3 バイト（下）に詰め替えられる様子。
+色の付いたビットは上下で同じもの。灰色は目印（先頭のバイトは \texttt{1110}、続きのバイトは \texttt{10}）。
+8 桁ごとに読むと \texttt{e5 90 be}、10 進法では 229, 144, 190 になる。}
+\label{fig:tok-utf8-bits}
+\end{figure}
+
+逆向きの変換は、バイト列の \code{decode("utf-8")} です。
+ただし、\textbf{バイトの列なら何でも文字列に戻せるわけではありません}。
+「吾輩」の 6 バイトを 4 バイト目で切ると、「輩」が 1 バイトしかないので、戻すときにエラー（\code{UnicodeDecodeError}）になります。
+
+ここまでで、大事な事実が手に入りました。
+\textbf{どんな文字列も、0 から 255 までの数の列として書ける}のです。
+256 種類のバイトをそのままトークンにすれば、語彙はたった 256 個で、未知の文字は原理的に存在しません。
+漢字でも絵文字でも、止まることはありません。
+
+ただし、代償があります。
+\tabref{tab:tok-units}の 1 行目のとおり、漱石のコーパスはバイト単位で約 716 万個になります。
+文字単位の $7{,}163{,}834\div2{,}407{,}914\approx2.98$ 倍の長さです。
+ちょうど 3 倍にならないのは、改行のように 1 バイトで済む文字が、約 3 万個混ざっているからです。
+128 トークンで見える範囲は、$128\div2.98\approx43$ 文字しかありません。
+次の節では、「止まらない」という長所を保ったまま、列を縮める方法を考えます。
+
+\section{よく出る並びをまとめる：BPE を手で動かす}\label{sec:tok-bpe-hand}
+
+バイトの列は長すぎました。
+日本語の 1 文字が 3 個の数になるので、文字単位の約 3 倍の長さです。
+どうすれば縮められるでしょうか。
+手がかりは、文章には\textbf{同じ並びが何度も現れる}ことです。
+何度も現れる並びに新しい番号を一つ与えれば、そのぶん列は短くなります。
+この考えを素直に手順にしたものが\term{バイト対符号化}{byte pair encoding、BPE}です。
+もとはデータ圧縮のための方法で~\cite{gage1994new}、のちに機械翻訳でサブワードを作る方法として使われるようになりました~\cite{sennrich2016neural}。
+GPT-2 以降の言語モデルでは、これをバイトの列に適用する形が標準になっています~\cite{radford2019language}。
+
+手で追えるように、小さな例で動かします。
+バイトだと 1 文字が 3 個になって追いにくいので、この節だけは\textbf{文字}を出発点にします。
+手順は、出発点がバイトでも文字でもまったく同じです。
+例文は、次の 22 文字です。
+
+\begin{center}
+猫である。犬である。人であるが、鳥であった。
+\end{center}
+
+\textbf{1 回目}。最初は 1 文字が 1 トークンで、22 個のトークンが並んでいます。
+隣り合う二つのトークンの組は、トークンとトークンの間の数だけあるので、全部で $22-1=21$ 個です。
+同じ組が何回現れるかを数えると、\tabref{tab:tok-pairs}の左の列になります（回数を足すと $4+3+2+12=21$ で、組の総数と合います）。
+最も多いのは（で, あ）の 4 回です。
+そこで「であ」という新しいトークンを語彙に加え、文中の「で」「あ」の並びをすべてこれに置き換えます。
+この操作を\jterm{マージ}と呼び、「（で, あ）$\to$ であ」という取り決めを\jterm{マージ規則}と呼びます。
+1 か所をまとめるごとに、2 個のトークンが 1 個になります。
+4 か所をまとめたので、22 個だったトークンは 4 個減って、$22-4=18$ 個になりました（\figref{fig:tok-bpe-hand}の 2 段目）。
+
+\begin{table}[tbp]
+\centering
+\caption{例文の「隣り合う組」の出現回数。マージのたびに数え直す。太字が、その回に選ばれる組。}
+\label{tab:tok-pairs}
+\small
+\begin{tabular}{lr@{\hspace{6mm}}lr@{\hspace{6mm}}lr}
+\toprule
+\multicolumn{2}{l}{最初（22 個）} & \multicolumn{2}{l}{マージ 1 の後（18 個）} & \multicolumn{2}{l}{マージ 2 の後（15 個）} \\
+\midrule
+\textbf{（で, あ）} & \textbf{4} & \textbf{（であ, る）} & \textbf{3} & \textbf{（である, 。）} & \textbf{2} \\
+（あ, る） & 3 & （る, 。） & 2 & （猫, である） & 1 \\
+（る, 。） & 2 & （猫, であ） & 1 & （である, が） & 1 \\
+ほか 12 種類 & 各 1 & ほか 11 種類 & 各 1 & ほか 10 種類 & 各 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  t/.style={tok,minimum width=4.7mm,minimum height=5.6mm,font=\footnotesize,inner sep=1pt},
+  m/.style={t,fill=figgreen,draw=bookgreen},
+  rl/.style={lbl,anchor=south west,inner sep=0pt}]
+  \node[rl] at (-2.4mm,3.8mm) {最初：1 文字が 1 トークン（22 個）};
+  \begin{scope}[start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {猫/t,で/t,あ/t,る/t,。/t,犬/t,で/t,あ/t,る/t,。/t,人/t,で/t,あ/t,る/t,が/t,、/t,鳥/t,で/t,あ/t,っ/t,た/t,。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.4mm,-8.7mm) {マージ 1：（で, あ）$\to$「であ」（18 個）};
+  \begin{scope}[yshift=-12.5mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {猫/t,であ/m,る/t,。/t,犬/t,であ/m,る/t,。/t,人/t,であ/m,る/t,が/t,、/t,鳥/t,であ/m,っ/t,た/t,。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.4mm,-21.2mm) {マージ 2：（であ, る）$\to$「である」（15 個）};
+  \begin{scope}[yshift=-25mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {猫/t,である/m,。/t,犬/t,である/m,。/t,人/t,である/m,が/t,、/t,鳥/t,であ/t,っ/t,た/t,。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.4mm,-33.7mm) {マージ 3：（である, 。）$\to$「である。」（13 個）};
+  \begin{scope}[yshift=-37.5mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {猫/t,である。/m,犬/t,である。/m,人/t,である/t,が/t,、/t,鳥/t,であ/t,っ/t,た/t,。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+\end{tikzpicture}
+\caption{BPE の手計算。各段で、最も多い「隣り合う組」を一つのトークンにまとめる（緑がその回にできたトークン）。
+3 回のマージで、22 個が 13 個になった。語彙には「であ」「である」「である。」の三つが加わった。}
+\label{fig:tok-bpe-hand}
+\end{figure}
+
+\textbf{2 回目}は、いまの 18 個の列で、組を\textbf{数え直します}。
+ここが大事な点です。
+最初の表で 2 位だった（あ, る）は、もうどこにもありません。
+「あ」がすべて「であ」に吸収されたからです。
+代わりに（であ, る）という新しい組が 3 回現れていて、これが最多です（\tabref{tab:tok-pairs}の中央）。
+これをマージすると「である」ができ、列は 3 個減って $18-3=15$ 個になります。
+
+\textbf{3 回目}も同じです。
+数え直すと、最多は（である, 。）の 2 回です。
+マージすると「である。」ができ、列は $15-2=13$ 個になります。
+\figref{fig:tok-bpe-hand}の最下段では、「人であるが」の「である」は、後ろが「。」ではないので、そのまま残っています。
+語彙には、長さの違う三つのトークンが加わり、最初の 12 種類の文字と合わせて 15 個になりました。
+
+最下段の 13 個では、隣り合う組がどれも 1 回ずつしか現れないので、ここで止めます。
+大きなコーパスではマージを何千回も続けられるので、作りたい語彙の大きさになったところで止めます。
+
+\begin{definition}[BPE の学習]\label{def:tok-bpe}
+入力は、学習用の文章と、目標とする語彙の大きさです。
+\begin{enumerate}[leftmargin=1.6em]
+\item 文章を最小の単位（バイト、または文字）の列にします。最初の語彙は、その単位の全種類です。
+\item 列の中で隣り合うトークンの組を、すべて数えます。
+\item 最も多い組を一つ選び、新しいトークンとして語彙に加えます。列の中のその組を、すべて新しいトークンに置き換えます。
+\item 語彙が目標の大きさになるまで、2 と 3 を繰り返します。
+\end{enumerate}
+出力は、\textbf{学習した順に並べたマージ規則の表}と、語彙です。
+\end{definition}
+
+BPE は、文法も単語の意味も知りません。
+「隣どうしが何回並んだか」を数え、最も多い組をまとめることを繰り返すだけです。
+それでも「である。」という、日本語として意味のあるまとまりが現れました。
+よく使われる言い回しは、よく並ぶからです。
+
+なお、この「学習」は、\chapref{ch:ml}以来の「損失を勾配で下げる」学習とは別物で、損失も勾配も使いません。
+トークナイザの学習は、モデルの学習より前に一度だけ行い、その後は変えません。
+
+\section{BPE を実装する：学習・エンコード・デコード}\label{sec:tok-bpe-code}
+\skimread{結論は三つです。BPE の学習は、「組を数える」「組を置き換える」の二つの短い関数で書けます。バイトから始めても、手計算と同じ「である。」ができます。知らない文字は、エラーにならず、バイトに戻るだけです。節末の「ここまでの道のり」は読んでください。}
+
+手計算では、3 回のマージのために、組の表を 3 回作りました。
+大きなコーパスでは、これを何千回も繰り返します。
+何千回もの「数えて、まとめる」は、どれくらいのコードで書けるのでしょうか。
+答えは、短い関数が二つです。
+
+手計算の手順を、そのままコードにします。
+必要な部品は、定義\ref{def:tok-bpe}の手順 2（数える）と手順 3（置き換える）の二つです。
+そのあと、できた規則で新しい文章をエンコード・デコードする方法を作ります。
+まず、数える部品です。
+
+\snippet{隣り合う組を数える}{code:tok-count}{llmbook/tokenizer.py}{count-pairs}
+
+\code{ids} はトークン ID のリストです。
+1 行目の \code{list[int]} や \code{->} の後ろは、引数と返り値の種類の覚え書き（型の注釈）で、書かなくても動作は変わりません。
+3 行目で、回数を入れる空の辞書を用意します。
+4 行目の \code{zip(ids, ids[1:])} は、リストと、それを一つずらしたものを並べて、隣り合う組を順に取り出します。
+\code{[1, 2, 1, 2, 3]} なら \code{(1, 2)}, \code{(2, 1)}, \code{(1, 2)}, \code{(2, 3)} で、
+結果は \texttt{\{(1, 2): 2, (2, 1): 1, (2, 3): 1\}} です。
+5 行目の \code{counts.get(pair, 0)} は、辞書にその組があればいまの回数を、なければ 0 を返します。これに 1 を足して書き戻します。
+
+\snippet{組を新しいトークンに置き換える}{code:tok-merge}{llmbook/tokenizer.py}{merge-pair}
+
+4 行目の \code{out} は結果を入れるリスト、5 行目の \code{i} はいま見ている位置です。
+列を左から順に見ます。
+いまの位置と次の位置が組 \code{pair} と一致したら、新しい番号 \code{new_id} を一つ書き出して 2 個先に進みます（7〜9 行目）。
+一致しなければ、いまのトークンをそのまま書き出して 1 個先に進みます（10〜12 行目）。
+7 行目の \code{i < len(ids) - 1} は、「次の位置がある」ことの確認です。最後のトークンには、次がないからです。
+\code{[1, 2, 1, 2, 3]} の \code{(1, 2)} を \code{9} に置き換えてみます。
+位置 0 と 1 が \code{(1, 2)} なので、\code{9} を書いて位置 2 へ進みます。
+位置 2 と 3 も同じで、\code{9} を書いて位置 4 へ進みます。
+位置 4 の \code{3} には次がないので、そのまま書き出します。結果は \code{[9, 9, 3]} です。
+この二つを、定義\ref{def:tok-bpe}のとおりに繰り返すのが、学習です。
+
+\snippet{BPE の学習（素朴版）}{code:tok-train}{ch07/bpe_naive.py}{train}
+
+\code{vocab} は「番号 $\to$ そのトークンの中身」の辞書です。
+5 行目で組を数えます。6 行目の \code{max(counts, key=counts.get)} は、辞書のキー（組）のうち、\code{counts.get} が返す値（回数）が最大のものを選びます（同数なら、先に現れた組です）。
+7 行目で新しいトークンに「次の空き番号」を与え、8 行目で列を置き換え、9 行目で規則を \code{merges} に記録します。
+番号は 0 から詰めて振ってあるので、語彙の個数 \code{len(vocab)} が、そのまま次の空き番号です。
+Python の辞書は追加した順序を保つので、\code{merges} は「学習した順に並んだ規則の表」になります。
+10 行目で、二つのトークンの中身をつないで語彙に加えます。引数の辞書 \code{vocab} に直接書き足すので、呼び出した側の語彙が育ちます（11〜12 行目は経過の表示です）。
+
+手計算と同じ結果になるかを、確かめましょう。
+前節の例文の 22 文字（変数 \code{text}）に、マージを 3 回行います。
+
+\snippet{手計算の例文で学習する}{code:tok-toy-char}{ch07/bpe_naive.py}{toy-char}
+\outputfile{ch07/out/toy_char.txt}
+
+1 行目の \code{CharTokenizer} は、\secref{sec:tok-units}で使った文字単位のトークナイザです。
+3 行目で、その「番号 $\to$ 文字」の辞書（\code{ctok.itos}）の写しを作り、最初の語彙にします。
+実行結果の各行は、マージの番号、まとめた二つのトークン、新しい番号と中身、組の回数です。
+選ばれた組も、回数の 4、3、2 も、\tabref{tab:tok-pairs}の太字と一致しました。
+新しい番号が 12 から始まるのは、最初の文字が 12 種類（番号 0〜11）だからです。
+最後の行の 13 個の並びも、\figref{fig:tok-bpe-hand}の最下段と同じです。
+紙の上の手順が、そのまま動きました。
+
+\subsection*{出発点をバイトに替える}
+
+次に、同じ関数を\textbf{バイトの列}に対して動かします。
+変えるのは、最初の列と最初の語彙だけです。
+例文の 22 文字は、どれも 3 バイトなので、$22\times3=66$ 個の数から始まります。
+最初の語彙は 256 種類のバイトで、新しいトークンの番号は 256 から始まります。
+
+\snippet{同じ例文をバイトから始める}{code:tok-toy-byte}{ch07/bpe_naive.py}{toy-byte}
+\outputfile{ch07/out/toy_byte.txt}
+
+\code{bytes([i])} は、整数 \code{i} 1 個だけのバイト列です。
+表示に使った補助関数 \code{show} は、トークンの中身が文字として読めれば「で」のように、読めなければ \code{<e3 81>} のように 16 進法で示します。
+
+1 回目に選ばれたのは、\code{e3} と \code{81} の組です。
+これは文字ではありません。
+「で」（\code{e3 81 a7}）も「あ」（\code{e3 81 82}）も「が」「っ」「た」も、\code{e3 81} で始まります。
+\secref{sec:tok-utf8}で見たとおり、ひらがなの多くが最初の 2 バイトを共有しているので、この組が 11 回も現れたのです
+（「で」と「あ」が 4 回ずつ、「が」「っ」「た」が 1 回ずつで、$4+4+3=11$ 回です）。
+2 回目で、これに \code{a7} が付いて、ようやく「で」という 1 文字ができます。
+BPE は文字というものを知らず、バイトの並びを数えているだけです。
+3 回目にできたのは、「で」の後ろに、次の文字の先頭 2 バイトが付いたものです。
+このように、文字の境目をまたぐ半端なトークンもできますが、気にしません。
+それでも 4 回目で「であ」、8 回目で「である」、10 回目で「である。」ができ、手計算と同じまとまりに行き着きました。
+
+最後の行のとおり、66 個の数は 25 個になりました。
+「である。」が 2 個、「である」「であ」「。」が 1 個ずつで、残りの 20 個は、まだ文字になっていない部品です
+（漢字 4 文字が 3 個ずつ、「が」「、」「っ」「た」が 2 個ずつで、$4\times3+4\times2=20$ 個）。
+
+\subsection*{エンコードとデコード}
+
+学習で得たマージ規則の表を使って、新しい文章をトークン ID の列に直します。
+まずバイトの列にし、規則を\textbf{学習した順に}一つずつ当てはめます。
+デコードはその逆で、各トークンの中身（バイトの並び）を順につなぎ、UTF-8 として読みます。
+
+\snippet{エンコードとデコード（素朴版）}{code:tok-encode}{ch07/bpe_naive.py}{encode-decode}
+
+\figref{fig:tok-encode}は、「である。」の 12 バイトに 10 個の規則を順に当てはめた様子です。
+規則 1〜4 で「であ」、規則 5〜8 で「である」、規則 9 で「。」ができます。
+最後の規則 10 が「である」と「。」をつないで、1 個のトークン（ID 265）になります。
+順番が大事な理由も、この図から分かります。
+規則 10 は、「である」と「。」が\textbf{すでにできている}ことを前提にしています。
+後から学習した規則は、先に学習した規則の産物を材料にしているのです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  by/.style={cell,minimum width=6.2mm,minimum height=5.4mm,font=\scriptsize\ttfamily,fill=figgray},
+  m/.style={tok,minimum height=5.4mm,minimum width=6.2mm,font=\footnotesize,inner sep=1.5pt,fill=figgreen,draw=bookgreen},
+  rl/.style={lbl,anchor=east}]
+  \begin{scope}[start chain=going right,node distance=0.5mm]
+    \foreach \x [count=\i] in {e3,81,a7,e3,81,82,e3,82,8b,e3,80,82} \node[by,on chain] (a\i) {\x};
+  \end{scope}
+  \foreach \l/\r/\c in {1/3/で,4/6/あ,7/9/る,10/12/。}
+    \draw[decorate,decoration={brace,amplitude=1.2mm},draw=black!60] ([yshift=0.6mm]a\l.north west) -- ([yshift=0.6mm]a\r.north east)
+      node[midway,above=1.2mm,font=\footnotesize] {\c};
+  \node[rl] at (-5mm,0) {バイトの列（12 個）};
+  \begin{scope}[yshift=-8mm,start chain=going right,node distance=0.5mm]
+    \node[m,on chain] {であ};
+    \foreach \x in {e3,82,8b,e3,80,82} \node[by,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-5mm,-8mm) {規則 1〜4 の後（7 個）};
+  \begin{scope}[yshift=-16mm,start chain=going right,node distance=0.5mm]
+    \node[m,on chain] {である};
+    \node[by,on chain,minimum width=10mm] {e3 80};
+    \node[by,on chain] {82};
+  \end{scope}
+  \node[rl] at (-5mm,-16mm) {規則 5〜8 の後（3 個）};
+  \begin{scope}[yshift=-24mm,start chain=going right,node distance=0.5mm]
+    \node[m,on chain] {である};
+    \node[m,on chain] {。};
+  \end{scope}
+  \node[rl] at (-5mm,-24mm) {規則 9 の後（2 個）};
+  \begin{scope}[yshift=-32mm,start chain=going right,node distance=0.5mm]
+    \node[m,on chain] (z) {である。};
+  \end{scope}
+  \node[lbl,right=1.5mm of z] {ID 265};
+  \node[rl] at (-5mm,-32mm) {規則 10 の後（1 個）};
+\end{tikzpicture}
+\caption{エンコードの様子。「である。」の 12 バイトに、\coderef{code:tok-toy-byte}で学習した 10 個の規則を、学習した順に当てはめる。
+灰色はバイトのままのトークン、緑はマージでできたトークン。}
+\label{fig:tok-encode}
+\end{figure}
+
+学習に使っていない二つの文をエンコードし、デコードで元に戻るかを確かめた結果が次です。
+
+\outputfile{ch07/out/toy_encode.txt}
+
+「鳥である。」は 5 文字で 15 バイトですが、「鳥」の 3 バイトと「である。」の 1 個で、4 トークンになりました。
+「魚」は、学習に使った例文に一度も出てこない文字です。
+それでもエラーにはならず、3 個のバイトとして表されています。
+\textbf{知らない文字は、バイトに戻るだけ}です。
+文字単位のトークナイザが「\code{+}」で止まったのとは対照的です。
+
+デコードの \code{errors="replace"} は、モデルが\textbf{生成した}トークン列のための備えです。
+エンコードで作った列は必ず元に戻せますが、生成された列は、文字の途中で終わることがあります。
+\secref{sec:tok-utf8}で見たとおり、そのままではエラーになるので、読めない部分を「不明な文字」の印に置き換えて先へ進みます。
+
+最後に、速さについてです。
+この素朴な実装は、マージのたびに列全体を Python のループでたどります。
+漱石のコーパスの学習用の部分（全体の 95\%、約 681 万バイト）では、マージ 1 回に約 2.2 秒かかります（\file{ch07/out/speed.txt}）。
+本書のトークナイザに必要な 3,832 回（この数の出どころは\secref{sec:tok-explore}で説明します）では、単純計算で $2.2\times3{,}832\approx8{,}430$ 秒、約 2.3 時間です。
+共有ライブラリの \code{BPETokenizer} は、同じ手順を NumPy（\chapref{ch:pytorch}）の配列の計算で書き直したものです。
+組 $(a, b)$ を一つの整数 $a\times S+b$（$S$ は語彙の大きさ）で表し、出現回数を \code{np.bincount} で一度に数えます（\chapref{ch:lm}で 2 文字の組を数えたのと同じ手です）。
+$a$ も $b$ も $S$ より小さいので、組が違えば、この整数も必ず違います。
+これで、マージ 1 回は約 0.08 秒になります。丸める前の値で比べると $2.15\div0.082\approx26$ で、26 倍の速さです。
+手順は同じで、同数の組があるときの選び方だけが違います。
+
+\subsection*{ここまでの道のり}
+
+\begin{itemize}
+\item 文字単位は未知の文字で止まり、単語単位は語彙が膨らみます。そこで、中間のサブワードを使います。
+\item どんな文字列も 0〜255 のバイトの列です。バイトから始めれば、未知の文字はなくなります。
+\item BPE は「最も多い隣どうしをまとめる」ことを繰り返して、バイトの列を縮めます。
+\end{itemize}
+残る問いは、本物のデータで学習すると何ができるのか、文章に現れない「印」をどう扱うのか、実務では何が使われているのか、の三つです。
+
+\section{本書のトークナイザを観察する}\label{sec:tok-explore}
+
+22 文字の例文で起きたことは、240 万字の小説でも起きるのでしょうか。
+本書の基盤モデルが使っているトークナイザを開けて、確かめます。
+
+このトークナイザは、漱石の小説の最初の 95\%（学習用の部分、約 229 万字）に対して、BPE のマージを 3,832 回行ったものです。
+末尾の 5\% は、\chapref{ch:lm}で取り分けた検証データなので、使っていません（$2{,}407{,}914\times0.95\approx229$ 万字です）。
+計算ドリルも使っていません。
+3,832 という数は、語彙の大きさ 4,096 から決まります。
+256 個は最初からあるバイトで、8 個は\secref{sec:tok-special}で説明する特別な印の席なので、マージで作るのは残りの $4096-256-8=3832$ 個です。
+
+「学習」という言葉が二つの意味で出てくるので、\figref{fig:tok-two-stages}で順番を整理します。
+先に行うのが、トークナイザの学習です（上段）。組を数えてまとめるだけで、損失も勾配も使いません。
+できたマージ規則の表は、\file{data/bpe4096.json} に保存されています。
+その後で、この規則を使って小説とドリルを ID の列に直し、モデルの学習（\chapref{ch:pretraining}）に渡します（下段）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  n/.style={minimum height=10mm,font=\footnotesize}]
+  \node[lbl,anchor=east] at (-2,0) {先に};
+  \node[plainbox,n,minimum width=30mm,anchor=west] (a) at (0,0) {小説の学習用の部分\\[-0.5mm]約 229 万字};
+  \node[box,n,minimum width=30mm,anchor=west] (b) at ([xshift=7mm]a.east) {BPE の学習\\[-0.5mm]マージを 3,832 回};
+  \node[greenbox,n,minimum width=30mm,anchor=west] (c) at ([xshift=7mm]b.east) {マージ規則の表\\[-0.5mm]\texttt{bpe4096.json}};
+  \draw[arr] (a) -- (b);
+  \draw[arr] (b) -- (c);
+  \node[lbl,anchor=east] at (-2,-21) {後で};
+  \node[plainbox,n,minimum width=30mm,anchor=west] (d) at (0,-21) {小説の学習用の部分\\[-0.5mm]と計算ドリル};
+  \node[box,n,minimum width=20mm,anchor=west] (e) at ([xshift=7mm]d.east) {エンコード};
+  \node[orangebox,n,minimum width=16mm,anchor=west] (f) at ([xshift=7mm]e.east) {ID の列};
+  \node[graybox,n,minimum width=30mm,anchor=west] (g) at ([xshift=7mm]f.east) {モデルの学習\\[-0.5mm]勾配で損失を下げる};
+  \draw[arr] (d) -- (e);
+  \draw[arr] (e) -- (f);
+  \draw[arr] (f) -- (g);
+  \draw[arr] (c.south) -- ++(0,-5.5) -| node[pos=0.25,below,lbl]{規則を使う} (e.north);
+\end{tikzpicture}
+\caption{二つの「学習」の順番。先に行うトークナイザの学習（上段）は、組を数えるだけで、計算ドリルは使わない。
+モデルの学習（下段）は、できた規則で文章を ID の列に直してから始める。}
+\label{fig:tok-two-stages}
+\end{figure}
+
+保存された規則を \code{BPETokenizer.load} で読み込んだものを \code{tok} とします。
+学習した順に、最初の 8 個の規則を表示した結果が次です（\file{ch07/explore_tokenizer.py}）。
+
+\outputfile{ch07/out/first_merges.txt}
+
+各行は、「まとめた二つのトークン \code{->} 新しい ID と中身」です。
+山かっこの \code{<e3 81>} は、まだ文字になっていないバイトの並びを、16 進法（0〜9 と a〜f で数を書く方法）で示したものです。
+このトークナイザは、0〜255 の数（バイト）の列から出発します。
+日本語の 1 文字は 3 バイトなので、最初にできるのは、文字の部品です。
+
+最初の三つの規則は、\code{e3 81}、\code{e3 82}、\code{e3 80} です。
+\code{e3 81} は、ひらがなの前半（「あ」から「み」まで）の先頭 2 バイトです。
+\code{e3 82} は残りのひらがなとカタカナの前半、\code{e3 80} は「。」「、」やかぎ括弧の先頭 2 バイトです。
+トークナイザが最初に覚えたのは、「日本語の文字は \code{e3} で始まることが多い」という、UTF-8 の事情でした。
+4 番目からは、「の」「い」「た」「。」「て」と、よく使われる文字から順に、1 文字のトークンができていきます。
+その先では、文字どうしがつながり始めます。
+\tabref{tab:tok-born}は、いくつかのトークンが何番目のマージで生まれたかを調べたものです（1 番目のマージが ID 256 をもらうので、トークン ID は、マージの番号に 255 を足した値です）。
+
+\begin{table}[tbp]
+\centering
+\caption{トークンが生まれた順（\file{ch07/explore_tokenizer.py}、\file{ch07/vocab_tradeoff.py}）。
+「回数」は、マージの時点でその組が学習用の文章に現れていた回数。よく出る並びほど早く生まれる。}
+\label{tab:tok-born}
+\small
+\begin{tabular}{lrr@{\hspace{10mm}}lrr}
+\toprule
+トークン & マージの番号 & 回数 & トークン & マージの番号 & 回数 \\
+\midrule
+の & 4 & 90,397 & 先生 & 437 & 1,233 \\
+。 & 7 & 61,990 & である & 1,016 & 445 \\
+た。 & 26 & 31,017 & 吾輩 & 1,074 & 420 \\
+ない & 41 & 15,922 & 猫 & 1,796 & 228 \\
+ない。 & 178 & 3,380 & 吾輩は & 2,564 & 147 \\
+である。 & 181 & 3,354 & んでいた。 & 3,776 & 87 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+「た。」は 26 番目、「ない。」は 178 番目、「である。」は 181 番目に生まれています。
+文末の言い回しは小説に何千回も現れるので、早い段階で 1 トークンになります。
+一方、「猫」という 1 文字ができるのは 1,796 番目です。
+BPE の基準は文字数ではなく、\textbf{並んで現れた回数}だからです。
+
+\tabref{tab:tok-born}をよく見ると、「である。」が「である」より先に生まれています。手計算とは逆の順です。
+調べると、本物のトークナイザは「である。」を、「であ」（95 番目）と「る。」（56 番目）から作っていました。
+小説には「る。」で終わる文が多く、「る。」が先にできていたからです。
+同じトークンでも、データが変われば、組み立ての道筋は変わります。
+
+実際の文を \code{tok.encode} で切り、切れ目に「\code{/}」を入れて表示した結果が次です。
+
+\outputfile{ch07/out/pieces.txt}
+
+「吾輩は猫である。名前はまだ無い。」の 16 文字が、8 トークンになりました。
+「吾輩は」「である。」「はまだ」のような言い回しが、それぞれ 1 トークンです。
+実行結果の 2 行目が、章の冒頭の問いの答えです。
+\chapref{ch:intro}で基盤モデルが「どうも仕方が」の次に「ない。」を 1 回で予測できたのは、「ない。」が 1 個のトークンだからです。
+
+コーパス全体では、2,407,914 文字が 1,432,060 トークンになるので（\tabref{tab:tok-units}）、1 トークンは平均 $2{,}407{,}914\div1{,}432{,}060\approx1.68$ 文字です。
+後の章に出てくる「約 1.75 文字」は、検証データ（小説の末尾の 5\%）だけで測った値で、食い違いではありません。
+
+一つ注意があります。
+文を途中で切った「吾輩は猫で」をエンコードすると、「吾輩は」「猫」「で」になります（\file{ch07/out/prefix.txt}）。
+3 個目は「である。」ではなく、「で」という別のトークンです。
+\textbf{文字列の前半が、トークン列の前半になるとは限りません}。
+モデルが学習で見たのは「猫」「である。」の並びなので、「で」で終わる入力は見慣れない形です。
+文の途中から続きを予測させるときは、文字列ではなく、エンコードした後の ID の列を切ります。
+
+\subsection*{語彙の大きさと列の長さ}
+\skimread{結論は「語彙を増やすと列は縮むが、効き目は薄れ、出番の少ないトークンとモデルのパラメータが増える」です。次の「数字と、知らない文字」は必読です。}
+
+語彙を大きくすると、同じ文はどう切れるでしょうか。
+\figref{fig:tok-levels}は、マージを途中で打ち切って、同じ文を切ってみたものです。
+語彙 512 では、ひらがなと「である。」はもうトークンになっていますが、漢字の多くはまだバイトの断片です。
+語彙が増えるにつれて、「吾」「吾輩」「吾輩は」と、トークンが育っていきます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  t/.style={tok,minimum width=4.4mm,minimum height=5.4mm,font=\footnotesize,inner sep=1pt},
+  f/.style={t,fill=figgray,font=\scriptsize\ttfamily},
+  rl/.style={lbl,anchor=south west,inner sep=0pt}]
+  \node[rl] at (-2.2mm,3.7mm) {語彙 512（20 個）};
+  \begin{scope}[start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {e5 90/f,be/f,e8/f,bc/f,a9/f,は/t,e7/f,8c/f,ab/f,である。/t,e5 90/f,8d/f,前/t,は/t,ま/t,だ/t,e7 84/f,a1/f,い/t,。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.2mm,-8.3mm) {語彙 1,024（15 個）};
+  \begin{scope}[yshift=-12mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {吾/t,e8 bc/f,a9/f,は/t,e7/f,8c/f,ab/f,である。/t,e5 90/f,8d/f,前/t,は/t,まだ/t,無/t,い。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.2mm,-20.3mm) {語彙 2,048（11 個）};
+  \begin{scope}[yshift=-24mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {吾輩/t,は/t,e7 8c/f,ab/f,である。/t,名/t,前/t,は/t,まだ/t,無/t,い。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+  \node[rl] at (-2.2mm,-32.3mm) {語彙 4,096（8 個）：本書のトークナイザ};
+  \begin{scope}[yshift=-36mm,start chain=going right,node distance=0.5mm]
+    \foreach \x/\s in {吾輩は/t,猫/t,である。/t,名/t,前/t,はまだ/t,無/t,い。/t}
+      \node[\s,on chain] {\x};
+  \end{scope}
+\end{tikzpicture}
+\caption{「吾輩は猫である。名前はまだ無い。」（16 文字、48 バイト）を、マージの途中の語彙で切った結果（\file{ch07/out/levels.txt}）。
+灰色は、まだ文字になっていないバイトの断片。語彙が大きいほど、トークンは長く、列は短くなる。}
+\label{fig:tok-levels}
+\end{figure}
+
+一つの文ではなく、小説全体で測ったのが、\figref{fig:tok-tradeoff}と\tabref{tab:tok-tradeoff}です。
+左のグラフのとおり、語彙を大きくするほど、1 トークンが表す文字数は増えます（列は短くなります）。
+ただし、横軸は 1 目盛りごとに 2 倍になる目盛（対数目盛）です。
+表の「学習用」の列のとおり、語彙 512 で 0.88 文字、1,024 で 1.13 文字、2,048 で 1.39 文字、4,088 で 1.68 文字です
+（最後が 4,096 でなく 4,088 なのは、文章には現れない 8 個の特別な印の席を除いたからです）。
+上から順に引き算すると、伸びは $1.13-0.88=0.25$、$1.39-1.13=0.26$、$1.68-1.39=0.29$ 文字です。
+語彙を 2 倍にして、やっと 0.25〜0.3 文字伸びます。
+足したトークンは 512 個、1,024 個、2,040 個と増えているので、トークンを 1 個増やす効き目は、語彙が大きくなるほど小さくなるのです。
+
+右のグラフが理由を示しています。
+1 番目の規則（語彙 257）がまとめた組は 109 万回現れていましたが、最後の 3,832 番目の規則（語彙 4,088）の組は、たった 85 回です。
+後から加わるトークンほど、出番が少ないのです。
+
+表の「検証用」は、トークナイザの学習に使っていない、小説の末尾の 5\% で測った値です。
+学習用とほぼ同じなので、学習で見なかった文章も、同じように縮むと分かります。
+
+\begin{table}[tbp]
+\centering
+\caption{語彙の大きさと、1 トークンあたりの文字数（\file{ch07/out/tradeoff.txt}）。「伸び」は、学習用の値の、一つ上の行との差。}
+\label{tab:tok-tradeoff}
+\small
+\begin{tabular}{rrrrr}
+\toprule
+語彙の大きさ & 学習用 & 検証用 & 伸び & 最後にまとめた組の回数 \\
+\midrule
+512 & 0.88 & 0.90 & — & 2,199 \\
+1,024 & 1.13 & 1.18 & $+0.25$ & 624 \\
+2,048 & 1.39 & 1.45 & $+0.26$ & 228 \\
+4,088 & 1.68 & 1.75 & $+0.29$ & 85 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=44mm,xmode=log,log basis x=2,
+  xmin=256,xmax=4500,ymin=0,ymax=2,
+  xtick={256,512,1024,2048,4096},xticklabels={256,512,1024,2048,4096},
+  xlabel={語彙の大きさ},ylabel={1 トークンあたりの文字数},
+  legend pos=south east]
+\addplot[bookblue] table[col sep=comma,x=vocab,y=chars_per_token]{code/ch07/out/tradeoff.csv};
+\addlegendentry{学習用}
+\addplot[bookaccent,dashed] table[col sep=comma,x=vocab,y=chars_per_token_val]{code/ch07/out/tradeoff.csv};
+\addlegendentry{検証用}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=44mm,xmode=log,log basis x=2,ymode=log,
+  xmin=256,xmax=4500,ymin=50,ymax=2000000,
+  xtick={256,512,1024,2048,4096},xticklabels={256,512,1024,2048,4096},
+  xlabel={語彙の大きさ},ylabel={まとめた組の出現回数}]
+\addplot[bookgreen] table[col sep=comma,x=vocab,y=count]{code/ch07/out/tradeoff.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{語彙の大きさと圧縮の関係（\file{ch07/vocab_tradeoff.py}）。
+横軸はどちらも、1 目盛りで 2 倍になる対数目盛。
+左：語彙を 2 倍にするたびに、1 トークンは 0.25〜0.3 文字ずつ長くなる。
+学習に使っていない検証用の文章（破線）も、ほぼ同じだけ縮む。
+右：各マージの時点で、まとめた組が現れていた回数（縦軸も対数目盛）。後の規則ほど出番が少ない。}
+\label{fig:tok-tradeoff}
+\end{figure}
+
+語彙を大きくしすぎると、困ることが二つあります。
+一つは、\textbf{出番の少ないトークンが増える}ことです。
+モデルはトークンの使い方を学習データの実例から学ぶので、85 回しか現れないトークンについて学べることは、わずかです。
+もう一つは、\textbf{モデルが大きくなる}ことです。
+\chapref{ch:embedding}で見るように、モデルはトークン 1 種類ごとに $d$ 個の数を持ちます。
+本書の基盤モデルでは $d=192$ なので、語彙 4,096 に対して $4096\times192=786{,}432$ 個、全パラメータ（約 260 万個）の約 30\% です。
+語彙の大きさは、「列の短さ」と「1 トークンあたりの学習例の多さ・モデルの小ささ」の綱引きで決めます。
+
+語彙の中身も見ておきます（\tabref{tab:tok-kinds}）。
+マージで作った 3,832 個のうち、2 文字以上のトークンは $1{,}105+564+284+137=2{,}090$ 個で、半分を超えます（$2{,}090\div3{,}832\approx0.55$）。
+最も長いものの一つは「なければならなかった。」の 11 文字です。
+一方、1 文字のトークンは 1,037 個しかありません。
+コーパスの残り約 3,000 種類（$4{,}078-1{,}037=3{,}041$）の文字は、ほとんどが、「断片」を組み合わせた複数のトークンで表されます。
+
+\begin{table}[tbp]
+\centering
+\caption{マージで作られた 3,832 個のトークンの内訳（\file{ch07/out/token_kinds.csv}）。「断片」は、文字になっていないバイトの並び。}
+\label{tab:tok-kinds}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+トークンの長さ & 断片 & 1 文字 & 2 文字 & 3 文字 & 4 文字 & 5 文字以上 \\
+\midrule
+個数 & 705 & 1,037 & 1,105 & 564 & 284 & 137 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{数字と、知らない文字}
+
+本書のもう一つの題材、計算ドリルはどう切られるでしょうか。
+
+\begin{quiz}
+「\code{12+35=47}」の「\code{12}」は、1 トークンになるでしょうか。それとも「\code{1}」「\code{2}」の 2 トークンでしょうか。
+ヒント：このトークナイザが学習に使ったのは、漱石の小説だけです。
+\end{quiz}
+
+ドリルの 1 行と、漱石の小説にない言葉を、続けてエンコードします（\code{pieces} は、先ほどの「\code{/}」区切りの表示を作る補助関数です）。
+
+\snippet{計算ドリルと、学習データにない文字}{code:tok-drill}{ch07/explore_tokenizer.py}{drill-unknown}
+\outputfile{ch07/out/drill_unknown.txt}
+
+1 行目がドリルです。答えは 2 トークンでした。
+「\code{12+35=47}」と改行の 9 文字が、9 個の ID になっています。
+数字も記号も改行（最後の 10）も、すべて\textbf{1 文字が 1 トークン}です。
+漱石の小説では、数は「五十一」のように漢数字で書かれるので、半角の数字どうしをつなぐ規則は一つも学習されていません。
+半角の英数字は UTF-8 で 1 バイトなので、バイトのトークンがそのまま使われます。
+ID の 49 や 50 は、「\code{1}」「\code{2}」のバイトの値そのものです（同じように、43 は「\code{+}」、61 は「\code{=}」です）。
+1 桁が必ず 1 トークンなので、どんな数でも、桁の数とトークンの数が一致します。
+
+2 行目以降を見ます。
+「餃」はコーパスに一度も現れない字ですが、2 個の断片（文字の部品）として表されています。
+先頭の 2 バイト \code{e9 a4} は「養」や「館」と共通なので、すでに 1 個のトークンになっていたのです。
+「薔薇」は小説に 19 回しか現れないので、1 文字に 2 トークンずつかかっています。
+英字の「LLM」は 1 文字が 1 トークン、絵文字は 4 トークン（4 バイト）です。
+どれも止まらずにエンコードでき、デコードすると元に戻ります。
+\textbf{未知の文字はなくなりました}。
+ただし、「エンコードできる」ことと「モデルが理解できる」ことは別です。
+256 種類のバイトのトークンのうち、モデルの学習データ（小説とドリル）に一度でも現れるのは 140 種類だけです。
+絵文字の \code{f0} のようなバイトを、モデルは学習中に一度も見ていないので、意味のある予測はできません。
+
+まとめると、本物のデータで学習した BPE は、まず文字を組み立て、次によく出る言い回しを 1 トークンにします。
+語彙を大きくすると列は短くなりますが、トークンを 1 個増やす効果はだんだん薄れます。
+
+\section{文章に現れない印：特殊トークン}\label{sec:tok-special}
+\skimread{結論は「特殊トークンは、BPE では決して作られない専用の番号。本書では語彙の末尾の 8 個（ID 4088〜4095）」です。使い方は\chapref{ch:posttraining}で説明します。}
+
+ここまでのトークンは、すべて文章の一部でした。
+しかし、モデルを使うときには、「ここで一つの文書が終わる」「ここからが利用者の発言である」といった、文章そのものではない印が必要になります。
+これは、どう表せばよいでしょうか。
+「\code{ユーザ:}」のような普通の文字列を印にすると、利用者が本文に同じ文字列を書いたときに、印と区別が付きません。
+そこで、\textbf{文章に BPE を当てはめても決して作られない番号}を、印のために用意します。
+これが\term{特殊トークン}{special token}です。
+本書では 8 個を使います（\file{llmbook/tokenizer.py} の \code{SPECIAL_TOKENS}）。
+文書の区切りの \code{<|endoftext|>} や、対話で発言の始まりと終わりを示す \code{<|user|>}、\code{<|assistant|>}、\code{<|end|>} などです。
+それぞれの使い方は、\chapref{ch:posttraining}と\chapref{ch:agent}で説明します。
+\figref{fig:tok-id-layout}のとおり、バイトとマージで作ったトークンが ID 0〜4087 を使います（$256+3{,}832=4{,}088$ 個）。
+特殊トークンは、その次の 4088〜4095、語彙の末尾の 8 個に置かれています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[graybox,minimum width=26mm,minimum height=9mm,anchor=west] (b) at (0,0) {バイト\\[-0.5mm]256 個};
+  \node[box,minimum width=62mm,minimum height=9mm,anchor=west] (m) at (b.east) {マージで作ったトークン\\[-0.5mm]3,832 個};
+  \node[redbox,minimum width=30mm,minimum height=9mm,anchor=west] (s) at (m.east) {特殊トークン\\[-0.5mm]8 個};
+  \node[lbl,above=0.3mm of b.north west,anchor=south west] {ID 0〜255};
+  \node[lbl,above=0.3mm of m.north west,anchor=south west] {256〜4087};
+  \node[lbl,above=0.3mm of s.north west,anchor=south west] {4088〜4095};
+  \node[lbl,below=0.5mm of b,align=center] {49 =「\texttt{1}」\\227 = \texttt{<e3>}};
+  \node[lbl,below=0.5mm of m,align=center] {259 =「の」\quad 436 =「である。」\\4087 =「って行く」};
+  \node[lbl,below=0.5mm of s,align=center] {4088 = \texttt{<|endoftext|>}\\4089 = \texttt{<|user|>}};
+\end{tikzpicture}
+\caption{本書のトークナイザの ID の割り当て（幅は個数に比例していない）。
+前から、バイト、マージで作ったトークン（学習した順）、特殊トークンが並ぶ。}
+\label{fig:tok-id-layout}
+\end{figure}
+
+なぜ、まだ使わない印の席を、いまから取っておくのでしょうか。
+モデルはトークン 1 種類ごとに数の組を持つので、学習の後から語彙を増やすと、できあがったモデルに手を入れることになるからです。
+基盤モデルの学習データに現れる特殊トークンは、文書の区切りの \code{<|endoftext|>} だけです（小説とドリルの境目と、末尾の 2 回だけです）。
+残りの 7 個は、席があるだけで、まだ何の意味も持っていません。
+実際の LLM も同じです。
+たとえば Llama 3~\cite{dubey2024llama3} の公開されている設定では、語彙 128,256 個のうち 256 個が、特殊トークンのための席です。
+
+特殊トークンを含む文字列を、実際にエンコードしてみます。
+
+\snippet{特殊トークンを含む文字列のエンコード}{code:tok-special}{ch07/explore_tokenizer.py}{special}
+\outputfile{ch07/out/special.txt}
+
+\code{<|user|>} は 8 文字ですが、4089 という 1 個のトークンになりました（出力の 2 行目は、各 ID を \code{token_str} でトークンの文字列に直したものです）。
+同じように、\code{<|end|>} は 4091、\code{<|assistant|>} は 4090 です。
+\code{BPETokenizer} の \code{encode} は、最初に特殊トークンの文字列を探して、そこで文を区切ります。
+区切られた普通の部分だけに BPE を当てはめ、特殊トークンにはそれぞれの ID を直接入れます。
+特殊トークンへの置き換えは、BPE とは別の前処理なのです。
+普通の文章にどれだけマージを当てはめても、4088 以上の ID は作られません。
+
+\begin{caution}{利用者の入力に特殊トークンが紛れ込む}
+利用者が入力欄に「\code{<|end|>}」と打ち込むと、そのままエンコードすれば本物の特殊トークンになり、発言の区切りを勝手に書き換えられてしまいます。
+この置き換えは、開発者が組み立てた文字列にだけ行うべきものです。
+本書の \code{encode} は簡単のため常に置き換えますが、\code{tiktoken} は、許可しない限り、特殊トークンの文字列を見つけるとエラーにします。
+\end{caution}
+
+まとめると、特殊トークンは、BPE では作られない専用の番号です。
+語彙の大きさはモデルの形を決めるので、使う予定の印の席は最初に確保しておきます。
+
+\section{実務のトークナイザと落とし穴}\label{sec:tok-practice}
+\laterread{既製の LLM やトークナイザを自分で使うときに戻れば足ります。飛ばしても、章末の「まとめ」は読めます。ただし、小節「落とし穴」の箇条書きは、短い読み物としておすすめです。}
+
+自作のトークナイザの仕組みは、ここまでですべてです。
+実際の LLM で使われているトークナイザは、これと同じものなのでしょうか。
+最後に、既製品を動かして比べ、使うときに気を付けることをまとめます。
+
+OpenAI が公開している \code{tiktoken} は、GPT 系列のモデルのトークナイザを収めたライブラリです~\cite{openai2022tiktoken}。
+GPT-2 のトークナイザを読み込んでみます。
+
+\snippet{tiktoken で GPT-2 のトークナイザを使う}{code:tok-tiktoken}{ch07/tiktoken_demo.py}{tiktoken}
+\outputfile{ch07/out/tiktoken_gpt2.txt}
+
+使い方は、自作のものと同じ \code{encode} と \code{decode} です（\code{decode_single_token_bytes} は、ID 1 個の中身をバイト列で返します）。
+実行結果の 2 行目では、「\code{Hello world}」が、「\code{Hello}」と、空白で始まる「\code{ world}」の 2 トークンです。
+語彙の大きさは 50,257 で、内訳は 256 個のバイト、50,000 個のマージ、1 個の特殊トークン（\code{<|endoftext|>}）です~\cite{radford2019language}。
+仕組みは本書と同じバイト単位の BPE で、おもな違いは学習に使った文章です。
+英語のウェブの文章で学習したので、「\code{tokenization}」は「\code{token}」と「\code{ization}」になりました。
+一方、「吾輩は猫である。」は 13 トークンで、漢字はバイトの断片のままです。
+
+同じ文を、新しい世代のトークナイザでも数えました（\tabref{tab:tok-tiktoken}）。
+世代が進むほど日本語のトークン数が減るのは、語彙が増え、多くの言語の文章を学習に含めるようになったためと考えられます。
+本書のトークナイザは、漱石の文では最も少ない 18 トークンですが、英語では 1 文字が 1 トークンになってしまいます。
+\textbf{トークナイザは、学習した文章に似た文章でだけ、よく縮みます}。
+
+\begin{table}[tbp]
+\centering
+\caption{同じ文のトークン数（\file{ch07/tiktoken_demo.py}）。日本語は『吾輩は猫である』の冒頭の 3 文（33 文字）、英語はその英訳（67 文字）、数字は「\texttt{1234567890}」。
+\texttt{tiktoken} の 3 行の「語彙の大きさ」は、ライブラリが返す値（\texttt{n\_vocab}）。}
+\label{tab:tok-tiktoken}
+\small
+\begin{tabular}{llrrrr}
+\toprule
+トークナイザ & 使うモデル & 語彙の大きさ & 日本語 & 英語 & 数字 \\
+\midrule
+本書 & ミニGPT & 4,096 & 18 & 67 & 10 \\
+\texttt{gpt2} & GPT-2 & 50,257 & 46 & 21 & 4 \\
+\texttt{cl100k\_base} & GPT-4 & 100,277 & 39 & 21 & 4 \\
+\texttt{o200k\_base} & GPT-4o 以降 & 200,019 & 32 & 21 & 4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{BPE の仲間たちと、日本語の事情}
+
+サブワードの作り方は、BPE だけではありません。
+本書で使うのは BPE だけなので、ここは名前と違いを知っておけば十分です。
+よく使われる三つを\tabref{tab:tok-algos}にまとめました。
+\jterm{WordPiece}~\cite{schuster2012japanese,wu2016google} は、回数そのものではなく、結び付きの強さで組を選びます。
+\jterm{Unigram}~\cite{kudo2018subword} は逆向きの発想で、大量の候補から不要なものを削っていきます。
+\jterm{SentencePiece}~\cite{kudo2018sentencepiece} は、方式ではなくライブラリの名前で、BPE と Unigram の両方を実装しています。
+文章を単語に区切らずにそのまま学習するので、単語の間に空白を置かない日本語や中国語でも同じ手順で使えます。
+
+\begin{table}[tbp]
+\centering
+\caption{代表的なサブワードの作り方。どれも「よく出る並びを 1 トークンにする」点は同じ。BERT と T5 は Google の言語モデル。}
+\label{tab:tok-algos}
+\small
+\begin{tabularx}{\linewidth}{lXXl}
+\toprule
+方式 & 語彙の作り方 & エンコードの方法 & 使用例 \\
+\midrule
+BPE & 最も多い組をまとめる & 学習した順に規則を適用 & GPT、Llama 3 \\
+WordPiece & 結び付きの強い組をまとめる & 左から最長のトークンを取る & BERT \\
+Unigram & 不要な候補を削っていく & 確率が最も高い切り方を選ぶ & T5 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+日本語には、英語にない事情もあります。
+文字の種類が多いので、語彙の多くを 1 文字のトークンに割くことになります（本書では 1,037 個）。
+1 文字が 3 バイトなので、1 文字を作るだけでマージが 2 回要ります。
+また、本書のトークナイザでは、半角の「\code{1}」は 1 トークンですが、全角の「１」は 2 トークンになります（全角は 3 バイトの文字です）。
+見た目が似ていても別の文字なので、入力の表記をそろえる前処理が、実務では重要です。
+
+\subsection*{落とし穴}
+
+トークナイザは地味な部品ですが、モデルの振る舞いに思わぬ形で影響します。
+
+\begin{itemize}
+\item \textbf{トークン数は文字数ではない}。モデルが一度に読める長さも、利用料金も、トークン数で数えます。
+本書の 128 トークンは、小説なら約 215 文字です（$128\times1.68\approx215$）。
+\item \textbf{数字の切れ方が位取りと合わない}。\code{o200k_base} は「\code{1234567890}」を「\code{123}」「\code{456}」「\code{789}」「\code{0}」と切ります。BPE の前に、数字を左から 3 桁ずつに区切っておく作りだからです。
+\coderef{code:tok-tiktoken}の GPT-2 は、「\code{12345678}」を「\code{123}」「\code{45}」「\code{678}」と切りました。
+同じ「\code{123}」が何の位を表すかは、後ろに続く桁数で変わります。LLM が大きな数の計算を苦手とする原因の一つです。
+\item \textbf{空白もトークンの一部}。GPT-2 の出力では、「\code{ world}」の前に空白が付いていました。
+「\code{world}」と「\code{ world}」は別のトークンなので、末尾の空白一つで、モデルへの入力が変わります。
+\item \textbf{モデルには文字が見えていない}。\code{o200k_base} は「\code{strawberry}」を「\code{st}」「\code{raw}」「\code{berry}」の 3 トークンにします。
+モデルが受け取るのは 3 個の番号で、綴りではありません。「r はいくつあるか」という問いが LLM に難しい理由の一つです。
+\item \textbf{トークナイザとモデルは一組}。ID の意味はトークナイザごとに違うので、トークナイザを替えるなら、モデルは学習し直しです。
+\end{itemize}
+
+最後に、規模を比べます（\tabref{tab:tok-scale}）。
+実際の LLM の語彙は、本書の 8 倍（$32{,}768\div4{,}096=8$）から、約 50 倍（$200{,}019\div4{,}096\approx49$）です。
+小さな対話モデルの公開実装 nanochat がトークナイザの学習に使う文章は、本書の約 900 倍です（20 億 $\div$ 229 万 $\approx870$）。
+それでも作り方は同じです。
+おもな違いは、語彙の大きさと、学習に使う文章の量と種類です。
+
+\begin{table}[tbp]
+\centering
+\caption{トークナイザの規模の対比。方式はどれもバイト単位の BPE。Llama 3 の数は、公開されている設定の値。}
+\label{tab:tok-scale}
+\small
+\begin{tabular}{lrl}
+\toprule
+トークナイザ & 語彙の大きさ & 備考 \\
+\midrule
+本書 & 4,096 & 小説の 95\%（約 229 万字）で学習。Python で数分 \\
+nanochat~\cite{karpathy2025nanochat} & 32,768 & 約 20 億文字で学習。高速な言語 Rust で実装 \\
+GPT-2~\cite{radford2019language} & 50,257 & 特殊トークンは 1 個 \\
+Llama 3~\cite{dubey2024llama3} & 128,256 & うち 256 個が特殊トークンの席 \\
+GPT-4o 以降 & 200,019 & \texttt{o200k\_base} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{summary}
+\item トークナイザは、文字列をトークン ID の列に直し（エンコード）、元に戻す（デコード）道具です。
+文字単位は未知の文字で止まり、単語単位は語彙が膨らみます。サブワードはその中間です。
+\item どんな文字列も、UTF-8 で 0〜255 のバイトの列になります。日本語の 1 文字は 3 バイトです。バイトから始めれば、未知の文字はなくなります。
+\item BPE は「最も多い隣どうしの組を一つにまとめる」ことを繰り返します。エンコードでは、学習した順に規則を当てはめます。
+\item 本書のトークナイザ（語彙 4,096）では、「である。」「ない。」が 1 トークン、数字は 1 桁が 1 トークンです。1 トークンは平均 1.68 文字です。
+\item 語彙を増やすと列は縮みますが、まれなトークンとパラメータが増えます。
+\item 特殊トークンは、BPE では作られない専用の印です。語彙の末尾に、あらかじめ席を確保します。
+\item トークン数は文字数ではなく、数字や空白の切れ方はモデルの振る舞いに影響します。
+\end{summary}
+
+\section*{次の章へ}
+
+文章は、トークン ID の列になりました。
+「どうも仕方がない。」は、1434, 1394, 433 という 3 個の整数です。
+しかし、433 番の「ない。」と 436 番の「である。」は、番号が近いからといって、意味が近いわけではありません。
+番号は、生まれた順に付いただけの名札で、足したり掛けたりしても意味のある結果にはなりません。
+名札でしかない整数を、ニューラルネットワークが計算できる形にするには、どうすればよいのでしょうか。
+\chapref{ch:embedding}では、トークン一つ一つを\textbf{ベクトル}に置き換える「埋め込み」を学びます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Sennrich らの論文~\cite{sennrich2016neural}：BPE でサブワードを作る方法の原典です。
+\item Karpathy の minbpe~\cite{karpathy2024minbpe}：素朴な BPE から GPT-4 のトークナイザの再現までを、短いコードで示します。
+\item SentencePiece の論文~\cite{kudo2018sentencepiece}：文章を単語に区切らずに扱う設計の説明です。
+\item Jurafsky と Martin の教科書~\cite{jurafsky2025slp}：単語・サブワード・BPE を言語学の視点も交えて解説しています。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 5}
+\item \textbf{（手計算）}\ 「いないいないばあ」の 8 文字に、BPE のマージを 2 回行ってください（同数の組は、先に現れたほうを選びます）。列は何個になりますか。
+\item \textbf{（手計算）}\ 「猫」の符号位置は \code{U+732B} です。\figref{fig:tok-utf8-bits}にならって UTF-8 の 3 バイトを求め、\code{"猫".encode("utf-8")} で確かめてください。
+\item \textbf{（考察）}\ エンコードで、マージ規則を学習した順と\textbf{逆の順}に当てはめると、「である。」はどんなトークン列になりますか。\coderef{code:tok-toy-byte}の実行結果にある 10 個の規則を使って説明してください。
+\item \textbf{（コード）}\ \code{tiktoken} の \code{o200k_base} で、1 桁から 12 桁までの数字の列を切り、切れ目の位置に規則性があるかを調べてください。
+\item \textbf{（考察）}\ 語彙を 10 万まで増やしたとすると、列の長さ、トークン 1 種類あたりの学習例、モデルのパラメータ数はどうなりますか。
+\end{exercises}

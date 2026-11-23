@@ -1,0 +1,40 @@
+% 単章ビルド用: 他章の章番号を解決するための仮ラベル（tools/build_chapter.sh が読む）
+\makeatletter
+\@ifundefined{r@ch:intro}{\expandafter\gdef\csname r@ch:intro\endcsname{{0}{}{}{}{}}}{}
+\@ifundefined{r@ch:math}{\expandafter\gdef\csname r@ch:math\endcsname{{1}{}{}{}{}}}{}
+\@ifundefined{r@ch:pytorch}{\expandafter\gdef\csname r@ch:pytorch\endcsname{{2}{}{}{}{}}}{}
+\@ifundefined{r@ch:ml}{\expandafter\gdef\csname r@ch:ml\endcsname{{3}{}{}{}{}}}{}
+\@ifundefined{r@ch:nn}{\expandafter\gdef\csname r@ch:nn\endcsname{{4}{}{}{}{}}}{}
+\@ifundefined{r@ch:training}{\expandafter\gdef\csname r@ch:training\endcsname{{5}{}{}{}{}}}{}
+\@ifundefined{r@ch:lm}{\expandafter\gdef\csname r@ch:lm\endcsname{{6}{}{}{}{}}}{}
+\@ifundefined{r@ch:tokenizer}{\expandafter\gdef\csname r@ch:tokenizer\endcsname{{7}{}{}{}{}}}{}
+\@ifundefined{r@ch:embedding}{\expandafter\gdef\csname r@ch:embedding\endcsname{{8}{}{}{}{}}}{}
+\@ifundefined{r@ch:attention}{\expandafter\gdef\csname r@ch:attention\endcsname{{9}{}{}{}{}}}{}
+\@ifundefined{r@ch:transformer}{\expandafter\gdef\csname r@ch:transformer\endcsname{{10}{}{}{}{}}}{}
+\@ifundefined{r@ch:modern-arch}{\expandafter\gdef\csname r@ch:modern-arch\endcsname{{11}{}{}{}{}}}{}
+\@ifundefined{r@ch:gpu}{\expandafter\gdef\csname r@ch:gpu\endcsname{{12}{}{}{}{}}}{}
+\@ifundefined{r@ch:pretraining}{\expandafter\gdef\csname r@ch:pretraining\endcsname{{13}{}{}{}{}}}{}
+\@ifundefined{r@ch:distributed}{\expandafter\gdef\csname r@ch:distributed\endcsname{{14}{}{}{}{}}}{}
+\@ifundefined{r@ch:infra}{\expandafter\gdef\csname r@ch:infra\endcsname{{15}{}{}{}{}}}{}
+\@ifundefined{r@ch:posttraining}{\expandafter\gdef\csname r@ch:posttraining\endcsname{{16}{}{}{}{}}}{}
+\@ifundefined{r@ch:lora}{\expandafter\gdef\csname r@ch:lora\endcsname{{17}{}{}{}{}}}{}
+\@ifundefined{r@ch:distillation}{\expandafter\gdef\csname r@ch:distillation\endcsname{{18}{}{}{}{}}}{}
+\@ifundefined{r@ch:eval-serving}{\expandafter\gdef\csname r@ch:eval-serving\endcsname{{19}{}{}{}{}}}{}
+\@ifundefined{r@ch:rl-basics}{\expandafter\gdef\csname r@ch:rl-basics\endcsname{{20}{}{}{}{}}}{}
+\@ifundefined{r@ch:policy-gradient}{\expandafter\gdef\csname r@ch:policy-gradient\endcsname{{21}{}{}{}{}}}{}
+\@ifundefined{r@ch:rl-llm}{\expandafter\gdef\csname r@ch:rl-llm\endcsname{{22}{}{}{}{}}}{}
+\@ifundefined{r@ch:agent}{\expandafter\gdef\csname r@ch:agent\endcsname{{23}{}{}{}{}}}{}
+\@ifundefined{r@ch:agentic-rl}{\expandafter\gdef\csname r@ch:agentic-rl\endcsname{{24}{}{}{}{}}}{}
+\@ifundefined{r@ch:capstone}{\expandafter\gdef\csname r@ch:capstone\endcsname{{25}{}{}{}{}}}{}
+\@ifundefined{r@app:notation}{\expandafter\gdef\csname r@app:notation\endcsname{{A}{}{}{}{}}}{}
+\@ifundefined{r@app:setup}{\expandafter\gdef\csname r@app:setup\endcsname{{B}{}{}{}{}}}{}
+\@ifundefined{r@app:glossary}{\expandafter\gdef\csname r@app:glossary\endcsname{{C}{}{}{}{}}}{}
+\@ifundefined{r@app:answers}{\expandafter\gdef\csname r@app:answers\endcsname{{D}{}{}{}{}}}{}
+\@ifundefined{r@part:prep}{\expandafter\gdef\csname r@part:prep\endcsname{{I}{}{}{}{}}}{}
+\@ifundefined{r@part:ml}{\expandafter\gdef\csname r@part:ml\endcsname{{II}{}{}{}{}}}{}
+\@ifundefined{r@part:lm}{\expandafter\gdef\csname r@part:lm\endcsname{{III}{}{}{}{}}}{}
+\@ifundefined{r@part:scale}{\expandafter\gdef\csname r@part:scale\endcsname{{IV}{}{}{}{}}}{}
+\@ifundefined{r@part:post}{\expandafter\gdef\csname r@part:post\endcsname{{V}{}{}{}{}}}{}
+\@ifundefined{r@part:rl}{\expandafter\gdef\csname r@part:rl\endcsname{{VI}{}{}{}{}}}{}
+\@ifundefined{r@part:agent}{\expandafter\gdef\csname r@part:agent\endcsname{{VII}{}{}{}{}}}{}
+\makeatother

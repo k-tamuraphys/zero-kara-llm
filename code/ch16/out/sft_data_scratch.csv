@@ -1,0 +1,7 @@
+n,init,chat_acc
+30,scratch,0.005
+100,scratch,0.01
+300,scratch,0.04
+1000,scratch,0.035
+3000,scratch,0.03
+10000,scratch,0.035

@@ -1,0 +1,7 @@
+step 0 pref_acc 0.000 chosen 0.000 rejected 0.000 polite 0.000 correct 0.870
+step 25 pref_acc 0.990 chosen 14.380 rejected -0.597 polite 0.000 correct 0.830
+step 100 pref_acc 1.000 chosen 23.606 rejected -8.619 polite 0.000 correct 0.315
+step 200 pref_acc 1.000 chosen 26.493 rejected -16.081 polite 0.000 correct 0.005
+12+35は？ -> ?って57です。
+300から123を引くといくつですか？ -> とかからは277です。
+7足す8は？ -> 望?ってってってはははは65です。

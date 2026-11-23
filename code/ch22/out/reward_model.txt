@@ -1,0 +1,11 @@
+step   0  test loss 0.636  test acc 0.670
+step  25  test loss 0.002  test acc 1.000
+step  50  test loss 0.001  test acc 1.000
+step  75  test loss 0.000  test acc 1.000
+step 100  test loss 0.000  test acc 1.000
+  r(47です。) = -3.73
+  r(57です。) = -3.62
+  r(答えは47です。) = +5.94
+  r(答えは57です。) = +6.20
+  r(答えは答えは47です。) = +7.03
+total 60s

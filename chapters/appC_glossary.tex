@@ -1,0 +1,580 @@
+\chapter{用語集}\label{app:glossary}
+\newcommand{\gitem}[4]{\item[#1]（#2）\enspace #3\enspace $\to$ #4}
+
+この付録は、本書で定義した用語を集めた小さな辞書です。
+通読する必要はありません。本文で用語に迷ったときに引いてください。
+各項目は「用語（英語）」「ひとことの意味」「$\to$ 習った章・節」の順に並べました。
+意味の文は、ほかの専門用語にできるだけ頼らずに書いてあります。くわしい説明と例は、矢印の先の本文にあります。
+
+並びは読みの五十音順です。英字（アルファベット）で始まる語は、最後の「英字で始まる語」にまとめました。
+略語の正式名称は、最後の\tabref{tab:glossary-abbr}で引けます。
+同じ語を二つの章で定義している場合は、最初に定義した章を示しました。
+
+{\footnotesize
+\section*{あ行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{アクセラレータ}{accelerator}{行列積の専用回路を大量に並べ、速いメモリをそばに置いた、行列積に特化した計算装置。GPU のほかに TPU などがある。}{\secref{sec:gpu-arch}}
+\gitem{アクター}{actor}{アクター・クリティックで、行動を選ぶ側。方策のこと。}{\secref{sec:pg-actor-critic}}
+\gitem{アクター・クリティック}{actor-critic}{行動を選ぶ方策（アクター）と、状態の良さを見積もる価値ネット（クリティック）を一緒に学習する方法。見積もりを基準にすることで、学習のぶれを小さくする。}{\secref{sec:pg-actor-critic}}
+\gitem{足場}{scaffold}{モデルを包み、ツールを呼ばせ、結果をモデルに返す外側のプログラム。エージェントの成績は足場によって変わるので、比べるときは足場をそろえる。}{\appref{app:benchmarks}}
+\gitem{アダプタ}{adapter}{LoRA で、基盤モデルは凍結したまま、用途ごとに学習して持つ小さな差分（低ランクの行列の組）。層の間に小さな層を挟む別の手法は「アダプタ層」と呼び分ける。}{\secref{sec:lora-cost}}
+\gitem{圧縮}{compaction}{エージェントで、長くなった会話の古いやりとりを要約して短くすること。文脈の長さの上限に収めるために行う。}{\secref{sec:agent-rag}}
+\gitem{アドバンテージ}{advantage}{ある状態で、ある行動をとることが、その状態での平均的な行動よりどれだけ良いか。$A^\pi=Q^\pi-V^\pi$。}{\secref{sec:pg-variance}}
+\gitem{暗黙の報酬}{implicit reward}{DPO で、学習中のモデルと参照モデルの確率の比（の対数）から読み取れる報酬。報酬モデルを別に作らなくても、モデル自身が報酬を表している。}{\secref{sec:rl-dpo}}
+\gitem{位置埋め込み}{position embedding}{位置ごとに 1 本ずつ用意し、学習で調整するベクトル。トークンの埋め込みに足して、位置の情報を伝える。位置エンコーディングの一つのやり方。}{\secref{sec:tf-position}}
+\gitem{位置エンコーディング}{positional encoding}{トークンの位置の情報をベクトルで表して、モデルに渡す仕組み。}{\secref{sec:tf-position}}
+\gitem{1 バッチ過学習テスト}{overfitting a single batch}{1 つのバッチだけで学習を繰り返し、損失がほぼ 0 まで下がるかを確かめる検査。下がらなければ、コードに誤りがある。}{\secref{sec:training-diagnosis}}
+\gitem{一般化アドバンテージ推定}{generalized advantage estimation, GAE}{未来の TD 誤差を、遠いものほど小さく割り引いて足し合わせ、アドバンテージを見積もる方法。係数 $\lambda$ で、ぶれと偏りの釣り合いを調整する。}{\secref{sec:pg-actor-critic}}
+\gitem{因果マスク}{causal mask}{注意機構で、各位置が自分より後ろ（未来）の位置を見られないようにする制限。位置 $t$ は位置 $1,\dots,t$ だけを見る。}{\secref{sec:attn-causal}}
+\gitem{インデックス}{indexing}{テンソルの一部を、位置の番号で指定して取り出す操作。番号は 0 から始まる。}{\secref{sec:pt-tensor}}
+\gitem{ウォームアップ}{warmup}{学習の最初の数百〜数千ステップで、学習率を 0 から少しずつ上げること。最初の不安定な時期に大きく動きすぎるのを防ぐ。}{\secref{sec:training-schedule}}
+\gitem{埋め込み}{embedding}{トークンの番号ごとに用意された、学習で調整されるベクトル。番号という「ただの名札」を、計算できる数の並びに置き換える。}{\secref{sec:emb-lookup}}
+\gitem{埋め込み表}{embedding table}{全トークンの埋め込みを 1 行ずつ並べた $V\times d$ の行列 $\mE$。トークン $x$ の埋め込みは $x$ 行目を引くだけで得られる。}{\secref{sec:emb-lookup}}
+\gitem{エージェント}{agent}{強化学習で、環境の様子を見て行動を選び、報酬を受け取る側。第 23 章以降では、LLM にツールを使わせる仕組み（AI エージェント）も指す。}{\secref{sec:rlb-what}}
+\gitem{エージェントループ}{agent loop}{モデルが書いたツール呼び出しを外側のプログラムが実行し、結果を文脈に足して、またモデルに続きを書かせる繰り返し。}{\secref{sec:agent-why}}
+\gitem{枝刈り}{pruning}{重要でない重みを 0 にして（あるいは取り除いて）、計算や保存を省く圧縮の方法。}{\secref{sec:distill-why}}
+\gitem{エピソード}{episode}{強化学習で、始まりから終わり（終端状態）までの 1 回分のやりとり。}{\secref{sec:rlb-mdp}}
+\gitem{エポック}{epoch}{訓練データ全体を 1 回ずつ使い切ること。データが $N$ 件、バッチサイズが $B$ なら 1 エポックは $N/B$ ステップ。}{\secref{sec:ml-sgd}}
+\gitem{エンコード}{encode}{文字列を、トークン ID の列に変換すること。逆向きはデコード。}{\secref{sec:tok-units}}
+\gitem{演算の融合}{kernel fusion}{続けて行う要素ごとの演算を 1 つにまとめ、メモリとの往復を減らすこと。\code{torch.compile} が自動で行う。}{\secref{sec:gpu-speedup}}
+\gitem{エントロピー}{entropy}{分布 $p$ に従って結果が出るときの、平均の驚き（情報量の平均）$H(p)$。結果が読みにくいほど大きい。}{\secref{sec:math-info}}
+\gitem{追い出し}{eviction}{キャッシュの置き場からあふれた分を捨てること。}{\secref{sec:es-cache}}
+\gitem{汚染}{contamination}{テストの問題や答えが、学習データに紛れ込んでいること。汚染があると、点数が実力より高く出る。}{\secref{sec:es-bench}}
+\gitem{オフポリシー}{off-policy}{いま学習している方策とは別の方策で集めたデータから学ぶこと。}{\secref{sec:rlb-q}}
+\gitem{オブジェクトストレージ}{object storage}{「名前を渡すと、データの塊が返る」だけの単純で大きな貯蔵庫。学習データの原本の置き場に向く。}{\secref{sec:infra-storage}}
+\gitem{オプティマイザ}{optimizer}{勾配を使ってパラメータを更新する部品。SGD や AdamW など。訳語は「最適化手法」。}{\secref{sec:nn-pytorch}}
+\gitem{重み}{weight}{入力に掛ける数のパラメータ。どの入力をどれだけ重く見るかを表す。}{\secref{sec:ml-supervised}}
+\gitem{重み共有}{weight tying}{入力側の埋め込み表と、出力側のロジットを作る行列に、同じ行列を使うこと。パラメータが減る。}{\secref{sec:tf-gpt}}
+\gitem{重み減衰}{weight decay}{更新のたびに重みを少しだけ 0 に近づけ、重みが大きくなりすぎるのを防ぐ方法。過学習を抑える。}{\secref{sec:training-optim}}
+\gitem{オンデマンド}{on-demand}{GPU を、利用の約束なしで、使った分だけ払って借りる契約。}{\secref{sec:infra-gpu}}
+\gitem{温度}{temperature}{生成のとき、ロジットを割る数 $\tau$。1 より大きいと分布が平らになって多様な出力に、小さいと確率の高いトークンばかりが選ばれる。}{\secref{sec:lm-generation}}
+\gitem{オンポリシー}{on-policy}{いま学習している方策そのもので集めたデータだけを使って学ぶこと。方策を更新したら、データは集め直す。}{\secref{sec:pg-reinforce}}
+\end{description}
+
+\section*{か行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{回帰}{regression}{気温や時間のような、連続した数を予測する問題。}{\secref{sec:ml-classification}}
+\gitem{階数}{number of dimensions}{テンソルで、数が並ぶ向きの数。数 1 個は 0 階、ベクトルは 1 階、行列は 2 階。コードでは \code{.ndim}。}{\secref{sec:pt-tensor}}
+\gitem{過学習}{overfitting}{訓練データには非常によく合うのに、見たことのないデータでは成績が悪くなること。データを丸暗記した状態。}{\secref{sec:ml-generalization}}
+\gitem{書き込み}{cache write}{プレフィックスキャッシュで、前置きの KV キャッシュを最初に計算して保存すること。}{\secref{sec:es-cache}}
+\gitem{学習曲線}{learning curve}{ステップごとの損失をグラフにしたもの。学習がうまく進んでいるかを見る第一の手がかり。}{\secref{sec:training-diagnosis}}
+\gitem{学習後量子化}{post-training quantization}{学習の終わったモデルの重みを、学習し直さずにそのまま少ないビットへ丸める量子化。}{\secref{sec:distill-quant}}
+\gitem{学習率}{learning rate}{勾配の向きに、1 回の更新でどれだけ進むかを決める数 $\eta$。大きすぎると発散し、小さすぎると進まない。}{\secref{sec:ml-gd}}
+\gitem{学習率スケジュール}{learning rate schedule}{学習の進み具合に応じて学習率を変えていく決まり。本書はウォームアップのあとコサイン減衰で下げる。}{\secref{sec:training-schedule}}
+\gitem{確率的勾配降下法}{stochastic gradient descent, SGD}{全データではなく、ランダムに選んだ一部（ミニバッチ）で勾配を求めて更新する勾配降下法。1 回の計算が軽い。}{\secref{sec:ml-sgd}}
+\gitem{確率的方策}{stochastic policy}{行動を確率で選ぶ方策。同じ状態でも、選ぶ行動が毎回同じとは限らない。}{\secref{sec:rlb-return}}
+\gitem{確率比}{probability ratio}{同じ行動を、新しい方策と古い方策がそれぞれ選ぶ確率の比 $\rho_t$。PPO はこの比が 1 から離れすぎないようにする。}{\secref{sec:pg-surrogate}}
+\gitem{確率分布}{probability distribution}{起こりうる結果のそれぞれに、どれだけ起こりやすいかの数（合計 1）を割り当てたもの。}{\secref{sec:math-prob}}
+\gitem{確率変数}{random variable}{サイコロの目のように、値が偶然によって決まる変数。}{\secref{sec:math-prob}}
+\gitem{隠れ状態}{hidden state}{RNN が、それまでに読んだ内容を要約して持ち運ぶベクトル。1 トークン読むたびに書き換わる。}{\secref{sec:emb-rnn}}
+\gitem{隠れ層}{hidden layer}{ニューラルネットワークで、最後の層（出力層）より手前にある途中の層。その値は、データの入力にも正解にも現れない。}{\secref{sec:nn-mlp}}
+\gitem{加算平滑化}{additive smoothing}{数え上げの言語モデルで、どの組も実際より $\alpha$ 回多く現れたことにする方法。見たことのない組の確率が 0 になるのを防ぐ。}{\secref{sec:lm-bigram-count}}
+\gitem{仮想環境}{virtual environment}{Python のライブラリの置き場所を、作業ごとに分けるしくみ。ほかの作業に影響を与えずに、本書用のライブラリを入れられる。}{\secref{sec:setup-install}}
+\gitem{形}{shape}{ベクトル・行列・テンソルで、各方向にいくつ数が並んでいるかを表す数の組。3 行 4 列の行列の形は $(3,4)$。}{\secref{sec:math-notation}}
+\gitem{偏り}{bias}{推定量の期待値が真の値からずれているときの、そのずれ。「バイアス」の (2) と同じ。}{\secref{sec:pg-logtrick}}
+\gitem{価値反復}{value iteration}{ベルマン最適方程式の右辺を、価値の表の書き換えの規則として繰り返し使い、最適な価値を直接求める方法。}{\secref{sec:rlb-dp}}
+\gitem{価値ベース}{value-based}{まず価値を学び、価値が最大の行動を選ぶ、という順で方策を作る流儀。方策そのものを直接良くする流儀は「方策ベース」。}{\secref{sec:rlb-fa}}
+\gitem{活性化}{activation}{学習のとき、逆伝播のために残しておく各層の途中の計算結果。メモリを大きく使う。}{\secref{sec:gpu-memory}}
+\gitem{活性化関数}{activation function}{ニューロンの出力を曲げる関数（ReLU など）。これがないと、層を何枚重ねても 1 枚の線形変換と同じになる。}{\secref{sec:nn-neuron}}
+\gitem{活用}{exploitation}{今の知識でいちばん良さそうな行動を選ぶこと。探索と対になる。}{\secref{sec:rlb-q}}
+\gitem{環境}{environment}{強化学習で、エージェントの行動を受けて、次の状態と報酬を返す側。}{\secref{sec:rlb-what}}
+\gitem{環境のモデル}{model of the environment}{環境の遷移確率と報酬関数のこと。これを知っていれば、試さなくても計算で価値を求められる。}{\secref{sec:rlb-mc-td}}
+\gitem{環境変数}{environment variable}{ターミナルが覚えている、名前の付いた設定。プログラムは、動き始めるときにこれを読む。}{\secref{sec:setup-layout}}
+\gitem{関数近似}{function approximation}{価値や方策を表に書く代わりに、ニューラルネットワークなどの関数で表すこと。状態が多すぎて表に書けないときに使う。}{\secref{sec:rlb-fa}}
+\gitem{キー}{key}{注意機構で、各位置が「自分はどんな情報か」を紹介する見出しのベクトル。クエリとの内積がスコアになる。}{\secref{sec:attn-qkv}}
+\gitem{機械学習}{machine learning}{ルールを人が書く代わりに、例を計算機に見せ、ルールにあたるものを計算機自身に見つけさせる方法。}{\secref{sec:ml-rules-vs-examples}}
+\gitem{棄却サンプリング}{rejection sampling}{たくさん生成し、検査に合格したものだけを残すこと。本書では、成功した軌跡だけを集めて SFT に使う意味で使う。}{\secref{sec:arl-real}}
+\gitem{基準線}{baseline}{成績を比べる相手にする、単純な方法の成績。学習したモデルは、これを上回らなければならない。強化学習の「ベースライン」は別の意味（その項目を見よ）。}{\secref{sec:lm-objective}}
+\gitem{疑似量子化}{fake quantization}{重みを量子化してから元の目盛りに戻した値で、普通の浮動小数点の計算をすること。量子化したときの精度を、手軽に確かめられる。}{\secref{sec:distill-quant-impl}}
+\gitem{基数木}{radix tree}{前置き（先頭の部分）が共通する列を、枝分かれする形にまとめた木。SGLang がプレフィックスキャッシュに使う。}{\secref{sec:es-cache}}
+\gitem{軌跡}{trajectory}{1 エピソードの間の状態・行動・報酬を、順に並べた記録 $\tau$。エージェントでは、1 回の仕事の文脈の全文がこれに当たる。}{\secref{sec:rlb-return}}
+\gitem{期待値}{expected value}{確率で重みを付けた平均。何度も繰り返したときの平均の値。}{\secref{sec:math-prob}}
+\gitem{期待値の線形性}{linearity of expectation}{和の期待値は期待値の和に等しく、定数倍は期待値の外に出せる、という性質。}{\secref{sec:math-prob}}
+\gitem{ギブスの不等式}{Gibbs' inequality}{KL ダイバージェンスは 0 以上である、という不等式。交差エントロピーがエントロピーより小さくならないことを表す。}{\secref{sec:math-info}}
+\gitem{逆伝播}{backward pass}{誤差逆伝播法のうち、出力側から入力側へ、勾配を順に求めていく手順。順伝播と対になる。}{\secref{sec:nn-backprop}}
+\gitem{逆量子化}{dequantization}{量子化で整数にした値を、スケールとゼロ点を使って、元の実数の目盛りに戻すこと。丸めた分の誤差は戻らない。}{\secref{sec:distill-quant-linear}}
+\gitem{強化学習}{reinforcement learning, RL}{正解の代わりに、行動の結果として得られる報酬を手がかりにして、報酬の合計が大きくなる行動の選び方を学ぶ学習。}{\chapref{ch:rl-basics}}
+\gitem{教師}{teacher}{知識蒸留で、出力を手本として使う、大きいほうのモデル。}{\secref{sec:distill-why}}
+\gitem{教師あり学習}{supervised learning}{入力と正解の組を大量に与え、入力から正解を当てる関数を学ぶ学習。}{\secref{sec:ml-supervised}}
+\gitem{教師ありファインチューニング}{supervised fine-tuning, SFT}{質問と模範解答の組で、事前学習したモデルを追加で学習すること。モデルが質問に答える振る舞いを身につける。}{\secref{sec:post-lifecycle}}
+\gitem{教師強制}{teacher forcing}{学習中は、モデル自身の予測ではなく、いつもデータの本物の文章を入力に使うこと。全位置の予測を一度に計算できる。}{\secref{sec:lm-self-supervised}}
+\gitem{強スケーリング}{strong scaling}{全体の仕事量を固定し、台数で分担して速さを測る測り方。1 台あたりの計算が減るので、効率が落ちやすい。}{\secref{sec:dist-comm}}
+\gitem{行列}{matrix}{数を縦横の長方形に並べたもの。太字大文字で書く。}{\secref{sec:math-notation}}
+\gitem{行列積}{matrix product}{行列どうしの掛け算。$(m,k)$ と $(k,n)$ の形から $(m,n)$ の形ができ、掛ける順序は入れ替えられない。}{\secref{sec:math-linalg}}
+\gitem{局所勾配}{local gradient}{計算グラフの 1 つの演算について、その演算だけを見れば分かる微分（出力を入力で微分したもの）。}{\secref{sec:nn-backprop}}
+\gitem{クエリ}{query}{注意機構で、「どんな情報を探しているか」を表すベクトル。キーとの内積で、どこを見るかが決まる。}{\secref{sec:attn-qkv}}
+\gitem{クラス}{class}{分類の問題で、正解になりうる「種類」の一つ一つ。}{\secref{sec:ml-classification}}
+\gitem{クリティック}{critic}{アクター・クリティックで、状態の価値を見積もる側のネットワーク。}{\secref{sec:pg-actor-critic}}
+\gitem{グループ}{group}{GRPO で、同じ質問に対して生成した複数の応答の組。組の中で報酬を比べる。}{\secref{sec:rl-rlvr}}
+\gitem{訓練データ}{training data}{パラメータを調整するのに使うデータ。}{\secref{sec:ml-generalization}}
+\gitem{計画}{planning}{長い仕事で、最初に手順の全体をモデルに書き出させること。文脈に残せば、どこまで終わったかを読み返せる。}{\secref{sec:agent-real}}
+\gitem{経験再生}{experience replay}{過去の経験（状態・行動・報酬・次の状態）をためておき、何度も取り出して学習に使う工夫。DQN が使う。}{\secref{sec:rlb-fa}}
+\gitem{経験リスク最小化}{empirical risk minimization}{手元のデータで測った損失の平均が、なるべく小さくなるパラメータを求める、という学習の方針。}{\secref{sec:ml-supervised}}
+\gitem{計算グラフ}{computational graph}{計算の途中結果をノード、計算の流れを矢印にした図。逆伝播はこれを逆にたどる。}{\secref{sec:nn-backprop}}
+\gitem{計算律速}{compute-bound}{メモリからデータを運ぶ時間ではなく、計算そのものが全体の速さを決めている状態。メモリ律速の反対。}{\secref{sec:gpu-memory-bw}}
+\gitem{形式証明}{formal proof}{証明をプログラムのように書き、検査器（Lean など）に正しさを確かめさせるもの。採点に、人も LLM 審査員も要らない。}{\secref{sec:bm-math}}
+\gitem{継続事前学習}{continual pre-training}{事前学習を終えたモデルに、特定の分野などの文章で、同じ次トークン予測の学習を続けること。}{\secref{sec:post-cpt}}
+\gitem{系列レベルの蒸留}{sequence-level knowledge distillation}{教師が生成した文章そのものを手本にして、生徒を学習させる蒸留。教師の確率が見られなくても使える。}{\secref{sec:distill-llm}}
+\gitem{決定的方策}{deterministic policy}{各状態で、選ぶ行動を 1 つに決めている方策。状態 $s$ で選ぶ行動を $\pi(s)$ と書く。}{\secref{sec:rlb-return}}
+\gitem{言語モデル}{language model}{トークンの列に、それが現れる確率を割り当てるモデル。文脈から次のトークンの確率を出すことと同じ。}{\secref{sec:lm-definition}}
+\gitem{検索拡張生成}{retrieval-augmented generation, RAG}{質問に関係する文書を検索して文脈に入れてから、答えを生成させる方法。モデルが覚えていない知識を使える。}{\secref{sec:agent-rag}}
+\gitem{検証可能なタスク}{verifiable task}{答えが正しいかをプログラムで自動的に確かめられる課題。強化学習の報酬を作りやすい。}{\secref{sec:arl-env}}
+\gitem{検証可能な報酬による強化学習}{reinforcement learning with verifiable rewards, RLVR}{答えをプログラムで採点し、その正誤を報酬にする強化学習。報酬の出どころの名前で、アルゴリズムの名前ではない。}{\secref{sec:rl-rlvr}}
+\gitem{検証データ}{validation data}{学習には使わず、ハイパーパラメータを選んだり、過学習を見つけたりするのに使うデータ。}{\secref{sec:ml-generalization}}
+\gitem{語彙}{vocabulary}{使ってよいトークンをすべて集めたもの $\calV$。その個数を $V$ と書く。}{\secref{sec:tok-units}}
+\gitem{交差エントロピー}{cross-entropy}{本当の分布が $p$ のとき、予測 $q$ で測った平均の驚き $H(p,q)$。予測が当たっているほど小さい。分類と言語モデルの損失に使う。}{\secref{sec:math-info}}
+\gitem{交差注意}{cross-attention}{クエリをデコーダ側のベクトルから、キーとバリューをエンコーダの出力から作る注意。デコーダが、エンコーダの出力を見にいく。}{\secref{sec:tf-family}}
+\gitem{格子世界}{gridworld}{マス目の上を上下左右に動いてゴールを目指す、強化学習の定番の小さな題材。}{\secref{sec:rlb-mdp}}
+\gitem{行動}{action}{エージェントが選んで行うこと。LLM では、次に書く 1 トークン。}{\secref{sec:rlb-what}}
+\gitem{行動価値関数}{action-value function}{ある状態で、ある行動をとり、その後は方策に従ったときに、平均して得られる収益 $Q^\pi(s,a)$。}{\secref{sec:rlb-value}}
+\gitem{勾配}{gradient}{すべてのパラメータについての偏微分を並べたベクトル。関数が最も増える向きを指す。}{\secref{sec:math-calculus}}
+\gitem{勾配クリッピング}{gradient clipping}{勾配全体の長さが上限を超えたら、向きは変えずに長さだけ縮めること。学習が急に壊れるのを防ぐ。}{\secref{sec:training-schedule}}
+\gitem{勾配降下法}{gradient descent}{勾配の反対向きに、パラメータを少しずつ動かして損失を下げる方法。}{\secref{sec:ml-gd}}
+\gitem{勾配消失}{vanishing gradient}{逆伝播で小さな数を何度も掛けるうちに、入力に近い層の勾配がほぼ 0 になり、学習が進まなくなること。}{\secref{sec:nn-deep}}
+\gitem{勾配チェックポインティング}{gradient checkpointing}{途中の計算結果の一部だけを残し、残りは逆伝播のときに計算し直すことで、メモリを節約する方法。}{\secref{sec:dist-sharding}}
+\gitem{勾配爆発}{exploding gradient}{逆伝播で大きな数を何度も掛けるうちに、勾配が極端に大きくなること。}{\secref{sec:nn-deep}}
+\gitem{勾配累積}{gradient accumulation}{小さなバッチの勾配を何回か足し合わせてから 1 回更新し、大きなバッチと同じ効果を少ないメモリで得る方法。}{\secref{sec:gpu-speedup}}
+\gitem{構文木}{syntax tree}{式の組み立てを、木の形で表したもの。計算は木の下から上へ進む。}{\secref{sec:agent-toolcall}}
+\gitem{コールドスタート}{cold start}{強化学習の前に行う、短い SFT。最初から少しは成功できるようにしておく。}{\secref{sec:arl-exp}}
+\gitem{コサイン減衰}{cosine decay}{学習率を、コサインの形の曲線に沿ってなめらかに下げていくスケジュール。}{\secref{sec:training-schedule}}
+\gitem{コサイン類似度}{cosine similarity}{2 本のベクトルの向きがどれだけそろっているかを $-1$〜$1$ で表す数。長さには左右されない。}{\secref{sec:math-linalg}}
+\gitem{誤差逆伝播法}{backpropagation}{出力側から入力側へ、連鎖律で勾配を順に計算していく方法。ニューラルネットワークの学習の土台。}{\secref{sec:nn-backprop}}
+\gitem{混合エキスパート}{mixture of experts, MoE}{MLP を何個も用意し（エキスパート）、トークンごとにその一部だけを使うモデル。計算をあまり増やさずにパラメータを増やせる。}{\secref{sec:ma-moe}}
+\gitem{混合精度}{mixed precision}{計算の大部分を BF16 のような少ないビットの数で行い、精度が要るところだけ FP32 を使う学習の方法。速く、メモリも少ない。}{\secref{sec:gpu-precision}}
+\gitem{混入}{contamination}{「汚染」と同じ意味。「汚染」の項目を見よ。}{\secref{sec:es-bench}}
+\end{description}
+
+\section*{さ行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{再帰型ニューラルネットワーク}{recurrent neural network, RNN}{トークンを 1 個ずつ読み、隠れ状態を書き足しながら進むネットワーク。どんな長さの文脈も扱えるが、遠くの情報は薄れやすい。}{\secref{sec:emb-rnn}}
+\gitem{再現性}{reproducibility}{同じコードを同じ条件で動かせば、同じ結果が出ること。本書は乱数の種を固定して確保する。}{\secref{sec:pt-tensor}}
+\gitem{最適化}{optimization}{損失が最も小さくなるパラメータを探すこと。}{\secref{sec:ml-rules-vs-examples}}
+\gitem{最適価値関数}{optimal value function}{あらゆる方策の中で達成できる、最大の価値 $V^\ast$。}{\secref{sec:rlb-dp}}
+\gitem{最適方策}{optimal policy}{すべての状態で、価値が最適価値関数に等しくなる方策 $\pi^\ast$。これより良い方策はない。}{\secref{sec:rlb-dp}}
+\gitem{最尤推定}{maximum likelihood estimation}{手元のデータが出てくる確率（尤度）が最大になるように、パラメータを選ぶ方法。}{\secref{sec:math-mle}}
+\gitem{サブワード}{subword}{文字と単語の中間の大きさの単位。よく出る文字の並びを 1 つにまとめたもの。}{\secref{sec:tok-units}}
+\gitem{残差ストリーム}{residual stream}{Transformer で、各ブロックが結果を足し込んでいく、層を貫く 1 本のベクトルの流れ。}{\secref{sec:tf-residual}}
+\gitem{残差接続}{residual connection}{層の出力に、その層の入力をそのまま足す近道。勾配がこの近道を通って深い層まで届く。}{\secref{sec:training-residual}}
+\gitem{算術強度}{arithmetic intensity}{メモリから 1 バイト運ぶあいだに、何回計算するか。小さいとメモリの運搬が速さを決める。}{\secref{sec:gpu-memory-bw}}
+\gitem{サンドボックス}{sandbox}{ツールを、外のファイルやネットワークに触れない隔離された場所で動かすこと。モデルが誤った命令を出しても被害を閉じ込める。}{\secref{sec:agent-eval}}
+\gitem{サンプリング}{sampling}{確率分布に従って、値をくじ引きのように 1 つ選ぶこと。}{\secref{sec:math-prob}}
+\gitem{シーケンス図}{sequence diagram}{やりとりを、時間の流れに沿って並べた図。縦の線が登場人物で、上から下へ時間が進む。}{\secref{sec:agent-toolcall}}
+\gitem{ジェネレータ式}{generator expression}{Python で、リスト内包表記から角かっこを外した書き方。リストを作って保存せず、要素を 1 個ずつ作って渡す。}{\secref{sec:post-template}}
+\gitem{時間地平}{time horizon}{AI が 50\% の確率で成功するのは、人なら何分かかる課題までか、を表す指標。AI が動き続けられる時間ではない。}{\secref{sec:bm-agent}}
+\gitem{軸}{axis}{テンソルで、数が並ぶ向きの一つ一つ。形の左から順に、軸 0、軸 1 と番号を付ける。}{\secref{sec:pt-tensor}}
+\gitem{シグモイド関数}{sigmoid function}{どんな数も 0〜1 の間に押し込む S 字の関数 $\sigmoid(z)$。2 択の確率を出すのに使う。}{\secref{sec:ml-classification}}
+\gitem{自己回帰}{autoregressive}{次のトークンを 1 個選んで文脈に足し、また次を予測する、を繰り返して文章を作ること。}{\secref{sec:lm-generation}}
+\gitem{自己教師あり学習}{self-supervised learning}{人が正解を付けず、データそのものから正解を作る学習。言語モデルは、文章を 1 つずらして「次のトークン」を正解にする。}{\secref{sec:lm-self-supervised}}
+\gitem{自己注意}{self-attention}{同じ系列の中で、各位置がほかの位置を見て情報を集める注意機構。}{\secref{sec:attn-qkv}}
+\gitem{事後学習}{post-training}{事前学習を終えたモデルを、質問に答えるなど目的の振る舞いに合わせて学習し直す工程の総称。SFT や強化学習を含む。}{\chapref{ch:posttraining}}
+\gitem{指示チューニング}{instruction tuning}{指示とそれに従った応答の組で SFT を行い、指示に従うモデルにすること。}{\secref{sec:post-lifecycle}}
+\gitem{指数移動平均}{exponential moving average}{新しい値を少しだけ混ぜながら更新していく平均。古い値ほど重みが小さくなり、「最近の平均」になる。}{\secref{sec:training-optim}}
+\gitem{指数関数}{exponential function}{$e^{x}$。$\exp(x)$ とも書く。「$e$ を $x$ 回掛けたもの」を、$x$ が整数でない場合にまで広げた関数。}{\secref{sec:math-notation}}
+\gitem{システムプロンプト}{system prompt}{会話の最初に置き、モデルの役割や守るべき決まりを指示する文。}{\secref{sec:post-sft}}
+\gitem{事前学習}{pre-training}{大量の文章で次トークン予測を学習し、言葉と知識の土台（基盤モデル）を作る工程。}{\chapref{ch:pretraining}}
+\gitem{事前正規化}{Pre-LN}{層に入れる前に正規化し、残差接続の近道には正規化をかけない並べ方。深いモデルでも学習が安定する。}{\secref{sec:training-residual}}
+\gitem{自動微分}{automatic differentiation}{計算の記録をもとに、勾配をプログラムが自動で求めるしくみ。PyTorch では \code{backward()} で使う。}{\secref{sec:pt-autograd}}
+\gitem{次トークン予測}{next-token prediction}{それまでの文脈から、次に来るトークンを当てる問題。語彙の数だけ答えがある分類と同じ。}{\secref{sec:lm-definition}}
+\gitem{シャード}{shard}{大きなトークン列などを、数百 MB〜数 GB ごとに分けて保存した「かけら」。複数の計算機が同時に読め、壊れた分だけ作り直せる。}{\secref{sec:pt-binary}}
+\gitem{弱スケーリング}{weak scaling}{1 台あたりの仕事量を固定し、台数とともに全体の仕事量を増やして速さを測る測り方。}{\secref{sec:dist-comm}}
+\gitem{収益}{return}{ある時刻から先にもらう報酬を、割引率で割り引いて足した合計 $G_t$。}{\secref{sec:rlb-return}}
+\gitem{集合通信}{collective communication}{複数のプロセスが全員で参加して、データを配ったり合計したりする通信。all-reduce など。}{\secref{sec:dist-ddp}}
+\gitem{終端状態}{terminal state}{入ったらエピソードが終わる状態。}{\secref{sec:rlb-mdp}}
+\gitem{重点サンプリング}{importance sampling}{ある分布から取ったサンプルで、別の分布の下での期待値を求める方法。二つの分布の確率の比を重みとして掛ける。}{\secref{sec:pg-surrogate}}
+\gitem{周辺確率}{marginal probability}{同時確率を、気にしない変数について足し合わせて得られる確率 $p(x)$。}{\secref{sec:math-prob}}
+\gitem{縮小写像}{contraction mapping}{1 回行うたびに、目標との差の最大値が必ず決まった倍率（価値反復では $\gamma$ 倍）以下に縮む操作。繰り返すと差は 0 に近づく。}{\secref{sec:rlb-dp}}
+\gitem{縮小付き内積注意}{scaled dot-product attention}{クエリとキーの内積を $\sqrt{\dhead}$ で割ってから softmax で重みにし、バリューの重み付き平均をとる注意。}{\secref{sec:attn-qkv}}
+\gitem{主成分分析}{principal component analysis, PCA}{ベクトルのばらつきがいちばん大きい方向から順に選び、その座標だけを取り出す方法。高い次元のベクトルを 2 次元の図にするのに使う。}{\secref{sec:emb-neighbors}}
+\gitem{出力層}{output layer}{ニューラルネットワークの最後の層。予測（ロジットなど）を出す。}{\secref{sec:nn-mlp}}
+\gitem{順位表}{leaderboard}{多くのモデルの点数を並べて公開している表。}{\appref{app:benchmarks}}
+\gitem{順伝播}{forward propagation}{入力から出力へ、層の計算を順に行うこと。}{\secref{sec:nn-mlp}}
+\gitem{条件付き確率}{conditional probability}{ある事柄が分かったという条件のもとでの、別の事柄の確率 $p(y\mid x)$。}{\secref{sec:math-prob}}
+\gitem{状態}{state}{強化学習で、エージェントが行動を選ぶときに手がかりにする、いまの状況。}{\secref{sec:rlb-what}}
+\gitem{状態価値関数}{state-value function}{ある状態から方策に従って進んだときに、平均して得られる収益 $V^\pi(s)$。}{\secref{sec:rlb-value}}
+\gitem{情報量}{information content}{確率 $p(x)$ の結果が起きたときの「驚き」を表す数 $-\log p(x)$。確率が小さいほど大きい。}{\secref{sec:math-info}}
+\gitem{上流の勾配}{upstream gradient}{誤差逆伝播法で、出力側から届く勾配（損失を、その演算の出力で微分したもの）。これに局所勾配を掛けて、入力側へ渡す。}{\secref{sec:nn-backprop}}
+\gitem{初期化}{initialization}{学習を始める前に、パラメータに最初の値を入れること。値の大きさが学習の成否を左右する。}{\secref{sec:training-init}}
+\gitem{ジョブスケジューラ}{job scheduler}{多くの人が共有するクラスタで、誰がどのマシンを何時間使うかを決める係のプログラム。代表は Slurm。}{\secref{sec:dist-cluster}}
+\gitem{信用割当}{credit assignment}{最後にもらった報酬が、それまでのどの行動のおかげなのかを見分ける問題。}{\secref{sec:rlb-what}}
+\gitem{信頼領域}{trust region}{1 回の更新で、方策を古い方策から離してよい範囲。範囲内なら見積もりが信用できる。}{\secref{sec:pg-ppo}}
+\gitem{推論}{inference}{学習の済んだモデルを使って、出力を計算すること。}{\secref{sec:distill-why}}
+\gitem{推論モデル}{reasoning model}{答える前に長い思考の過程を書き、それを強化学習で鍛えたモデル。}{\secref{sec:rl-variants}}
+\gitem{数値微分}{numerical differentiation}{入力を実際に少しだけ動かし、関数の値の差を動かした幅で割って、微分の近似値を求める方法。}{\secref{sec:math-calculus}}
+\gitem{スカラー}{scalar}{ただ 1 個の数。}{\secref{sec:math-notation}}
+\gitem{スケーリング効率}{scaling efficiency}{装置を $W$ 倍にしたときに速さが何倍になったかを、理想の $W$ 倍で割った値。}{\secref{sec:dist-comm}}
+\gitem{スケール}{scale}{線形量子化で、整数の目盛り 1 つの幅 $s$。}{\secref{sec:distill-quant-linear}}
+\gitem{スコア関数}{score function}{方策の確率の対数を、パラメータで微分したもの。方策勾配の式に現れる。}{\secref{sec:pg-logtrick}}
+\gitem{ステップ}{step}{パラメータを 1 回更新すること。}{\secref{sec:ml-gd}}
+\gitem{ストリーミング}{streaming}{生成したトークンを、全部書き終わるのを待たずに、できた順に送り届けること。}{\secref{sec:es-server}}
+\gitem{スポット}{spot}{空いている GPU を安く借りる契約。途中で取り上げられることがある。}{\secref{sec:infra-gpu}}
+\gitem{スライス}{slicing}{テンソルの一部を、範囲で指定して取り出す操作。}{\secref{sec:pt-tensor}}
+\gitem{スループット}{throughput}{単位時間あたりに処理できる量。たとえば 1 秒あたりに生成できるトークン数。}{\secref{sec:es-cost}}
+\gitem{正規化}{normalization}{途中の値の平均や大きさをそろえ直すこと。深いネットワークの学習を安定させる。}{\secref{sec:training-norm}}
+\gitem{正規表現}{regular expression}{探したい文字列の「型」を書くための小さな記法。}{\secref{sec:agent-real}}
+\gitem{正規分布}{normal distribution}{平均のまわりに左右対称に広がる、つり鐘の形の分布 $\calN(\mu,\sigma^2)$。}{\secref{sec:math-prob}}
+\gitem{生徒}{student}{知識蒸留で、教師モデルの出力を手本にして学習させる、小さいほうのモデル。}{\secref{sec:distill-why}}
+\gitem{成分}{component}{ベクトルや行列の中の、一つひとつの数。}{\secref{sec:math-notation}}
+\gitem{絶対値による枝刈り}{magnitude pruning}{絶対値の小さいほうから、決まった割合の重みを 0 にする枝刈り。}{\secref{sec:distill-prune-mag}}
+\gitem{ゼロ点}{zero point}{線形量子化で、実数の 0 に当たる整数 $z_0$。}{\secref{sec:distill-quant-linear}}
+\gitem{遷移確率}{transition probability}{ある状態である行動をとったとき、次にどの状態へ移るかの確率 $P(s'\mid s,a)$。}{\secref{sec:rlb-mdp}}
+\gitem{線形回帰}{linear regression}{入力に重みを掛けてバイアスを足した、直線（平面）で予測するモデル。}{\secref{sec:ml-supervised}}
+\gitem{線形スケーリング則}{linear scaling rule}{バッチを $k$ 倍にしたら学習率も $k$ 倍にする、という決まり。成り立つバッチには上限がある。}{\secref{sec:dist-torchrun}}
+\gitem{線形層}{linear layer}{全結合層の別名。PyTorch の \code{nn.Linear} に当たる。}{\secref{sec:nn-mlp}}
+\gitem{線形変換}{linear transformation}{行列を掛けて、ベクトルを別のベクトルに移すこと。}{\secref{sec:math-linalg}}
+\gitem{線形量子化}{linear quantization}{実数をスケールで割って丸め、等間隔の目盛りの整数に直す量子化。}{\secref{sec:distill-quant}}
+\gitem{全結合層}{fully connected layer}{すべての入力とすべての出力の間に重みがある層。行列を掛けてバイアスを足す。}{\secref{sec:nn-mlp}}
+\gitem{選好}{preference}{2 つの応答のうち、人がどちらを良いと思ったかという判断。}{\secref{sec:rl-rlhf}}
+\gitem{層}{layer}{ニューラルネットワークを作る 1 段の計算。}{\secref{sec:nn-mlp}}
+\gitem{早期終了}{early stopping}{検証データでの損失が下がらなくなったところで、学習を止めること。}{\secref{sec:training-regularization}}
+\gitem{添字}{subscript}{文字の右下に付ける小さな字。ベクトルや行列の何番目の成分かを表す（$x_i$、$W_{ij}$）。}{\secref{sec:math-notation}}
+\gitem{疎行列}{sparse matrix}{成分のほとんどが 0 の行列。0 でない成分だけを記録して、メモリと計算を節約する。}{\secref{sec:agent-tfidf}}
+\gitem{疎な報酬}{sparse reward}{エピソードの最後など、たまにしかもらえない報酬。信用割当が難しくなる。}{\secref{sec:arl-mdp}}
+\gitem{ソフトターゲット}{soft target}{蒸留で手本にする、教師の確率分布全体。正解 1 つだけを示すより多くを教える。}{\secref{sec:distill-loss}}
+\gitem{損失関数}{loss function}{予測が正解からどれだけ外れているかを 1 つの数で表す関数。学習はこれを小さくする。}{\secref{sec:ml-rules-vs-examples}}
+\gitem{損失スパイク}{loss spike}{学習の途中で、損失が突然跳ね上がること。}{\secref{sec:pt-monitor}}
+\gitem{損失マスク}{loss mask}{損失を数える位置と、数えない位置を指定する印。SFT では応答の部分だけを学ばせる。}{\secref{sec:post-sft}}
+\end{description}
+
+\section*{た行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{ダークナレッジ}{dark knowledge}{教師の確率のうち、正解以外の候補に付いた小さな確率に含まれる情報。「どの間違いがもっともらしいか」を教える。}{\secref{sec:distill-dark}}
+\gitem{ターミナル}{terminal}{コマンドを文字で打ち込んで、PC に指示を出すための窓。}{\secref{sec:setup-install}}
+\gitem{対応のある比較}{paired comparison}{2 つのモデルを同じ問題で比べ、問題ごとに正誤を突き合わせる方法。問題の難しさという共通のぶれが消える。}{\secref{sec:es-compare}}
+\gitem{対称量子化}{symmetric quantization}{ゼロ点を 0 に固定し、$-\max\abs{w}$ から $\max\abs{w}$ までを整数の目盛りに割り当てる線形量子化。}{\secref{sec:distill-quant-linear}}
+\gitem{対数関数}{logarithm}{$\log x$。「$e$ を何乗すれば $x$ になるか」の答え。指数関数の逆をたどる関数。}{\secref{sec:math-notation}}
+\gitem{対数微分のトリック}{log-derivative trick}{確率の勾配を「確率 $\times$ 対数確率の勾配」に書き換える恒等式 $\nabla_{\vtheta}\pitheta(a)=\pitheta(a)\,\nabla_{\vtheta}\log\pitheta(a)$。勾配をサンプルの平均で見積もれる形にする。}{\secref{sec:pg-logtrick}}
+\gitem{対数尤度}{log-likelihood}{尤度の対数。積が和になるので、計算しやすい。}{\secref{sec:math-mle}}
+\gitem{代理目的関数}{surrogate objective}{古い方策で集めたデータだけで計算できるように作った、方策の良さの近似。確率比とアドバンテージの積の平均。PPO はこれを大きくする。}{\secref{sec:pg-surrogate}}
+\gitem{タスク成功率}{task success rate}{答えを機械的に確かめられる課題をエージェントに最後までやらせて、成功した割合。}{\secref{sec:agent-eval}}
+\gitem{多層パーセプトロン}{multilayer perceptron, MLP}{全結合層と活性化関数を交互に重ねた、基本のニューラルネットワーク。}{\secref{sec:nn-mlp}}
+\gitem{多腕バンディット}{multi-armed bandit}{当たる確率が台ごとに違うスロットマシンを、確率を知らずに引く問題。状態が 1 つだけの、探索と活用を考えるいちばん簡単な設定。}{\secref{sec:rlb-q}}
+\gitem{探索}{exploration}{よく分かっていない行動を、あえて試してみること。活用と対になる。}{\secref{sec:rlb-what}}
+\gitem{探索と活用のトレードオフ}{exploration--exploitation trade-off}{試す（探索）を増やすと、分かっている良い行動を使う（活用）が減り、その逆も成り立つこと。どちらに偏っても損をする。}{\secref{sec:rlb-q}}
+\gitem{小さなファイル問題}{small-file problem}{小さなファイルが大量にあると、中身を読む時間より、ファイルを探す手間（メタデータの処理）で遅くなる問題。}{\secref{sec:infra-storage}}
+\gitem{チェックポイント}{checkpoint}{学習の途中で保存した、重みやオプティマイザの状態の一式。止まっても、そこから再開できる。}{\secref{sec:pt-ckpt}}
+\gitem{置換同変性}{permutation equivariance}{入力のトークンの順番を並べ替えると、出力も同じように並べ替わるだけで中身は変わらない、という性質。因果マスクのない注意機構が持つ。}{\secref{sec:attn-properties}}
+\gitem{知識蒸留}{knowledge distillation}{大きな教師モデルの出力（確率）をまねるように、小さな生徒モデルを学習させる方法。単に「蒸留」とも言う。}{\secref{sec:distill-why}}
+\gitem{チャットテンプレート}{chat template}{会話を、特殊トークンで区切った 1 本の文字列に並べる決まった書式。}{\secref{sec:post-sft}}
+\gitem{注意機構}{attention}{各位置が、文脈中のどの位置をどれだけ重く見るかを内容から決め、情報を重み付き平均で集めるしくみ。Transformer の中心。}{\chapref{ch:attention}}
+\gitem{注意の重み}{attention weights}{注意機構で、各位置がほかの各位置をどれだけ見るかを表す数。各行の和は 1。}{\secref{sec:attn-qkv}}
+\gitem{中間学習}{mid-training}{事前学習の終盤から事後学習の前までに、特別なデータで行う継続事前学習。最近の論文での呼び名。}{\secref{sec:post-lifecycle}}
+\gitem{中心極限定理}{central limit theorem}{独立な確率変数をたくさん足して平均を取ると、その分布は、もとの分布が何であっても正規分布に近づく、という定理。}{\secref{sec:es-stats}}
+\gitem{長距離依存}{long-range dependency}{文章の中で、離れたトークンどうしの関係。RNN はこれが苦手。}{\secref{sec:emb-rnn}}
+\gitem{重複除去}{deduplication}{学習データから、同じ文章や、ほぼ同じ文章を取り除くこと。計算の無駄と丸暗記を防ぐ。}{\secref{sec:pt-data}}
+\gitem{ツール}{tool}{電卓や検索のように、モデルが呼び出して結果を受け取れる外部のプログラム。}{\secref{sec:agent-why}}
+\gitem{データ型}{dtype}{テンソルの中の数を、小数・整数などどの種類で、何ビットで持つかを表す情報。\code{.dtype} で調べられる。}{\secref{sec:pt-tensor}}
+\gitem{データミックス}{data mixture}{事前学習で、ウェブ・コード・書籍など種類の違うデータを、どの割合で混ぜるかの配合。}{\secref{sec:pt-data}}
+\gitem{テストデータ}{test data}{最後に一度だけ、本当の実力を測るために使うデータ。}{\secref{sec:ml-generalization}}
+\gitem{デコーダのみ}{decoder-only}{因果マスク付きの自己注意だけでできた Transformer。GPT など今の LLM の多くがこの形。}{\secref{sec:tf-overview}}
+\gitem{デコード}{decode}{トークン ID の列を文字列に戻すこと。第 19 章では、プリフィルのあと 1 トークンずつ生成する段階の意味でも使う。}{\secref{sec:tok-units}}
+\gitem{デッドロック}{deadlock}{プロセスが互いに相手を待ち合って、永遠に止まってしまうこと。}{\secref{sec:dist-comm}}
+\gitem{デバイス}{device}{テンソルを置いて計算する装置。CPU か GPU。}{\secref{sec:pt-tools}}
+\gitem{転移学習}{transfer learning}{ある問題で学んだモデルを、別の問題の出発点に使うこと。}{\secref{sec:post-finetune}}
+\gitem{データセット}{dataset}{学習や評価に使う、データの集まり $\calD$。}{\secref{sec:ml-supervised}}
+\gitem{データ並列}{data parallel}{同じモデルを複数の GPU に置き、データを分けて計算し、勾配を平均してそろえる並列化。}{\secref{sec:dist-why}}
+\gitem{テンソル}{tensor}{数を 3 方向以上に並べたもの。PyTorch では、数 1 個・ベクトル・行列も含めた配列全般をこう呼び、違いは形だけ。}{\secref{sec:math-notation}}
+\gitem{テンソル並列}{tensor parallel}{1 つの層の行列を切り分けて、複数の GPU で分担して計算する並列化。}{\secref{sec:dist-mp}}
+\gitem{転置}{transpose}{行列の行と列を入れ替えること。$\mA$ の転置を $\mA^\T$ と書く。}{\secref{sec:math-linalg}}
+\gitem{導関数}{derivative}{各点 $x$ に、その点での微分係数を対応させる関数。$f'(x)$ または $\dd{f}{x}$ と書く。}{\secref{sec:math-calculus}}
+\gitem{同時確率}{joint probability}{2 つの事柄が両方とも起こる確率 $p(x,y)$。}{\secref{sec:math-prob}}
+\gitem{動的計画法}{dynamic programming}{遷移確率を使い、ベルマン方程式で価値の表を順に埋めていく方法の総称。}{\secref{sec:rlb-dp}}
+\gitem{倒立振子}{CartPole}{左右に動く台車の上に立てた棒が倒れないように、台車を左右に押し続ける課題。強化学習の定番。}{\secref{sec:pg-reinforce}}
+\gitem{トークナイザ}{tokenizer}{文字列とトークン ID の列を、行き来させる道具。モデルと一組で使う。}{\secref{sec:tok-units}}
+\gitem{トークン}{token}{言語モデルが文章を読み書きする単位。文字や、よく出る文字の並び。}{\secref{sec:tok-units}}
+\gitem{トークン ID}{token ID}{語彙の各トークンに振った、$0$ から $V-1$ までの番号。モデルに入るのは、文字ではなくこの番号の列。}{\secref{sec:tok-units}}
+\gitem{トークン化}{tokenization}{文字列をトークンの列に切り分けること。}{\secref{sec:tok-units}}
+\gitem{トークン間時間}{inter-token latency}{応答を少しずつ返すとき、トークンが届く間隔。}{\secref{sec:es-cost}}
+\gitem{特殊トークン}{special token}{会話の区切りなど、印として使う専用のトークン。普通の文章からは決して作られない。}{\secref{sec:tok-special}}
+\gitem{独立}{independent}{2 つの確率変数で、片方の値を知っても、もう片方の確率が変わらないこと。このとき同時確率は、それぞれの確率の積になる。}{\secref{sec:math-prob}}
+\gitem{トポロジカル順}{topological order}{計算グラフのノードを、どの矢印も列の前から後ろへ向かうように 1 列に並べた順番。逆伝播はこれを後ろからたどる。}{\secref{sec:nn-value}}
+\gitem{トライグラム}{trigram}{直前の 2 トークンを見て、次のトークンを予測する言語モデル。$n=3$ の $n$-グラム。}{\secref{sec:lm-ngram-limits}}
+\gitem{ドロップアウト}{dropout}{学習中、ランダムに選んだ一部の値を 0 にする方法。特定の値に頼りすぎるのを防ぐ。}{\secref{sec:training-regularization}}
+\gitem{貪欲法}{greedy decoding}{毎回、いちばん確率の高いトークンを選ぶ生成の方法。温度 0 と同じ。}{\secref{sec:lm-generation}}
+\gitem{貪欲方策}{greedy policy}{各状態で、価値がいちばん高い行動を必ず選ぶ方策。}{\secref{sec:rlb-dp}}
+\end{description}
+
+\section*{な行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{内在次元}{intrinsic dimension}{ファインチューニングで十分な性能を得るのに必要な、パラメータを動かす部分空間の大きさ。事前学習が進んだモデルほど小さい。}{\secref{sec:lora-why-lowrank}}
+\gitem{内積}{inner product}{2 本のベクトルの成分ごとの積を足した数。向きがそろっているほど大きい。}{\secref{sec:math-linalg}}
+\gitem{ニューラルネットワーク}{neural network}{ニューロンを層に並べ、層を重ねた関数。}{\secref{sec:nn-neuron}}
+\gitem{ニューロン}{neuron}{入力に重みを掛けて足し、活性化関数を通して 1 つの数を出す、最小の部品。}{\secref{sec:nn-neuron}}
+\gitem{ノード}{node}{GPU などを載せた 1 台の計算機。}{\secref{sec:dist-ddp}}
+\gitem{ノルム}{norm}{ベクトルの長さ $\norm{\va}$。各成分を 2 乗して足し、平方根を取ったもの。}{\secref{sec:math-linalg}}
+\end{description}
+
+\section*{は行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{パープレキシティ}{perplexity}{損失 $\calL$ から計算する $e^{\calL}$。モデルが平均して「何択で迷っているか」を表す。}{\secref{sec:lm-objective}}
+\gitem{バイアス}{bias}{(1) 入力によらず足される数のパラメータ（\secref{sec:ml-supervised}）。(2) 推定が平均して本当の値からずれる量。訳語は「偏り」（\secref{sec:pg-logtrick}）。}{\secref{sec:ml-supervised}}
+\gitem{バイアス補正}{bias correction}{Adam で、勾配の平均を 0 から始めたために最初のうち小さく出すぎる分を、割り算で直す操作。}{\secref{sec:training-optim}}
+\gitem{バイグラム}{bigram}{直前の 1 トークンだけを見て、次のトークンを予測する言語モデル。}{\secref{sec:lm-bigram-count}}
+\gitem{排他的論理和}{exclusive or, XOR}{0 か 1 の 2 つの入力のうち、ちょうど片方だけが 1 のときに 1、それ以外は 0 とする規則。直線では分けられない最小の例。}{\secref{sec:nn-linear-limit}}
+\gitem{バイト}{byte}{8 桁の 2 進数（8 ビット）。0 から 255 までの 256 通りの値を表す。ファイルや通信のデータは、すべてバイトの列。}{\secref{sec:tok-utf8}}
+\gitem{バイト対符号化}{byte pair encoding, BPE}{最も多く隣り合う 2 つのトークンを 1 つにまとめる、を繰り返して語彙を作るトークン化の方法。}{\secref{sec:tok-bpe-hand}}
+\gitem{ハイパーパラメータ}{hyperparameter}{学習率や層の数のように、学習で調整されず、人が学習の前に決める設定。}{\secref{sec:ml-generalization}}
+\gitem{パイプライン並列}{pipeline parallel}{モデルを層ごとに区切って GPU に割り当て、データを流れ作業のように順に渡す並列化。}{\secref{sec:dist-mp}}
+\gitem{配列}{array}{同じ型の数を一続きに並べたもの。NumPy と PyTorch の基本の入れ物。}{\secref{sec:pt-tools}}
+\gitem{バケット}{bucket}{DDP が、勾配をパラメータごとに送る代わりに、約 25 MB ずつにまとめて送るときの 1 まとまり。}{\secref{sec:dist-comm}}
+\gitem{バックエンド}{backend}{集合通信で、実際に数を運ぶ通信ライブラリ。GPU どうしでは NCCL、CPU では gloo を使う。}{\secref{sec:dist-ddp}}
+\gitem{バッチ}{batch}{1 個のデータを 1 行として縦に積んだ、データの束。まとめて計算すると速い。}{\secref{sec:pt-matmul}}
+\gitem{バッチサイズ}{batch size}{1 回の更新に使うデータの個数 $B$。}{\secref{sec:ml-sgd}}
+\gitem{バッチ正規化}{batch normalization}{ニューロンごとに、ミニバッチにわたる平均が 0、分散が 1 になるようにそろえる正規化。画像のモデルで広まった。}{\secref{sec:training-norm}}
+\gitem{パディング}{padding}{長さの違う系列を同じ長さにそろえるため、短い方の末尾に詰める意味のないトークン。}{\secref{sec:post-sft}}
+\gitem{幅}{width}{隠れ層のニューロンの個数。}{\secref{sec:nn-mlp}}
+\gitem{バブル}{bubble}{パイプライン並列で、流れの最初と最後に、GPU が何もせずに待っている時間。}{\secref{sec:dist-mp}}
+\gitem{破滅的忘却}{catastrophic forgetting}{新しいデータで学習し直したとき、以前にできたことを大きく忘れてしまうこと。}{\secref{sec:post-cpt}}
+\gitem{パラメータ}{parameter}{モデルの振る舞いを決める、学習で調整される数の全体 $\vtheta$。}{\secref{sec:math-notation}}
+\gitem{パラメータ効率のよいファインチューニング}{parameter-efficient fine-tuning, PEFT}{元の重みはほぼ凍結し、ごく一部の（または付け足した）パラメータだけを学習するファインチューニングの総称。LoRA が代表。}{\secref{sec:lora-practice}}
+\gitem{バリュー}{value}{注意機構で、見られた位置から実際に受け渡される中身のベクトル。}{\secref{sec:attn-qkv}}
+\gitem{汎化}{generalization}{学習に使っていない新しいデータでも、正しく予測できること。}{\secref{sec:ml-generalization}}
+\gitem{万能近似定理}{universal approximation theorem}{隠れ層が 1 枚の MLP でも、うまく作れば、連続な関数をどんなに小さな誤差でも近似できる、という定理。良い重みが存在することだけを言う。}{\secref{sec:nn-mlp}}
+\gitem{反復方策評価}{iterative policy evaluation}{ベルマン期待方程式の右辺で価値の表を繰り返し書き換えて、方策の価値を求める方法。}{\secref{sec:rlb-value}}
+\gitem{非対称量子化}{asymmetric quantization}{値の最小値と最大値を、それぞれ整数の目盛りの両端に合わせる線形量子化。ゼロ点が 0 とは限らない。}{\secref{sec:distill-quant-linear}}
+\gitem{人のフィードバックからの強化学習}{reinforcement learning from human feedback}{「RLHF」の項目を見よ。}{\secref{sec:rl-rlhf}}
+\gitem{微分係数}{derivative}{ある点で $x$ を少しだけ増やしたとき、関数の増加が $x$ の増加の何倍になるかを、増やし幅を 0 に近づけて求めた値。}{\secref{sec:math-calculus}}
+\gitem{ビュー}{view}{数をコピーせず、元のテンソルのメモリの一部をそのまま見せているテンソル。書き換えると、元のテンソルも変わる。}{\secref{sec:pt-tensor}}
+\gitem{評価}{evaluation}{モデルの出力の良し悪しを、決まった手順で数字にすること。}{\secref{sec:es-what}}
+\gitem{評価ハーネス}{evaluation harness}{問題を読み込み、モデルに解かせ、採点して集計するまでを自動で行うプログラム。}{\secref{sec:es-harness}}
+\gitem{標準誤差}{standard error}{測った値（たとえば正答率）が、問題の選ばれ方の偶然でどのくらいぶれるかの目安。}{\secref{sec:es-stats}}
+\gitem{標準偏差}{standard deviation}{分散の平方根。もとの値と同じ単位で、「ふつうはこのくらいずれる」という幅を表す。}{\secref{sec:math-prob}}
+\gitem{品質フィルタ}{quality filter}{同じ文字が続く行や記号ばかりの行など、質の悪い文章を、経験則や分類器で学習データから落とす処理。}{\secref{sec:pt-data}}
+\gitem{ファインチューニング}{fine-tuning}{学習済みのモデルの重みを出発点にして、新しいデータで追加の学習をすること。}{\secref{sec:post-lifecycle}}
+\gitem{ブートストラップ}{bootstrap}{(1) 手元の問題から重複を許して選び直すことを何度も繰り返し、測った値のぶれを見積もる方法（\secref{sec:es-stats}）。(2) 強化学習で、見積もりを使って見積もりを更新すること（\secref{sec:rlb-mc-td}）。}{\secref{sec:es-stats}}
+\gitem{深さ}{depth}{ニューラルネットワークの層の枚数。本書では、パラメータを持つ層で数える。}{\secref{sec:nn-mlp}}
+\gitem{負荷分散損失}{load-balancing loss}{MoE で、トークンが一部のエキスパートに偏らないように足す損失。}{\secref{sec:ma-moe}}
+\gitem{符号位置}{code point}{Unicode で、文字の一つ一つに割り当てられた番号。\code{U+} の後に 16 進法で書く。}{\secref{sec:tok-utf8}}
+\gitem{符号検定}{sign test}{2 つのモデルの正誤が食い違った問題だけを見て、「差がなければ、どちらが正解するかは五分五分」というコイン投げの計算で $p$ 値を求める方法。}{\secref{sec:es-compare}}
+\gitem{浮動小数点演算数}{floating-point operations, FLOPs}{計算に必要な、実数の足し算と掛け算の回数。1 秒あたりの回数は FLOP/s と書き分ける。}{\secref{sec:gpu-flops}}
+\gitem{浮動小数点数}{floating-point number}{計算機が小数を、決まったビット数で表す形式。\code{float32} は 32 ビットで、正しいのはおよそ 7 桁目まで。}{\secref{sec:pt-tensor}}
+\gitem{負の対数尤度}{negative log-likelihood}{対数尤度に $-1$ を掛けたもの。小さくすることが、尤度を大きくすることになる。}{\secref{sec:math-mle}}
+\gitem{不偏推定量}{unbiased estimator}{期待値が、真の値に等しくなる推定量。}{\secref{sec:pg-logtrick}}
+\gitem{ブラックボックス蒸留}{black-box distillation}{教師が生成した文章しか手に入らないときの蒸留。生成された文章を手本にして SFT を行う。}{\secref{sec:distill-llm}}
+\gitem{プリフィル}{prefill}{生成を始める前に、プロンプト全体を一度に計算して KV キャッシュを作る段階。}{\secref{sec:es-cost}}
+\gitem{プレフィックスキャッシュ}{prefix caching}{同じ書き出しを持つプロンプトの KV キャッシュを取っておき、使い回すこと。}{\secref{sec:es-cache}}
+\gitem{ブロードキャスト}{broadcasting}{形の違うテンソルどうしの演算で、小さいほうを同じ数の繰り返しで引き伸ばしてから計算する仕組み。}{\secref{sec:pt-broadcast}}
+\gitem{プロセス}{process}{実行中の 1 つのプログラム。分散学習では、ふつう GPU 1 枚に 1 つのプロセスを割り当てる。}{\secref{sec:dist-ddp}}
+\gitem{プロセスグループ}{process group}{分散学習で、一緒に学習するプロセスの集まり。}{\secref{sec:dist-ddp}}
+\gitem{プロンプト}{prompt}{モデルに続きを書かせるために与える、最初の文章。}{\secref{sec:agent-prompt}}
+\gitem{プロンプトインジェクション}{prompt injection}{ツールの結果や文書の中に紛れ込ませた指示で、モデルに本来の指示と違うことをさせる攻撃。}{\secref{sec:agent-eval}}
+\gitem{プロンプトキャッシュ}{prompt caching}{事業者の API が提供するプレフィックスキャッシュ。同じ前置きを繰り返し送ると、その分の入力の単価が変わる。}{\secref{sec:es-cache}}
+\gitem{分散}{variance}{値が平均からどれだけ散らばっているかを、差の 2 乗の平均で表した数。}{\secref{sec:math-prob}}
+\gitem{分配関数}{partition function}{合計で割って確率分布にするときの、正規化の定数 $Z$。}{\secref{sec:rl-dpo}}
+\gitem{分布仮説}{distributional hypothesis}{単語の意味は、その単語がどんな単語と一緒に現れるかで決まる、という言語学の考え方。}{\secref{sec:emb-meaning}}
+\gitem{文脈内学習}{in-context learning}{プロンプトの中の例から、重みを変えずに、その場でやり方を読み取る能力。}{\secref{sec:post-why}}
+\gitem{分類}{classification}{入力が、決まった種類（クラス）のどれに当たるかを当てる問題。}{\secref{sec:ml-classification}}
+\gitem{平均二乗誤差}{mean squared error, MSE}{予測と正解の差を 2 乗して平均した損失。回帰で使う。}{\secref{sec:ml-supervised}}
+\gitem{ベイズの定理}{Bayes' theorem}{$p(x\mid y)=p(y\mid x)\,p(x)/p(y)$ という式。条件を入れ替えた確率を求められ、結果から原因を推し量るときに使う。}{\secref{sec:math-prob}}
+\gitem{並列ファイルシステム}{parallel file system}{データを多数のサーバに分けて置き、多くのノードから同時に速く読み書きできるファイルの置き場。}{\secref{sec:infra-storage}}
+\gitem{ベースライン}{baseline}{方策勾配で、収益から引く基準の値。平均は変えずに、勾配の見積もりのぶれを小さくする。}{\secref{sec:pg-variance}}
+\gitem{ベクトル}{vector}{数を一列に並べたもの。本書の数式では縦に並べ、太字の小文字で書く。}{\secref{sec:math-notation}}
+\gitem{ベクトル化}{vectorization}{要素を一つずつ処理する \code{for} 文を、配列全体への演算に書き直すこと。計算が大幅に速くなる。}{\secref{sec:pt-speed}}
+\gitem{ヘッド}{head}{マルチヘッド注意で、独立に注意を計算する 1 組。}{\secref{sec:attn-multihead}}
+\gitem{ベルマン期待方程式}{Bellman expectation equation}{ある状態の価値を、すぐもらう報酬と、次の状態の価値の割り引いた値の和で表す式。}{\secref{sec:rlb-value}}
+\gitem{ベルマン最適方程式}{Bellman optimality equation}{ベルマン期待方程式の「方策の確率で平均する」を「最大のものを選ぶ」に置き換えた式。最適価値関数が満たす。}{\secref{sec:rlb-dp}}
+\gitem{ベンチマーク}{benchmark}{公開された問題集と採点方法の組。全員が同じ物差しで、モデルどうしを比べるために使う。}{\secref{sec:es-bench}}
+\gitem{偏微分}{partial derivative}{変数がいくつもある関数で、1 つの変数だけを少し動かしたときの変化の割合。}{\secref{sec:math-calculus}}
+\gitem{方策}{policy}{状態を見て、どの行動をどの確率で選ぶかの決まり $\pi(a\mid s)$。LLM では、文脈から次のトークンの確率を出すモデルそのもの。}{\secref{sec:rlb-return}}
+\gitem{方策改善}{policy improvement}{すべての状態で、いまの方策の行動価値が最大の行動を選ぶ方策に取り替えること。元の方策より悪くならない。}{\secref{sec:rlb-dp}}
+\gitem{方策勾配}{policy gradient}{期待収益が増える向きに、方策のパラメータを直接動かす方法。}{\secref{sec:pg-param}}
+\gitem{方策反復}{policy iteration}{方策評価と方策改善を交互に繰り返して、最適方策を求める方法。}{\secref{sec:rlb-dp}}
+\gitem{方策評価}{policy evaluation}{ある方策の状態価値関数 $V^\pi$ を求めること。}{\secref{sec:rlb-value}}
+\gitem{方策ベース}{policy-based}{方策そのものをパラメータを持つ関数で表し、直接良くしていく流儀。価値ベースと対になる。}{\secref{sec:rlb-fa}}
+\gitem{報酬}{reward}{行動の結果として環境から返される、良し悪しを表す数。}{\secref{sec:rlb-what}}
+\gitem{報酬関数}{reward function}{状態と行動（と次の状態）から、報酬を決める関数。}{\secref{sec:rlb-mdp}}
+\gitem{報酬ハッキング}{reward hacking}{報酬の作り方の抜け穴を突いて、本来の目的を果たさずに報酬だけを上げること。}{\secref{sec:rl-rlhf}}
+\gitem{飽和}{saturation}{ベンチマークで多くのモデルが満点近くを取り、差がつかなくなった状態。}{\secref{sec:es-bench}}
+\gitem{ホライゾン}{horizon}{1 エピソードの長さ。長いほど、どの行動が効いたかを見分けにくい。}{\secref{sec:arl-mdp}}
+\gitem{ホワイトボックス蒸留}{white-box distillation}{教師の確率分布を直接見られるときの蒸留。見られない場合はブラックボックス蒸留と呼び、教師が生成した文章から学ぶ。}{\secref{sec:distill-llm}}
+\end{description}
+
+\section*{ま行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{マージ}{merge}{(1) BPE で、隣り合う 2 つのトークンを 1 つにまとめる 1 回の操作（\secref{sec:tok-bpe-hand}）。(2) LoRA で、学習した差分を元の重みに足し込んで 1 つの行列にすること（\secref{sec:lora-merge}）。}{\secref{sec:tok-bpe-hand}}
+\gitem{マージ規則}{merge rule}{BPE で、「この 2 つのトークンをまとめて、この 1 つにする」という取り決め。学習で見つけた順に並べたものが、トークナイザの中身になる。}{\secref{sec:tok-bpe-hand}}
+\gitem{前向き KL}{forward KL}{教師の分布を前（重みを付ける側）、生徒の分布を後に置いた KL ダイバージェンス。教師が確率を置いた候補すべてに、生徒も確率を置くよう促す。}{\secref{sec:distill-kl}}
+\gitem{窓}{window}{次のトークンを当てるときに見る、「直前の $n$ 個」という固定の範囲。$n$ を窓の幅と呼ぶ。}{\secref{sec:emb-mlp}}
+\gitem{マルコフ決定過程}{Markov decision process, MDP}{状態・行動・遷移確率・報酬・割引率の 5 つで、強化学習の問題を書き表す枠組み。}{\secref{sec:rlb-mdp}}
+\gitem{マルコフ性}{Markov property}{次の状態と報酬の確率が、いまの状態と行動だけで決まり、それより前の経緯によらないこと。}{\secref{sec:rlb-mdp}}
+\gitem{マルチヘッド注意}{multi-head attention}{小さな注意を何組も並べて同時に計算し、結果をつなぐ注意。組ごとに別のことに注目できる。}{\secref{sec:attn-multihead}}
+\gitem{未学習}{underfitting}{モデルが単純すぎるか学習が足りず、訓練データにさえ合っていない状態。}{\secref{sec:ml-generalization}}
+\gitem{未知語}{unknown word}{語彙にない単語。単語単位のトークン化では、「不明」を表す 1 個のトークンに置き換えるしかない。}{\secref{sec:tok-units}}
+\gitem{ミニバッチ}{minibatch}{データ全体からランダムに選んだ一部。1 回の更新はこれで計算する。}{\secref{sec:ml-sgd}}
+\gitem{メタデータ}{metadata}{ファイルの中身ではなく、名前・大きさ・置き場所など「ファイルについての情報」。}{\secref{sec:infra-storage}}
+\gitem{メモリマップ}{memory map}{ファイルをメモリ上の配列のように扱い、必要な部分だけを読み込むしくみ。大きな学習データを全部読まずに使える。}{\secref{sec:pt-binary}}
+\gitem{メモリ律速}{memory-bound}{計算よりもメモリからデータを運ぶ時間が、全体の速さを決めている状態。}{\secref{sec:gpu-memory-bw}}
+\gitem{目的関数}{objective}{学習で小さく（または大きく）したい関数の総称。強化学習では期待収益 $J(\vtheta)$ を大きくする。}{\secref{sec:pg-param}}
+\gitem{モーメンタム}{momentum}{過去の勾配を少しずつ混ぜた「勢い」の向きに進む更新。坂の細かな揺れをならす。}{\secref{sec:training-optim}}
+\gitem{モデル}{model}{入力から出力を計算する、パラメータで調整できる関数。}{\secref{sec:ml-rules-vs-examples}}
+\gitem{モデル圧縮}{model compression}{性能をなるべく保ったまま、モデルを小さく速くすること。蒸留・量子化・枝刈りなど。}{\secref{sec:distill-why}}
+\gitem{モデル並列}{model parallel}{モデルそのものを切り分けて、複数の GPU に載せる並列化の総称。}{\secref{sec:dist-why}}
+\gitem{モデルフリー}{model-free}{環境のモデルを使わず、実際に行動してみた経験だけから学ぶ方法。}{\secref{sec:rlb-mc-td}}
+\gitem{モンテカルロ法}{Monte Carlo method}{エピソードを最後まで行い、実際に得た収益の平均で価値を見積もる方法。}{\secref{sec:rlb-mc-td}}
+\end{description}
+
+\section*{や行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{ヤコビ行列}{Jacobian}{入力が $n$ 個、出力が $m$ 個の関数の偏微分を、$m$ 行 $n$ 列に並べた行列。}{\secref{sec:math-calculus}}
+\gitem{尤度}{likelihood}{パラメータを決めたとき、手元のデータが出てくる確率。パラメータの良さの物差しとして見る。}{\secref{sec:math-mle}}
+\gitem{ユニグラム}{unigram}{前のトークンを見ずに、トークンの出やすさだけで予測する言語モデル。$n=1$ の $n$-グラム。}{\secref{sec:lm-bigram-count}}
+\gitem{読み出し}{cache read}{プレフィックスキャッシュで、保存しておいた KV キャッシュを後で使うこと。}{\secref{sec:es-cache}}
+\gitem{予約}{reserved}{GPU を、数か月から数年の利用を約束して、割引を受けて借りる契約。}{\secref{sec:infra-gpu}}
+\end{description}
+
+\section*{ら行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{ラベル}{label}{正解の別名。モデルに当ててほしい値 $y$。}{\secref{sec:ml-supervised}}
+\gitem{乱数の種}{seed}{乱数の出方を決める最初の数。同じ種なら、毎回同じ乱数が出る。}{\secref{sec:pt-tensor}}
+\gitem{ランダム方策}{random policy}{どの状態でも、すべての行動を等しい確率で選ぶ方策。}{\secref{sec:rlb-return}}
+\gitem{ランチャ}{launcher}{学習スクリプトを複数のプロセスとして起動し、各プロセスに役割を知らせる起動プログラム。PyTorch では \code{torchrun}。}{\secref{sec:dist-torchrun}}
+\gitem{ランク}{rank}{(1) 分散学習で、各プロセスに付けた 0 からの通し番号（\secref{sec:dist-ddp}）。(2) 行列の、互いに独立な列の数。LoRA の $r$（\secref{sec:lora-lowrank}）。}{\secref{sec:dist-ddp}}
+\gitem{リング all-reduce}{ring all-reduce}{プロセスを輪の形につなぎ、隣どうしで少しずつ受け渡して全員の合計をそろえる通信の方法。}{\secref{sec:dist-comm}}
+\gitem{領域適応}{domain adaptation}{医療や法律など特定の分野の文章で学習を続け、その分野に強くすること。}{\secref{sec:post-cpt}}
+\gitem{量子化}{quantization}{重みなどの数を、少ないビット数（たとえば 8 ビットの整数）で近似して表すこと。メモリが減り、速くなる。}{\secref{sec:distill-quant}}
+\gitem{量子化を意識した学習}{quantization-aware training, QAT}{学習の途中から、順伝播で疑似量子化した重みを使う方法。モデルが、丸めに強い重みを自分で見つける。}{\secref{sec:distill-quant-llm}}
+\gitem{ルーフライン}{roofline}{横軸に算術強度、縦軸に達成できる計算の速さの上限を描いた図。メモリの運搬で決まる斜めの線と、演算器の最大性能の水平の線が、屋根の形になる。}{\secref{sec:gpu-memory-bw}}
+\gitem{レイテンシ}{latency}{1 つの処理を頼んでから結果が返るまでの待ち時間。日本語では「遅延」とも書く。}{\secref{sec:dist-comm}}
+\gitem{レイヤー正規化}{layer normalization}{1 件のデータの中で、ベクトルの成分の平均を 0、分散を 1 にそろえ直す正規化。}{\secref{sec:training-norm}}
+\gitem{連鎖律}{chain rule}{関数を重ねたものの微分は、それぞれの微分の掛け算になる、という規則。逆伝播の土台。}{\secref{sec:math-calculus}}
+\gitem{連続バッチ処理}{continuous batching}{推論で、生成を終えた系列の空き席に、すぐ次の依頼を入れながらまとめて計算する方法。}{\secref{sec:es-batch}}
+\gitem{ローカル NVMe}{local NVMe}{ノードに内蔵された高速な SSD。最も速いが、ほかのノードからは見えない。}{\secref{sec:infra-storage}}
+\gitem{ローカルランク}{local rank}{分散学習で、1 つのノードの中でプロセスに付けた番号。そのノードの何枚目の GPU を使うかを決める。}{\secref{sec:dist-ddp}}
+\gitem{ロールアウト}{rollout}{今の方策で実際に行動させ、軌跡を集めること。}{\secref{sec:pg-reinforce}}
+\gitem{ロジスティック回帰}{logistic regression}{入力の重み付きの和をシグモイド関数に通して、2 つのクラスのどちらかの確率を出すモデル。名前に「回帰」と付くが、分類のモデル。}{\secref{sec:ml-classification}}
+\gitem{ロジット}{logits}{softmax で確率に直す前の、候補ごとのスコア $\vz$。}{\secref{sec:math-linalg}}
+\gitem{露出バイアス}{exposure bias}{学習ではお手本の途中までを見て次を当てるのに、使うときは自分が書いた途中までを見て次を書く、という食い違い。一度間違えると、間違いが連鎖しやすい。}{\secref{sec:rl-why}}
+\end{description}
+
+\section*{わ行}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{ワールドサイズ}{world size}{分散学習に参加するプロセスの総数 $W$。}{\secref{sec:dist-ddp}}
+\gitem{割引率}{discount factor}{先の報酬ほど軽く数えるために掛ける、0 から 1 の数 $\gamma$。}{\secref{sec:rlb-return}}
+\end{description}
+
+\section*{英字で始まる語}
+\begin{description}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}
+\gitem{Agentic RL}{agentic reinforcement learning}{ツールを使いながら何ステップもかけて仕事をするエージェントを、強化学習で鍛える方法。}{\chapref{ch:agentic-rl}}
+\gitem{AI エージェント}{AI agent}{LLM がツール呼び出しを書き、外側のプログラムが実行して結果を返す、という往復をループで回す仕組み。「LLM ＋ ツール ＋ ループ」。}{\chapref{ch:agent}}
+\gitem{BF16}{bfloat16}{1 個を 2 バイトで表す浮動小数点数の形式。FP32 と同じ広さの範囲を、粗い目盛りで表す。}{\secref{sec:gpu-precision}}
+\gitem{BLAS}{Basic Linear Algebra Subprograms}{行列計算のために磨き抜かれたライブラリ。\code{torch.matmul} は、CPU での行列積をこれに任せる。}{\secref{sec:gpu-cpu-speed}}
+\gitem{Bradley--Terry モデル}{Bradley--Terry model}{2 つの応答の報酬の差から、人がどちらを好むかの確率を決めるモデル。報酬モデルの学習に使う。}{\secref{sec:rl-rlhf}}
+\gitem{DDP}{DistributedDataParallel}{PyTorch のデータ並列の部品。逆伝播の途中で勾配の平均を取り、全 GPU のモデルをそろえる。}{\secref{sec:dist-ddp}}
+\gitem{DPO}{Direct Preference Optimization}{報酬モデルも強化学習も使わず、選好データから直接、好まれた応答の確率を上げる学習。}{\secref{sec:rl-dpo}}
+\gitem{DQN}{deep Q-network}{Q 学習の行動価値を深いニューラルネットワークで表し、ゲームの画面にも使えるようにした方法。}{\secref{sec:rlb-fa}}
+\gitem{few-shot}{few-shot}{プロンプトの中に解き方の例をいくつか見せてから、本題を解かせること。}{\secref{sec:agent-prompt}}
+\gitem{FSDP}{Fully Sharded Data Parallel}{パラメータ・勾配・オプティマイザの状態を GPU 全体に分けて持ち、必要なときだけ集めて計算するデータ並列。}{\secref{sec:dist-sharding}}
+\gitem{GPU}{graphics processing unit}{小さな計算器を大量に並べ、同じ形の計算を同時に行う計算機。行列の掛け算が非常に速い。}{\secref{sec:gpu-arch}}
+\gitem{GPU 時間}{GPU-hours}{使った GPU の枚数と時間の掛け算。費用の見積もりの単位。}{\secref{sec:infra-pipeline}}
+\gitem{GQA}{grouped-query attention}{いくつかのクエリのヘッドで、キーとバリューのヘッドを共有する注意。KV キャッシュが小さくなる。全ヘッドで 1 組だけを共有するものを MQA と呼ぶ。}{\secref{sec:ma-gqa}}
+\gitem{GRPO}{Group Relative Policy Optimization}{同じ質問への複数の応答の報酬を比べ、平均より良い応答を強める強化学習。価値ネットが要らない。}{\secref{sec:rl-grpo}}
+\gitem{He の初期化}{He initialization}{ReLU の層で信号の大きさが保たれるよう、重みを分散 $2/n$ の正規分布で初期化する方法。}{\secref{sec:training-init}}
+\gitem{Jaccard 係数}{Jaccard index}{2 つの集合がどれだけ重なっているかを表す数。両方に含まれる要素の数を、どちらかに含まれる要素の数で割る。同じなら 1、共通部分がなければ 0。}{\secref{sec:pt-data}}
+\gitem{JSON}{JavaScript Object Notation}{名前と値の組を波かっこで囲んで書く、文字列の書き方。Python の辞書やリストとほぼ同じ見た目をしている。}{\secref{sec:agent-real}}
+\gitem{JSON スキーマ}{JSON Schema}{「この JSON はこういう形のはずだ」を JSON で書く規格。ツールの名前・説明・引数の型を書くのに使う。}{\secref{sec:agent-real}}
+\gitem{KL ダイバージェンス}{Kullback--Leibler divergence}{2 つの分布がどれだけずれているかを表す 0 以上の数 $\KL{p}{q}$。同じ分布のときだけ 0。}{\secref{sec:math-info}}
+\gitem{KV キャッシュ}{key--value cache}{生成の間、計算済みの位置のキーとバリューを保存して使い回すこと。1 トークンごとの計算が、文脈の長さに比例する量で済む。}{\secref{sec:ma-kvcache}}
+\gitem{LLM 審査員}{LLM-as-a-judge}{正解が 1 つに決まらない出力を、別の LLM に採点させる方法。位置や長さによる偏りがある。}{\secref{sec:es-judge}}
+\gitem{log-sum-exp}{log-sum-exp}{$\exp$ を取り、和を取り、$\log$ を取る計算 $\log\sum_j\exp(z_j)$。最大値を先にくくり出すと、安全に計算できる。}{\secref{sec:math-softmax}}
+\gitem{LoRA}{low-rank adaptation}{元の重みを凍結し、2 つの細長い行列の積 $\mB\mA$ だけを学習して差分として足すファインチューニング。訳語は「低ランク適応」。}{\chapref{ch:lora}}
+\gitem{LSTM}{long short-term memory}{メモ（隠れ状態）のどこを書き換え、どこを残すかを決める「ゲート」を持つ RNN。勾配が消えにくい。}{\secref{sec:emb-rnn}}
+\gitem{MCP}{Model Context Protocol}{ツールを提供するサーバと、それを使うアプリの間のやりとりを決めた共通の規格。}{\secref{sec:agent-real}}
+\gitem{MFU}{model FLOPs utilization}{GPU が出せる公称の計算速度のうち、モデルの学習に実際に使えた割合。}{\secref{sec:gpu-arch}}
+\gitem{MinHash}{MinHash}{集合の要素をハッシュ関数で数に変えて最小値を取り、2 つの集合で最小値が一致する割合から Jaccard 係数を近似する方法。}{\secref{sec:pt-data}}
+\gitem{MQA}{multi-query attention}{キーとバリューのヘッドを 1 つだけにして、すべてのクエリのヘッドで共有する注意。KV キャッシュは小さくなるが、性能が下がることがある。}{\secref{sec:ma-gqa}}
+\gitem{NFS}{Network File System}{1 台のサーバのディスクを、ネットワーク越しに全ノードで共有する古くからの方式。}{\secref{sec:infra-storage}}
+\gitem{$n$-グラム}{$n$-gram}{直前の $n-1$ 個のトークンを見て、次を予測する数え上げの言語モデル。}{\secref{sec:lm-ngram-limits}}
+\gitem{OOM}{out of memory}{GPU などのメモリが足りなくなって計算が止まること。}{\secref{sec:gpu-memory}}
+\gitem{PPO}{proximal policy optimization}{確率比をクリップして、1 回の更新で方策が変わりすぎないようにする方策勾配法。}{\secref{sec:pg-ppo}}
+\gitem{PUE}{power usage effectiveness}{施設全体の電力を、計算機（IT 機器）の電力で割った値。1.0 に近いほど、冷却などに使う電気の無駄が少ない。}{\secref{sec:infra-power}}
+\gitem{$p$ 値}{$p$-value}{本当は差がないとしたら、測った差以上の差が偶然出る確率。小さいほど、差が偶然とは考えにくい。}{\secref{sec:es-compare}}
+\gitem{Q 学習}{Q-learning}{行動価値を、次の状態での最大の行動価値を使って少しずつ更新する方法。}{\secref{sec:rlb-q}}
+\gitem{QLoRA}{quantized LoRA}{元の重みを 4 ビットに量子化して凍結し、その上で LoRA を学習する方法。メモリが大きく減る。}{\secref{sec:lora-practice}}
+\gitem{ReAct}{Reasoning and Acting}{モデルに、思考・行動（ツール呼び出し）・観察（その結果）を交互に書かせる方式。}{\secref{sec:agent-real}}
+\gitem{REINFORCE}{REINFORCE}{実際に得た収益で、選んだ行動の対数確率に重みを付けて上げる、最も素朴な方策勾配法。}{\secref{sec:pg-reinforce}}
+\gitem{ReLU}{rectified linear unit}{負の値を 0 にし、正の値はそのまま通す活性化関数 $\max(0,u)$。}{\secref{sec:nn-neuron}}
+\gitem{reward-to-go}{reward-to-go}{時刻 $t$ から先に得た収益 $G_t$ の、英語での呼び名。}{\secref{sec:pg-variance}}
+\gitem{RLHF}{reinforcement learning from human feedback}{人の選好から報酬モデルを作り、その報酬で LLM を強化学習する手順。訳語は「人のフィードバックからの強化学習」。}{\secref{sec:rl-rlhf}}
+\gitem{RMSNorm}{root mean square normalization}{平均を引かず、2 乗平均の平方根で割るだけの正規化。レイヤー正規化より計算が軽い。}{\secref{sec:ma-rmsnorm}}
+\gitem{RoPE}{rotary position embedding}{クエリとキーを、位置に応じた角度だけ回転させて位置を教える方法。内積が位置の差だけで決まる。}{\secref{sec:ma-rope}}
+\gitem{SentencePiece}{SentencePiece}{トークナイザを作るライブラリの名前。BPE と Unigram の両方を実装している。}{\secref{sec:tok-practice}}
+\gitem{SFT}{supervised fine-tuning}{教師ありファインチューニングの略。その項目を見よ。}{\secref{sec:post-lifecycle}}
+\gitem{softmax}{softmax}{ロジットの各成分を $e$ の肩に乗せ、合計で割って、足して 1 になる確率に直す関数。}{\secref{sec:math-softmax}}
+\gitem{softmax 方策}{softmax policy}{状態から各行動のスコア（ロジット）を出し、その softmax を行動の確率とする方策。}{\secref{sec:pg-param}}
+\gitem{TD 誤差}{TD error}{1 ステップ進んで分かった「報酬＋次の状態の価値」と、今の価値の見積もりとの差 $\delta_t$。}{\secref{sec:rlb-mc-td}}
+\gitem{TD 学習}{temporal-difference learning}{エピソードの終わりを待たず、TD 誤差で 1 ステップごとに価値を更新する方法。}{\secref{sec:rlb-mc-td}}
+\gitem{Tensor Core}{テンソルコア}{最近の GPU が持つ、行列積専用の演算器。小さな行列どうしの積を 1 命令で計算する。}{\secref{sec:gpu-arch}}
+\gitem{TF-IDF}{term frequency--inverse document frequency}{段落の中での出現回数に、珍しいものほど大きくなる重みを掛けた数。どの段落にも出るものは重みが 0 になる。段落をベクトルにするのに使う。}{\secref{sec:agent-tfidf}}
+\gitem{top-$k$ ゲーティング}{top-$k$ gating}{MoE のルータが、トークンごとに点数の高い $k$ 個のエキスパートだけを選ぶこと。}{\secref{sec:ma-moe}}
+\gitem{top-$k$／top-$p$ サンプリング}{top-$k$ / top-$p$ sampling}{確率の高い $k$ 個、または確率の合計が $p$ に達するまでの候補だけからくじを引く生成の方法。}{\secref{sec:lm-generation}}
+\gitem{Transformer}{Transformer}{注意機構と MLP のブロックを、残差接続でつないで何層も重ねたモデル。今の LLM の土台。}{\chapref{ch:transformer}}
+\gitem{TRPO}{trust region policy optimization}{「古い方策から KL ダイバージェンスで決まった範囲内」という制約を守りながら、方策を良くする方法。計算も実装も重い。}{\secref{sec:pg-ppo}}
+\gitem{TTFT}{time to first token}{依頼を出してから、最初のトークンが返ってくるまでの時間。}{\secref{sec:es-cost}}
+\gitem{Unicode}{ユニコード}{世界中の文字に、一つずつ番号を割り当てた共通の表。}{\secref{sec:tok-utf8}}
+\gitem{Unigram}{Unigram}{サブワードの語彙の作り方の一つ。大量の候補から、不要なものを削っていく。$n$-グラムの「ユニグラム」とは別。}{\secref{sec:tok-practice}}
+\gitem{UTF-8}{UTF-8}{Unicode の符号位置を 1〜4 バイトで表す方式。日本語の文字はほとんど 3 バイト。}{\secref{sec:tok-utf8}}
+\gitem{VRAM}{video RAM}{GPU に載っているメモリ。モデルと学習の状態がここに収まる必要がある。}{\secref{sec:gpu-memory-bw}}
+\gitem{WordPiece}{WordPiece}{サブワードの語彙の作り方の一つ。組が出てくる回数ではなく、結び付きの強さで、まとめる組を選ぶ。}{\secref{sec:tok-practice}}
+\gitem{Xavier の初期化}{Xavier initialization}{シグモイドや tanh のための重みの初期化。層を通っても信号の大きさが変わらないように、分散を約 $1/n$ にする。}{\secref{sec:training-init}}
+\gitem{ZeRO}{Zero Redundancy Optimizer}{データ並列で全 GPU が同じものを重複して持つ無駄をなくし、学習の状態を分けて持つ方法。}{\secref{sec:dist-sharding}}
+\gitem{$\varepsilon$-貪欲法}{$\varepsilon$-greedy}{確率 $\varepsilon$ でランダムに行動し、残りは価値が最大の行動を選ぶ方法。探索と活用を両立させる。}{\secref{sec:rlb-q}}
+\gitem{95\% 信頼区間}{95\% confidence interval}{測った値のまわりに取る幅で、本当の値がこの中に入る見込みが 95\% のもの。おおよそ $\pm1.96$ 標準誤差。}{\secref{sec:es-stats}}
+\end{description}
+
+\section*{略語の一覧}
+\noindent
+本文に出てくる主な略語の正式名称と、本書での日本語の言い方です。
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering
+\captionof{table}{略語の一覧（英字順）。}\label{tab:glossary-abbr}
+\begin{tabular}{l>{\raggedright\arraybackslash}p{0.44\linewidth}>{\raggedright\arraybackslash}p{0.36\linewidth}}
+\toprule
+略語 & 正式名称 & 本書での言い方 \\
+\midrule
+BF16 & bfloat16 & BF16（2 バイトの浮動小数点数） \\
+BPE & byte pair encoding & バイト対符号化 \\
+DDP & DistributedDataParallel & （PyTorch のデータ並列） \\
+DPO & Direct Preference Optimization & DPO \\
+FLOPs & floating-point operations & 浮動小数点演算数 \\
+FSDP & Fully Sharded Data Parallel & FSDP \\
+GAE & generalized advantage estimation & 一般化アドバンテージ推定 \\
+GPU & graphics processing unit & GPU \\
+GQA & grouped-query attention & GQA \\
+GRPO & Group Relative Policy Optimization & GRPO \\
+KL & Kullback--Leibler (divergence) & KL ダイバージェンス \\
+KV & key--value (cache) & KV キャッシュ \\
+LLM & large language model & 大規模言語モデル \\
+LoRA & low-rank adaptation & 低ランク適応 \\
+LSTM & long short-term memory & LSTM \\
+MCP & Model Context Protocol & MCP \\
+MDP & Markov decision process & マルコフ決定過程 \\
+MFU & model FLOPs utilization & MFU \\
+MLP & multilayer perceptron & 多層パーセプトロン \\
+MoE & mixture of experts & 混合エキスパート \\
+MQA & multi-query attention & MQA \\
+MSE & mean squared error & 平均二乗誤差 \\
+NFS & Network File System & NFS \\
+OOM & out of memory & メモリ不足 \\
+PCA & principal component analysis & 主成分分析 \\
+PEFT & parameter-efficient fine-tuning & パラメータ効率のよいファインチューニング \\
+PPO & proximal policy optimization & PPO \\
+PUE & power usage effectiveness & PUE \\
+QAT & quantization-aware training & 量子化を意識した学習 \\
+RAG & retrieval-augmented generation & 検索拡張生成 \\
+RDMA & remote direct memory access & RDMA \\
+RL & reinforcement learning & 強化学習 \\
+RLHF & reinforcement learning from human feedback & 人のフィードバックからの強化学習 \\
+RLVR & reinforcement learning with verifiable rewards & 検証可能な報酬による強化学習 \\
+RNN & recurrent neural network & 再帰型ニューラルネットワーク \\
+RoPE & rotary position embedding & RoPE \\
+SFT & supervised fine-tuning & 教師ありファインチューニング \\
+SGD & stochastic gradient descent & 確率的勾配降下法 \\
+TD & temporal difference & TD \\
+TRPO & trust region policy optimization & TRPO \\
+TTFT & time to first token & TTFT \\
+VRAM & video RAM & VRAM（GPU のメモリ） \\
+XOR & exclusive or & 排他的論理和 \\
+ZeRO & Zero Redundancy Optimizer & ZeRO \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+}

@@ -1,0 +1,4 @@
+trainable params: 98,304 || all params: 2,682,240 || trainable%: 3.6650
+Linear | W0: (576, 192) | A: (8, 192) | B: (576, 8)
+対話正答率（1,000 問）: 82.5%
+GPT 2583936

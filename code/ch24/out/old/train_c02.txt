@@ -1,0 +1,6 @@
+step 10 53s reward 0.453 add_acc 0.29 add_tool 0.21
+step 20 103s reward 0.308 add_acc 0.25 add_tool 0.20
+step 30 154s reward 0.216 add_acc 0.16 add_tool 0.30
+step 40 209s reward 0.295 add_acc 0.17 add_tool 0.51
+step 50 259s reward 0.366 add_acc 0.20 add_tool 0.48
+step 60 316s reward 0.353 add_acc 0.31 add_tool 0.33
