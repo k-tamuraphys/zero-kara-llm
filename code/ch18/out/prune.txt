@@ -1,0 +1,5 @@
+prune 0%: acc 0.826
+prune 30%: acc 0.787
+prune 50%: acc 0.297
+prune 70%: acc 0.002
+prune 90%: acc 0.000

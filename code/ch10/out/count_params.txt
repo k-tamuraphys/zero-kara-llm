@@ -1,0 +1,8 @@
+tok_emb      V*d             786,432
+pos_emb      T*d              24,576
+block x 1    12d^2+4d        443,136
+block x L    L(12d^2+4d)   1,772,544
+ln_f         2d                  384
+lm_head      0 (tied)              0
+total (formula)            2,583,936
+model.num_params()         2,583,936

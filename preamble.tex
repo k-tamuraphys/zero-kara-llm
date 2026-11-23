@@ -1,0 +1,325 @@
+% ======================================================================
+%  preamble.tex --- 本書共通のプリアンブル（全章がこれを共有する）
+%  章ファイルの中でパッケージを読み込んだりマクロを再定義したりしないこと。
+% ======================================================================
+\usepackage[haranoaji,deluxe]{luatexja-preset}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{graphicx}
+\usepackage[dvipsnames,svgnames]{xcolor}
+\usepackage{booktabs,multirow,array,tabularx,makecell}
+\usepackage{enumitem}
+\usepackage{caption,subcaption}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds,matrix,
+  shapes.geometric,shapes.misc,shapes.multipart,decorations.pathreplacing,
+  decorations.pathmorphing,patterns,chains,shadows}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepgfplotslibrary{fillbetween}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{makeidx}
+\usepackage[unicode,hidelinks,bookmarksnumbered,pdfusetitle]{hyperref}
+\usepackage{url}
+
+% ---------------------------------------------------------------- 色
+\definecolor{bookblue}{HTML}{1F4E79}
+\definecolor{bookaccent}{HTML}{C0504D}
+\definecolor{bookgreen}{HTML}{2E7D32}
+\definecolor{bookorange}{HTML}{E08A00}
+\definecolor{bookpurple}{HTML}{6A4C93}
+\definecolor{bookgray}{HTML}{5F6B7A}
+\definecolor{codebg}{HTML}{F6F8FA}
+\definecolor{outbg}{HTML}{FBFAF3}
+\colorlet{figblue}{bookblue!18}
+\colorlet{figred}{bookaccent!18}
+\colorlet{figgreen}{bookgreen!18}
+\colorlet{figorange}{bookorange!22}
+\colorlet{figpurple}{bookpurple!18}
+\colorlet{figgray}{black!8}
+
+% ---------------------------------------------------------------- 版面・見出し
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{bookgray}\leftmark}
+\fancyhead[R]{\small\sffamily\color{bookgray}\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\sffamily\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+% 第 0 章でも「図 0.1」のように章番号を付ける。柱は「第 3 章　タイトル」。
+\renewcommand{\thefigure}{\thechapter.\arabic{figure}}
+\renewcommand{\thetable}{\thechapter.\arabic{table}}
+\renewcommand{\theequation}{\thechapter.\arabic{equation}}
+\makeatletter
+\renewcommand{\chaptermark}[1]{\markboth{\@chapapp\thechapter\@chappos\quad #1}{}}
+\makeatother
+\setcounter{tocdepth}{1}
+\setcounter{secnumdepth}{2}
+\captionsetup{font=small,labelfont={bf,sf},labelsep=quad}
+\setlist{itemsep=0.2ex,topsep=0.6ex,parsep=0.2ex}
+\allowdisplaybreaks[2]
+
+% ---------------------------------------------------------------- 数式マクロ
+% ベクトルは太字小文字、行列は太字大文字。
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\mat}[1]{\bm{#1}}
+\newcommand{\va}{\bm{a}}\newcommand{\vb}{\bm{b}}\newcommand{\vc}{\bm{c}}
+\newcommand{\ve}{\bm{e}}\newcommand{\vg}{\bm{g}}\newcommand{\vh}{\bm{h}}
+\newcommand{\vk}{\bm{k}}\newcommand{\vm}{\bm{m}}\newcommand{\vo}{\bm{o}}
+\newcommand{\vp}{\bm{p}}\newcommand{\vq}{\bm{q}}\newcommand{\vr}{\bm{r}}
+\newcommand{\vs}{\bm{s}}\newcommand{\vu}{\bm{u}}\newcommand{\vv}{\bm{v}}
+\newcommand{\vw}{\bm{w}}\newcommand{\vx}{\bm{x}}\newcommand{\vy}{\bm{y}}
+\newcommand{\vz}{\bm{z}}\newcommand{\vzero}{\bm{0}}\newcommand{\vone}{\bm{1}}
+\newcommand{\vtheta}{\bm{\theta}}\newcommand{\vphi}{\bm{\phi}}
+\newcommand{\vdelta}{\bm{\delta}}\newcommand{\vmu}{\bm{\mu}}
+\providecommand{\vgamma}{\bm{\gamma}}\providecommand{\vbeta}{\bm{\beta}}
+\newcommand{\mA}{\bm{A}}\newcommand{\mB}{\bm{B}}\newcommand{\mC}{\bm{C}}
+\newcommand{\mD}{\bm{D}}\newcommand{\mE}{\bm{E}}\newcommand{\mH}{\bm{H}}
+\newcommand{\mI}{\bm{I}}\newcommand{\mJ}{\bm{J}}\newcommand{\mK}{\bm{K}}
+\newcommand{\mM}{\bm{M}}\newcommand{\mP}{\bm{P}}\newcommand{\mQ}{\bm{Q}}
+\newcommand{\mR}{\bm{R}}\newcommand{\mS}{\bm{S}}\newcommand{\mU}{\bm{U}}
+\newcommand{\mV}{\bm{V}}\newcommand{\mW}{\bm{W}}\newcommand{\mX}{\bm{X}}
+\newcommand{\mY}{\bm{Y}}\newcommand{\mZ}{\bm{Z}}
+\newcommand{\R}{\mathbb{R}}                    % 実数全体
+\newcommand{\N}{\mathbb{N}}                    % 自然数全体
+\newcommand{\E}{\mathbb{E}}                    % 期待値
+\newcommand{\Var}{\operatorname{Var}}          % 分散
+\newcommand{\calD}{\mathcal{D}}                % データセット
+\newcommand{\calL}{\mathcal{L}}                % 損失関数
+\newcommand{\calV}{\mathcal{V}}                % 語彙
+\newcommand{\calS}{\mathcal{S}}                % 状態集合
+\newcommand{\calA}{\mathcal{A}}                % 行動集合
+\newcommand{\calN}{\mathcal{N}}                % 正規分布
+\newcommand{\calO}{\mathcal{O}}                % オーダー記法
+\newcommand{\T}{\top}                          % 転置
+\newcommand{\pdata}{p_{\mathrm{data}}}         % データの真の分布
+\newcommand{\ptheta}{p_{\theta}}               % モデルの分布
+\newcommand{\pitheta}{\pi_{\theta}}            % 方策
+\newcommand{\KL}[2]{D_{\mathrm{KL}}\!\left(#1\,\middle\|\,#2\right)}
+\newcommand{\pd}[2]{\frac{\partial #1}{\partial #2}}   % 偏微分
+\newcommand{\dd}[2]{\frac{d #1}{d #2}}                 % 常微分
+\newcommand{\softmax}{\operatorname{softmax}}
+\newcommand{\relu}{\operatorname{ReLU}}
+\newcommand{\gelu}{\operatorname{GELU}}
+\newcommand{\sigmoid}{\sigma}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1 \right\rvert}
+\newcommand{\inner}[2]{\left\langle #1, #2 \right\rangle}
+\newcommand{\defeq}{\coloneqq}                 % 「左辺を右辺で定義する」
+\newcommand{\dmodel}{d}                        % 埋め込み次元
+\newcommand{\dhead}{d_{\mathrm{head}}}
+\newcommand{\dff}{d_{\mathrm{ff}}}
+
+% ---------------------------------------------------------------- 用語・参照
+% \term{日本語}{English}: 初出の専門用語。太字にして索引にも載せる。
+\newcommand{\term}[2]{\textbf{#1}（#2）\index{#1@#1（#2）}}
+% \jterm{日本語}: 英語を添えない初出用語。
+\newcommand{\jterm}[1]{\textbf{#1}\index{#1}}
+\newcommand{\chapref}[1]{第\ref{#1}章}
+\newcommand{\secref}[1]{\ref{#1}節}
+\newcommand{\figref}[1]{図\ref{#1}}
+\newcommand{\tabref}[1]{表\ref{#1}}
+\newcommand{\coderef}[1]{コード\ref{#1}}
+\newcommand{\appref}[1]{付録\ref{#1}}
+\newcommand{\partref}[1]{第\ref{#1}部}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}   % 文中のコード片
+\newcommand{\file}[1]{\texttt{\detokenize{#1}}}   % ファイル名
+
+% ---------------------------------------------------------------- 定理環境
+\theoremstyle{definition}
+\newtheorem{definitioninner}{定義}[chapter]
+\newtheorem{theoreminner}{定理}[chapter]
+\newtheorem{exampleinner}{例}[chapter]
+\renewcommand{\proofname}{\textbf{証明}}
+
+\tcbset{bookbox/.style={enhanced,breakable,sharp corners,boxrule=0pt,
+  left=3mm,right=3mm,top=1.5mm,bottom=1.5mm,before skip=3mm,after skip=3mm}}
+
+% 定義: \begin{definition}[名前] ... \end{definition}
+\newenvironment{definition}[1][]{%
+  \begin{tcolorbox}[bookbox,colback=figblue!45,borderline west={2.5pt}{0pt}{bookblue}]
+  \ifx\relax#1\relax\begin{definitioninner}\else\begin{definitioninner}[#1]\fi}%
+  {\end{definitioninner}\end{tcolorbox}}
+% 定理: \begin{theorem}[名前] ... \end{theorem}
+\newenvironment{theorem}[1][]{%
+  \begin{tcolorbox}[bookbox,colback=figpurple!45,borderline west={2.5pt}{0pt}{bookpurple}]
+  \ifx\relax#1\relax\begin{theoreminner}\else\begin{theoreminner}[#1]\fi}%
+  {\end{theoreminner}\end{tcolorbox}}
+% 例: \begin{example}[名前] ... \end{example}
+\newenvironment{example}[1][]{%
+  \ifx\relax#1\relax\begin{exampleinner}\else\begin{exampleinner}[#1]\fi}%
+  {\hfill$\triangleleft$\end{exampleinner}}
+
+% ---------------------------------------------------------------- 囲み
+\newtcolorbox{titledbox}[3]{bookbox,colback=#2!6,colframe=#2,boxrule=0pt,
+  borderline west={2.5pt}{0pt}{#2},
+  title={#3\ #1},fonttitle=\bfseries\sffamily\small,coltitle=#2!85!black,
+  attach title to upper={\par\smallskip},colbacktitle=#2!6}
+% 章の導入: \begin{chapterlead} ... \end{chapterlead}
+\newenvironment{chapterlead}{\begin{titledbox}{この章の位置づけとゴール}{bookblue}{$\blacktriangleright$}}{\end{titledbox}}
+% 直感: \begin{intuition}{見出し} ... \end{intuition}
+\newenvironment{intuition}[1]{\begin{titledbox}{#1}{bookgreen}{直感}}{\end{titledbox}}
+% 注意・よくある誤解: \begin{caution}{見出し} ... \end{caution}
+\newenvironment{caution}[1]{\begin{titledbox}{#1}{bookaccent}{注意}}{\end{titledbox}}
+% コラム: \begin{column}{見出し} ... \end{column}
+\newenvironment{column}[1]{\begin{titledbox}{#1}{bookorange}{コラム}}{\end{titledbox}}
+% 実務メモ: \begin{practice}{見出し} ... \end{practice}
+\newenvironment{practice}[1]{\begin{titledbox}{#1}{bookpurple}{実務メモ}}{\end{titledbox}}
+% 章末のまとめ: \begin{summary} \item ... \end{summary}
+\newenvironment{summary}{\section*{この章のまとめ}\addcontentsline{toc}{section}{この章のまとめ}%
+  \begin{tcolorbox}[bookbox,colback=figblue!35,borderline west={2.5pt}{0pt}{bookblue}]\begin{itemize}[leftmargin=1.2em]}%
+  {\end{itemize}\end{tcolorbox}}
+% 演習問題: \begin{exercises} \item ... \end{exercises}
+\newenvironment{exercises}{\section*{演習問題}\addcontentsline{toc}{section}{演習問題}%
+  \begin{enumerate}[label=\textbf{\thechapter.\arabic*},leftmargin=2.6em]}{\end{enumerate}}
+% 付録 D（略解）: \begin{answers}{ch:ml}{章の題} \item ... \end{answers}。番号は章末の演習問題と同じ「章.番号」
+\newenvironment{answers}[2]{\section*{第\ref{#1}章\quad #2}%
+  \begin{enumerate}[label=\textbf{\ref{#1}.\arabic*},leftmargin=2.6em]}{\end{enumerate}}
+% 途中の確認問題: \begin{quiz} ... \end{quiz}
+\newenvironment{quiz}{\begin{titledbox}{手を止めて考えてみましょう}{bookgray}{確認}}{\end{titledbox}}
+
+% ---------------------------------------------------------------- 読み方ガイド（初めて読む人のための優先度）
+% 優先度の札: \rgmust（必読）, \rgskim（流し読み可）, \rglater（後回し可）
+\newcommand{\rgtag}[2]{{\fboxsep=1.3pt\colorbox{#1}{\sffamily\bfseries\scriptsize\textcolor{white}{\hspace{0.15em}#2\hspace{0.15em}}}}}
+\newcommand{\rgmust}{\rgtag{bookblue}{必読}}
+\newcommand{\rgskim}{\rgtag{bookorange}{流し読み可}}
+\newcommand{\rglater}{\rgtag{bookgray}{後回し可}}
+\newcommand{\rgpre}{\rgtag{bookgreen}{読む前に}}
+% 章の冒頭（chapterlead の直後）に置く道案内:
+%   \begin{readingguide}
+%   \item[\rgmust] \secref{sec:x}〜\secref{sec:y}：理由。
+%   \item[\rgskim] \secref{sec:z}：押さえる結論。
+%   \item[\rglater] \secref{sec:w}：戻ってくる目安。
+%   \end{readingguide}
+\newenvironment{readingguide}{%
+  \begin{tcolorbox}[bookbox,lines before break=4,colback=white,colframe=bookblue!70,boxrule=0.5pt,
+    title={この章の読み方（初めて読む人へ）},fonttitle=\bfseries\sffamily\small,coltitle=bookblue!85!black,
+    attach title to upper={\par\smallskip},colbacktitle=white]\small
+  \begin{description}[leftmargin=5.6em,labelwidth=5.0em,labelsep=0.6em,itemsep=1pt,topsep=1pt,parsep=0pt,font=\normalfont]}%
+  {\end{description}\end{tcolorbox}}
+% 節・小節の見出しの直後に置く 1 行の札（必読の節には何も置かない）:
+%   \skimread{結論の「〜」だけ押さえれば先へ進めます。}
+%   \laterread{第 14 章で DDP を使うときに戻ってくれば足ります。}
+\newcommand{\skimread}[1]{\par\noindent\rgskim\enspace{\small\sffamily\color{black!65}#1}\par\smallskip}
+\newcommand{\laterread}[1]{\par\noindent\rglater\enspace{\small\sffamily\color{black!65}#1}\par\smallskip}
+% 演習問題の先頭（\begin{exercises} の直後）に置く、初読の人への案内: \exfirst{1 と 3}
+\newcommand{\exfirst}[2][]{\item[]\hspace*{-2.6em}\rgtag{bookblue}{初読}\enspace{\small\sffamily\color{black!65}初めて読むときは、#2だけで十分です。#1}}
+
+% ---------------------------------------------------------------- コード
+\lstdefinestyle{bookpython}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{bookblue}\bfseries,
+  commentstyle=\color{bookgreen!80!black},
+  stringstyle=\color{bookaccent},
+  showstringspaces=false,
+  columns=fullflexible,keepspaces=true,
+  breaklines=true,breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{bookgray}{$\hookrightarrow$}\space},
+  numbers=left,numberstyle=\tiny\color{bookgray},numbersep=6pt,
+  xleftmargin=1.2em,
+  tabsize=4,upquote=true,
+  morekeywords={self,True,False,None,with,as,yield,nonlocal,async,await},
+}
+% 実行結果・設定ファイル用。Python の色付けをしない。
+\lstdefinestyle{booktext}{
+  language={},keywordstyle={},commentstyle={},stringstyle={},
+  basicstyle=\ttfamily\footnotesize,columns=fullflexible,keepspaces=true,
+  breaklines=true,showstringspaces=false,numbers=none,upquote=true,
+}
+\lstset{style=bookpython}
+\newcounter{codelisting}[chapter]
+\renewcommand{\thecodelisting}{\thechapter.\arabic{codelisting}}
+\newcommand{\snippetdir}{build/snippets}
+\newcommand{\codecaption}[2]{%
+  \refstepcounter{codelisting}\label{#2}%
+  {\small\sffamily\bfseries\color{bookblue}コード\thecodelisting\quad}{\small #1}}
+\tcbset{codebox/.style={enhanced,breakable,lines before break=4,sharp corners,colback=codebg,
+  colframe=black!25,boxrule=0.4pt,left=1mm,right=1mm,top=0.5mm,bottom=0.5mm,
+  before skip=2mm,after skip=3mm}}
+
+% 見出しだけがページ末に残るのを防ぐ（残りが 6 行未満なら改ページ）。
+% 先に \penalty0 でページを確定させる（直前の段落があふれた直後は \pagetotal > \pagegoal になるため）。
+\newcommand{\codeneedspace}{\par\penalty0\relax\ifdim\pagetotal<\pagegoal
+  \ifdim\dimexpr\pagegoal-\pagetotal\relax<6\baselineskip\relax\newpage\fi\fi}
+% コード全体を掲載: \codefile{キャプション}{ラベル}{ch10/train.py}
+\newcommand{\codefile}[3]{%
+  \codeneedspace\medskip\noindent\codecaption{#1}{#2}\hfill{\scriptsize\ttfamily\color{bookgray}code/\detokenize{#3}}\nopagebreak
+  \begin{tcolorbox}[codebox]
+  \lstinputlisting[style=bookpython]{\snippetdir/#3/_full.txt}
+  \end{tcolorbox}}
+% コードの一部（スニペット）を掲載: \snippet{キャプション}{ラベル}{ch10/gpt.py}{名前}
+\newcommand{\snippet}[4]{%
+  \codeneedspace\medskip\noindent\codecaption{#1}{#2}\hfill{\scriptsize\ttfamily\color{bookgray}code/\detokenize{#3}}\nopagebreak
+  \begin{tcolorbox}[codebox]
+  \lstinputlisting[style=bookpython]{\snippetdir/#3/#4.txt}
+  \end{tcolorbox}}
+% 実行結果（スクリプトが保存した出力ファイル）: \outputfile{ch10/out/train.txt}
+\newcommand{\outputfile}[1]{%
+  \begin{tcolorbox}[codebox,colback=outbg,title={実行結果},
+    fonttitle=\sffamily\scriptsize\bfseries,coltitle=bookgray,colbacktitle=outbg,
+    attach title to upper={\par},top=0mm]
+  \lstinputlisting[style=booktext]{code/#1}
+  \end{tcolorbox}}
+% その場に書く短いコード（説明用の断片・疑似コード）。番号なし。
+\lstnewenvironment{pycode}{\lstset{style=bookpython,numbers=none,xleftmargin=0.5em,
+  backgroundcolor=\color{codebg},frame=single,rulecolor=\color{black!25}}}{}
+% その場に書く実行結果・シェルコマンド・設定ファイルなど。
+\lstnewenvironment{textcode}{\lstset{style=booktext,xleftmargin=0.5em,
+  backgroundcolor=\color{outbg},frame=single,rulecolor=\color{black!25}}}{}
+
+% ---------------------------------------------------------------- TikZ 共通スタイル
+\tikzset{
+  >={Stealth[length=2mm]},
+  box/.style={draw=bookblue,fill=figblue,rounded corners=2pt,minimum height=7mm,
+    minimum width=16mm,align=center,font=\small},
+  redbox/.style={box,draw=bookaccent,fill=figred},
+  greenbox/.style={box,draw=bookgreen,fill=figgreen},
+  orangebox/.style={box,draw=bookorange,fill=figorange},
+  purplebox/.style={box,draw=bookpurple,fill=figpurple},
+  graybox/.style={box,draw=black!45,fill=figgray},
+  plainbox/.style={box,draw=black!60,fill=white},
+  op/.style={draw=black!70,circle,inner sep=1pt,minimum size=5mm,font=\small,fill=white},
+  arr/.style={->,thick,draw=black!70},
+  darr/.style={->,thick,dashed,draw=black!55},
+  lbl/.style={font=\footnotesize,text=bookgray},
+  neuron/.style={draw=bookblue,fill=figblue,circle,minimum size=6mm,inner sep=0pt},
+  tok/.style={draw=black!50,fill=figorange,rounded corners=1pt,minimum height=6mm,
+    minimum width=9mm,font=\small,inner sep=2pt},
+  cell/.style={draw=black!40,minimum size=6mm,font=\footnotesize,inner sep=0pt},
+}
+\pgfplotsset{bookplot/.style={width=0.78\linewidth,height=0.48\linewidth,
+  grid=major,grid style={black!10},tick label style={font=\footnotesize},
+  label style={font=\small},legend style={font=\footnotesize,draw=black!30},legend cell align=left,
+  every axis plot/.append style={thick}},
+  every axis/.append style={bookplot}}
+
+% ---------------------------------------------------------------- 全体地図
+% \bookmap{k}: 本書の 7 部構成を帯で示し、第 k 部を強調する。各章冒頭に置く。
+\newcommand{\bookmapitem}[4]{% #1 番号 #2 現在の部 #3 見出し #4 x 位置
+  \ifnum#1=#2
+    \node[draw=bookblue,fill=bookblue,text=white,rounded corners=1.5pt,
+      minimum height=9mm,text width=15.5mm,align=center,font=\sffamily\bfseries\tiny,inner sep=1pt]
+      (bm#1) at (#4,0) {#3};
+  \else
+    \node[draw=black!30,fill=black!4,text=black!60,rounded corners=1.5pt,
+      minimum height=9mm,text width=15.5mm,align=center,font=\sffamily\tiny,inner sep=1pt]
+      (bm#1) at (#4,0) {#3};
+  \fi}
+\newcommand{\bookmap}[1]{%
+  \begin{center}\begin{tikzpicture}[x=1mm,y=1mm]
+    \bookmapitem{1}{#1}{I\ 準備\\数学と道具}{0}
+    \bookmapitem{2}{#1}{II\ 機械学習と\\ニューラルネット}{18.5}
+    \bookmapitem{3}{#1}{III\ 言語モデルと\\Transformer}{37}
+    \bookmapitem{4}{#1}{IV\ 大規模学習\\GPU・分散}{55.5}
+    \bookmapitem{5}{#1}{V\ 事後学習\\微調整・蒸留}{74}
+    \bookmapitem{6}{#1}{VI\ 強化学習}{92.5}
+    \bookmapitem{7}{#1}{VII\ エージェント\\と総仕上げ}{111}
+    \foreach \a/\b in {1/2,2/3,3/4,4/5,5/6,6/7}
+      \draw[->,black!45,line width=0.4pt] (bm\a) -- (bm\b);
+  \end{tikzpicture}\end{center}}

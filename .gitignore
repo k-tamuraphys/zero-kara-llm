@@ -1,0 +1,23 @@
+# 組版の出力（tools/build.sh が作る）
+/build/
+
+# 自分の PC で作るデータとモデル（付録 B の手順）。本文の図が読む学習ログだけは残す
+/code/data/
+/code/checkpoints/*
+!/code/checkpoints/base_log.csv
+
+# Python
+*.pt
+__pycache__/
+*.pyc
+.venv/
+
+# 執筆・編集の作業記録（公開しない）
+/notes/
+/reviews/
+/backup/
+/research/
+/BRIEF.md
+/STYLE.md
+/OUTLINE.md
+/tools/env.local.sh

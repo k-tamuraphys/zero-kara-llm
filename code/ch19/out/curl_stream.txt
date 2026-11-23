@@ -1,0 +1,10 @@
+data: {"choices": [{"index": 0, "delta": {"content": "4"}, "finish_reason": null}]}
+
+data: {"choices": [{"index": 0, "delta": {"content": "7"}, "finish_reason": null}]}
+
+data: {"choices": [{"index": 0, "delta": {"content": "です。"}, "finish_reason": null}]}
+
+data: {"choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}]}
+
+data: [DONE]
+

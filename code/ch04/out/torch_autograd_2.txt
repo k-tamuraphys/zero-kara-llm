@@ -1,0 +1,2 @@
+2 回目の backward の後  dL/dw = 16.0
+0 に戻してからの backward  dL/dw = 8.0

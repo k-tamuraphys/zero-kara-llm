@@ -1,0 +1,7 @@
+loss  = 4.0
+dL/dw = 8.0
+dL/db = 4.0
+grad_fn: <PowBackward0 object at 0xffffbf048850>
+---
+2 回目の backward の後  dL/dw = 16.0
+0 に戻してからの backward  dL/dw = 8.0

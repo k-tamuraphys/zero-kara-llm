@@ -1,0 +1,20 @@
+step     0  acc1000 0.826  (7s)
+            reward 0.727  signal 0.81  kl 0.0000
+  step 1 10.8s
+  step 2 13.0s
+  step 3 14.8s
+  step 4 17.0s
+step    25  acc1000 0.793  (66s)
+            reward 0.781  signal 0.81  kl 0.0225
+step    50  acc1000 0.835  (124s)
+            reward 0.641  signal 0.62  kl 0.0279
+step    75  acc1000 0.833  (193s)
+            reward 0.555  signal 0.81  kl 0.0485
+step   100  acc1000 0.834  (250s)
+            reward 0.727  signal 0.81  kl 0.0619
+step   125  acc1000 0.831  (309s)
+            reward 0.734  signal 0.75  kl 0.0212
+step   150  acc1000 0.829  (366s)
+            reward 0.820  signal 0.69  kl 0.0205
+step   175  acc1000 0.840  (439s)
+            reward 0.820  signal 0.62  kl 0.0199

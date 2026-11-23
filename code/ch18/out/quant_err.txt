@@ -1,0 +1,10 @@
+W: shape (768, 192), min -0.1930, max 0.1937
+bits=8 group=None: mean |error| 0.000201
+bits=8 group=32: mean |error| 0.000151
+bits=4 group=None: mean |error| 0.003409
+bits=4 group=32: mean |error| 0.002565
+bits=3 group=None: mean |error| 0.007318
+bits=3 group=32: mean |error| 0.005503
+bits=2 group=None: mean |error| 0.017062
+bits=2 group=32: mean |error| 0.012933
+

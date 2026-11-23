@@ -1,0 +1,13 @@
+step 0 pref_acc 0.000 chosen 0.000 rejected 0.000 polite 0.000 correct 0.870
+step 25 pref_acc 0.990 chosen 14.715 rejected -0.640 polite 0.000 correct 0.835
+step 50 pref_acc 1.000 chosen 21.245 rejected -2.453 polite 0.000 correct 0.740
+step 75 pref_acc 1.000 chosen 25.849 rejected -4.356 polite 0.000 correct 0.590
+step 100 pref_acc 1.000 chosen 28.999 rejected -5.602 polite 0.020 correct 0.495
+step 125 pref_acc 1.000 chosen 31.434 rejected -6.583 polite 0.395 correct 0.640
+step 150 pref_acc 1.000 chosen 33.439 rejected -7.272 polite 0.720 correct 0.710
+step 175 pref_acc 1.000 chosen 34.771 rejected -7.894 polite 0.960 correct 0.775
+step 200 pref_acc 1.000 chosen 35.429 rejected -8.925 polite 0.995 correct 0.775
+12+35は？ -> 答えは57です。
+300から123を引くといくつですか？ -> 答えは177です。
+7足す8は？ -> 答えは15です。
+total 500s

@@ -1,0 +1,13 @@
+質問: 57足す73は？
+  学習前         × <|assistant|>57+
+  SFT後        ○ <|tool|>57+73<|result|>130<|assistant|>130です。
+  SFT+RL(c=0) ○ <|tool|>57+73<|result|>130<|assistant|>130です。
+質問: 13+955は？
+  学習前         ○ <|assistant|>968です。
+  SFT後        × <|tool|>13+975<|result|>988<|assistant|>988です。
+  SFT+RL(c=0) ○ <|tool|>13+955<|result|>968<|assistant|>968です。
+質問: 64と6を足すといくつですか？
+  学習前         × <|tool|>64*6<|result|>384<|assistant|>384です。
+  SFT後        ○ <|tool|>64+6<|result|>70<|assistant|>70です。
+  SFT+RL(c=0) ○ <|tool|>64+6<|result|>70<|assistant|>70です。
+SFT+RL(c=0) の加減算の誤り 72 問のうち、式の数を写し間違えたもの 36 問

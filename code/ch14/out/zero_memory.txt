@@ -1,0 +1,15 @@
+N = 7.5B, W = 64
+  DDP（分割なし）           120.0 GB
+  ZeRO-1               31.4 GB
+  ZeRO-2               16.6 GB
+  ZeRO-3 / FSDP         1.9 GB
+N = 70.0B, W = 64
+  DDP（分割なし）          1120.0 GB
+  ZeRO-1              293.1 GB
+  ZeRO-2              155.3 GB
+  ZeRO-3 / FSDP        17.5 GB
+N = 70.0B, W = 512
+  DDP（分割なし）          1120.0 GB
+  ZeRO-1              281.6 GB
+  ZeRO-2              141.9 GB
+  ZeRO-3 / FSDP         2.2 GB

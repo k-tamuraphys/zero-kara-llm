@@ -1,0 +1,7 @@
+cond=soft N=3000 steps=1200 student=627,648 teacher=2,583,936
+step     0 loss 15.4595 acc200 0.000 (74s)
+step   300 loss 1.9954 acc200 0.015 (146s)
+step   600 loss 1.9023 acc200 0.015 (219s)
+step   900 loss 1.6378 acc200 0.040 (286s)
+step  1199 loss 1.5014 acc200 0.055 (372s)
+final chat accuracy (1000, seed 777): 0.068  time 462s

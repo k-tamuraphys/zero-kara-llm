@@ -1,0 +1,1628 @@
+\chapter{事後学習の全体像とファインチューニング}\label{ch:posttraining}
+\bookmap{5}
+
+\begin{chapterlead}
+\textbf{ここまで}: 第 IV 部までで、基盤モデル \file{base.pt} を事前学習で作り、
+それを大きくするための計算機と見積もりの考え方を学びました。基盤モデルは、文章の続きを書くことができます。\\
+\textbf{この章の問い}: 基盤モデルは、なぜそのままでは質問に答えてくれないのでしょうか。
+事前学習・継続事前学習・教師ありファインチューニング・強化学習・蒸留は、それぞれ何のためにあり、どう使い分けるのでしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 基盤モデルが質問に答えない理由を、学習データの中身から説明できます。
+\item LLM のライフサイクル全体と、五つの学習手段の使い分けを、表と流れ図で説明できます。
+\item 継続事前学習を実際に行い、新しい能力の獲得と「破滅的忘却」を測れます。
+\item チャットテンプレートと損失マスクを使って教師ありファインチューニングを実装し、計算アシスタントを作れます。
+\item 実験から、教師ありファインチューニングに何ができて何ができないかを言えます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] \chapref{ch:pretraining}で作った基盤モデル \file{base.pt}（漱石の小説と足し算・引き算のドリルで事前学習したモデル）と、次トークン予測の損失（\chapref{ch:lm}）が分かれば読めます。
+学習ループに出てくる AdamW・勾配クリッピング・ウォームアップ（\chapref{ch:training}）は、名前と役割だけで足ります（本文で一言ずつ思い出します）。\chapref{ch:distributed}と\chapref{ch:infra}の内容は使いません。
+\item[\rgmust] \secref{sec:post-why}〜\secref{sec:post-finetune}：基盤モデルが答えない理由（能力と振る舞い）、事後学習の地図（図・表・流れ図）、ファインチューニングの定義。第 V〜VII 部はこの地図の上を進みます。
+\item[\rgmust] \secref{sec:post-sft}、\secref{sec:post-exp-data}、\secref{sec:post-limits}：SFT の実装（テンプレート・損失マスク・パディング・学習ループ）と、事前学習の価値を示す実験、SFT にできないこと。章の主役で、\chapref{ch:lora}はこの SFT を土台にします。
+\item[\rgskim] \secref{sec:post-cpt}：継続事前学習の実験。「新しいデータだけで学習すると、似た形の古い能力から壊れる（破滅的忘却）。元のデータを混ぜると防げる」という結論で、後の節は読めます。
+\item[\rgskim] \secref{sec:post-real-models}と、\secref{sec:post-exp-mask}〜\secref{sec:post-multiturn}：実在モデルのレシピと、SFT の追加の実験。押さえる結論は、それぞれの見出しの下の札に書きました。
+\item[\rglater] \secref{sec:post-hf}〜\secref{sec:post-scale-compare}：ライブラリでの書き方、手本データの作り方、実際の SFT との規模の比較。公開モデルを自分で SFT するときや、\chapref{ch:lora}でライブラリを使うときに戻ってください。
+\end{readingguide}
+
+\chapref{ch:pretraining}で作った基盤モデルは、計算ドリルの続きを 9 割近く正しく書けました。
+それなら、ふつうに質問しても答えてくれそうです。
+試しに、対話の形で「\code{12+35は？}」とたずねてみます。
+返ってきたのは、次の文字列でした。
+
+\begin{textcode}
+262=540⏎9+3=12⏎9
+\end{textcode}
+
+「\code{⏎}」は改行を表します。
+モデルは答えずに、「\code{262=540}」という意味のない式を書き、さらに別の問題を作り始めました。
+計算の力はあるはずなのに、質問に答えるという振る舞いが出てこないのです。
+
+この章は、このずれを直すところから始まります。
+事前学習の後にモデルを作り変える工程をまとめて\term{事後学習}{post-training}と呼びます。
+第 V 部から第 VII 部までの残りの章は、すべて事後学習の話です。
+そこで、この章ではまず事後学習の全体の地図を広げます。
+そのうえで、すべての事後学習の土台になる「ファインチューニング」を、二つの形で実際に行います。
+一つは新しい領域の文章を読ませる継続事前学習、もう一つは質問への答え方を教える教師ありファインチューニングです。
+
+\section{基盤モデルはなぜ質問に答えないのか}\label{sec:post-why}
+
+計算ができるモデルが、質問には答えない。
+これは不思議に見えます。
+まず、いろいろな聞き方を試して、何が起きているのかを確かめましょう。
+
+\subsection{四通りの聞き方を試す}
+
+次のコードは、同じ計算「12+35」を四通りの書き方でモデルに渡し、続きを書かせます。
+
+\snippet{同じ計算を四通りの書き方でたずねる}{code:post-prompts}{ch16/base_fails.py}{prompts}
+
+一つ目の \code{render_chat} は、対話を本書の書式の文字列にする関数です（\secref{sec:post-template}で中身を見ます）。
+ここでは、作られる文字列がコメントのとおり「\code{<|user|>12+35は？<|end|><|assistant|>}」になることだけを押さえてください。
+\code{<|user|>} は「ここから利用者の発話」、\code{<|end|>} は「発話の終わり」、
+\code{<|assistant|>} は「ここからアシスタントの発話」を表す特殊トークンです。
+二つ目は、改行の後に質問の文をそのまま書いたものです。
+三つ目は、質問と答えの例を二つ見せてから本題をたずねるものです。
+四つ目は、事前学習で読ませた計算ドリルと同じ書き方です。
+
+続きを書かせる関数は次のとおりです。
+
+\snippet{続きを貪欲法で書かせる}{code:post-continue}{ch16/base_fails.py}{continue-text}
+
+4 行目でプロンプトをトークン ID の列にし、形 $(1, T)$ のテンソルにします。
+5 行目の \code{generate} は、\chapref{ch:transformer}で作った生成の関数です。
+温度 0 なので、毎回いちばん確率の高いトークンを選びます（貪欲法）。
+6 行目で、新しく生成した部分だけを文字列に戻します。
+結果は次のとおりです（改行は「⏎」で表示しています）。
+
+\outputfile{ch16/out/base_fails.txt}
+
+上の 4 行が、四通りの聞き方への応答です。
+
+\begin{itemize}
+\item \textbf{対話形式}: 答えずに、ドリルのような式の断片を書き始めます。導入で見たのはこれです。
+\item \textbf{地の文で質問}: 「\code{」と聞いた。代助はすぐ「そうさ」と答えた。}」と、小説の続きを書きました。
+モデルは「12+35は？」を、\textbf{小説の登場人物のせりふ}として読んだのです。
+漱石の小説には「〜は？」と問うせりふがたくさんあり、その後には「」と聞いた」が続きやすいからです。
+\item \textbf{例を見せる}: 質問と答えの例を二つ見せても、まねをしてくれません。
+\item \textbf{ドリル形式}: 「\code{57}」と、とにかく数で答えます（正解は 47 なので誤答です）。
+\end{itemize}
+
+その下の 3 行は、200 問で測った正答率です（最後の 2 行は、後で\figref{fig:post-base-next-token}に描く、次トークンの確率です）。
+ここでは、続きの先頭に書かれた数字が正解と一致すれば正解としました（「\code{47です。}」でも「\code{47}」でも正解）。
+ドリル形式なら 86.5\% 正解するのに、対話形式では 1.0\%、例を見せても 0\% です\footnote{\file{code/README.md} に記した「対話形式の正答率 0\%」は、
+応答が「\code{47です。}」と完全に一致した割合です。ここでは数字だけを見る甘い基準にしたので、偶然に数字が合った 2 問が正解に数えられています。}。
+計算の力はあるのに、それを引き出せるのはドリルの書き方だけなのです。
+
+\subsection{モデルは学習データに忠実なだけ}
+
+なぜこうなるのでしょうか。
+言語モデルが学習したもの（\chapref{ch:lm}）を思い出しましょう。
+言語モデルは、文脈 $x_{<t}$ の後に来るトークンの確率 $\ptheta(x_t \mid x_{<t})$ を出す関数でした。
+事前学習では、学習データの各位置で正解トークンの確率が高くなるように、次の損失を下げました。
+\begin{equation}
+\calL_{\text{事前}}(\vtheta) = -\frac{1}{T}\sum_{t=1}^{T} \log \ptheta(x_t \mid x_{<t})
+\label{eq:post-pretrain-loss}
+\end{equation}
+この損失が小さいモデルとは、「学習データの中で、この文脈の後によく出てきた続き」に高い確率を付けるモデルです。
+基盤モデルの学習データは、漱石の小説と計算ドリルでした。
+その中には「質問の後に、それへの答えが続く」という形の文書がほとんどありません。
+だからモデルは、質問を小説のせりふとして続けたり、ドリルの断片として続けたりします。
+モデルが間違っているのではありません。\textbf{学習データに忠実に振る舞っている}のです。
+
+\figref{fig:post-base-next-token}は、対話形式と地の文の二つについて、次のトークンの確率の上位 5 個を示したものです。
+左の対話形式では、上位はすべて数字か「\code{=}」です。
+最も高い「\code{2}」でも確率は 0.154 しかなく、モデルが迷っている様子が分かります。
+右の地の文では、「\code{」と}」（0.302）、「\code{」⏎　}」（0.266）と、せりふを閉じるかぎかっこが上位を占めます。
+このトークナイザでは数字が 1 桁ずつ 1 トークンになるので、正しく答えるなら、次のトークンは 47 の最初の 1 桁「\code{4}」になるはずです。
+しかし、どちらの場合も、「\code{4}」は上位に入っていません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=left,xbar,width=0.47\linewidth,height=44mm,
+  xmin=0,xmax=0.42,bar width=3.6mm,
+  symbolic y coords={n9,n3,eq,n1,n2},ytick=data,
+  yticklabels={「9」,「3」,「=」,「1」,「2」},
+  y tick label style={font=\small},title={\small 対話形式},
+  xlabel={確率},xmajorgrids=true,ymajorgrids=false,
+  nodes near coords,nodes near coords style={font=\scriptsize,
+    /pgf/number format/fixed,/pgf/number format/precision=3},
+  enlarge y limits=0.14,axis line style={black!40},tick style={black!40}]
+\addplot[fill=figblue,draw=bookblue] coordinates
+  {(0.033,n9) (0.046,n3) (0.081,eq) (0.095,n1) (0.154,n2)};
+\end{axis}
+\begin{axis}[at={($(left.east)+(22mm,0)$)},anchor=west,
+  xbar,width=0.47\linewidth,height=44mm,
+  xmin=0,xmax=0.42,bar width=3.6mm,
+  symbolic y coords={s5,s4,s3,s2,s1},ytick=data,
+  yticklabels={「」⏎「そう」,「」と云」,「――」,「」⏎　」,「」と」},
+  y tick label style={font=\small},title={\small 地の文で質問},
+  xlabel={確率},xmajorgrids=true,ymajorgrids=false,
+  nodes near coords,nodes near coords style={font=\scriptsize,
+    /pgf/number format/fixed,/pgf/number format/precision=3},
+  enlarge y limits=0.14,axis line style={black!40},tick style={black!40}]
+\addplot[fill=figorange,draw=bookorange] coordinates
+  {(0.024,s5) (0.029,s4) (0.122,s3) (0.266,s2) (0.302,s1)};
+\end{axis}
+\end{tikzpicture}
+\caption{基盤モデルが予測した「次のトークン」の上位 5 個（\file{ch16/out/base_next_token.csv}）。
+左は対話形式「\code{<|user|>12+35は？<|end|><|assistant|>}」の後、右は「\code{⏎12+35は？}」の後。
+左ではドリルの断片、右では小説のせりふの続きが予測され、どちらにも答えの「4」は現れない。}
+\label{fig:post-base-next-token}
+\end{figure}
+
+左の図には、もう一つ大事な事情が隠れています。
+\code{<|user|>} や \code{<|assistant|>} のような特殊トークンは、事前学習の時点で語彙に席だけ確保してあり、
+学習データには一度も現れませんでした（\chapref{ch:tokenizer}）。
+モデルにとって、これらは「見たことのない記号」です。
+何を意味する記号なのかを教えない限り、モデルはそれを手がかりにできません。
+
+\begin{quiz}
+三つ目の「例を見せる」書き方では、質問と答えの例を二つも見せました。
+それでもモデルがまねをしなかったのはなぜだと思いますか。
+\end{quiz}
+
+答えの手がかりは二つあります。
+一つは、「\code{3+4は？7です。}」という形の行が、学習データのどこにもないことです。
+もう一つは、モデルが小さいことです。
+プロンプトの中の例からその場でやり方を読み取る能力を\term{文脈内学習}{in-context learning}と呼びます。
+GPT-3 の論文\cite{brown2020language}は、この能力がモデルを大きくするにつれて強く現れることを示しました。
+1,750 億パラメータの GPT-3 なら、数個の例を見せるだけで、かなりの課題をこなせます。
+しかし、260 万パラメータの本書のモデルには、その力がほとんどありません。
+
+\subsection{能力と振る舞いを分けて考える}
+
+ここまでの観察を、二つの言葉で整理しておきます。
+
+\begin{itemize}
+\item \textbf{能力}: モデルの中に、ある仕事をこなす力が備わっているか。基盤モデルは足し算・引き算の\textbf{能力}を持っています（ドリル形式で 86.5\%）。
+\item \textbf{振る舞い}: どんな入力に対して、どんな形の出力を出すか。基盤モデルには「質問されたら答える」という\textbf{振る舞い}がありません。
+\end{itemize}
+
+基盤モデルは、能力はあるのに、それを質問への答えとして出す振る舞いを知らない状態です。
+たとえるなら、計算の得意な人が、問題用紙の書式しか見たことがなく、口頭で質問されても何を求められているのか分からない状態です。
+（このたとえには限界があります。人間なら一度説明されれば分かりますが、モデルには説明ではなく、学習で教える必要があります。）
+
+すると、次のような作戦が考えられます。
+「質問の後に答えが続く」形の文書を用意し、それでもう少し学習させればよいのです。
+そうすれば、モデルは「\code{<|assistant|>} の後には答えを書く」という続き方を覚えるはずです。
+これがこの章の後半で行う教師ありファインチューニングです。
+ただし、モデルを作り変える方法はそれだけではありません。
+そこで次の節では、作り変える方法を一通り並べ、全体の地図を作ります。
+
+この節で分かったことをまとめます。
+基盤モデルは、学習データに出てきた形の続きを書くだけです。
+足りないのは計算の\textbf{能力}ではなく、質問に答えるという\textbf{振る舞い}です。
+
+\section{LLM のライフサイクルと、五つの学習の使い分け}\label{sec:post-lifecycle}
+
+前節で、基盤モデルの振る舞いを変えたいという目標がはっきりしました。
+では、実際の LLM 開発では、基盤モデルをどのような工程で作り変えていくのでしょうか。
+そして、目的に応じて、どの方法を選べばよいのでしょうか。
+この節で、第 V〜VII 部全体の地図を作ります。
+
+\subsection{全体の流れ}
+
+\figref{fig:post-lifecycle}は、現在の LLM が作られて利用者に届くまでの、標準的な流れです。
+上段の左から右へ、そして下段の右から左へと進みます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 9mm,
+  stage/.style={box,minimum width=33mm,minimum height=13mm,font=\footnotesize,text width=31mm},
+  opt/.style={dashed},
+  dat/.style={font=\scriptsize,text=bookgray,text width=33mm,align=center}]
+  \node[stage,orangebox] (pre) {\textbf{事前学習}\\次トークン予測\\（\ref{ch:pretraining} 章）};
+  \node[stage,orangebox,opt,right=of pre] (cpt) {\textbf{継続事前学習}\\領域の文章を追加\\（本章）};
+  \node[stage,right=of cpt] (sft) {\textbf{教師あり}\\\textbf{ファインチューニング}\\（本章, \ref{ch:lora} 章）};
+  \node[dat,below=0.6mm of pre] (dpre) {生のテキスト\\（兆トークン規模）};
+  \node[dat,below=0.6mm of cpt] (dcpt) {領域の生テキスト\\（億〜千億トークン）};
+  \node[dat,below=0.6mm of sft] (dsft) {入力と模範応答の対\\（数千〜数百万件）};
+  \node[stage,purplebox,opt,below=24mm of sft] (rl) {\textbf{選好最適化・}\\\textbf{強化学習}\\（\ref{ch:rl-basics}--\ref{ch:rl-llm}, \ref{ch:agentic-rl} 章）};
+  \node[stage,greenbox,opt,left=of rl] (dist) {\textbf{蒸留・量子化}\\小さく速く\\（\ref{ch:distillation} 章）};
+  \node[stage,redbox,left=of dist] (dep) {\textbf{評価・配備}\\測って届ける\\（\ref{ch:eval-serving}, \ref{ch:agent} 章）};
+  \node[dat,below=0.6mm of rl] {応答の良し悪し（選好・報酬）};
+  \node[dat,below=0.6mm of dist] {教師モデルの出力};
+  \node[dat,below=0.6mm of dep] {評価用の問題・利用者};
+  \draw[arr] (pre) -- (cpt); \draw[arr] (cpt) -- (sft);
+  \draw[arr] (dsft.south) -- (rl.north);
+  \draw[arr] (rl) -- (dist); \draw[arr] (dist) -- (dep);
+  \draw[darr,rounded corners=3pt] (dep.north) -- ++(0,5mm) -| node[pos=0.25,below,lbl]{評価の結果を見て、データを直して戻る} ($(dsft.south west)+(3mm,0)$);
+  \node[lbl,above=0.5mm of pre.north west,anchor=south west] {\textbf{基盤モデルを作る}};
+  \node[lbl,above=0.5mm of sft.north west,anchor=south west] {\textbf{事後学習（ここから）}};
+\end{tikzpicture}
+\caption{LLM のライフサイクル。枠が実線の工程はほぼ必ず行われ、破線の工程は目的に応じて行われる。
+各工程の下に、その工程が使うデータの種類と量の目安を書いた。事前学習から先へ進むほど、データは少なく、そして「誰がどう作ったか」が重要になる。}
+\label{fig:post-lifecycle}
+\end{figure}
+
+図の上段は、基盤モデルを作るまでです。
+事前学習で作った基盤モデルに、必要なら特定の領域（数学、プログラム、医療、ある言語など）の文章を追加で読ませます。
+上段の右端からが事後学習です。
+まず手本を見せて応答の仕方を教え、次に必要なら「どちらの応答が良いか」「答えは正しいか」という判定を手がかりに質を上げ、
+最後に小さく速くして利用者に届けます。
+評価の結果が悪ければ、データを直して前の工程に戻ります（破線の矢印）。
+この章で実際に手を動かすのは、上段の「継続事前学習」と「教師ありファインチューニング」の二つです。
+残りの箱は、後の章で一つずつ作ります。
+
+図と次の表には、まだ説明していない言葉がいくつか出てきます。
+ここでは 1 行ずつの意味だけを押さえ、詳しくは各章に任せます。
+
+\begin{itemize}
+\item \textbf{選好}: 二つの応答のどちらが良いかという、人（または別のモデル）の判断。
+\item \textbf{報酬}: 応答の良し悪しを表す点数。「計算が合っていたら 1、違えば 0」のように決める。「報酬の抜け穴」とは、点数だけ高くて中身の悪い応答をモデルが見つけてしまうこと（第 VI 部）。
+\item \textbf{蒸留}: 大きなモデル（教師）の出力をまねさせて、小さなモデル（生徒）を学習すること（\chapref{ch:distillation}）。
+\item \textbf{量子化}: 重みを少ないビット数で表して、モデルを小さく速くすること。
+\item \textbf{配備}: 完成したモデルをサーバーなどに載せ、利用者が使えるようにすること。
+\end{itemize}
+
+ここで新しい言葉をいくつか定義しておきます。
+事前学習で得たモデルから学習を続けることを\term{ファインチューニング}{fine-tuning}と呼びます（正確な定義は\secref{sec:post-finetune}）。
+そのうち、手本（入力と模範応答の対）で学習するものを\term{教師ありファインチューニング}{supervised fine-tuning}、略して \jterm{SFT} と呼びます。
+「教師あり」は、正解（ここでは模範応答）が与えられている、という意味です（\chapref{ch:ml}）。
+指示とそれに従った応答の手本で SFT を行うことを、特に\term{指示チューニング}{instruction tuning}と呼ぶこともあります\cite{wei2022finetuned}。
+SFT を終えて対話ができるようになったモデルは、指示モデル（instruct model）やチャットモデルと呼ばれます。
+\textbf{継続事前学習}（continual pre-training）は、基盤モデルに次トークン予測をそのまま続けさせることです。
+最近の論文では、事前学習の終盤から事後学習の前までに特別なデータで行う継続事前学習を、\jterm{中間学習}（mid-training）と呼ぶこともあります。
+
+\subsection{五つの学習を比べる}
+
+図の工程のうち、モデルの重みを学習で変えるのは、事前学習・継続事前学習・SFT・選好最適化と強化学習・蒸留の五つです。
+量子化は学習せずに行うこともあるので、ここでは蒸留の仲間として扱います。評価・配備は学習ではありません。
+\tabref{tab:post-methods}は、これらを、目的・データ・更新するもの・コスト・リスクの観点で比べたものです。
+いちばん上の行には、比較のために「学習しない」選択肢であるプロンプトの工夫も入れました。
+
+\begin{table}[tbp]
+\centering
+\caption{モデルを作り変える方法の比較。下へ行くほど、使うデータは少なく、作るのに手間がかかる。
+「更新するもの」の「全部または一部」は、LoRA（\chapref{ch:lora}）のように一部だけを学習する方法も使えることを表す。}
+\label{tab:post-methods}
+\footnotesize
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}X}
+\toprule
+方法 & 何を変えるか（目的） & データの種類と量の目安 & 更新するもの & コストと主なリスク \\
+\midrule
+プロンプトの工夫 & 学習済みの力の引き出し方 & 指示や例を数個（学習データは不要） & なし & 最も安い。モデルの力が足りなければ効かない（\secref{sec:post-why}） \\
+事前学習 & 言語・知識・考える力の土台 & 生のテキスト、兆トークン規模 & 全部 & 最も高い（大規模なら GPU 数千〜数万枚で数週間〜数か月）。データの質がすべてを決める \\
+継続事前学習 & 特定領域の知識・言葉 & 領域の生テキスト、億〜千億トークン & 全部 & 中〜高。元の能力を忘れやすい（\secref{sec:post-cpt}） \\
+SFT & 応答の形式と振る舞い & 入力と模範応答の対、数千〜数百万件 & 全部または一部 & 安い。手本の質が上限になる。手本にない振る舞いは身につかない \\
+選好最適化・強化学習 & 手本を超える質、正解のない目標 & 応答の比較、正誤を判定するプログラムなど & 全部または一部 & 中。報酬の抜け穴をつく、学習が不安定になる（第 VI 部） \\
+蒸留 & 大きなモデルの力を小さなモデルへ & 教師モデルの出力（確率や生成文） & 生徒の全部 & 中。生徒は教師を超えにくい。利用規約に注意（\chapref{ch:distillation}） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+表を縦に読むと、二つの傾向が見えます。
+
+一つ目は、\textbf{データの量と性質}です。
+上の事前学習は、ラベルの付いていない生のテキストを兆トークン規模で使います。
+下へ行くほど、データの量は減ります。
+その代わり、データは「人や別のモデルが目的に合わせて作ったもの」になっていきます。
+SFT の手本は誰かが書く必要がありますし、選好のデータは誰かが応答を比べる必要があります。
+
+二つ目は、\textbf{何を変えるのか}です。
+事前学習と継続事前学習は、モデルの知識や能力そのものを作ります。
+SFT は主に、すでにある能力の出し方、つまり振る舞いを変えます。
+選好最適化と強化学習は、手本では伝えきれない「より良い応答」へとモデルを押し上げます。
+前節の言葉で言えば、事前学習から選好最適化・強化学習までの 4 行のうち、上の行は\textbf{能力}を、下の行は主に\textbf{振る舞い}を作る方法です。
+最後の蒸留は少し別で、すでにある能力と振る舞いを、まとめて小さなモデルに移すための方法です。
+
+\subsection{どれを使うかを決める流れ図}
+
+では、手元に「モデルにこういうことをさせたい」という目標があるとき、どの方法から試せばよいでしょうか。
+\figref{fig:post-decision}は、その判断の流れを図にしたものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 8mm,
+  q/.style={plainbox,rounded corners=6pt,text width=56mm,minimum height=11mm,font=\footnotesize,align=left},
+  act/.style={box,text width=40mm,minimum height=11mm,font=\footnotesize,align=left},
+  yes/.style={arr},no/.style={arr}]
+  \node[q] (q1) {\textbf{Q1} プロンプト（指示・例示）を工夫するだけで、目標の振る舞いが得られるか？};
+  \node[act,graybox,right=of q1] (a1) {\textbf{プロンプトの工夫}\\学習しない。まず最初に試す};
+  \node[q,below=of q1] (q2) {\textbf{Q2} 足りないのは、領域の知識や言葉か？\\その領域の生テキストが大量にあるか？};
+  \node[act,orangebox,right=of q2] (a2) {\textbf{継続事前学習}\\元のデータを混ぜて\\忘却を防ぐ\\（\secref{sec:post-cpt}）};
+  \node[q,below=of q2] (q3) {\textbf{Q3} 望む振る舞いの手本（入力と\\模範応答）を用意できるか？};
+  \node[act,right=of q3] (a3) {\textbf{SFT}\\安く済ませるなら LoRA\\（\secref{sec:post-sft}, \chapref{ch:lora}）};
+  \node[q,below=of q3] (q4) {\textbf{Q4} 手本を超えたいか？　答えが一つでないが、良し悪しの比較や正誤の判定ならできるか？};
+  \node[act,purplebox,right=of q4] (a4) {\textbf{選好最適化・強化学習}\\SFT の後に行う\\（第 VI 部）};
+  \node[q,below=of q4] (q5) {\textbf{Q5} 性能は足りたが、生成が遅い・高い・\\端末に載らないか？};
+  \node[act,greenbox,right=of q5] (a5) {\textbf{蒸留・量子化}\\（\chapref{ch:distillation}）};
+  \node[act,redbox,below=of q5,text width=56mm] (ev) {\textbf{評価する}（\chapref{ch:eval-serving}）。足りなければ上に戻る};
+  \foreach \i in {1,...,5} {\draw[yes] (q\i) -- node[above,lbl]{はい} (a\i);}
+  \foreach \i/\j in {1/2,2/3,3/4,4/5} {\draw[no] (q\i) -- node[right,lbl]{いいえ} (q\j);}
+  \draw[no] (q5) -- node[right,lbl]{いいえ} (ev);
+  \draw[darr] ($(a2.south west)+(2mm,0)$) -- (q3.north east);
+\end{tikzpicture}
+\caption{目標に合わせて方法を選ぶ流れ図。上から順に、安く試せる方法から検討する。
+「はい」でも、そこで終わりとは限らない（破線は、継続事前学習の後に Q3 へ進むことを表す）。実際の LLM は、継続事前学習 $\to$ SFT $\to$ 強化学習 $\to$ 蒸留のように、複数の方法を順に重ねて作られる。}
+\label{fig:post-decision}
+\end{figure}
+
+流れ図の上から順に見ていきます。
+原則は「\textbf{安く試せる方法から順に}」です。
+
+\begin{description}[leftmargin=1em]
+\item[Q1 プロンプトで足りるか] 学習には、データを用意する手間と計算の費用がかかります。
+大きなモデルなら、指示を丁寧に書いたり例を見せたりするだけで、目標の振る舞いが得られることがよくあります。
+だから最初に試します。
+本書の小さなモデルでは、\secref{sec:post-why}で見たとおり、これは効きませんでした。
+\item[Q2 知識が足りないか] モデルが知らない領域の知識や言葉が必要なら、継続事前学習を考えます。
+手本を数千件見せても、新しい専門知識を大量に覚えさせるのは難しいからです。
+ただし、その領域の生テキストが大量に（少なくとも数億トークン規模で）必要です。
+\item[Q3 手本を用意できるか] 振る舞いを変えたいなら、まず SFT です。多くの場合、ここが事後学習の中心です。
+\item[Q4 手本を超えたいか] SFT は手本をまねる学習なので、手本より良くはなりにくいです。
+また、良い小説の書き方のように、正解が一つに決まらない目標もあります。
+そうした目標でも、二つの応答のどちらが良いかを比べたり、計算の答えが正しいかを判定したりはできます。
+その判定を手がかりに学ぶのが、選好最適化と強化学習です。
+\item[Q5 速さ・費用が問題か] 性能が足りても、配備するには大きすぎることがあります。そのときは蒸留や量子化で小さくします。
+\end{description}
+
+最後は必ず評価に行き着き、足りなければ上の段に戻ります。
+なお、\figref{fig:post-decision}は考え方の順序です。実際の開発では、いくつかの方法を重ねて使います。
+
+\subsection{実在のモデルはどう作られているか}\label{sec:post-real-models}
+\skimread{押さえる結論は、「どのモデルも、まず SFT で対話の形を教え、その後で強化学習などで質を上げる」です。表の細部は、第 VI 部を読むときに見直せば足ります。}
+
+実際に公開されている LLM が、どの工程をどの順に重ねているかを\tabref{tab:post-recipes}に示します。
+
+\begin{table}[tbp]
+\centering
+\caption{公開された技術報告に書かれた事後学習の工程（事前学習の後）。「$\to$」の順に行う。
+RLHF は人の選好から学ぶ強化学習、DPO は選好から直接学ぶ方法、GRPO は強化学習の手法の一つで、いずれも\chapref{ch:rl-llm}で扱う。}
+\label{tab:post-recipes}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{30mm}X}
+\toprule
+モデル（公開年） & 事後学習の工程 \\
+\midrule
+InstructGPT（2022）\cite{ouyang2022training} & SFT $\to$ 報酬モデルの学習 $\to$ 強化学習（RLHF） \\
+Llama 2-Chat（2023）\cite{touvron2023llama2} & SFT $\to$ 強化学習（RLHF）を反復 \\
+DeepSeekMath（2024）\cite{shao2024deepseekmath} & 数学の文書で\textbf{継続事前学習} $\to$ SFT $\to$ 強化学習（GRPO） \\
+Llama 3（2024）\cite{dubey2024llama3} & 長い文脈のデータで継続事前学習 $\to$ 「SFT $\to$ DPO」を 6 回反復 \\
+T\"ulu 3（2024）\cite{lambert2024tulu3} & SFT $\to$ DPO $\to$ 正誤を判定できる課題での強化学習 \\
+DeepSeek-R1（2025）\cite{guo2025deepseekr1} & 少量の SFT $\to$ 強化学習 $\to$ 約 80 万件の SFT $\to$ 再び強化学習 \\
+\midrule
+本書の計算アシスタント & SFT（本章）$\to$ LoRA（\ref{ch:lora} 章）$\to$ 蒸留（\ref{ch:distillation} 章）$\to$ 強化学習（\ref{ch:rl-llm} 章）$\to$ ツール利用（\ref{ch:agent}, \ref{ch:agentic-rl} 章） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+細部は違いますが、どのモデルも「\textbf{まず SFT で対話の形を教え、その後で強化学習などにより質を上げる}」という骨組みは共通です。
+数学のように特定の領域を強くしたいモデル（DeepSeekMath）は、SFT の前に継続事前学習をはさみます。
+本書の計算アシスタントも、この骨組みに沿って育てていきます。
+
+\begin{intuition}{五つの学習を、人の学び方にたとえると}
+事前学習は、図書館の本を片端から読んで教養を身につけることです。
+継続事前学習は、ある分野の専門書をまとめて読み込むことです。
+SFT は、模範解答を見ながら「こう聞かれたらこう答える」を練習することです。
+強化学習は、自分で答えを書いて採点してもらい、点が上がる書き方を探すことです。
+蒸留は、先生の答え方をそばで見て、要点をまねて身につけることです。
+ただし、人は一度読んだことを忘れにくいのに対し、モデルは新しいことを学ぶと古いことを簡単に忘れます。
+この違いは\secref{sec:post-cpt}で実際に確かめます。
+\end{intuition}
+
+この節で分かったことをまとめます。
+事後学習の工程は、継続事前学習・SFT・選好最適化と強化学習・蒸留の組み合わせです。
+上流の工程は能力を、下流の工程は主に振る舞いを作ります。
+方法は、安く試せるものから順に検討します。
+
+\section{ファインチューニング：学習済みの重みから学習を続ける}\label{sec:post-finetune}
+
+前節の五つの方法のうち、事前学習以外の四つには共通点があります。
+どれも、ゼロからではなく、学習済みのモデルから出発して学習を続けるのです。
+なぜゼロから学習し直さないのでしょうか。
+学習済みの重みから出発すると、何がうれしく、何に気をつけなければならないのでしょうか。
+
+\subsection{出発点を変えるだけ}
+
+\chapref{ch:ml}で見たとおり、学習とは、損失 $\calL(\vtheta)$ を勾配降下法で下げていくことでした。
+\begin{equation}
+\vtheta^{(k+1)} = \vtheta^{(k)} - \eta\, \nabla_{\vtheta}\calL(\vtheta^{(k)})
+\label{eq:post-gd}
+\end{equation}
+ここで $k$ は更新の回数、$\eta$ は学習率です。
+この式には、最初のパラメータ $\vtheta^{(0)}$ をどう決めるかは書かれていません。
+事前学習では、$\vtheta^{(0)}$ を小さな乱数で初期化しました（\chapref{ch:training}）。
+
+ファインチューニングは、この出発点を変えるだけです。
+
+\begin{definition}[ファインチューニング]
+事前学習で得たパラメータを $\vtheta_{\text{事前}}$ とする。
+新しいデータ $\calD_{\text{新}}$ に対する損失 $\calL_{\text{新}}(\vtheta)$ を、$\vtheta^{(0)} = \vtheta_{\text{事前}}$ から出発して式\eqref{eq:post-gd}で下げていくことを、\textbf{ファインチューニング}と呼ぶ。
+\end{definition}
+
+あるデータで学んだことを別の課題に生かすことを、一般に\term{転移学習}{transfer learning}と呼びます。
+ファインチューニングは、転移学習の最も基本的なやり方です。
+「事前学習してからファインチューニングする」という二段構えは、2018 年ごろに言語処理の標準になりました。
+ULMFiT\cite{howard2018universal}、GPT\cite{radford2018improving}、BERT\cite{devlin2019bert}が、その代表です。
+
+コードで見ると、違いはさらにはっきりします。
+ゼロから学習するときと、ファインチューニングするときの違いは、モデルを作る 1 行だけです。
+
+\begin{pycode}
+model = GPT(config)                        # ゼロから: 重みは乱数
+model = load_checkpoint("checkpoints/base.pt")  # ファインチューニング: 学習済みの重み
+# ここから先の学習ループ（順伝播 → 損失 → 逆伝播 → 更新）は同じ
+\end{pycode}
+
+\subsection{出発点が良いと何がうれしいか}
+
+出発点を学習済みの重みにすると、二つの良いことがあります。
+
+\textbf{一つ目は、少ないデータで済むことです。}
+基盤モデルは、日本語の文の形も、足し算の手順も、すでに知っています。
+新しく覚えるのは「\code{<|assistant|>} の後に答えを書く」という振る舞いだけです。
+ゼロから学習するなら、日本語と計算そのものも、少ない手本から学ばなければなりません。
+この差は、\secref{sec:post-sft-exp}の実験で数字として確かめます。
+
+\textbf{二つ目は、計算が安く済むことです。}
+本書の基盤モデルの事前学習は、4,000 ステップで約 1,640 万トークンを処理しました（\chapref{ch:pretraining}）。
+これに対し、この章の SFT は 600 ステップで、処理するトークンは約 30 万です
+（1 ステップに対話 32 件、1 件は平均約 16 トークン。$600 \times 32 \times 16 \approx 31$ 万）。
+31 万 $\div$ 1,640 万 $\approx 0.019$ なので、事前学習の 2\% ほどの計算で済むのです。
+実際の LLM でも、事後学習の計算量は事前学習よりずっと小さいのがふつうです。
+
+\subsection{出発点から離れすぎると何が起きるか}
+
+一方で、気をつけるべきこともあります。
+ファインチューニングで下げるのは、新しいデータの損失 $\calL_{\text{新}}$ だけです。
+事前学習の損失 $\calL_{\text{事前}}$ は、式のどこにも入っていません。
+したがって、$\calL_{\text{新}}$ を下げるために $\vtheta$ が大きく動くと、$\calL_{\text{事前}}$ が上がってしまうことがあります。
+つまり、事前学習で身につけたことを忘れてしまうのです。
+
+\figref{fig:post-landscape}は、この様子をパラメータが 2 個しかない場合の絵にしたものです。
+青い等高線は事前学習の損失、オレンジの等高線は新しいデータの損失を表します。
+出発点 $\vtheta_{\text{事前}}$ は、青い谷の底にあります。
+ここからオレンジの谷底へまっすぐ降りていくと（実線の矢印）、新しいデータの損失は最小になりますが、青い谷からは遠く離れてしまいます。
+一方、二つの谷が重なるあたりで止まれば（破線の矢印）、新しいことを覚えつつ、古いことも保てます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+  % 事前学習の損失の等高線（青）
+  \foreach \r in {7,13,19} {
+    \draw[bookblue,thick] (25,25) ellipse ({\r*1.35} and {\r*0.85});}
+  % 新しいデータの損失の等高線（オレンジ）。外側の輪どうしが重なるように置く
+  \foreach \r in {7,13,19} {
+    \draw[bookorange,thick,rotate around={30:(68,36)}] (68,36) ellipse ({\r*1.3} and {\r*0.8});}
+  \fill[bookblue] (25,25) circle (1.3);
+  \node[below,font=\footnotesize,text=bookblue,fill=white,inner sep=1pt] at (25,23) {$\vtheta_{\text{事前}}$（出発点）};
+  \fill[bookorange] (68,36) circle (1.3);
+  \node[font=\footnotesize,text=bookorange!80!black,fill=white,inner sep=1pt] at (80,40) {新しいデータの損失が最小};
+  \draw[arr,very thick] (26.5,25.4) -- (66.5,35.6);
+  \node[font=\footnotesize,align=center,fill=white,inner sep=1pt] at (60,16) {まっすぐ降りる:\\元の能力を忘れる};
+  \draw[arr,very thick,dashed,bookgreen] (26.5,26.3) -- (44.5,30.6);
+  \fill[bookgreen] (46,31) circle (1.1);
+  \node[font=\footnotesize,align=center,text=bookgreen!70!black,fill=white,inner sep=1pt] at (36,48) {二つの谷が重なる所で止まる:\\両方を保つ};
+  \draw[bookgreen!70!black,thin] (38,44.5) -- (45.5,32);
+  \node[font=\footnotesize,text=bookblue,anchor=south west] at (0,42) {事前学習の損失};
+  \node[font=\footnotesize,text=bookorange!80!black,anchor=south west] at (74,55) {新しいデータの損失};
+\end{tikzpicture}
+\caption{ファインチューニングをパラメータ空間で見た模式図（パラメータが 2 個の場合）。
+新しいデータの損失だけを下げ続けると（実線）、事前学習の損失の谷から出てしまう。
+学習率を小さくする、更新回数を減らす、元のデータを混ぜる、などの工夫で、二つの谷が重なる所（緑）にとどまれる。}
+\label{fig:post-landscape}
+\end{figure}
+
+もちろん、本物のモデルのパラメータは 2 個ではなく何百万個もあり、損失の形もこの絵のように単純ではありません。
+それでも、「新しい損失だけを見て遠くまで動くと、古い能力が壊れる」という構図は同じです。
+どれだけ遠くまで動くかは、主に次の三つで決まります。
+
+\begin{itemize}
+\item \textbf{学習率 $\eta$}: 1 回の更新でどれだけ動くか。事前学習より小さくするのがふつうです。
+\item \textbf{更新の回数}: 何ステップ学習するか。
+\item \textbf{データの中身}: 新しいデータだけか、元のデータも混ぜるか。
+\end{itemize}
+
+次の節では、この三つを実際に変えて、忘れる様子を測ります。
+
+この節で分かったことをまとめます。
+ファインチューニングとは、学習済みの重みを出発点として学習を続けることです。
+少ないデータと計算で済む代わりに、出発点から離れすぎると元の能力を失います。
+
+\section{継続事前学習と破滅的忘却}\label{sec:post-cpt}
+\skimread{押さえる結論は二つです。新しいデータだけで学習を続けると、新しい能力は少し身につきますが、見た目の似た古い能力から壊れます（\textbf{破滅的忘却}。掛け算を覚えたモデルが「12+35=」に 420 と書く）。元のデータを混ぜると、この忘却を大きく減らせます。}
+
+基盤モデルにできないことは、振る舞いの問題だけではありません。
+そもそも能力がないこともあります。
+たとえば掛け算です。
+基盤モデルの学習データには足し算と引き算のドリルしかなかったので、「\code{23*4=}」の続きを正しく書くことはできません（後で測るとおり、正答率は 0\% です）。
+このように、モデルが知らない領域の知識を足したいときに使うのが、継続事前学習でした（\figref{fig:post-decision}の Q2）。
+この節では、継続事前学習を実際に行い、新しい能力が身につく様子と、古い能力が失われる様子を測ります。
+
+\subsection{新しい領域を読ませる}
+
+\term{継続事前学習}{continual pre-training}とは、基盤モデルに、新しい領域の生テキストで次トークン予測を続けさせることです。
+狙いが特定の領域への適応であることを強調して、\term{領域適応}{domain adaptation}のための事前学習と呼ぶこともあります\cite{gururangan2020dont}。
+損失は事前学習と同じ式\eqref{eq:post-pretrain-loss}で、変わるのはデータだけです。
+
+実際の例を一つ挙げます。
+DeepSeekMath\cite{shao2024deepseekmath}は、プログラムを学習済みの 70 億パラメータのモデルに、ウェブから集めた 1,200 億トークンの数学の文書を中心に、合計 5,000 億トークンを追加で読ませました。
+その結果、数学の問題を解く力が大きく伸びました。
+
+本書の世界で、これを縮小して再現します。
+新しい領域は「掛け算ドリル」です。
+2 桁までの掛け算を「\code{12*74=888}」のような行で 6 万行用意し、基盤モデルに読ませます。
+基盤モデルは \code{*} の行を一度も見たことがないので、これは本当に「新しい領域」です。
+
+\snippet{新しい領域のデータを用意する}{code:post-cpt-data}{ch16/continual_pretrain.py}{cpt-data}
+
+2 行目の \code{drill_text} は、\chapref{ch:pretraining}で事前学習のドリルを作ったのと同じ関数です。
+\code{ops="*"} で掛け算に、\code{max_value=99} で 2 桁までに限っています。
+3 行目でトークン化します。
+このトークナイザでは数字が 1 桁 1 トークンになるので、1 行はおよそ 10 トークンです。
+4 行目の \code{old_data} は、事前学習に使ったデータ（漱石＋加減算ドリル）そのものです。
+後で、元のデータを混ぜる実験に使います。
+
+\subsection{三つの物差しで測る}
+
+学習の途中で、三つの量を測ります。
+
+\begin{enumerate}
+\item \textbf{掛け算の正答率}: 新しい能力が身についたか。「\code{⏎23*4=}」を与えて、続きが正しい答えかを 100 問で測ります。
+\item \textbf{加減算の正答率}: 古い能力が残っているか。事前学習で身につけた足し算・引き算を 100 問で測ります。
+\item \textbf{漱石の損失}: もう一つの古い能力である、漱石の文章の予測が保たれているか。学習に使っていない、コーパスの末尾 5\% で測ります。
+\end{enumerate}
+
+3 つ目の測り方は次のとおりです。
+
+\snippet{漱石の検証用テキストでの損失}{code:post-soseki-val}{ch16/common.py}{soseki-val}
+
+8〜9 行目で、漱石のコーパスを訓練用と検証用に分け（\chapref{ch:pretraining}と同じ分け方）、検証用の部分をトークン化します。
+一度作ったら使い回すように、1 行目のグローバル変数に保存しています。
+12 行目の \code{estimate_loss} は、ランダムに選んだ 20 個のバッチで損失を平均する関数でした（\chapref{ch:transformer}）。
+11 行目で毎回同じ乱数の種を設定し、どの時点のモデルも\textbf{同じ窓で}測るようにしています。
+こうすると、測るたびに窓が変わることによるぶれがなくなり、モデルの変化だけが比べられます。
+10 行目の \code{fork_rng} は、この種の設定が学習側の乱数（バッチの選び方）に影響しないように、乱数の状態を一時的に退避する仕組みです。
+
+\begin{caution}{評価の乱数が学習を乱す}
+筆者は最初、10 行目を書かずに実験しました。
+すると評価のたびに乱数の種が 1234 に戻り、学習のバッチも毎回同じ並びで選ばれてしまい、結果が大きく狂いました。
+評価のコードが知らないうちに学習に影響することがあります。乱数の種を設定するときは、その影響範囲に注意してください。
+\end{caution}
+
+\subsection{三つの設定で学習する}
+
+学習は次の三つの設定で行います。
+
+\snippet{三つの設定}{code:post-cpt-settings}{ch16/continual_pretrain.py}{cpt-settings}
+
+\code{high_lr} は事前学習と同じ最大学習率 $10^{-3}$ で、データはすべて掛け算ドリルです。
+\code{low_lr} は学習率をその 10 分の 1 にしたもの、\code{mix} は学習率を $10^{-3}$ のまま、バッチの半分を元のデータから取るものです。
+
+3 行目で、コマンドラインの引数から設定を選びます。
+4 行目で、その設定の学習率と新しいデータの割合を取り出します。
+5 行目のとおり、どの設定も 300 ステップ、バッチ 32、系列長 128 です。
+学習ループは次のとおりです。
+
+\snippet{継続事前学習のループ}{code:post-cpt-loop}{ch16/continual_pretrain.py}{cpt-loop}
+
+ほとんどは\chapref{ch:pretraining}の学習ループ \code{train_lm} と同じです。
+違うのは二点だけです。
+一つは、出発点が \code{load_base()} で読み込んだ基盤モデルであることです（ループの外で読み込んでいます）。
+もう一つは、11〜14 行目で、バッチを新しいデータと元のデータから作ることです。
+1 行目の \code{n_new} は、32 行のうち新しいデータから取る行数です。
+割合が 1.0 なら 32 行すべて、0.5 なら 16 行です。
+13 行目で残りの行を元のデータから取り、14 行目で縦につなげて 1 つのバッチにします。
+3〜5 行目では、25 ステップごとに三つの物差しで測って記録しています。
+8〜10 行目は、各ステップの学習率を決める部分です。
+\code{lr_at} は\chapref{ch:pretraining}と同じスケジュールで、最初の 20 ステップで学習率を小さな値から \code{max_lr} まで上げ（ウォームアップ）、その後はなだらかに下げていきます（コサイン減衰）。
+16〜20 行目は、損失を計算し、逆伝播し、勾配の大きさを 1.0 で切りそろえ、パラメータを更新する、いつもの手順です。
+
+\subsection{結果：新しいことを覚え、古いことを忘れる}
+
+三つの設定で実行した結果を\tabref{tab:post-cpt}に、学習の途中経過を\figref{fig:post-cpt-curves}に示します
+（実行は \code{python ch16/continual_pretrain.py high_lr} のように設定名を付けます。三つを同時に走らせて、それぞれ約 13 分でした）。
+まず、\code{high_lr} の出力を読みましょう。
+
+\outputfile{ch16/out/cpt_high_lr.txt}
+
+掛け算の正答率は 0\% から 26\% に上がりました。
+一度も見たことのなかった掛け算が、300 ステップの継続事前学習で、少しはできるようになったのです。
+しかし、その代わりに失ったものがあります。
+加減算の正答率は 90\% から 0\% に落ちました\footnote{事前学習直後の加減算の正答率は、\chapref{ch:pretraining}では 200 問で 86.5\% でした。ここでは 100 問で測っているので 90\% になっています。}。
+漱石の損失は 4.877 から 9.092 に上がりました。
+
+最後の 2 行が、何が起きたかを物語っています。
+「\code{23*4=}」の続きは \code{98} で、正解の 92 に近いものの外れています。掛け算は、まだ「だいたい合う」程度です。
+「\code{12+35=}」の続きは \code{420} でした。
+これは $12 \times 35 = 420$ です。
+モデルは、「\code{=} の前の二つの数を掛ける」ことを覚えた結果、足し算の式にも掛け算の答えを書くようになったのです。
+足し算のやり方が、掛け算のやり方で\textbf{上書き}されてしまいました。
+
+漱石の損失 9.092 も異常な値です。
+語彙は 4,096 個なので、すべてのトークンに同じ確率を付ける「でたらめな予測」の損失は $\log 4096 \approx 8.318$ です（\chapref{ch:pretraining}）。
+9.092 はそれより大きく、でたらめよりも悪い予測です。
+掛け算ドリルばかり読んだモデルは、小説の文の中でも「次は数字だ」と自信を持って予測し、その自信が外れて大きな損失になっているのです。
+
+\begin{table}[tbp]
+\centering
+\caption{継続事前学習（掛け算ドリル、300 ステップ）の結果（\file{ch16/out/cpt_*.txt}）。
+掛け算の正答率は上がるが、元のデータを混ぜないと、加減算と漱石の文章の能力が壊れる。}
+\label{tab:post-cpt}
+\small
+\begin{tabular}{lccrrr}
+\toprule
+ & 最大学習率 & 新データの割合 & 掛け算 & 加減算 & 漱石の損失 \\
+\midrule
+学習前（\file{base.pt}） & --- & --- & 0\% & 90\% & 4.877 \\
+\code{high_lr} & $10^{-3}$ & 100\% & 26\% & 0\% & 9.092 \\
+\code{low_lr} & $10^{-4}$ & 100\% & 11\% & 0\% & 4.999 \\
+\code{mix} & $10^{-3}$ & 50\% & 20\% & 79\% & 5.008 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{cptplot/.style={width=0.5\linewidth,height=42mm,xmin=0,xmax=300,
+  xlabel={ステップ},xtick={0,100,200,300},
+  legend style={font=\scriptsize,at={(0.98,0.97)},anchor=north east}}}
+\begin{tikzpicture}
+\begin{axis}[cptplot,name=mul,ylabel={正答率},ymin=0,ymax=1,title={\small (a) 掛け算の正答率（新しい能力）}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=mul_acc]{code/ch16/out/cpt_high_lr.csv};
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=mul_acc]{code/ch16/out/cpt_low_lr.csv};
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=step,y=mul_acc]{code/ch16/out/cpt_mix.csv};
+\end{axis}
+\begin{axis}[cptplot,at={($(mul.east)+(14mm,0)$)},anchor=west,ymin=0,ymax=1,title={\small (b) 加減算の正答率（古い能力）}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=addsub_acc]{code/ch16/out/cpt_high_lr.csv};
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=addsub_acc]{code/ch16/out/cpt_low_lr.csv};
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=step,y=addsub_acc]{code/ch16/out/cpt_mix.csv};
+\end{axis}
+\begin{axis}[cptplot,at={($(mul.south west)+(0,-20mm)$)},anchor=north west,width=0.9\linewidth,height=44mm,
+  ylabel={損失},ymin=4,ymax=13,title={\small (c) 漱石の検証用テキストでの損失（古い能力。低いほど良い）},
+  legend columns=3,legend style={at={(0.5,0.97)},anchor=north}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=soseki_loss]{code/ch16/out/cpt_high_lr.csv};
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=soseki_loss]{code/ch16/out/cpt_low_lr.csv};
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=step,y=soseki_loss]{code/ch16/out/cpt_mix.csv};
+\addplot[black!50,dashed,thin,domain=0:300] {8.318};
+\legend{\code{high_lr},\code{low_lr},\code{mix},でたらめな予測（$\log 4096$）}
+\end{axis}
+\end{tikzpicture}
+\caption{継続事前学習の途中経過（25 ステップごと。\file{ch16/out/cpt_*.csv}）。赤が \code{high_lr}、青が \code{low_lr}、緑が \code{mix}。
+(a) どの設定でも掛け算は少しずつ身につく。(b) 新しいデータだけで学習すると、加減算の能力は最初の 25 ステップでほぼ消える。元のデータを混ぜた \code{mix} だけが回復する。
+(c) 学習率が大きい \code{high_lr} では、漱石の文章の予測がでたらめよりも悪くなる。}
+\label{fig:post-cpt-curves}
+\end{figure}
+
+\figref{fig:post-cpt-curves}で、三つの設定を比べます。
+
+\textbf{学習率を下げた \code{low_lr}}（青）は、(c) の漱石の損失をほぼ保ちました（4.877 から 4.999）。
+1 回の更新で動く量が小さいので、出発点から遠くへ行かなかったのです（\figref{fig:post-landscape}の破線の矢印に当たります）。
+その代わり、(a) の掛け算の伸びは 11\% と遅くなりました。
+ところが、(b) の加減算は、\code{high_lr} と同じく最初の 25 ステップでほぼ 0\% に落ちています。
+小さな学習率でも、加減算は守れなかったのです。
+これは、加減算のドリルが掛け算のドリルと\textbf{見た目がよく似ている}からだと考えられます。
+「数 記号 数 \code{=}」という同じ形の行で、\code{=} の後の書き方だけが違うので、少し学習しただけで古い書き方が新しい書き方に置き換わります。
+一方、漱石の文章は掛け算ドリルと見た目がまったく違うので、少しの学習では影響を受けにくいのです。
+
+\textbf{元のデータを混ぜた \code{mix}}（緑）は、三つの物差しのバランスが最も良い設定です。
+漱石の損失は 5.008 にとどまり、加減算は 79\% まで戻り、掛け算も 20\% まで伸びました。
+ただし、(b) を見ると、\code{mix} でも最初の 25 ステップで加減算が 4\% まで落ちています。
+学習率の大きい更新が始まった直後に一度壊れ、その後、元のデータを学習し直すことで回復したのです。
+それでも、元の 90\% には戻りきっていません。
+
+\subsection{なぜ忘れるのか、どう防ぐのか}
+
+このように、新しいことを学ぶと、以前に学んだことが急速に失われる現象を\term{破滅的忘却}{catastrophic forgetting}と呼びます\cite{mccloskey1989catastrophic}。
+\secref{sec:post-finetune}で述べたとおり、原因は損失の式にあります。
+新しいデータだけで学習するとき、勾配は新しいデータの損失だけを下げる向きを指します。
+古い能力を保つことは、どこにも書かれていません。
+そして、古い能力も新しい能力も、同じパラメータを共有して表現されています。
+だから、新しい能力のためにパラメータを動かすと、古い能力が巻き添えになるのです。
+
+この理解から、防ぐ方法が自然に出てきます。
+
+\begin{itemize}
+\item \textbf{元のデータを混ぜる}（リプレイ）。
+\code{mix} の設定がこれです。
+バッチの 32 行のうち 16 行を元のデータから取ると、バッチの平均損失は、二つのデータの損失のほぼ平均になります。
+つまり、次の損失を下げていることになります。
+\begin{equation}
+\calL_{\text{混合}}(\vtheta) = (1-\lambda)\,\calL_{\text{新}}(\vtheta) + \lambda\,\calL_{\text{事前}}(\vtheta)
+\label{eq:post-mix-loss}
+\end{equation}
+$\lambda$ は元のデータの割合で、\code{mix} では $\lambda = 0.5$ です。
+古い能力を保つことが、損失の式に書き込まれたわけです。
+\item \textbf{学習率を下げる、学習を短くする}。出発点から遠くへ行かないようにします。\code{low_lr} の結果のとおり、似た形の能力は守りきれないことがあります。
+\item \textbf{出発点からの距離に罰を与える}。損失に $\norm{\vtheta - \vtheta_{\text{事前}}}^2$ のような項を足し、離れすぎないようにします。
+パラメータごとに重要度で重みを付ける EWC\cite{kirkpatrick2017overcoming}が有名です。
+\item \textbf{一部のパラメータだけを学習する}。動かすパラメータを減らせば、壊れる範囲も減ります。次の\chapref{ch:lora}の LoRA がその代表です。
+\end{itemize}
+
+実際の LLM の継続事前学習でも、最もよく使われるのは混合です。
+たとえば DeepSeekMath\cite{shao2024deepseekmath}は、継続事前学習のデータを、数学の文書 56\%、数学のプログラム 4\%、論文 10\%、プログラム 20\%、一般の文章 10\% という割合で混ぜました。
+新しい領域の比率を高くしつつ、元の能力を支えるデータも残しているのです。
+また、継続事前学習は、SFT の\textbf{前}の基盤モデルに対して行うのが原則です。
+SFT 済みのモデルに生のテキストを読ませると、せっかく身につけた対話の振る舞いが忘れられてしまうからです。
+
+\begin{column}{この実験を一般化しすぎないために}
+本書の実験は、260 万パラメータのモデルを 300 ステップ（$300 \times 32 \text{ 行} \times 128 \text{ トークン} \approx 120$ 万トークン）だけ学習したものです。
+掛け算の正答率が 2〜3 割にとどまったのは、主にモデルが小さく、学習が短いからです。
+大きなモデルで何千億トークンも学習すれば、新しい能力の伸び方も、忘れ方の程度も変わります。
+一方、「元のデータを混ぜないと、新しい領域に引きずられて古い能力が壊れる」という構図は、規模によらず実務で注意されている点です。
+\end{column}
+
+この節で分かったことをまとめます。
+継続事前学習は、新しい領域の生テキストで次トークン予測を続けることで、新しい能力を加えます。
+しかし、新しいデータだけで学習すると、似た形の古い能力から順に壊れます（破滅的忘却）。
+元のデータを混ぜれば、損失の式に「古い能力を保つ」ことを書き込めます。
+
+\section{指示チューニング（SFT）を一段ずつ作る}\label{sec:post-sft}
+
+\begin{center}
+\begin{tcolorbox}[bookbox,colback=figgray,borderline west={2.5pt}{0pt}{bookgray},width=0.92\linewidth]
+\textbf{ここまでの道のり}\quad
+(1) 基盤モデルは計算の能力を持つが、質問に答える振る舞いを知らない（\secref{sec:post-why}）。
+(2) モデルを作り変える方法は五つあり、安く試せるものから選ぶ（\secref{sec:post-lifecycle}）。
+(3) どれも学習済みの重みから学習を続けるファインチューニングで、離れすぎると忘れる（\secref{sec:post-finetune}, \secref{sec:post-cpt}）。
+ここからは、本章の主役である SFT で、基盤モデルを計算アシスタントにします。
+\end{tcolorbox}
+\end{center}
+
+\secref{sec:post-why}の結論を思い出しましょう。
+基盤モデルに足りないのは「\code{<|assistant|>} の後に答えを書く」という振る舞いでした。
+そこで、質問と模範応答を対話の形で書いた手本をたくさん用意し、その続きを当てる練習をさせます。
+これが SFT です。
+SFT を作るには、次の四つを決める必要があります。
+
+\begin{enumerate}
+\item 対話を、どんな 1 本のトークン列として書くか（チャットテンプレート）。
+\item そのうち、どの位置を学習するか（損失マスク）。
+\item 長さの違う対話を、どうやってバッチにまとめるか（パディング）。
+\item 手本のデータを、どう作るか。
+\end{enumerate}
+
+この節では、共有ライブラリ \file{llmbook/chat.py} の関数を順に読みながら、この四つを一つずつ決めていきます。
+最後に、それらを組み合わせて学習します。
+共有スクリプト \file{scripts/sft_chat.py} で作った \file{sft.pt} と同じ設定を、\file{code/ch16/sft_step_by_step.py} で途中経過を記録しながら作り直します。
+
+\subsection{対話を 1 本のトークン列にする：チャットテンプレート}\label{sec:post-template}
+
+言語モデルが扱えるのは、1 本のトークン列だけです。
+一方、対話には「誰が話したか」という構造があります。
+そこで、対話の構造を目印のトークンで書き込んだ 1 本の文字列に直します。
+この書き方の決まりを\term{チャットテンプレート}{chat template}と呼びます。
+本書のテンプレートは単純で、すべての発話を「\code{<|役割|>本文<|end|>}」の形で書き、それを順に並べるだけです。
+
+\snippet{対話を本書の書式の文字列にする}{code:post-render-chat}{llmbook/chat.py}{render-chat}
+
+9 行目が本体です。
+\code{messages} の各発話 \code{m} について、役割と本文を目印で挟んだ文字列を作り、すべてをつなげます。
+\code{join} のかっこの中の \code{f"..." for m in messages} は、\chapref{ch:pytorch}のリスト内包表記から角かっこ \code{[ ]} を外した形で、\term{ジェネレータ式}{generator expression}と呼ばれます。
+リストを作って保存する代わりに、要素を 1 個ずつ作って \code{join} に渡します。結果は \code{"".join([f"..." for m in messages])} と同じです。
+10〜11 行目の \code{add_generation_prompt} は、学習の後でモデルに応答を生成させるとき（推論のとき）に使う引数です。
+これを \code{True} にすると、末尾に \code{<|assistant|>} だけを付け足します。
+モデルにとってこれは「ここからアシスタントの発話が始まる。続きを書け」という合図です。
+学習データを作るときは、模範応答まで含めた対話全体を書くので、\code{False} のままにします。
+
+目印に、ふつうの文字列（たとえば「ユーザ：」）ではなく特殊トークンを使うのには、三つの理由があります。
+
+\begin{itemize}
+\item \textbf{紛れない}: 特殊トークンは、トークナイザが文字列 \code{<|user|>} を見つけたときにだけ作られる、専用の 1 トークンです（\chapref{ch:tokenizer}）。
+ふつうの文章の中に偶然現れることがないので、発話の境目を取り違えません。
+\item \textbf{1 トークンで済む}: 目印が 1 トークンなので、モデルが覚えるのも、生成を止める判定をするのも簡単です。
+\item \textbf{止める合図になる}: 推論では、モデルが \code{<|end|>} を出したところで生成を止めます。
+\code{<|end|>} は、モデルが自分で「応答を書き終えた」と宣言するためのトークンです。
+\end{itemize}
+
+\figref{fig:post-chat-tokens}は、対話 1 件が実際にどんなトークン列になるかを示したものです。
+質問「\code{12+35は？}」の数字は 1 桁ずつ、「は」と「？」は 1 文字ずつのトークンです。
+答えの「\code{です。}」は 1 トークンにまとまっています。
+全体で 14 トークンになります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=7.8mm,
+  t/.style={tok,minimum width=7.4mm,font=\footnotesize,inner sep=1pt},
+  sp/.style={t,fill=figblue,draw=bookblue},
+  us/.style={t,fill=figgray},
+  as/.style={t,fill=figgreen,draw=bookgreen}]
+  \foreach \i/\s/\st in {0/{\textsf{\textbf{U}}}/sp,1/1/us,2/2/us,3/+/us,4/3/us,5/5/us,6/は/us,7/？/us,8/{\textsf{\textbf{E}}}/sp,
+                         9/{\textsf{\textbf{A}}}/sp,10/4/as,11/7/as,12/です。/as,13/{\textsf{\textbf{E}}}/sp} {
+    \node[\st,text width=6.8mm,align=center] (n\i) at (\i,0) {\s};
+  }
+  \draw[decorate,decoration={brace,amplitude=4pt,raise=2pt}] (n0.north west) -- node[above=5pt,lbl]{利用者の発話} (n8.north east);
+  \draw[decorate,decoration={brace,amplitude=4pt,raise=2pt}] (n9.north west) -- node[above=5pt,lbl]{アシスタントの発話} (n13.north east);
+  \foreach \i in {0,...,13} {\node[font=\scriptsize,text=bookgray] at (\i,-6mm) {\i};}
+  \node[font=\scriptsize,text=bookgray,anchor=east] at (-0.6,-6mm) {位置};
+\end{tikzpicture}
+\caption{対話「\code{<|user|>12+35は？<|end|><|assistant|>47です。<|end|>}」のトークン列（\file{ch16/out/chat_encode.txt}）。
+青が特殊トークン、灰色が利用者の発話の本文、緑がアシスタントの発話の本文。
+特殊トークンは長いので、図では U（\code{<|user|>}）、A（\code{<|assistant|>}）、E（\code{<|end|>}）と略す。どれも 1 トークンである。}
+\label{fig:post-chat-tokens}
+\end{figure}
+
+\subsubsection*{実在のチャットテンプレート}
+\skimread{押さえる結論は、「実在のモデルも、役割の目印・本文・終わりの目印を並べる同じ形を使う。目印の名前はモデルごとに違うので、そのモデルのテンプレートを正確に使う」です。}
+
+実際の LLM も、基本的な考え方は同じです。
+ただし、目印の名前や改行の入れ方は、モデルごとに違います。
+\figref{fig:post-real-templates}に、代表的な三つの形式を示します。
+
+\begin{figure}[tbp]
+\centering
+\begin{minipage}{0.95\linewidth}
+\textbf{\small (a) ChatML（Qwen2.5・Qwen3 など）}
+\begin{textcode}
+<|im_start|>system
+あなたは計算アシスタントです。<|im_end|>
+<|im_start|>user
+12+35は？<|im_end|>
+<|im_start|>assistant
+47です。<|im_end|>
+\end{textcode}
+\textbf{\small (b) Llama 3}
+\begin{textcode}
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+あなたは計算アシスタントです。<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+12+35は？<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+47です。<|eot_id|>
+\end{textcode}
+\textbf{\small (c) Phi-4-mini}
+\begin{textcode}
+<|system|>あなたは計算アシスタントです。<|end|><|user|>12+35は？<|end|><|assistant|>47です。<|end|>
+\end{textcode}
+\end{minipage}
+\caption{実在のチャットテンプレートの例（各モデルの配布物に含まれるテンプレートより）。
+どれも「役割の目印 $\to$ 本文 $\to$ 発話の終わりの目印」を並べる点は同じで、目印の名前と改行の入れ方が違う。
+本書の形式は (c) とほぼ同じである。}
+\label{fig:post-real-templates}
+\end{figure}
+
+(a) の ChatML では、\code{<|im_start|>} の後に役割の名前をふつうの文字列で書き、改行してから本文を書きます。
+(b) の Llama 3 では、役割の名前を \code{<|start_header_id|>} と \code{<|end_header_id|>} で挟みます。
+発話の終わりは \code{<|eot_id|>}（end of turn）です。
+(c) の Phi-4-mini は、本書と同じく役割ごとに専用の特殊トークンを持ちます。
+三つとも、最初に \code{system} という役割の発話があります。
+これは\term{システムプロンプト}{system prompt}と呼ばれ、アシスタントの役割や口調などを指定するものです（\secref{sec:post-multiturn}で扱います）。
+
+\begin{caution}{テンプレートはモデルの一部}
+モデルは、SFT で使ったテンプレートの形でしか正しく振る舞いません。
+Llama 3 のモデルに ChatML の形で話しかけると、改行一つの違いでも、応答の質が目に見えて落ちることがあります。
+自分でファインチューニングするときも、推論するときも、そのモデルのテンプレートを正確に使ってください。
+実務では、手で文字列を組み立てず、ライブラリの機能（\secref{sec:post-practice}）でテンプレートを適用します。
+\end{caution}
+
+\subsection{どこを学習するか：損失マスク}
+
+次の問題は、トークン列のどこを学習するかです。
+事前学習では、すべての位置で次のトークンを当てる練習をしました。
+同じように、\figref{fig:post-chat-tokens}の 14 トークンすべてで次のトークンを当てさせてよいでしょうか。
+
+\begin{quiz}
+対話のトークン列のすべての位置で次トークン予測を学習すると、モデルは「\code{<|user|>}」の次に何を書くことも練習することになります。
+これにはどんな困ったことがあるでしょうか。
+\end{quiz}
+
+すべての位置を学習すると、モデルは利用者の質問を書く練習もすることになります。
+しかし、私たちがモデルにしてほしいのは、質問に\textbf{答える}ことです。
+質問を作る練習は、目的に関係がありません。
+しかも、利用者の質問は、乱数で作った問題や、実際の利用者が書いた誤字だらけの文かもしれません。
+それをまねる理由はありません。
+
+そこで、\textbf{アシスタントが書くべき部分だけ}を正解とし、それ以外の位置は損失の計算から外します。
+これを\term{損失マスク}{loss mask}と呼びます。
+共有ライブラリでは、次の関数がトークン列と正解をまとめて作ります。
+
+\snippet{対話をトークン列と正解ラベルにする}{code:post-encode}{llmbook/chat.py}{encode-chat-example}
+
+この関数は、トークン ID の列 \code{ids} と、各位置の正解 \code{labels} を返します。
+\code{labels[t]} は「位置 \code{t} の次に来るべきトークン」です。
+学習しない位置には、目印の値 \code{IGNORE}（$-100$）を入れます。
+
+12〜17 行目のループで、発話を一つずつトークン列にします。
+13 行目の \code{head} は役割の目印（\code{<|user|>} など）、14 行目の \code{body} は本文と \code{<|end|>} です。
+16 行目の \code{learn} は、この発話をモデルが書くべきかどうかです。
+利用者の発話（\code{user}）と、ツールの実行結果（\code{result}、\chapref{ch:agent}で使います）以外は、モデルが書くべきものです。
+後で出てくるシステムプロンプト（\code{system}。アシスタントの役割や口調を指定する、対話の最初の発話）も、この関数ではそのまま学習の対象になります。どう扱うかは\secref{sec:post-multiturn}で決めます。
+17 行目で、各トークンが学習の対象かどうかを \code{is_target} に記録します。
+\code{[learn] * len(body)} は、同じ値を並べたリストを作る Python の書き方です（\code{[True] * 3} は \code{[True, True, True]}）。
+本文（\code{body}）は \code{learn} のとおりです。
+役割の目印（\code{head}）は、\code{learn_role} が \code{True} のときだけ対象になります。
+本章では、推論のときに \code{<|assistant|>} を必ずこちらから与えるので、モデルがそれを書く練習は要りません。
+\chapref{ch:agent}では、モデル自身に「電卓を呼ぶか、答えるか」を選ばせるので、目印も学習させます。
+
+18〜19 行目が要点です。
+位置 \code{t} の正解は、次の位置のトークン \code{ids[t + 1]} です。
+ただし、\code{ids[t + 1]} が学習の対象でなければ \code{IGNORE} にします。
+最後の 20 行目で、\code{ids} の最後の 1 個を落とします。
+最後のトークンには「次のトークン」がないので、入力にしても正解を付けられないからです。
+
+実際に、\figref{fig:post-chat-tokens}の対話を通すと次のようになります。
+
+\snippet{対話 1 件のトークンと正解を表示する}{code:post-demo-encode}{ch16/chat_format_demo.py}{demo-encode}
+
+\outputfile{ch16/out/chat_encode.txt}
+
+出力の 1 行目は、\code{render_chat} で作った文字列です。
+2 行目以降は、位置ごとに「入力のトークン \code{->} 正解」を表示しています。
+位置 0〜8（利用者の発話）は、すべて「学習しない」です。
+位置 9 の \code{<|assistant|>} を見たら「\code{4}」、位置 10 の「\code{4}」を見たら「\code{7}」、
+位置 11 で「\code{です。}」、位置 12 で「\code{<|end|>}」を当てるように学習します。
+14 トークンの対話のうち、学習するのは 4 か所だけです。
+\figref{fig:post-loss-mask}は、この対応を図にしたものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=7.8mm,
+  t/.style={tok,minimum width=7.4mm,font=\footnotesize,inner sep=1pt,text width=6.8mm,align=center},
+  sp/.style={t,fill=figblue,draw=bookblue},
+  us/.style={t,fill=figgray},
+  as/.style={t,fill=figgreen,draw=bookgreen},
+  ig/.style={t,fill=white,draw=black!25,text=black!40}]
+  \node[lbl,anchor=east] at (-0.6,0) {入力 \code{ids}};
+  \node[lbl,anchor=east] at (-0.6,-12mm) {正解 \code{labels}};
+  \foreach \i/\s/\st in {0/{\textsf{\textbf{U}}}/sp,1/1/us,2/2/us,3/+/us,4/3/us,5/5/us,6/は/us,7/？/us,8/{\textsf{\textbf{E}}}/sp,
+                         9/{\textsf{\textbf{A}}}/sp,10/4/as,11/7/as,12/です。/as} {
+    \node[\st] (x\i) at (\i,0) {\s};
+  }
+  \foreach \i in {0,...,8} {\node[ig] (y\i) at (\i,-12mm) {{\scriptsize $-100$}};}
+  \foreach \i/\s in {9/4,10/7,11/です。} {\node[as] (y\i) at (\i,-12mm) {\s};}
+  \node[sp] (y12) at (12,-12mm) {\textsf{\textbf{E}}};
+  \foreach \i in {9,...,12} {\draw[arr,bookgreen] (x\i.south) -- (y\i.north);}
+  \foreach \i in {0,...,8} {\draw[->,black!20] (x\i.south) -- (y\i.north);}
+  \node[font=\footnotesize,text=bookgreen!70!black,align=center] at (10.5,-19.5mm) {この 4 か所だけで損失を計算する};
+  \node[font=\footnotesize,text=black!50,align=center] at (4,-19.5mm) {$-100$ の位置は損失から除く（学習しない）};
+\end{tikzpicture}
+\caption{損失マスク。上の段が入力、下の段が各位置の正解。アシスタントが書くべきトークン（緑と最後の E = \code{<|end|>}）だけを正解にし、
+ほかの位置は $-100$ にして損失から除く。U, A, E の略し方は\figref{fig:post-chat-tokens}と同じ。}
+\label{fig:post-loss-mask}
+\end{figure}
+
+式で書くと、SFT の損失は次のようになります。
+対話 $i$ のトークン列を $x^{(i)}_1, \dots, x^{(i)}_{T_i}$ とし、学習の対象になる位置（正解が $-100$ でない位置）の集合を $\mathcal{M}$ とします。
+\begin{equation}
+\calL_{\text{SFT}}(\vtheta) = -\frac{1}{\abs{\mathcal{M}}} \sum_{(i,t)\in\mathcal{M}} \log \ptheta\bigl(x^{(i)}_{t+1} \bigm| x^{(i)}_{\le t}\bigr)
+\label{eq:post-sft-loss}
+\end{equation}
+事前学習の損失（式\eqref{eq:post-pretrain-loss}）と比べると、違いは和を取る範囲だけです。
+事前学習はすべての位置で平均しましたが、SFT は $\mathcal{M}$ の位置だけで平均します。
+分母も、全トークン数ではなく、学習する位置の数 $\abs{\mathcal{M}}$ です。
+
+数値で確かめましょう。
+\figref{fig:post-loss-mask}の 4 か所で、モデルが正解に付けた確率が、順に $0.5, 0.8, 0.9, 0.95$ だったとします。
+損失は、各位置の $-\log$ の平均です。
+\begin{align*}
+\calL_{\text{SFT}} &= -\frac{1}{4}\bigl(\log 0.5 + \log 0.8 + \log 0.9 + \log 0.95\bigr) && \text{（式\eqref{eq:post-sft-loss}で $\abs{\mathcal{M}}=4$）}\\
+&= \frac{1}{4}\bigl(0.693 + 0.223 + 0.105 + 0.051\bigr) && \text{（各項の $-\log$ を計算）}\\
+&= \frac{1.073}{4} \approx 0.268
+\end{align*}
+利用者の質問の部分で、モデルがどれだけ予測を外していても、この値には影響しません。
+
+コードの上では、この式はすでに実装済みです。
+\chapref{ch:transformer}で作った \code{GPT.forward} は、損失を \code{F.cross_entropy(..., ignore_index=-100)} で計算していました。
+\code{ignore_index} に指定した値の位置は、和からも分母からも除かれます。
+つまり、正解に $-100$ を入れるだけで、式\eqref{eq:post-sft-loss}になるのです。
+
+\subsection{長さの違う対話をバッチにする：パディング}
+
+学習は、複数の対話をまとめたバッチで行います。
+ところが、対話の長さはまちまちです。
+「\code{12+35は？}」は 14 トークンですが、「\code{7と8を足すといくつですか？}」はもっと長くなります。
+テンソルは長方形でなければならないので、短い対話の後ろを詰め物で埋めて長さをそろえます。
+これを\term{パディング}{padding}と呼び、詰め物には特殊トークン \code{<|pad|>} を使います。
+
+\snippet{長さの違う例をバッチにまとめる}{code:post-collate}{llmbook/chat.py}{collate}
+
+3 行目で、バッチの中で最も長い例の長さを \code{T} とします。
+\code{max(len(ids) for ids, _ in examples)} も、\code{render_chat} で見たジェネレータ式です。各例の長さを 1 個ずつ \code{max} に渡します（\code{_} は使わない値の受け皿です）。
+4 行目で、入力 \code{x} を形 $(B, T)$ の \code{<|pad|>} で埋めたテンソルとして作ります。
+5 行目で、正解 \code{y} を同じ形の \code{IGNORE} で埋めたテンソルとして作ります。
+6〜8 行目で、各例を左から書き込みます。
+書き込まれなかった右側は、入力が \code{<|pad|>}、正解が $-100$ のまま残ります。
+正解が $-100$ なので、詰め物の位置は損失に入りません。
+2 件の対話で試すと、次のようになります。
+
+\snippet{2 件の対話をバッチにする}{code:post-demo-collate}{ch16/chat_format_demo.py}{demo-collate}
+
+\outputfile{ch16/out/chat_collate.txt}
+
+出力の \code{x.shape = (2, 18)} は、2 件の対話を、長い方の長さ 18 にそろえたことを表します。
+\code{x[0]} の末尾に並ぶ 5 個の \code{4095} が \code{<|pad|>} の ID です（特殊トークンの ID は 4088〜4095 でした）。
+\code{y[0]} の同じ位置は $-100$ なので、詰め物は学習されません。
+\code{y[0]} で $-100$ でないのは \code{52, 55, 593, 4091} の 4 個で、これは「\code{4}」「\code{7}」「\code{です。}」「\code{<|end|>}」の ID です。
+\figref{fig:post-loss-mask}の下の段と同じものが、数字で見えています。
+\figref{fig:post-padding}に、このバッチの形を図で示します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=5.2mm,y=5.2mm,
+  c/.style={draw=black!35,minimum size=5.2mm,inner sep=0pt,font=\tiny}]
+  \foreach \row/\n/\a/\len in {0/13/9/13,1/18/14/18} {
+    \foreach \j in {0,...,17} {
+      \pgfmathtruncatemacro{\inside}{\j<\len}
+      \pgfmathtruncatemacro{\isans}{(\j>=\a)*(\j<\len)}
+      \ifnum\inside=1
+        \ifnum\isans=1 \node[c,fill=figgreen] at (\j,-\row) {};
+        \else \node[c,fill=figgray] at (\j,-\row) {}; \fi
+      \else \node[c,fill=white,pattern=north east lines,pattern color=black!25] at (\j,-\row) {}; \fi
+    }
+  }
+  \node[lbl,anchor=east] at (-0.7,0) {1 件目（13 トークン）};
+  \node[lbl,anchor=east] at (-0.7,-1) {2 件目（18 トークン）};
+  \draw[decorate,decoration={brace,amplitude=4pt,raise=3pt}] (-0.5,0.5) -- node[above=6pt,lbl]{$T = 18$（バッチの中で最も長い例に合わせる）} (17.5,0.5);
+  \draw[decorate,decoration={brace,amplitude=4pt,mirror,raise=3pt}] (12.5,-1.5) -- node[below=6pt,lbl]{詰め物 \code{<|pad|>}（正解は $-100$）} (17.5,-1.5);
+  \node[c,fill=figgray] at (0,-3.4) {}; \node[lbl,anchor=west] at (0.6,-3.4) {質問の部分（正解は $-100$）};
+  \node[c,fill=figgreen] at (8,-3.4) {}; \node[lbl,anchor=west] at (8.6,-3.4) {応答の部分（学習する）};
+\end{tikzpicture}
+\caption{2 件の対話をパディングして作ったバッチ（形 $(B, T) = (2, 18)$）。短い 1 件目の右側を \code{<|pad|>} で埋める。
+損失を計算するのは緑のマスだけである。}
+\label{fig:post-padding}
+\end{figure}
+
+ここで一つ疑問が湧くかもしれません。
+詰め物は損失に入らないとしても、モデルの入力には入っています。
+詰め物が、本物のトークンの予測に影響することはないのでしょうか。
+
+答えは「影響しない」です。
+理由は、\chapref{ch:attention}で学んだ因果マスクにあります。
+各位置は、自分より\textbf{前}の位置しか見ることができません。
+詰め物はすべて本物のトークンの\textbf{後ろ}（右側）に置いたので、本物のトークンの位置からは見えないのです。
+右側に詰めるのは、このためです。
+
+\subsection{手本のデータを作る}
+
+SFT の材料になる手本を作ります。
+本物の LLM の SFT データは、人が書いた手本や、ほかのモデルに生成させた手本です（\secref{sec:post-practice}で紹介します）。
+本書の計算アシスタントの場合は、手本をプログラムで自動的に作れます。
+計算の正解は、Python が知っているからです。
+
+まず、質問の言い方を用意します。
+
+\snippet{同じ計算をたずねるいろいろな言い方}{code:post-templates}{llmbook/chat.py}{templates}
+
+足し算・引き算・掛け算のそれぞれについて、3 通りの言い方があります。
+\code{{a}} と \code{{b}} の所に数が入ります。
+同じ計算でも言い方を変えるのは、モデルに「言い回しは違っても、求められていることは同じ」と学ばせるためです。
+一つの言い方しか見せないと、モデルはその言い方にしか答えられなくなるかもしれません。
+掛け算の言い方も用意してありますが、本章では使いません（\chapref{ch:agent}で電卓を使って解かせます）。
+
+次の関数が、対話を 1 件作ります。
+
+\snippet{対話を 1 件作る}{code:post-make-example}{llmbook/chat.py}{make-chat-example}
+
+4 行目の \code{make_problem} は、ドリルを作るのに使った関数です（\chapref{ch:pretraining}）。
+「\code{12+35=}」と「\code{47}」のような、式と答えの組を返します。
+5〜6 行目で、式から演算子と二つの数を取り出します。
+5 行目の \code{next(ch for ch in problem if ch in ...)} は、式の文字を先頭から順に調べ、最初に見つかった演算子の文字を返す書き方です。
+7 行目で、言い方を一つ無作為に選び、数を埋め込んで質問の文にします。
+8〜9 行目で、質問と模範応答「\code{47です。}」を対話にします。
+
+学習データは、この関数で 3,000 件作ります。
+
+\snippet{学習データを用意する}{code:post-sft-data}{ch16/sft_step_by_step.py}{sft-data}
+
+2 行目で、乱数の種を 0 にします。
+評価用の 200 問（\code{chat_accuracy}）は種 12345 で作るので、学習と評価は別々の問題の列になります\footnote{偶然の重なりはあり、評価用の 200 問のうち 26 問は、一字一句同じ質問が学習データにあります。
+重なりが評価に与える影響は\chapref{ch:eval-serving}で詳しく扱います。}。
+3〜4 行目で、作った対話を \code{encode_chat_example} でトークン列と正解にします。
+5 行目で、詰め物の ID を取り出しておきます。
+
+\subsection{学習する}
+
+部品がそろったので、学習ループを書きます。
+
+\snippet{SFT の学習ループ}{code:post-sft-loop}{ch16/sft_step_by_step.py}{sft-loop}
+
+1 行目で、600 ステップ、バッチ 32 件、最大学習率 $3\times10^{-4}$ と決めます。
+2 行目のオプティマイザは、事前学習と同じ AdamW です（\chapref{ch:training}。勾配の過去の平均を使って、パラメータごとに歩幅を自動で調整する最適化手法でした）。
+ただし重み減衰は 0 にしています。
+短い学習なので、重みを小さく保つ正則化の必要が薄いからです。
+4〜5 行目では、50 ステップごとに途中経過を測ります。
+測るのは、対話の正答率（\code{chat_accuracy}、200 問）、漱石の損失、ドリル形式の正答率の三つです。
+8〜10 行目は、事前学習と同じウォームアップ付きのコサイン減衰です（\chapref{ch:pretraining}）。
+最初の 30 ステップで学習率を少しずつ上げ、その後なだらかに下げます。学習の始めに大きな更新で重みを壊さないための工夫です。
+11 行目で 3,000 件から 32 件を無作為に選び、12 行目の \code{collate} で形 $(B, T)$ のバッチにします。
+14 行目で損失を計算します。
+正解に $-100$ が入っているので、この損失は式\eqref{eq:post-sft-loss}の SFT の損失です。
+13 行目の \code{model.train()} は、モデルを学習のモードに戻す 1 行です。途中の評価（5 行目）の中で、モデルが評価のモード（\code{model.eval()}）に切り替えられるからです。
+15〜18 行目は、勾配をゼロにし、逆伝播し、勾配の大きさを 1.0 で切りそろえ（勾配クリッピング、\chapref{ch:training}。まれに出る巨大な勾配で重みが壊れるのを防ぐ）、パラメータを更新する、いつもの手順です。
+19 行目で損失を記録し、後で\figref{fig:post-sft-curves}(a) に描きます。
+
+事前学習の学習ループ（\chapref{ch:pretraining}）と見比べてください。
+違うのは、出発点が \file{base.pt} であることと、バッチの作り方（11〜12 行目）だけです。
+\secref{sec:post-finetune}で述べたとおり、SFT は学習ループとしては事前学習と同じものです。
+
+なお、評価に使う \code{chat_accuracy} は次の関数です。
+
+\snippet{対話形式の正答率を測る}{code:post-chat-accuracy}{llmbook/chat.py}{chat-accuracy}
+
+8 行目で評価用の問題を作り、9 行目の \code{chat_reply} で応答を生成します。
+\code{chat_reply} は、質問を \code{render_chat(..., add_generation_prompt=True)} で対話形式にして与え、
+モデルが \code{<|end|>} を出すまで貪欲法で生成する関数です。
+10 行目で、応答が模範応答「\code{47です。}」と\textbf{完全に一致}したときだけ正解とします。
+数が合っていても、「です。」が抜けていれば不正解です。
+形式まで含めて、振る舞いを身につけたかを測るためです。
+
+\subsection{結果：計算アシスタントができた}
+
+\file{ch16/sft_step_by_step.py} を実行した結果の要所です（評価を含めて約 14 分。学習だけなら 1〜2 分です）。
+
+\outputfile{ch16/out/sft_step_by_step.txt}
+
+最初の 4 行は、学習中のバッチの損失です。
+0 ステップ目の 8.973 は、でたらめな予測の $\log 4096 \approx 8.318$ よりも大きな値です。
+基盤モデルは \code{<|assistant|>} の後に数字やドリルの断片を予測するので（\figref{fig:post-base-next-token}）、「\code{47}」の後の「\code{です。}」や \code{<|end|>} にほとんど確率を付けず、損失が大きくなるのです。
+それが 100 ステップで 1.048、最後には 0.061 まで下がりました。
+
+次の 4 行が対話の正答率です。
+0\% から始まり、600 回の更新の後には 89.0\% になりました。
+最後の 4 行は応答の例です。
+どの言い方の質問にも、「◯◯です。」の形で正しく答えています。
+最後の「456と789を足すといくつですか？」は、繰り上がりが 3 回ある難しい問題ですが、正しく 1245 と答えました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=loss,width=0.5\linewidth,height=46mm,xmin=0,xmax=600,ymode=log,
+  xlabel={ステップ},ylabel={損失（対数目盛）},title={\small (a) 学習中のバッチの損失}]
+\addplot[bookblue,thin] table[col sep=comma,x=step,y=loss]{code/ch16/out/sft_loss.csv};
+\end{axis}
+\begin{axis}[at={($(loss.east)+(16mm,0)$)},anchor=west,width=0.5\linewidth,height=46mm,xmin=0,xmax=600,ymin=0,ymax=1,
+  xlabel={ステップ（更新の回数）},ylabel={正答率},title={\small (b) 対話形式とドリル形式の正答率},
+  legend style={font=\scriptsize,at={(0.97,0.5)},anchor=east}]
+\addplot[bookgreen,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=chat_acc]{code/ch16/out/sft_eval.csv};
+\addplot[bookaccent,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=drill_acc]{code/ch16/out/sft_eval.csv};
+\legend{対話形式,ドリル形式}
+\end{axis}
+\end{tikzpicture}
+\caption{SFT の学習曲線（\file{ch16/out/sft_loss.csv}, \file{sft_eval.csv}）。(a) 損失は最初の 100 ステップで急に下がり、その後はゆっくり下がる。
+(b) 対話形式の正答率（緑）は 0\% から 89\% まで上がる。一方、事前学習で 86.5\% だったドリル形式の正答率（赤）は、最初の 50 回の更新で 0\% に落ちる。}
+\label{fig:post-sft-curves}
+\end{figure}
+
+\figref{fig:post-sft-curves}で、学習の途中経過を見ます。
+(a) の損失は、最初の 100 ステップで 9 近くから 1 程度まで急に下がります。
+この間にモデルが覚えたのは、主に「\code{<|assistant|>} の後には数を書き、\code{です。} と \code{<|end|>} で閉じる」という\textbf{形式}です。
+(b) の緑の線を見ると、対話の正答率が本格的に上がり始めるのは 100 回目の更新の後です。
+形式を覚えた後で、正しい数を書くことが少しずつできるようになっていきます。
+
+(b) にはもう一つ、赤の線があります。
+これは、事前学習のときの書き方「\code{⏎12+35=}」でたずねた正答率です。
+事前学習の直後には 86.5\% あったのに、最初の 50 回の更新で 0\% に落ち、二度と戻りません。
+\secref{sec:post-cpt}で見た破滅的忘却（新しいことを学ぶと、以前に学んだことが急速に失われる現象）が、SFT でも起きているのです。
+SFT のデータは対話形式だけなので、ドリル形式の書き方は守られません。
+この点は次の節でもう少し詳しく調べます。
+
+\begin{column}{共有スクリプトの値との違い}
+\file{code/README.md} に記録した \file{sft.pt}（\file{scripts/sft_chat.py} で作成）の正答率は 87.0\% でした。
+本章の \file{ch16_sft.pt} は、データ・乱数の種・ハイパーパラメータをすべて同じにしたのに 89.0\% です。
+損失は 0 ステップ目（8.97）と 100 ステップ目（1.05）では README の記録と一致しますが、300 ステップ目では README の 0.16 に対して 0.438 と、ずれていました。
+原因として考えられるのは、CPU のスレッド数の違いです（本章のスクリプトは 2 スレッドに制限しています）。
+スレッド数が変わると足し算の順序が変わり、丸め誤差がわずかに変わります。その差が学習の中で増幅されるのです。
+200 問の正答率には、この程度（数 \%）のぶれが常にあると考えてください。
+評価のぶれを統計的に扱う方法は\chapref{ch:eval-serving}で学びます。
+\end{column}
+
+この節で分かったことをまとめます。
+SFT は、(1) チャットテンプレートで対話を 1 本のトークン列にし、(2) 損失マスクでアシスタントの部分だけを正解にし、(3) パディングでバッチにして、
+(4) 事前学習と同じ学習ループで学習することです。
+600 ステップ、約 30 万トークンの学習で、基盤モデルは 89\% の正答率で質問に答える計算アシスタントになりました。
+
+\section{SFT の実験：何が効いて、何が失われるのか}\label{sec:post-sft-exp}
+
+前節で、SFT が動くことは確かめました。
+しかし、「動いた」だけでは、次に自分で SFT をするときの判断材料になりません。
+手本は何件あれば足りるのか。事前学習は本当に必要なのか。損失マスクはどれだけ効いているのか。そして、何を失ったのか。
+この節では、条件を一つずつ変えて SFT をやり直し、これらの問いに数字で答えます。
+
+実験のたびに学習ループを書き直すのは手間なので、前節のループを関数にまとめておきます。
+
+\snippet{実験用の SFT の関数}{code:post-run-sft}{ch16/common.py}{run-sft}
+
+中身は\coderef{code:post-sft-loop}と同じです。
+違うのは、バッチを選ぶ乱数を関数の中で作り直すこと（4 行目）と、途中経過を測らないことだけです。
+11 行目の \code{min(batch_size, len(examples))} は、手本が 32 件より少ない実験のための工夫です。
+そのときは、毎ステップすべての手本を使います。
+
+一つ注意があります。
+この関数で 3,000 件の手本を学習すると、正答率は 86.0\% になり、前節の 89.0\% と少し違います。
+設定は同じでも、乱数を作り直したぶんバッチの選ばれ方が変わり、結果はこの程度ぶれます（前節末のコラム）。
+この節では、同じ関数で学習した結果どうしを比べることにします。
+
+\subsection{実験 1：手本の数と、事前学習の価値}\label{sec:post-exp-data}
+
+一つ目の実験では、手本の数を 30 件から 1 万件まで変えます。
+さらに、同じことを、事前学習をしていないモデル（重みが乱数のまま）からも行います。
+事前学習をしていないモデルは次のように作ります。
+
+\snippet{事前学習をしていないモデル}{code:post-scratch}{ch16/sft_experiments.py}{from-scratch}
+
+\code{load_base().config} で \file{base.pt} と同じ形（層の数、幅、語彙）を取り出し、その形のモデルを新しく作ります。
+形は同じで、重みだけが乱数です。
+実験の本体は次のとおりです。
+
+\snippet{手本の数を変えて SFT する}{code:post-exp-data}{ch16/sft_experiments.py}{exp-data}
+
+2 行目で手本を \code{n} 件作ります。
+乱数の種がいつも 0 なので、100 件の手本は 300 件の手本の先頭 100 件と同じです。
+3 行目で出発点を選び、4 行目で学習します。
+\textbf{どの \code{n} でも 600 ステップ}学習することに注意してください。
+手本が 30 件なら同じ手本を 600 回見ることになります（30 件は 32 件より少ないので、毎ステップ全部を使います）。
+1 万件なら、600 ステップで見る延べ $600 \times 32 = 19{,}200$ 件を 1 万件で割って、1 件を 2 回ほど見るだけです。
+つまり、この実験で変えているのは計算量ではなく、\textbf{手本の種類の多さ}です。
+
+結果を\figref{fig:post-sft-data}に示します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\linewidth,height=52mm,xmode=log,xmin=20,xmax=15000,ymin=0,ymax=1,
+  xlabel={手本の数（対数目盛）},ylabel={対話の正答率},
+  xtick={30,100,300,1000,3000,10000},xticklabels={30,100,300,1000,3000,10000},
+  legend style={font=\scriptsize,at={(0.97,0.45)},anchor=east}]
+\addplot[bookblue,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=chat_acc]{code/ch16/out/sft_data_base.csv};
+\addplot[bookaccent,mark=square*,mark size=1.5pt] table[col sep=comma,x=n,y=chat_acc]{code/ch16/out/sft_data_scratch.csv};
+\legend{\file{base.pt} から（事前学習あり）,乱数の重みから（事前学習なし）}
+\end{axis}
+\end{tikzpicture}
+\caption{手本の数と対話の正答率（\file{ch16/out/sft_data_base.csv}, \file{sft_data_scratch.csv}）。どの点も 600 ステップの SFT の結果。
+事前学習あり（青）は 300 件で 66\%、1,000 件で 82\% に達し、3,000 件で頭打ちになる。事前学習なし（赤）は、手本を 1 万件にしても 4\% 以下にとどまる。}
+\label{fig:post-sft-data}
+\end{figure}
+
+まず青の線（事前学習あり）を見ます。
+30 件と 100 件では、正答率は 1.5\% と 4.5\% にとどまります。
+同じ問題を 600 回も見たので、手本そのものはほぼ丸暗記できたはずです。
+それでも見たことのない評価の問題には答えられません。
+手本が少なすぎると、モデルは「質問に答える」という一般的な振る舞いではなく、「この 30 問の答え」を覚えてしまうのです（\chapref{ch:ml}で学んだ過学習です）。
+300 件で 66.5\%、1,000 件で 81.5\% と急に良くなり、3,000 件と 1 万件はどちらも 86.0\% で頭打ちになります。
+この 86\% は、基盤モデルがドリル形式で出した 86.5\% とほぼ同じです。
+200 問の正答率には数ポイントのぶれがあるので（\secref{sec:post-sft}末のコラム）、本章に出てくる 86〜90\% は、どれも同じ水準と見てください。
+手本を増やしても、基盤モデルが持っている計算の能力を大きく超えることはないのです。
+
+次に赤の線（事前学習なし）を見ます。
+こちらは、手本を何件にしても正答率が 0.5〜4\% にとどまりました（1 万件で 3.5\%）。
+同じ手本、同じ 600 ステップ、同じ形のモデルなのに、出発点が乱数だというだけで、ほとんど何もできないのです。
+乱数から出発したモデルは、600 ステップのあいだに、日本語の文字の並び、「◯◯です。」という形式、そして足し算・引き算のやり方を、すべて対話の手本だけから学ばなければなりません。
+基盤モデルが 4,000 ステップかけて事前学習で身につけた計算の能力を、600 ステップで作るのは無理なのです。
+数 \% の正解は、答えが 1〜2 桁の簡単な問題で、形式をまねたら偶然に数が合ったものと考えられます。
+
+二本の線の差が、\textbf{事前学習の価値}です（\secref{sec:post-finetune}で予告したことを、ここで数字で確かめました）。
+SFT は「能力の出し方」を教える学習でした。
+出す能力がなければ、出し方だけを教えても答えは出てきません。
+大きな LLM で、SFT の前に莫大な計算をかけて事前学習を行うのは、このためです。
+
+\subsection{実験 2：損失マスクは何をしているか}\label{sec:post-exp-mask}
+\skimread{押さえる結論は、「マスクを外しても正答率はあまり変わらないが、モデルが利用者の質問まで書くようになり、忘却も増える。マスクは余計なことを学ばせないためのもの」です。}
+
+二つ目の実験では、損失マスクを外します。
+実験のスクリプト \file{ch16/sft_experiments.py} の関数 \code{make_examples} は、
+\code{learn_all=True} のとき、利用者の発話や目印も含め、すべての位置で次のトークンを当てる正解を作ります。
+手本は 3,000 件、それ以外の設定は実験 1 と同じです。
+結果を\tabref{tab:post-mask}にまとめました。
+
+\begin{table}[tbp]
+\centering
+\caption{損失マスクの有無による違い（手本 3,000 件、600 ステップ。\file{ch16/out/sft_mask.csv}）。
+右端は、\code{<|user|>} だけを与えて温度 0.8 で書かせた続き。}
+\label{tab:post-mask}
+\footnotesize
+\begin{tabular}{lccl}
+\toprule
+ & 対話の正答率 & 漱石の損失 & \code{<|user|>} の続き \\
+\midrule
+学習前（\file{base.pt}） & 0\% & 4.877 & --- \\
+マスクあり & 86.0\% & 6.277 & \code{302+1234=346} \\
+マスクなし & 82.5\% & 6.870 & \code{426と1を足すといくつです} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+正答率の差は 3.5 ポイントで、200 問の評価のぶれ（数 \%）と同じくらいです。
+この小さな実験では、マスクの有無で正答率がはっきり変わるとまでは言えません。
+差がはっきり出たのは、残りの二つの列です。
+
+右端の列を見てください。
+マスクなしで学習したモデルは、\code{<|user|>} の後に「\code{426と1を足すといくつです}」と、\textbf{利用者の質問を作り出しました}。
+利用者の発話も学習の対象にしたので、「質問を書く」ことまで覚えたのです。
+マスクありのモデルは、利用者の発話を一度も学習していないので、質問の書き方を知りません（ドリルの断片を書いています）。
+アシスタントとして使うモデルにとって、利用者の発話をまねる力は不要です。
+それどころか、応答の途中で \code{<|end|>} を出し損ねると、そのまま利用者の発話を勝手に書き続ける原因になります。
+
+真ん中の列の漱石の損失は、マスクなしのほうが 0.6 ほど悪くなりました。
+学習する位置が増えるぶん、パラメータは手本の文字列全体に合わせて大きく動き、事前学習で覚えたことがより多く上書きされたと考えられます。
+損失マスクの役割は、「答える力を上げる」ことよりも、「\textbf{学ばせたいことだけを学ばせ、余計なことを学ばせない}」ことにあるのです。
+大きな LLM でも、アシスタントの部分だけで損失を取るのが標準的なやり方です\cite{touvron2023llama2}。
+
+\subsection{実験 3：SFT で何を失ったか}\label{sec:post-exp-forget}
+\skimread{押さえる結論は、「1 種類の手本だけで SFT すると、小説やドリルの続きを書く力が失われる。守りたい能力の手本も混ぜておく」です。}
+
+最後に、\figref{fig:post-sft-curves}の学習中に測っておいた漱石の損失を見ます。
+学習前の 4.877 から、50 ステップで 5.199、300 ステップで 5.751、600 ステップで 6.331 へと、学習を続けるほど悪くなりました。
+ドリル形式の正答率が 86.5\% から 0\% に落ちたことと合わせると、計算アシスタントは、小説の続きを書く力とドリルの続きを書く力の両方を、かなり失ったことになります。
+
+これは、\secref{sec:post-cpt}の \code{high_lr}（掛け算ドリルだけを大きな学習率で学ばせた設定。漱石の損失 9.092）ほどではありませんが、同じ種類の忘却です。
+SFT の手本が「計算の対話」の 1 種類しかないので、モデルはその 1 種類に特化していくのです。
+計算アシスタントとして使うだけなら困りませんが、汎用の対話モデルを作るなら困ります。
+実際の SFT のデータが、文章作成・質問応答・プログラム・数学など多くの種類の課題を混ぜて作られる\cite{lambert2024tulu3}のは、このためでもあります。
+\secref{sec:post-cpt}の \code{mix}（元のデータを半分混ぜて忘却を防いだ設定）と同じ考え方で、守りたい能力の手本をデータに含めておくのです（章末の演習 5）。
+
+この節で分かったことをまとめます。
+(1) 手本の数は、種類が少なすぎると過学習になり、ある程度を超えると基盤モデルの能力で頭打ちになります。
+(2) 事前学習をしていないモデルは、同じ手本・同じ計算量でも、正答率が 4\% 以下にとどまります。SFT の効果は、事前学習で身につけた能力の上に成り立っています。
+(3) 損失マスクは、利用者の発話をまねるという余計な振る舞いを防ぎ、忘却を減らします。
+(4) 1 種類の手本だけの SFT は、それ以外の能力を忘れさせます。
+
+\section{システムプロンプトと多ターンの対話}\label{sec:post-multiturn}
+\skimread{押さえる結論は、「SFT で学んだ振る舞いは手本の形に結びつく。1 往復の手本だけで学んだモデルは、前にシステムプロンプトや前の往復が付くと答えられない。その形の手本を混ぜれば直る」です（\tabref{tab:post-multiturn}）。\chapref{ch:agent}で多ターンの対話を使う前に、読み直してください。}
+
+ここまでの手本は、すべて「質問 1 つと答え 1 つ」の対話でした。
+しかし、実際のチャットには、役割を指定するシステムプロンプト（\secref{sec:post-template}）が付いたり、何往復も会話が続いたりします。
+1 往復の手本だけで学んだ計算アシスタントは、こうした対話にも答えられるでしょうか。
+
+\subsection{手本にない形の対話を与える}
+
+次のコードは、\file{ch16_sft.pt} に同じ質問「\code{300から123を引くといくつですか？}」を三つの形で与えます。
+
+\snippet{三つの形の対話を用意する}{code:post-multiturn}{ch16/multiturn_test.py}{multiturn}
+
+1 行目はシステムプロンプトです。
+2〜3 行目は 1 往復目の対話で、ここに 2 往復目の質問（4 行目）を続けます。
+5〜7 行目の三つの形は、(1) 質問だけ、(2) システムプロンプトの後に質問、(3) 1 往復目の後に質問（2 ターン目）です。
+スクリプトは、この 3 例の応答に続けて、評価用の 200 問をそれぞれ三つの形でたずねた正答率を出力します。
+
+\outputfile{ch16/out/multiturn_sft.txt}
+
+1 ターンの形では、正しく「\code{177です。}」と答え、正答率も 89.0\% です。
+ところが、前にシステムプロンプトを付けるだけで「\code{17です。}」と間違え、正答率は 3.5\% に落ちます。
+2 ターン目ではさらに悪く、「\code{1です。}」と答え、正答率は 1.0\% です。
+答えの形式（「◯◯です。」）は守っているのに、肝心の数が出てこないのです。
+
+理由は、\secref{sec:post-why}で見たことと同じです。
+モデルは手本に出てきた形の続きしか知りません。
+手本では、\code{<|assistant|>} の直前には必ず「\code{<|user|>}質問\code{<|end|>}」だけがあり、その前には何もありませんでした。
+本書のモデルは、各トークンが何番目にあるかを位置埋め込みで知っています（\chapref{ch:transformer}）。
+手本では質問がいつも列の先頭にあったので、モデルは「先頭から何番目の数字か」という位置の手がかりに頼って計算するようになった可能性があります。
+質問の前に別の文字列が入ると、その手がかりがずれ、計算できなくなるのだと考えられます（本章では、この仮説をそれ以上は確かめていません）。
+小さなモデルの SFT は、手本の形に強く結びついているのです。
+
+\subsection{手本に多ターンとシステムプロンプトを含める}
+
+対策は単純です。
+そういう形の対話を手本に含めればよいのです。
+次の関数は、1〜3 往復の対話を作り、半分にはシステムプロンプトを付けます。
+
+\snippet{多ターンとシステムプロンプトを含む手本を作る}{code:post-multiturn-data}{ch16/sft_multiturn.py}{multiturn-data}
+
+4〜5 行目で、1〜3 個の質問と応答の組を順につなげます。
+6〜8 行目で、半分の対話の先頭にシステムプロンプトを付けます。
+9 行目の \code{encode_chat_example} は、利用者（\code{user}）以外の発話の本文をすべて学習の対象にします（\coderef{code:post-encode}）。
+したがって、2 往復の対話からは 2 つの応答の両方を学びます。
+ただし、このままではシステムプロンプトの本文まで学習の対象に入ってしまいます。
+システムプロンプトは「与えるもの」で、モデルに書かせるものではありません。
+そこで 10〜12 行目で、システムプロンプトの部分の正解を $-100$ にして外します。
+
+この手本 3,000 件で、ほかは同じ設定で SFT したモデルが \file{ch16_sft_multi.pt} です（約 3 分）。
+同じテストの結果は次のとおりです。
+
+\outputfile{ch16/out/multiturn_sft_multi.txt}
+
+\begin{table}[tbp]
+\centering
+\caption{1 往復の手本だけで学んだモデルと、多ターン・システムプロンプトの手本も含めて学んだモデルの、三つの形での正答率（200 問。\file{ch16/out/multiturn_*.txt}）。
+手本に含めた形でだけ、モデルは答えられる。}
+\label{tab:post-multiturn}
+\small
+\begin{tabular}{lrrr}
+\toprule
+学習したモデル & 1 ターン & システムあり & 2 ターン目 \\
+\midrule
+\file{ch16_sft.pt}（1 往復の手本だけ） & 89.0\% & 3.5\% & 1.0\% \\
+\file{ch16_sft_multi.pt}（多ターン・システムも） & 89.5\% & 90.0\% & 88.0\% \\
+
+\bottomrule
+\end{tabular}
+\end{table}
+
+1 例目の応答は、システムプロンプトありでは正しく「\code{177です。}」でしたが、1 ターンと 2 ターン目では「\code{187です。}」と 10 だけずれた誤答でした。
+
+1 問ずつの当たり外れは、学習をやり直すだけで入れ替わる程度のものです。
+そこで、200 問の正答率を、前の \file{ch16_sft.pt} と並べて\tabref{tab:post-multiturn}で見ます。
+
+正答率は、1 ターンが 89.5\%、システムプロンプトありが 90.0\%、2 ターン目が 88.0\% で、三つの形がほぼ同じになりました。
+しかも、1 ターンの正答率は下がっていません。
+更新の回数（600 ステップ）は同じなので、手本の形を増やしたことの代償はほとんどなかったことになります。
+2 ターン目の質問に答えるには、1 往復目の質問と答えを読み飛ばし、最後の質問に注意を向ける必要があります。
+モデルはこれを、多ターンの手本から学んだのです。
+
+この節で分かったことをまとめます。
+SFT で学んだ振る舞いは、手本の\textbf{形}に強く結びついています。
+システムプロンプトや多ターンの対話に答えさせたいなら、その形の手本を用意する必要があります。
+実際のチャットモデルの SFT データに、多ターンの対話やさまざまなシステムプロンプトが含まれているのはこのためです\cite{touvron2023llama2}。
+
+
+\section{SFT の限界と、実務での進め方}\label{sec:post-practice}
+
+ここまでで、SFT の仕組みと性質を、手元の実験で一通り確かめました。
+最後に、SFT では解けない問題を整理し、実際の LLM 開発で SFT をどう行うかを見ておきます。
+
+\subsection{SFT にできないこと}\label{sec:post-limits}
+
+\textbf{一つ目に、SFT は主に振る舞いを教えるもので、能力を大きく伸ばすものではありません。}
+計算アシスタントの正答率は 89.0\% でした。
+これは、基盤モデルがドリル形式で出した 86.5\% とほぼ同じ水準です。
+SFT は、基盤モデルが持っていた計算の能力を、対話の形で引き出せるようにしたのであって、計算そのものを上手にしたわけではありません。
+掛け算のように、基盤モデルが持っていない能力は、手本を見せても身につきにくいのです（\secref{sec:post-cpt}で見たように、新しい能力を足すには大量のデータが要ります）。
+大きな LLM でも、わずか 1,000 件ほどの丁寧な手本で SFT するだけで質の高い対話モデルができるという報告があり（LIMA と呼ばれる 2023 年の研究~\cite{zhou2023lima}）、
+「能力は事前学習で決まり、SFT は主に形式を教える」という見方が広く共有されています。
+
+\textbf{二つ目に、SFT は手本以上にはなれません。}
+SFT の損失は「手本と同じトークンを出す確率」を上げるものなので、手本に誤りがあれば、その誤りもまねます。
+手本を書く人より賢いモデルを、手本をまねるだけで作ることは難しいのです。
+
+\textbf{三つ目に、正解が一つに決まらない目標や、結果でしか良し悪しが分からない目標には向きません。}
+「面白い物語を書く」には、決まった模範解答がありません。
+長い手順を踏む仕事では、途中の一手一手の手本を用意するのが大変です。
+しかし、「どちらの物語が面白いか」は比べられますし、「最終的に計算が合ったか」は判定できます。
+その判定を学習の信号に使うのが、第 VI 部の強化学習です。
+計算アシスタントの残り 1 割の誤りも、第 VI 部で「正解したら報酬」という信号を使って減らしていきます。
+
+\subsection{実務では：チャットテンプレートをライブラリで適用する}\label{sec:post-hf}
+\laterread{ここから\secref{sec:post-scale-compare}までは、初読では飛ばしてかまいません。公開モデルを自分で SFT するときや、\chapref{ch:lora}でライブラリを使うときに戻ってください。飛ばしても、章末のまとめと次の章は読めます。}
+
+実際の開発では、\secref{sec:post-template}の \code{render_chat} のような関数を自分で書くことはまれです。
+Hugging Face の \code{transformers} ライブラリでは、各モデルのトークナイザが自分のチャットテンプレートを持っており、
+\code{apply_chat_template} で適用できます。
+次のコードは、Qwen3 のトークナイザ（約 16 MB。モデルの重みはダウンロードしません）でテンプレートを適用するものです。
+
+\snippet{transformers でチャットテンプレートを適用する}{code:post-hf-template}{ch16/hf_chat_template.py}{hf-template}
+
+3 行目でトークナイザを読み込みます。
+4〜7 行目の対話の書き方は、本書の \code{render_chat} と同じ「役割と本文の辞書のリスト」です。
+10〜12 行目で、テンプレートを適用した文字列を作ります。
+\code{add_generation_prompt=True} の意味も本書と同じです。
+\code{enable_thinking=False} は Qwen3 に特有の引数で、「考える過程」を書かずに答えるモードを指定します。
+13〜14 行目は、文字列ではなくトークン ID の列を直接得る書き方です。
+実行結果は次のとおりです（最後の 1 行は、後で説明する本書の形式です）。
+
+\outputfile{ch16/out/hf_chat_template.txt}
+
+\figref{fig:post-real-templates}(a) の ChatML の形になっています。
+末尾の \code{<think>} と \code{</think>} の空の組は、「考える過程は空です」という印として、テンプレートが自動で付けたものです。
+\code{<|im_start|>} が 1 トークンになっていることも分かります。
+
+このテンプレートの正体は、Jinja という書式で書かれたテンプレート文字列で、トークナイザの設定ファイルに含まれています。
+本書の形式も、同じ書式で書けます。
+
+\snippet{本書の形式を Jinja のテンプレートで書く}{code:post-jinja}{ch16/hf_chat_template.py}{jinja-template}
+
+2〜4 行目のテンプレートは、「各発話を \code{<|役割|>本文<|end|>} の形で並べ、\code{add_generation_prompt} なら \code{<|assistant|>} を付ける」と読めます。
+\code{render_chat} の 9〜11 行目とまったく同じ処理です。
+7 行目で、二つが同じ文字列を作ることを確かめています。
+
+学習の部分も、ライブラリで書くのがふつうです。
+Hugging Face の TRL ライブラリの \code{SFTTrainer} を使うと、SFT は次のように書けます（この節のコードのうち、これだけは実行していません。モデルのダウンロードと GPU が必要です）。
+
+\begin{pycode}
+from trl import SFTConfig, SFTTrainer
+from datasets import load_dataset
+dataset = load_dataset("trl-lib/Capybara", split="train")  # messages 列を持つ対話データ
+trainer = SFTTrainer("Qwen/Qwen3-0.6B", train_dataset=dataset,
+                     args=SFTConfig(assistant_only_loss=True))  # 損失マスク
+trainer.train()
+\end{pycode}
+
+\code{messages} の列を持つデータを渡すと、テンプレートの適用、パディング、学習ループまでをまとめて行います。
+\code{assistant_only_loss=True} が、本章の損失マスクに当たる指定です。
+中で行われていることは、本章で一から書いたものと同じです。
+
+\subsection{手本のデータはどう作られているか}\label{sec:post-data-sources}
+
+本書の手本はプログラムで作れましたが、一般の対話の手本はそうはいきません。
+SFT のデータの作り方は、大きく三つあります。
+
+\begin{itemize}
+\item \textbf{人が書く}。InstructGPT\cite{ouyang2022training}は、約 1 万 3 千件のプロンプトに対し、雇った作業者が模範応答を書きました。
+Llama 2-Chat\cite{touvron2023llama2}も、品質を重視して人が作った 27,540 件の手本を使い、「量より質」を強調しています。
+\item \textbf{既存のデータを書き換える}。翻訳や要約などの既存の課題のデータを、指示と応答の形に書き換えて大量に集めます。FLAN\cite{wei2022finetuned}がこの方法の代表です。
+\item \textbf{強いモデルに書かせる（合成データ）}。Self-Instruct\cite{wang2023selfinstruct}は、モデル自身に指示と応答を作らせる方法を示しました。
+Alpaca\cite{taori2023alpaca}は、この方法で別の強いモデルに約 5 万 2 千件の手本を作らせ、小さなモデルを SFT しました。
+最近の開発では、強いモデルに大量に生成させ、正しさや質で選別した合成データが主流です。
+DeepSeek-R1\cite{guo2025deepseekr1}の約 80 万件の SFT データも、モデルが生成した応答から良いものを選んだものです。
+\end{itemize}
+
+ほかのモデルに書かせたデータで学習するのは、\chapref{ch:distillation}で扱う蒸留の一種でもあります。
+その際は、生成に使ったモデルの利用規約やライセンスで、出力を別のモデルの学習に使うことが許されているかを必ず確認してください。
+
+\textbf{安全性}も、SFT のデータで教える振る舞いの一つです。
+危険な依頼（たとえば犯罪の手順をたずねる質問）に対して、理由を添えて断る応答を手本に含めておくと、モデルは断るという振る舞いを覚えます。
+ただし、手本だけでは「どこまでなら答えてよいか」の細かな線引きまでは教えきれません。
+そのため実際の開発では、SFT の後に、人の選好を使った強化学習などで、役に立つことと安全であることの釣り合いを調整します\cite{bai2022training,touvron2023llama2}。
+
+\subsection{本書の SFT と実際の SFT}\label{sec:post-scale-compare}
+
+\tabref{tab:post-scale}に、本書の SFT と、公開された実際の SFT を並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{本書の SFT と実際の LLM の SFT。規模は何桁も違うが、損失（アシスタントの部分だけの次トークン予測）と学習ループは同じである。
+Llama 2-Chat の値は\cite{touvron2023llama2}による。}
+\label{tab:post-scale}
+\small
+\begin{tabular}{lll}
+\toprule
+ & 本書の計算アシスタント & Llama 2-Chat（70B） \\
+\midrule
+パラメータ数 & 260 万 & 700 億 \\
+手本の数 & 3,000 件（プログラムで生成） & 27,540 件（人が作成） \\
+系列長 & 1 件ずつ（最長 24 トークン） & 4,096（手本をつなげて詰める） \\
+学習率 & $3\times 10^{-4}$（事前学習の $10^{-3}$ の 0.3 倍） & $2\times 10^{-5}$（事前学習の約 0.13 倍） \\
+学習の長さ & 600 ステップ $\times$ 32 件（約 6 エポック） & 2 エポック（バッチ 64） \\
+損失マスク & アシスタントの部分だけ & アシスタントの部分だけ \\
+計算機 & CPU で 1〜2 分 & GPU クラスタ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表の「約 6 エポック」は、600 ステップで見る延べ $600 \times 32 = 19{,}200$ 件を、手本の 3,000 件で割った値です（$19{,}200 \div 3{,}000 = 6.4$）。
+1 エポックは、手本全体を 1 回ずつ見ることでした（\chapref{ch:ml}）。
+
+いちばん大きな違いは、手本の中身です。
+本書の手本は答えが一つに決まる計算でしたが、実際の手本は、文章の作成、質問への回答、プログラムの作成、段階を踏んだ考え方の説明など、何万種類もの課題にわたります。
+一方、損失マスク付きの次トークン予測という学習の中身は、まったく同じです。
+データと計算機を大きくすれば、本章のコードで同じことができます。
+
+この節で分かったことをまとめます。
+SFT は手本をまねる学習なので、主に振る舞いを教え、手本を超えることは苦手です。
+実務ではテンプレートと学習ループをライブラリに任せますが、中身は本章で作ったものと同じです。
+手本のデータは、人手・既存データの書き換え・強いモデルによる合成で作られます。
+
+\begin{summary}
+\item 基盤モデルは学習データに出てきた形の続きを書くだけなので、計算の\textbf{能力}があっても、質問に答える\textbf{振る舞}いを知りません。
+\item 事後学習は、継続事前学習・SFT・選好最適化と強化学習・蒸留を目的に応じて組み合わせる工程です。プロンプトの工夫から始め、安く試せる方法から順に検討します（\figref{fig:post-decision}）。
+\item ファインチューニングとは、学習済みの重みを出発点として学習を続けることです。少ないデータで済む代わりに、出発点から離れすぎると元の能力を失います（破滅的忘却）。
+\item 継続事前学習は、新しい領域の生テキストで次トークン予測を続けます。元のデータを混ぜると、忘却を大きく減らせます。
+\item SFT は、チャットテンプレートで対話を 1 本のトークン列にし、損失マスクでアシスタントの部分だけを学習します。学習ループは事前学習と同じです。
+\item 本章の SFT で、計算アシスタントの対話の正答率は 0\% から 89.0\% になりました。事前学習なしでは、同じ手本でもほとんど学べません。
+\item SFT は手本にない形（システムプロンプト、多ターン）や、手本を超える質には対応できません。前者はデータで、後者は強化学習で補います。
+\end{summary}
+
+\section*{次の章へ}
+
+この章では、260 万個のパラメータをすべて更新して、計算アシスタントを作りました。
+小さなモデルならこれで問題ありません。
+しかし、700 億パラメータのモデルで同じことをすると、勾配とオプティマイザの状態を保持するだけで、パラメータそのものの数倍のメモリが必要になります。
+AdamW は、パラメータ 1 個ごとに、勾配に加えて 2 種類の平均値を覚えておくからです（\chapref{ch:training}）。
+
+用途ごとに作り分ければ、そのたびに巨大なモデルのコピーが一つずつ増えます。
+全部のパラメータを動かすので、破滅的忘却も起きやすくなります。
+次の\chapref{ch:lora}では、元の重みを凍結し、ごく少数のパラメータだけを学習して適応させる LoRA を作ります。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Ouyang ほか「InstructGPT」\cite{ouyang2022training}: SFT $\to$ 報酬モデル $\to$ 強化学習という事後学習の骨組みを確立した論文。第 1 段階が本章の SFT。
+\item Touvron ほか「Llama 2」\cite{touvron2023llama2}: SFT のデータの質、損失マスク、ハイパーパラメータが具体的に書かれていて、実務の参考になる。
+\item Lambert ほか「T\"ulu 3」\cite{lambert2024tulu3}: データ・コード・手順をすべて公開した事後学習のレシピ。SFT のデータの混ぜ方まで分かる。
+\item Wei ほか「FLAN」\cite{wei2022finetuned}: 指示チューニングで、見たことのない課題にも指示だけで対応できるようになることを示した。
+\item Gururangan ほか「Don't Stop Pretraining」\cite{gururangan2020dont}: 領域適応のための継続事前学習の効果を、多くの領域で調べた論文。
+\item Kirkpatrick ほか「EWC」\cite{kirkpatrick2017overcoming}: 破滅的忘却を、重要なパラメータを動かしにくくすることで防ぐ古典的な方法。
+\item Karpathy「nanochat」\cite{karpathy2025nanochat}: トークナイザから事前学習・SFT・強化学習までを一つにまとめた小さな実装。本書と同じ流れを GPU で再現できる。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 6}
+\item （手計算）
+\figref{fig:post-loss-mask}の対話で、損失マスクを使わずにすべての位置で学習した場合、損失の平均を取る位置の数はいくつになりますか。
+また、アシスタントの 4 か所の損失が本文の例と同じで、残りの位置の $-\log$ の平均が 3.0 だったとすると、全体の平均損失はいくらですか。
+\item （手計算）\code{mix} の設定（\secref{sec:post-cpt}）で、新しいデータの割合を 25\% にすると、式\eqref{eq:post-mix-loss}の $\lambda$ はいくらになりますか。
+1 バッチ 32 行のうち、新しいデータから取る行数はいくつですか。
+\item （コード）\file{ch16/continual_pretrain.py} に、最大学習率 $10^{-4}$ で元のデータを半分混ぜる設定 \code{"mix_low": (1e-4, 0.5)} を加えて実行し、\tabref{tab:post-cpt}の 3 設定と比べてください。
+\item （コード）SFT の手本の 1 割で、答えをわざと 1 だけずらしてから（例: 「\code{48です。}」）学習してください。
+正答率はどう変わるでしょうか。SFT が「手本をまねる」学習であることを確かめましょう。
+\item （コード）\file{ch16/sft_step_by_step.py} の学習データに、ドリル形式の行（\code{drill_text} で作ったもの）を事前学習の形のまま混ぜてください。
+ドリル形式の正答率の低下（\figref{fig:post-sft-curves}(b)）を防げるでしょうか。
+\item （考察）ある会社の社内文書（数億トークン）について答えられるチャットモデルを作りたいとします。
+\figref{fig:post-decision}に沿って、どの方法をどの順に試すかを考え、それぞれの段階で用意すべきデータを挙げてください。
+\item （考察）\secref{sec:post-sft}の損失マスクでは、\code{<|assistant|>} の目印そのものは学習しませんでした。
+モデルが自分で「答えを書く」か「電卓を呼ぶ」かを選べるようにするには、どの目印を学習の対象に含める必要があるでしょうか（\chapref{ch:agent}への準備）。
+\end{exercises}

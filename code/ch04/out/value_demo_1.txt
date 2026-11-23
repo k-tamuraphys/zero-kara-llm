@@ -1,0 +1,4 @@
+loss  = 4.0
+dL/dw = 8.0
+dL/db = 4.0
+dL/dx = 12.0

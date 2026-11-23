@@ -1,0 +1,8 @@
+model             total    active   KV/token  KV(8192 tok)
+Llama 2 7B           6.74B     6.74B   512 KiB     4.00 GiB
+Llama 3 8B           8.03B     8.03B   128 KiB     1.00 GiB
+Llama 3 70B         70.55B    70.55B   320 KiB     2.50 GiB
+Mistral 7B           7.24B     7.24B   128 KiB     1.00 GiB
+Mixtral 8x7B        46.70B    12.88B   128 KiB     1.00 GiB
+Qwen3-8B             8.19B     8.19B   144 KiB     1.12 GiB
+Qwen3-30B-A3B       30.53B     3.35B    96 KiB     0.75 GiB

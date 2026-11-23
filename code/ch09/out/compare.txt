@@ -1,0 +1,2 @@
+llmbook との差: 0.0e+00
+F.scaled_dot_product_attention との差: 6.0e-08

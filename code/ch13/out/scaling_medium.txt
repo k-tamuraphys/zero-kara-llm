@@ -1,0 +1,6 @@
+step     0 | train 8.319 | val 8.319 | 1 秒
+step   250 | train 5.397 | val 5.536 | 26 秒
+step   500 | train 4.742 | val 5.073 | 52 秒
+step   750 | train 4.624 | val 4.932 | 76 秒
+step  1000 | train 4.659 | val 4.529 | 100 秒
+medium: 全体 365,184 / 埋め込み以外 98,944 / 検証損失 4.788

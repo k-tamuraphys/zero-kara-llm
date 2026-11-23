@@ -1,0 +1,1542 @@
+\chapter{注意機構（Attention）}\label{ch:attention}
+\bookmap{3}
+
+% この章だけで使う図の部品（ヒートマップ）
+\providecommand{\chattnheat}[7]{% #1 CSV, #2 目盛りの文字, #3 見出し, #4 列数, #5 最後の番号, #6 幅, #7 追加の描画
+\begin{axis}[width=#6,height=#6,scale only axis,
+  enlargelimits=false,axis on top,grid=none,
+  colormap={chattnblue}{color=(white) color=(bookblue)},
+  point meta min=0,point meta max=1,
+  xtick={0,...,#5},ytick={0,...,#5},
+  xticklabels={#2},yticklabels={#2},
+  x tick label style={font=\scriptsize,rotate=90,anchor=east},
+  y tick label style={font=\scriptsize},
+  tick style={draw=none},y dir=reverse,
+  title={#3},title style={font=\footnotesize,yshift=-1mm}]
+\addplot[matrix plot*,mesh/cols=#4,point meta=explicit]
+  table[col sep=comma,x=x,y=y,meta=w]{#1};
+#7
+\end{axis}}
+
+\begin{chapterlead}
+\textbf{ここまで}: トークンを埋め込みベクトルに変え、直前の数トークンから次を予測するニューラル言語モデルを作りました（\chapref{ch:embedding}）。
+しかし、見られる文脈は「直前の決まった数のトークン」だけでした。\\[1mm]
+\textbf{この章の問い}: 各トークンが、文脈の「どこを見るべきか」を自分で決めるにはどうすればよいでしょうか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 縮小付き内積注意 $\softmax(\mQ\mK^\T/\sqrt{\dhead})\mV$ を、小さな数値例で手計算できます。
+\item クエリ・キー・バリュー、$\sqrt{\dhead}$ で割る理由、因果マスクの役割を、自分の言葉で説明できます。
+\item マルチヘッド自己注意を PyTorch で一から実装し、共有ライブラリ \code{llmbook} の実装と一致させられます。
+\item 注意の計算量が系列長の 2 乗で増えること、注意が語順を知らないことを、実験で確かめられます。
+\item 学習済みのミニGPT から注意の重みを取り出し、ヒートマップで読めます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgmust] \secref{sec:attn-why}〜\secref{sec:attn-causal}と、\secref{sec:attn-multihead}の前半（「形の変換」の手前まで）：注意の式 $\softmax(\mQ\mK^\T/\sqrt{\dhead})\mV$ を、平均から一歩ずつ組み立てます。\chapref{ch:transformer}のミニGPT は、この式と因果マスクとヘッドをそのまま使います。長くても飛ばさないでください。
+\item[\rgskim] \secref{sec:attn-qkv}の「なぜ $\sqrt{\dhead}$ で割るのか」と、\secref{sec:attn-multihead}の「形の変換」以降：導出と実装の細部です。見出しの下の札に書いた結論だけ押さえれば進めます。
+\item[\rgskim] \secref{sec:attn-experiment}〜\secref{sec:attn-visualize}：比較実験、計算量と語順、可視化です。結論は「注意を入れると正答率が 1.2\% から 96.0\% に上がる」「計算量は系列長の 2 乗で増える」「注意だけでは語順が分からない」の三つです。初読では、図と表だけで足ります。
+\item[\rglater] \secref{sec:attn-reading}：共有ライブラリ \code{llmbook} の実装を読みます。\chapref{ch:transformer}でミニGPT の全体を読むときに戻れば足ります。
+\end{readingguide}
+
+計算ドリルの一行「\code{25+48=}」の続きを、あなたならどう書くでしょうか。
+答えの十の位を書くには、「\code{2}」と「\code{4}」を見て、さらに一の位の「\code{5}」と「\code{8}」から繰り上がりがあるかを確かめるはずです。
+一の位を書くときには、今度は「\code{5}」と「\code{8}」を見ます。
+つまり、\textbf{同じ一行の中でも、いま書こうとしている文字によって、見るべき場所が変わる}のです。
+
+文章でも同じことが起きます。
+「先生は奥さんに手紙を渡した。奥さんはそれを\underline{\hspace{2em}}」の空欄を埋めるには、
+少し前の「手紙」まで戻って、「それ」が手紙のことだと分かる必要があります。
+「読んだ」が来そうだと分かるのは、そのためです。
+
+前の章までのモデルは、こうした「必要な場所を選んで見る」ことができませんでした。
+この章では、それを可能にする仕組みである\term{注意機構}{attention}を、一歩ずつ組み立てます。
+注意機構は、現在の主要な LLM のすべてで中心にある部品です。
+次の章で組み立てる Transformer も、この部品を積み重ねたものです。
+本書の山場の一つなので、ゆっくり進みましょう。
+
+\section{なぜ注意機構が必要か}\label{sec:attn-why}
+
+\chapref{ch:embedding}では、文脈を扱う二つの方法を学びました。
+この節では、まずそれらで何が足りないのかをはっきりさせます。
+そのうえで、「欲しい仕組み」の条件を書き出します。
+
+\subsection*{固定窓と RNN の限界}
+
+一つ目の方法は、直前の $n$ 個のトークンの埋め込みを並べて MLP に入れる、\textbf{固定窓}のモデルでした（Bengio らのモデル\cite{bengio2003neural}）。
+このモデルは、窓の外を一切見られません。
+しかも、窓の中のどこが大事かは、重みにあらかじめ焼き付けられています（「3 つ前のトークンには、いつもこの重み」）。
+
+二つ目の方法は、RNN でした。
+RNN は、過去の情報を一本の隠れ状態ベクトルに書き足しながら読み進めます。
+しかし、長い文脈のすべてを一本のベクトルに押し込むので古い情報ほど薄れ、1 トークンずつ順番に計算するので並列化もできません。
+
+\subsection*{見るべき場所は、内容で決まる}
+
+\figref{fig:attn-need}は、冒頭の二つの例を図にしたものです。
+上の段を見てください。
+「\code{=}」の位置で答えの十の位を予測するには、離れた「\code{2}」と「\code{4}」を見る必要があります。
+直前 3 トークンの固定窓（破線の枠）には、「\code{2}」が入っていません。
+では、「5 個前を見る」と決めておけばよいでしょうか。
+「\code{25+48=}」では「\code{2}」は「\code{=}」の 5 個前ですが、「\code{25+4=}」では 4 個前に来ます。
+問題が「\code{7+5=}」なら、十の位の数字はそもそも存在しません。
+\textbf{見るべきトークンが「何個前」にあるかは、文によって変わる}のです。
+したがって、「3 つ前にはこの重み」と位置で決め打ちするやり方では、うまくいきません。
+
+下の段も同じです。
+「それ」が指すものは、文によって 2 語前にも 10 語前にもあります。
+どこを見るべきかは、「それ」という語と、文脈の中身を見比べて初めて決まります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=1mm]
+  % 上段: 計算ドリル
+  \node[tok] (d0) {\texttt{\textbackslash n}};
+  \foreach \t [count=\i from 1, remember=\i as \j (initially 0)] in {2,5,+,4,8} {
+    \node[tok,right=1mm of d\j] (d\i) {\texttt{\t}};
+  }
+  \node[tok,right=1mm of d5,fill=figgreen,draw=bookgreen] (d6) {\texttt{=}};
+  \node[tok,right=1mm of d6,fill=white,draw=black!45,dashed] (d7) {？};
+  \draw[arr,bookaccent,very thick] (d6.north) to[out=135,in=45] (d1.north);
+  \draw[arr,bookaccent,very thick] (d6.north) to[out=125,in=55] (d4.north);
+  \draw[darr] (d6.south) to[out=-120,in=-60] (d2.south);
+  \draw[darr] (d6.south) to[out=-110,in=-70] (d5.south);
+  \node[draw=black!45,dashed,thick,rounded corners=2pt,fit=(d4)(d6),inner sep=1.3mm] (win) {};
+  \node[lbl,anchor=west,align=left] at ($(d7.east)+(3mm,4mm)$) {\textcolor{bookaccent}{赤い矢印}: 十の位を書くのに要る\\破線の矢印: 繰り上がりの判断に要る\\破線の枠: 直前 3 個の固定窓};
+  % 下段: 照応
+  \begin{scope}[yshift=-30mm]
+  \node[tok,minimum width=12mm] (w0) {先生は};
+  \node[tok,right=1mm of w0,minimum width=14mm] (w1) {奥さんに};
+  \node[tok,right=1mm of w1,minimum width=12mm,fill=figred,draw=bookaccent] (w2) {手紙を};
+  \node[tok,right=1mm of w2,minimum width=12mm] (w3) {渡した。};
+  \node[tok,right=1mm of w3,minimum width=14mm] (w4) {奥さんは};
+  \node[tok,right=1mm of w4,minimum width=11mm,fill=figgreen,draw=bookgreen] (w5) {それを};
+  \node[tok,right=1mm of w5,fill=white,draw=black!45,dashed] (w6) {？};
+  \draw[arr,bookaccent,very thick] (w5.north) to[out=135,in=45] (w2.north);
+  \node[lbl,anchor=west,align=left] at ($(w6.east)+(3mm,0)$) {\textcolor{bookaccent}{赤い矢印}: 「それ」が\\何を指すかを知るのに要る};
+  \end{scope}
+\end{tikzpicture}
+\caption{次のトークンを予測するために「見るべき場所」。上：計算ドリルで「\code{=}」の次（答えの十の位）を当てるには、離れた「\code{2}」と「\code{4}」を見る必要があり、直前 3 個の固定窓には収まらない。
+下：「それ」の指すものを知るには、数語前の「手紙を」を見る必要がある。どちらも、見るべき場所は位置ではなく内容で決まる。}
+\label{fig:attn-need}
+\end{figure}
+
+\subsection*{欲しい仕組みの条件}
+
+ここまでの観察から、欲しい仕組みの条件を書き出します。
+
+\begin{enumerate}
+\item \textbf{過去のどのトークンにも、直接手が届く}こと。固定窓のような「見えない範囲」がない。
+\item \textbf{どこをどれだけ見るかを、内容から決められる}こと。位置で決め打ちしない。
+\item \textbf{全位置の計算を、同時に（並列に）行える}こと。RNN のように順番待ちをしない。
+\end{enumerate}
+
+\chapref{ch:embedding}の最後で触れたように、機械翻訳の研究では、この発想がすでに RNN と組み合わせて使われていました\cite{bahdanau2015neural}。
+2017 年の論文「Attention Is All You Need」\cite{vaswani2017attention}は、RNN を取り除き、注意機構だけで系列を扱う Transformer を提案しました。
+
+この節で分かったことをまとめます。
+次のトークンを当てるために見るべき場所は、位置ではなく内容によって決まります。
+だから、「内容を見て、見る場所を選ぶ」仕組みが必要です。
+
+\section{平均から重み付き平均へ}\label{sec:attn-average}
+
+前節で、欲しい仕組みの条件を三つ挙げました。
+いきなり完成形を作るのは難しいので、まず「過去の情報を一つにまとめる」最も単純な方法から始めます。
+問いは、「各位置で、自分と過去のトークンのベクトルを、どうやって一つに混ぜればよいか」です。
+
+\subsection*{設定：各位置で「文脈のまとめ」を作る}
+
+入力の文は $T$ 個のトークンからなり、各トークンはすでに $d$ 次元の埋め込みベクトル $\vx_1,\dots,\vx_T$ になっているとします。
+埋め込み（\chapref{ch:embedding}）は、トークン ID ごとに用意された、学習で調整されるベクトルでした。
+目標は、各位置 $t$ について、自分と過去のトークン $\vx_1,\dots,\vx_t$ の情報をまとめたベクトル $\vy_t$ を作ることです。
+$\vy_t$ を使えば、位置 $t$ で次のトークン $x_{t+1}$ を予測できます。
+未来のトークン $\vx_{t+1},\dots$ を使わない理由は\secref{sec:attn-causal}で詳しく述べます。
+いまは「予測したい答えそのものを見てはいけない」とだけ思っておいてください。
+
+\subsection*{いちばん単純な方法：平均}
+
+まとめる方法として、まず思いつくのは平均です。
+\begin{equation}
+\vy_t = \frac{1}{t}\sum_{s=1}^{t} \vx_s .
+\label{eq:attn-mean}
+\end{equation}
+位置 1 では自分だけ、位置 2 では 2 個の平均、位置 3 では 3 個の平均です。
+素直に for 文で書くと、各位置 $t$ について \code{X[: t + 1].mean(dim=0)} を計算することになります（\code{X} は 1 トークンを 1 行に並べた行列です）。
+なお、本章の数式では位置を 1 から数え、コードと実行結果では Python の習慣どおり 0 から数えます。
+層やヘッドの番号も、コードに合わせて 0 から数えます。
+
+\subsection*{平均は 1 回の行列積で書ける}
+
+for 文は分かりやすいのですが、$T$ が大きくなると遅くなります（\chapref{ch:pytorch}で、配列演算のほうがはるかに速いことを測りました）。
+そこで、式\eqref{eq:attn-mean}を行列で書き直します。
+$\vx_t^\T$ を $t$ 行目に並べた行列を $\mX \in \R^{T\times d}$、同じく $\vy_t^\T$ を並べた行列を $\mY$ とします。
+すると、平均は次の 1 回の行列積で書けます。
+\begin{equation}
+\mY = \mA\mX, \qquad
+\mA = \begin{pmatrix}
+1 & 0 & 0 & 0\\
+\tfrac12 & \tfrac12 & 0 & 0\\
+\tfrac13 & \tfrac13 & \tfrac13 & 0\\
+\tfrac14 & \tfrac14 & \tfrac14 & \tfrac14
+\end{pmatrix}.
+\label{eq:attn-mean-matrix}
+\end{equation}
+なぜこれで平均になるのかを、行列積の定義から確かめます。
+$\mY$ の $t$ 行目は、$\mA$ の $t$ 行目と $\mX$ の積です。
+行列積の定義より、それは $\sum_s A_{ts}\,\vx_s^\T$、つまり「$\mX$ の各行を $A_{ts}$ 倍して足したもの」です。
+$\mA$ の 3 行目は $(\frac13,\frac13,\frac13,0)$ なので、$\vy_3 = \frac13\vx_1+\frac13\vx_2+\frac13\vx_3$ となり、式\eqref{eq:attn-mean}の $t=3$ と一致します。
+$\mA$ の上三角が 0 なのは、未来のトークンを混ぜないためです。
+
+\snippet{同じ平均を 1 回の行列積で計算する}{code:attn-average-matrix}{ch09/attention_steps.py}{average-matrix}
+
+1 行目の \code{torch.tril} は、行列の下三角（対角を含む）を残し、上三角を 0 にする関数です。
+全部 1 の行列に使うと、下三角だけが 1 の行列ができます。
+2 行目で各行をその行の和で割ると、行の和が 1 になり、式\eqref{eq:attn-mean-matrix}の $\mA$ になります。
+3 行目の \code{A @ X} が式\eqref{eq:attn-mean-matrix}の $\mA\mX$ です。
+\file{attention_steps.py} では、この直前に $T=4$、$d=2$ の乱数の \code{X} と、for 文で計算した平均 \code{Y} を用意してあります。
+
+\outputfile{ch09/out/average.txt}
+
+実行結果を上から読みます。
+1 行目は、for 文で計算した \code{Y} の 2 行目で、$\vx_1$ と $\vx_2$ の平均です（\code{X} が乱数なので、値そのものに意味はありません）。
+次の \code{A} は、確かに式\eqref{eq:attn-mean-matrix}のとおりです。
+最後の行の \code{True} は、行列積の結果が for 文の結果と一致したことを示しています。
+
+\subsection*{平均の弱点}
+
+平均には大きな弱点があります。
+\textbf{すべての過去を同じ重みで混ぜてしまう}ことです。
+「\texttt{\textbackslash n25+48=}」の「\code{=}」の位置で平均をとると、7 個のトークンが $1/7$ ずつ混ざります（\figref{fig:attn-avg}の右）。
+「\code{2}」も「\code{+}」も「\texttt{\textbackslash n}」も同じ扱いです。
+本当に欲しいのは、「\code{2}」と「\code{4}」に大きな重みを置き、ほかには小さな重みしか置かない混ぜ方でした。
+さらに、文脈が長くなると、一つ一つのトークンの重みは $1/t$ に薄まっていきます。
+128 トークン目では、重みは $1/128\approx0.008$ で、どのトークンも 1\% 未満しか効きません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+  % 左: 平均の重み行列
+  \matrix (A) [matrix of nodes,nodes={cell,minimum size=7.5mm},column sep=-\pgflinewidth,row sep=-\pgflinewidth] {
+    |[fill=bookblue!100,text=white]| 1 & |[fill=white]| 0 & |[fill=white]| 0 & |[fill=white]| 0 \\
+    |[fill=bookblue!50]| $\frac12$ & |[fill=bookblue!50]| $\frac12$ & |[fill=white]| 0 & |[fill=white]| 0 \\
+    |[fill=bookblue!33]| $\frac13$ & |[fill=bookblue!33]| $\frac13$ & |[fill=bookblue!33]| $\frac13$ & |[fill=white]| 0 \\
+    |[fill=bookblue!25]| $\frac14$ & |[fill=bookblue!25]| $\frac14$ & |[fill=bookblue!25]| $\frac14$ & |[fill=bookblue!25]| $\frac14$ \\
+  };
+  \node[lbl,above=1mm of A] {平均の重み行列 $\mA$（$T=4$）};
+  \node[lbl,left=1mm of A,align=center] {位置 $t$\\（まとめる側）};
+  \node[lbl,below=1mm of A] {位置 $s$（混ぜられる側）};
+  % 右: 「=」の行の重み
+  \begin{scope}[xshift=47mm,yshift=6mm]
+    \foreach \t [count=\i from 0] in {\textbackslash n,2,5,+,4,8,=} {
+      \node[tok,minimum width=6.6mm,font=\footnotesize] (r\i) at (\i*7.2mm,0) {\texttt{\t}};
+      \node[cell,minimum size=6.6mm,fill=bookblue!14] (a\i) at (\i*7.2mm,-9mm) {\scriptsize .14};
+    }
+    \foreach \i/\v/\c in {0/.00/0,1/.50/50,2/.00/0,3/.00/0,4/.50/50,5/.00/0,6/.00/0} {
+      \node[cell,minimum size=6.6mm,fill=bookaccent!\c] (b\i) at (\i*7.2mm,-18mm) {\scriptsize \v};
+    }
+    \node[lbl,anchor=east] at ($(a0.west)+(-1mm,0)$) {平均};
+    \node[lbl,anchor=east,align=right] at ($(b0.west)+(-1mm,0)$) {欲しい\\重み};
+    \node[lbl,above=1mm of r3] {「\texttt{=}」の位置で、各トークンに置く重み};
+  \end{scope}
+\end{tikzpicture}
+\caption{左：過去の平均を表す重み行列 $\mA$。$t$ 行目が、位置 $t$ で各トークンをどれだけ混ぜるかを表す。上三角は 0（未来を混ぜない）。
+右：「\texttt{\textbackslash n25+48=}」の「\code{=}」の位置での重み。平均はどのトークンにも $1/7\approx0.14$ を置くが、十の位を当てたいなら「\code{2}」と「\code{4}」に重みを集めたい（下段は説明のための理想像）。}
+\label{fig:attn-avg}
+\end{figure}
+
+\subsection*{重み付き平均にする}
+
+そこで、混ぜる重みを自由にします。
+\begin{equation}
+\vy_t = \sum_{s=1}^{t} a_{ts}\,\vx_s, \qquad a_{ts}\ge 0,\quad \sum_{s=1}^{t} a_{ts} = 1 .
+\label{eq:attn-weighted}
+\end{equation}
+重み $a_{ts}$ は「位置 $t$ が位置 $s$ をどれだけ見るか」を表します。
+重みが 0 以上で和が 1 なので、これは\textbf{重み付き平均}です。
+平均は、すべての $a_{ts}$ が $1/t$ という特別な場合でした。
+行列で書けば、やはり $\mY = \mA\mX$ です。
+違いは、$\mA$ の中身が自由になったことだけです。
+
+では、重み $a_{ts}$ をどう決めればよいでしょうか。
+「位置ごとに決まった値を学習させる」ことも考えられます。
+しかし、それでは前節で見た問題が残ります。
+「\code{25+48=}」と「\code{7+5=}」では、見るべき数字の位置が違うからです。
+重みは、\textbf{そのとき並んでいるトークンの内容から、その場で計算する}必要があります。
+これが次の節の主題です。
+
+この節で分かったことをまとめます。
+文脈を混ぜる操作は、重み行列 $\mA$ との積 $\mY=\mA\mX$ として書けます。
+平均は $\mA$ を固定したもので、注意機構は $\mA$ を内容から決めるものです。
+
+\section{重みを内容から決める：クエリ・キー・バリュー}\label{sec:attn-qkv}
+
+前節で、文脈を混ぜる操作を「重み行列 $\mA$ との積」として書きました。
+残った問題は、重み $a_{ts}$ を内容からどう計算するかです。
+この節では、「似ているものほど重みを大きくする」という素朴な考えから出発し、注意機構の完成形である縮小付き内積注意にたどり着きます。
+
+\subsection*{似ている度合いを内積で測る}
+
+位置 $t$ が位置 $s$ をどれだけ見るべきかを、二つのベクトルの「似ている度合い」で決めることにしましょう。
+\chapref{ch:math}で学んだように、ベクトルの内積は類似度として使えます。
+向きがそろっていれば大きな正の値、直交していれば 0、反対向きなら負の値になります。
+たとえば $(1,0)$ と $(1,0)$ の内積は 1、$(1,0)$ と $(0,1)$ は 0、$(1,0)$ と $(-1,0)$ は $-1$ です。
+
+内積を\textbf{スコア}と呼び、$s_{ts} = \vx_t^\T\vx_s$ と書くことにします（添字の $s$ と記号の $s$ が重なりますが、スコアは必ず $s_{ts}$ と二つの添字付きで書きます）。
+スコアはどんな実数にもなりえます。
+しかし、式\eqref{eq:attn-weighted}の重みは、0 以上で和が 1 でなければなりません。
+
+\subsection*{スコアを softmax で重みに変える}
+
+実数の並びを「0 以上で和が 1」の並びに変える道具を、私たちはすでに持っています。
+\chapref{ch:math}で学んだ softmax です。
+softmax は、各値の指数をとってから、全体の和で割る関数でした。
+位置 $t$ のスコアの並び $(s_{t1},\dots,s_{tt})$ に softmax をとった結果の $s$ 番目を、重み $a_{ts}$ とします。
+\begin{equation}
+a_{ts} = \frac{\exp(s_{ts})}{\sum_{u=1}^{t}\exp(s_{tu})} .
+\label{eq:attn-softmax}
+\end{equation}
+$\exp$ は常に正なので $a_{ts}>0$ です。
+分母が分子の総和なので、$s$ について足すと 1 になります。
+しかも、スコアが大きいほど重みが大きくなり、指数のおかげで差が強調されます。
+たとえばスコアが $(2, 0, 2)$ なら、指数は $e^{2}\approx 7.39$、$e^{0}=1$、$e^{2}\approx 7.39$ で、合計は $15.78$ です。
+それぞれを合計で割ると、$7.39/15.78\approx0.47$、$1/15.78\approx0.06$ です。
+重みは $(0.47, 0.06, 0.47)$ になり、スコア 0 のトークンはほとんど無視されます。
+
+\subsection*{一つのベクトルに三つの役割は重すぎる}
+
+これで「内積 → softmax → 重み付き平均」という流れができました。
+ところが、$\vx_t$ と $\vx_s$ の内積をそのまま使うと、困ったことが起きます。
+
+一つ目の困りごとは、自分自身との内積がたいてい一番大きいことです。
+内積は「長さ $\times$ 長さ $\times$ なす角の $\cos$」でした（式\eqref{eq:math-inner-cos}）。
+自分自身とはなす角が 0 なので、$\cos$ は最大の 1 になります。
+そのため $\vx_t^\T\vx_t = \norm{\vx_t}^2$ は、よほど長い別のベクトルがない限り最大になります。
+すると、どの位置も自分ばかり見てしまいます。
+二つ目は、もっと本質的な問題です。
+「\code{=}」が探したいのは「十の位の数字」ですが、「\code{=}」自身は数字ではありません。
+\textbf{「何を探しているか」と「自分は何者か」は、別のものです}。
+同じベクトル $\vx$ に、両方の役割を負わせるのは無理があります。
+さらに、見つけた相手から\textbf{「何を受け取るか」}も、また別の情報でよいはずです。
+
+\subsection*{辞書引きのたとえ}
+
+この三つの役割は、Python の辞書（\code{dict}）を思い浮かべると整理できます。
+\texttt{d = \{"2": "二", "4": "四"\}} という辞書に \code{d["4"]} と問い合わせると、
+問い合わせの文字列 \code{"4"} と一致する\textbf{キー}が探され、それに対応する\textbf{値}の \code{"四"} が返ります。
+ここには三つの登場人物がいます。
+問い合わせ（クエリ）、照合される見出し（キー）、返ってくる中身（バリュー）です。
+
+普通の辞書は、キーがクエリと\textbf{完全に一致するか}どうかで、取り出すかどうかを 0 か 1 かで決めます。
+注意機構は、これを「柔らかく」したものです（\figref{fig:attn-lookup}）。
+クエリとすべてのキーの似ている度合いを測り、softmax で重みに変え、
+\textbf{すべてのバリューを重み付きで混ぜて}返します。
+よく一致したキーのバリューほど多く混ざります。
+「完全一致しか許さない」辞書と違い、少しずつ似たものを少しずつ取り出せます。
+しかも、この操作は微分できるので、勾配降下法（\chapref{ch:ml}）で学習できます。
+ただし、たとえには限界もあります。
+本物の辞書のキーと値は人が書き込みますが、注意機構のキーとバリューは、すべて学習によって作られます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=2mm]
+  % (a) 普通の辞書
+  \node[font=\small\bfseries] at (-6mm,13mm) [anchor=west] {(a) 普通の辞書};
+  \node[orangebox,minimum width=12mm] (q) at (0,-6mm) {\texttt{"4"}};
+  \node[lbl,above=0.5mm of q] {クエリ};
+  \foreach \k/\v/\y in {"2"/"二"/0,"4"/"四"/-8,"5"/"五"/-16} {
+    \node[box,minimum width=11mm,minimum height=6mm] (k\y) at (28mm,\y mm+2mm) {\texttt{\k}};
+    \node[greenbox,minimum width=11mm,minimum height=6mm] (v\y) at (42mm,\y mm+2mm) {\texttt{\v}};
+  }
+  \node[lbl,above=0.5mm of k0] {キー};
+  \node[lbl,above=0.5mm of v0] {バリュー};
+  \draw[arr] (q.east) -- node[above,lbl,pos=0.45]{一致?} (k-8.west);
+  \node[greenbox,minimum width=11mm,minimum height=6mm] (out1) at (60mm,-6mm) {\texttt{"四"}};
+  \draw[arr] (v-8.east) -- (out1.west);
+  \node[lbl,below=0.5mm of out1] {一致した 1 個だけ};
+  % (b) 柔らかい辞書引き
+  \begin{scope}[yshift=-34mm]
+  \node[font=\small\bfseries] at (-6mm,13mm) [anchor=west] {(b) 注意機構（柔らかい辞書引き）};
+  \node[orangebox,minimum width=12mm] (q2) at (0,-6mm) {$\vq_t$};
+  \node[lbl,above=0.5mm of q2] {クエリ};
+  \foreach \k/\w/\y/\c in {1/0.10/0/10,2/0.75/-8/75,3/0.15/-16/15} {
+    \node[box,minimum width=11mm,minimum height=6mm] (kk\k) at (28mm,\y mm+2mm) {$\vk_{\k}$};
+    \node[greenbox,minimum width=11mm,minimum height=6mm] (vv\k) at (48mm,\y mm+2mm) {$\vv_{\k}$};
+    \node[cell,minimum width=8mm,minimum height=5mm,fill=bookaccent!\c] (w\k) at (38mm,\y mm+2mm) {\scriptsize \w};
+    \draw[arr,black!40,thin] (q2.east) -- (kk\k.west);
+    \draw[arr,thin] (vv\k.east) -- (62mm,-6mm);
+  }
+  \node[lbl,above=0.5mm of kk1] {キー};
+  \node[lbl,above=0.5mm of w1] {重み};
+  \node[lbl,above=0.5mm of vv1] {バリュー};
+  \node[op] (sum) at (64.5mm,-6mm) {$\Sigma$};
+  \node[greenbox,minimum width=26mm,minimum height=6mm,right=4mm of sum] (out2) {\footnotesize $0.10\vv_1{+}0.75\vv_2{+}0.15\vv_3$};
+  \draw[arr] (sum) -- (out2);
+  \node[lbl,below=0.5mm of out2] {全部を重み付きで混ぜる};
+  \node[lbl,align=center] at (14mm,-21mm) {内積 $\to$ softmax};
+  \end{scope}
+\end{tikzpicture}
+\caption{辞書引きと注意機構。(a) 普通の辞書は、クエリと完全に一致するキーのバリューを 1 個だけ返す。
+(b) 注意機構は、クエリと各キーの内積を softmax で重みに変え（中央の赤い列）、すべてのバリューをその重みで混ぜて返す。
+よく似たキー（ここでは $\vk_2$）のバリューが最も多く混ざる。}
+\label{fig:attn-lookup}
+\end{figure}
+
+\subsection*{クエリ・キー・バリューを射影で作る}
+
+三つの役割を分けるために、各トークンのベクトル $\vx_s$ から、三種類のベクトルを作ります。
+作り方は、学習で決まる三つの行列を掛けるだけです。
+\begin{equation}
+\vq_s = \mW_q^\T\vx_s,\qquad \vk_s = \mW_k^\T\vx_s,\qquad \vv_s = \mW_v^\T\vx_s .
+\label{eq:attn-qkv-vec}
+\end{equation}
+ここで $\mW_q, \mW_k, \mW_v \in \R^{d\times\dhead}$ です。
+転置した $\mW_q^\T$ は $\dhead$ 行 $d$ 列なので、$d$ 次元の $\vx_s$ に掛けると、$\dhead$ 次元のベクトルになります。
+$\dhead$ はクエリ・キー・バリューの次元で、$d$ と同じでも、小さくてもかまいません（\secref{sec:attn-multihead}で小さくする理由が分かります）。
+$\vq_s$ を\term{クエリ}{query}、$\vk_s$ を\term{キー}{key}、$\vv_s$ を\term{バリュー}{value}と呼びます。
+それぞれ「位置 $s$ が探しているもの」「位置 $s$ が自分を紹介する見出し」「位置 $s$ が相手に渡す中身」です。
+
+スコアは、見る側のクエリと、見られる側のキーの内積にします。
+\begin{equation}
+s_{ts} = \vq_t^\T\vk_s .
+\end{equation}
+こうすれば、「\code{=}」のクエリが「十の位の数字を探す」向きを向き、「\code{2}」のキーが「私は十の位の数字」という向きを向く、ということが起こりえます。
+自分とのスコア $\vq_t^\T\vk_t$ が最大になるとも限りません。
+どの向きを向くかは、$\mW_q$ と $\mW_k$ を学習で調整して決めます。
+人が設計するのではありません。
+
+コードでは 1 トークンが 1 行なので、式\eqref{eq:attn-qkv-vec}を行ベクトルの形に直しておきます。
+成分で見ると、$\vq_s$ の $j$ 番目は $\sum_i (W_q)_{ij}\,x_{s,i}$ で、これは横ベクトル $\vx_s^\T$ と $\mW_q$ の積の $j$ 番目と同じです。
+つまり $\vq_s^\T = \vx_s^\T\mW_q$ です。
+この行ベクトルを $s=1,\dots,T$ について縦に並べると、左辺は $\mQ$、右辺は $\mX\mW_q$ になります。
+こうして、全トークンをまとめて $\mQ = \mX\mW_q$、$\mK = \mX\mW_k$、$\mV = \mX\mW_v$ と書けます（$\mW$ の転置は、行ベクトルに直したときに消えます）。
+いずれも $(T, \dhead)$ の行列で、$t$ 行目が $\vq_t^\T$ などです。
+すると、全スコアは $\mQ\mK^\T$ という $(T,T)$ の行列にまとまります。
+その $(t,s)$ 成分は、$\mQ$ の $t$ 行目と $\mK$ の $s$ 行目の内積、つまり $\vq_t^\T\vk_s$ だからです。
+
+\subsection*{縮小付き内積注意}
+
+以上をまとめると、注意機構の定義ができあがります。
+スコアを $\sqrt{\dhead}$ で割っている理由は、この節の最後の小節で説明します。
+いまは「スコアが大きくなりすぎないようにする調整」とだけ思っておいてください。
+
+\begin{definition}[縮小付き内積注意]
+クエリ・キー・バリューの行列 $\mQ, \mK, \mV \in \R^{T\times\dhead}$ に対して、
+\begin{equation}
+\mathrm{Attention}(\mQ,\mK,\mV) = \softmax\!\left(\frac{\mQ\mK^\T}{\sqrt{\dhead}}\right)\mV
+\label{eq:attn-sdpa}
+\end{equation}
+を\term{縮小付き内積注意}{scaled dot-product attention}と呼ぶ\cite{vaswani2017attention}。
+softmax は行列の各行ごとに（$s$ について）とる。
+softmax の結果の $(T,T)$ 行列 $\mA$ を\term{注意の重み}{attention weights}と呼ぶ。
+言語モデルでは、さらに未来の位置の重みを 0 にする（\secref{sec:attn-causal}）。
+\end{definition}
+
+$\mQ, \mK, \mV$ がすべて同じ入力 $\mX$ から作られるとき、これを\term{自己注意}{self-attention}と呼びます。
+文が自分自身の中を見回して、各位置のまとめを作るからです。
+（翻訳のように、別の文から $\mK$ と $\mV$ を作る使い方もあります。これは\chapref{ch:transformer}で触れます。）
+
+\figref{fig:attn-flow}は、式\eqref{eq:attn-sdpa}の計算の流れを、行列の形と一緒に描いたものです。
+左の $\mX$ から三本の矢印で $\mQ,\mK,\mV$ が作られ、$\mQ$ と $\mK$ から $(T,T)$ のスコアが、そこから重み $\mA$ が作られ、最後に $\mA$ と $\mV$ の積で出力 $\mY$ ができます。
+入力も出力も「1 トークン 1 行」で、行数 $T$ が変わらないことに注目してください。
+注意機構は、各トークンのベクトルを「文脈を混ぜたベクトル」に置き換える操作なのです。
+ただし、出力の幅は $\dhead$ で、入力の幅 $d$ とは違うことがあります。
+これを $d$ に戻す行列は、\secref{sec:attn-multihead}で加えます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[sh/.style={font=\scriptsize,text=bookgray}]
+  \node[draw=black!60,fill=figgray,minimum width=10mm,minimum height=14mm] (X) at (0,0) {$\mX$};
+  \node[sh,below=0.5mm of X] {$(T,d)$};
+  \node[orangebox,minimum width=8mm,minimum height=11mm] (Q) at (24mm,16mm) {$\mQ$};
+  \node[box,minimum width=8mm,minimum height=11mm] (K) at (24mm,0) {$\mK$};
+  \node[greenbox,minimum width=8mm,minimum height=11mm] (V) at (24mm,-16mm) {$\mV$};
+  \foreach \n in {Q,K,V} \node[sh,below=0.3mm of \n] {$(T,\dhead)$};
+  \draw[arr] (X.north east) -- node[above,sh,pos=0.45]{$\times\mW_q$} (Q.west);
+  \draw[arr] (X.east) -- node[above,sh,pos=0.45]{$\times\mW_k$} (K.west);
+  \draw[arr] (X.south east) -- node[below,sh,pos=0.45]{$\times\mW_v$} (V.west);
+  \node[purplebox,minimum width=14mm,minimum height=14mm] (S) at (56mm,8mm) {$\mS$};
+  \node[sh,below=0.3mm of S] {$(T,T)$};
+  \node[sh,above=0.3mm of S] {$\mS=\mQ\mK^\T/\sqrt{\dhead}$};
+  \draw[arr] (Q.east) -- (S.west|-0,11mm);
+  \draw[arr] (K.east) -- (S.west|-0,5mm);
+  \node[redbox,minimum width=14mm,minimum height=14mm] (A) at (84mm,8mm) {$\mA$};
+  \node[sh,below=0.3mm of A,align=center] {$(T,T)$\\各行の和が 1};
+  \draw[arr] (S) -- node[above,sh]{マスク} node[below,sh]{softmax} (A);
+  \node[greenbox,minimum width=8mm,minimum height=11mm] (Y) at (110mm,-16mm) {$\mY$};
+  \node[sh,above=0.3mm of Y] {$(T,\dhead)$};
+  \draw[arr] (A.east) -| node[pos=0.3,above,sh]{$\mA\mV$} (Y.north|-A.east) -- ($(Y.north)+(0,4mm)$);
+  \draw[arr] (V.east) -- node[below,sh,pos=0.5]{バリューを重み付きで混ぜる} (Y.west);
+\end{tikzpicture}
+\caption{縮小付き内積注意の計算の流れと行列の形。$\mX$ から三つの行列を掛けて $\mQ,\mK,\mV$ を作り、
+スコア $\mS=\mQ\mK^\T/\sqrt{\dhead}$（$T\times T$）を softmax で重み $\mA$ に変え、$\mA\mV$ で出力 $\mY$ を作る。
+入力と出力の行数はどちらも $T$（1 トークンが 1 行）。}
+\label{fig:attn-flow}
+\end{figure}
+
+\subsection*{手で計算してみる}
+
+式\eqref{eq:attn-sdpa}を、3 トークン・$\dhead=2$ の小さな例で手計算します。
+射影 $\mW_q,\mW_k,\mW_v$ を掛けた結果、クエリ・キー・バリューが次の値になったとします。
+\begin{equation}
+\mQ=\begin{pmatrix}1&0\\0&2\\2&0\end{pmatrix},\quad
+\mK=\begin{pmatrix}1&0\\0&1\\1&1\end{pmatrix},\quad
+\mV=\begin{pmatrix}1&0\\0&1\\0&0\end{pmatrix}.
+\end{equation}
+3 番目のトークンの出力 $\vy_3$ を求めます。
+3 番目は、自分と過去（1〜3 番目）のすべてを見られます。
+手順を\tabref{tab:attn-hand}に、1 行ずつまとめました。
+
+\begin{table}[tbp]
+\centering
+\caption{3 番目のトークンの注意を手で計算する（$\vq_3=(2,0)$、$\sqrt{\dhead}=\sqrt2\approx1.414$）。
+右に進むほど計算が進む。最後の列を縦に足したものが出力 $\vy_3$ になる。}
+\label{tab:attn-hand}
+\small
+\begin{tabular}{ccccccc}
+\toprule
+見る相手 $s$ & キー $\vk_s$ & 内積 $\vq_3^\T\vk_s$ & $\div\sqrt2$ & $\exp$ & 重み $a_{3s}$ & $a_{3s}\vv_s$ \\
+\midrule
+1 & $(1,0)$ & 2 & 1.414 & 4.113 & 0.446 & $(0.446,\ 0)$ \\
+2 & $(0,1)$ & 0 & 0     & 1.000 & 0.108 & $(0,\ 0.108)$ \\
+3 & $(1,1)$ & 2 & 1.414 & 4.113 & 0.446 & $(0,\ 0)$ \\
+\midrule
+\multicolumn{4}{r}{合計} & 9.226 & 1.000 & $\vy_3=(0.446,\ 0.108)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表を左から読んでいきます。
+クエリ $\vq_3=(2,0)$ と各キーの内積は、$2\cdot1+0\cdot0=2$、$2\cdot0+0\cdot1=0$、$2\cdot1+0\cdot1=2$ です。
+これを $\sqrt{2}\approx1.414$ で割ると $1.414,\ 0,\ 1.414$ になります。
+指数をとると $e^{1.414}\approx4.113$、$e^{0}=1$ で、合計は $4.113+1+4.113=9.226$ です。
+各値を合計で割ると、重みは $4.113/9.226\approx0.446$、$1/9.226\approx0.108$、$0.446$ になります。
+最後に、重みでバリューを混ぜます。
+$\vy_3 = 0.446\,(1,0) + 0.108\,(0,1) + 0.446\,(0,0) = (0.446,\ 0.108)$ です。
+
+$\vq_3=(2,0)$ は「第 1 成分の向き」を探しているクエリです。
+その向きを含むキー $\vk_1$ と $\vk_3$ に大きな重みが付き、まったく含まないキー $\vk_2$ には小さな重みしか付きませんでした。
+「探しているものに似たキーほど、そのバリューを多く受け取る」という仕組みが、数値で確かめられます。
+
+同じ計算を PyTorch で行います。
+
+\snippet{縮小付き内積注意を 3 トークンで計算する}{code:attn-tiny}{ch09/attention_steps.py}{tiny-example}
+
+1〜9 行目で $\mQ,\mK,\mV$ を作ります。
+10 行目の \code{d_head} は $\dhead=2$ です。
+11 行目が $\mQ\mK^\T/\sqrt{\dhead}$ で、$(3,3)$ のスコア行列になります（\code{K.T} が $\mK^\T$）。
+12〜13 行目は、未来の位置のスコアを $-\infty$ に置き換える処理です。
+12 行目の \code{mask} は下三角だけが 1 の行列です。
+13 行目の \code{S.masked_fill(条件, 値)} は、\code{S} のうち条件が真の場所を、指定した値で埋めた新しいテンソルを返します。
+ここでは \code{mask == 0}（上三角、つまり未来の位置）を $-\infty$（\code{float("-inf")}）で埋めています。
+これが「自分と過去だけを見る」ための仕掛けで、次節で詳しく説明します。
+14 行目で各行に softmax をとり（\code{dim=-1} は「最後の次元、つまり行の中で」の意味です）、15 行目で $\mA\mV$ を計算します。
+
+\outputfile{ch09/out/tiny_example.txt}
+
+注意の重み \code{A} の 3 行目は $(0.446, 0.108, 0.446)$、出力 \code{Y} の 3 行目は $(0.446, 0.108)$ で、\tabref{tab:attn-hand}の手計算と一致します。
+1 行目は自分しか見られないので、重みは $1$ で、出力は $\vv_1=(1,0)$ そのものです。
+2 行目では、$\vq_2=(0,2)$ が $\vk_2=(0,1)$ とよく合うので、2 番目に $0.804$ の重みが付いています。
+
+\begin{quiz}
+クエリ $\vq_t$ がゼロベクトルだったら、注意の重みはどうなるでしょうか。
+そのとき出力 $\vy_t$ は何になるでしょうか。
+\end{quiz}
+
+答えを確かめましょう。
+$\vq_t=\vzero$ なら、どのキーとの内積も 0 なので、スコアはすべて 0 です。
+すると指数はすべて $e^{0}=1$ で、$t$ 個の合計は $t$ になります。
+各値を合計で割るので、重みはすべて $1/t$ です。
+すると出力は、バリューの\textbf{ただの平均}になります。
+つまり、\secref{sec:attn-average}の平均は、注意機構の特別な場合だったのです。
+注意機構は、平均を出発点に、「どこを重く見るか」を内容に応じて変えられるように広げたもの、と言えます。
+
+\subsection*{なぜ $\sqrt{\dhead}$ で割るのか}
+\skimread{結論は「内積の分散は次元 $\dhead$ に比例して大きくなる。そのままでは softmax の重みが一つのトークンに張り付き（飽和）、勾配が消えて学習が進まないので、$\sqrt{\dhead}$ で割る」です。導出は 2 周目に回し、\figref{fig:attn-scaling}だけ見てください。}
+
+最後に、式\eqref{eq:attn-sdpa}の $\sqrt{\dhead}$ の意味を考えます。
+割らないと何が困るのでしょうか。
+
+手がかりは、内積の大きさが次元とともに増えることです。
+クエリとキーの各成分が、互いに独立に平均 0・分散 1 の値をとるとしましょう。
+これは学習の初めの状態をおおまかに表した仮定です。
+\chapref{ch:training}の初期化では、層を通してもベクトルの各成分の分散が大きく変わらないように、ランダムな重みの大きさを選びました。
+$\mW_q$ と $\mW_k$ も別々の乱数で初期化されるので、$\vq$ と $\vk$ の成分は、平均 0 で互いにほぼ無関係です。分散は、計算を簡単にするために 1 とします。
+内積 $\vq^\T\vk=\sum_{i=1}^{\dhead}q_ik_i$ の平均と分散を計算します。
+
+計算の前に、使う性質を四つ確かめておきます。
+\begin{enumerate}
+\item 和の期待値は、期待値の和です（期待値の線形性。式\eqref{eq:math-linearity}）。
+\item 独立な $X$, $Y$ では $\E[XY]=\E[X]\,\E[Y]$ です。
+同時確率が積 $p(x)\,p(y)$ になり（\secref{sec:math-prob}）、$\sum_{x,y}p(x)\,p(y)\,xy$ を $x$ の和と $y$ の和の積に分けられるからです。
+\item 平均が 0 なら、分散の定義 $\Var[X]=\E[(X-\mu)^2]$（式\eqref{eq:math-variance}）で $\mu=0$ と置いて、$\Var[X]=\E[X^2]$ です。
+\item 独立な値の和の分散は、分散の和です。値を $c$ 倍すると、分散は $c^2$ 倍になります（\secref{sec:training-init}）。
+\end{enumerate}
+まず平均です。
+\begin{align}
+\E[\vq^\T\vk] &= \sum_{i=1}^{\dhead}\E[q_i k_i]
+  && \text{（性質 1）}\notag\\
+ &= \sum_{i=1}^{\dhead}\E[q_i]\,\E[k_i] = 0
+  && \text{（性質 2。$q_i$ も $k_i$ も平均 0）}.
+\end{align}
+内積の平均は 0 です。
+途中で、各項 $q_ik_i$ の平均も 0 だと分かりました。
+次に分散です。
+\begin{align}
+\Var[\vq^\T\vk] &= \sum_{i=1}^{\dhead}\Var[q_i k_i]
+  && \text{（性質 4。各項は互いに独立）}\notag\\
+ &= \sum_{i=1}^{\dhead}\E[q_i^2 k_i^2]
+  && \text{（性質 3。$q_ik_i$ の平均は 0）}\notag\\
+ &= \sum_{i=1}^{\dhead}\E[q_i^2]\,\E[k_i^2]
+  && \text{（性質 2。$q_i^2$ と $k_i^2$ も独立）}\notag\\
+ &= \sum_{i=1}^{\dhead} 1\cdot 1 = \dhead
+  && \text{（性質 3 より $\E[q_i^2]=\Var[q_i]=1$）}.
+\end{align}
+1 を $\dhead$ 個足すので、内積の分散は $\dhead$ に比例して大きくなります。
+標準偏差（分散の平方根）でいえば $\sqrt{\dhead}$ です。
+$\dhead=64$ なら $\sqrt{64}=8$ なので、スコアは典型的に $\pm8$ くらいばらつきます。
+そこで $\sqrt{\dhead}$ で割ります。
+性質 4 より、$1/\sqrt{\dhead}$ 倍すると分散は $1/\dhead$ 倍になり、$\dhead/\dhead = 1$ に戻ります。
+初期化で分散を 1 にそろえたのと同じ考え方を、スコアにも当てはめるわけです。
+
+では、スコアのばらつきが大きいと何が困るのでしょうか。
+softmax は、入力の差が大きいと、最大のもの以外をほぼ 0 にしてしまいます。
+たとえばスコアが 8 と 0 の二つなら、$e^{8}\approx2981$、$e^{0}=1$ なので、重みは $2981/2982$ と $1/2982$ です。
+つまり $\softmax(8, 0) \approx (0.9997, 0.0003)$ です。
+これは「ほぼ one-hot」で、注意が一つのトークンに張り付いた状態です。
+張り付くこと自体より困るのは、学習が進まなくなることです。
+softmax の出力 $a_i = e^{z_i}/\sum_k e^{z_k}$ を入力 $z_j$ で微分すると、商の微分法 $(f/g)'=(f'g-fg')/g^2$ より
+\begin{equation}
+\pd{a_i}{z_j} = a_i(\delta_{ij} - a_j)
+\qquad\text{（$\delta_{ij}$ は $i=j$ なら 1、それ以外は 0）}
+\label{eq:attn-softmax-grad}
+\end{equation}
+となります（演習\ref{ex:attn-softmax-grad}）。
+$a$ が one-hot に近いと、$a_i$ か $(\delta_{ij}-a_j)$ のどちらかがほぼ 0 になり、この微分はほぼ 0 になります。
+たとえば重みが $(0.5, 0.5)$ なら、$i=j=1$ の微分は $a_1(1-a_1)=0.5\times0.5=0.25$ です。
+重みが $(0.9997, 0.0003)$ なら $0.9997\times0.0003\approx0.0003$ で、その数百分の 1 しかありません。
+損失の勾配は、連鎖律によって、この微分を掛けながら $\mW_q$ や $\mW_k$ まで伝わります（\chapref{ch:nn}）。
+掛ける数がほぼ 0 なら届く勾配もほぼ 0 で、$\mW_q$ や $\mW_k$ はほとんど更新されません。
+
+これを実験で確かめます（\file{ch09/scaling.py}、約 3 秒）。
+各成分が平均 0・分散 1 の乱数で、クエリ 1 個とキー 16 個の組を 2000 組作り、内積をそのまま softmax に入れた場合と、$\sqrt{\dhead}$ で割ってから入れた場合を比べます。
+測るのは、内積の分散、16 個の重みのうち最大のもの、そして勾配の大きさです。
+勾配の大きさは、式\eqref{eq:attn-softmax-grad}の $\pd{a_i}{z_j}$ を $16\times16$ の表に並べたもの（ヤコビ行列と呼びます）の、全成分の 2 乗和の平方根で測ります。
+これが 0 に近いと、スコアを少し動かしても重みがほとんど変わらない、つまり softmax の手前に勾配がほとんど届かないことを意味します。
+$\dhead$ を 2 から 512 まで変えた結果が\figref{fig:attn-scaling}です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.36\linewidth,height=0.34\linewidth,
+  xmode=log,ymode=log,log basis x=2,xlabel={次元 $\dhead$},ylabel={内積の分散},
+  xtick={2,8,32,128,512},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend pos=north west,legend style={font=\scriptsize},title={(a) 内積の分散},title style={font=\footnotesize}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=d,y=var_raw]{code/ch09/out/scaling.csv};
+\addlegendentry{そのまま}
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=d,y=var_scaled]{code/ch09/out/scaling.csv};
+\addlegendentry{$\div\sqrt{\dhead}$}
+\end{axis}
+\begin{axis}[xshift=0.34\linewidth,width=0.36\linewidth,height=0.34\linewidth,
+  xmode=log,log basis x=2,xlabel={次元 $\dhead$},ymin=0,ymax=1,ytick={0,0.2,...,1},
+  xtick={2,8,32,128,512},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  title={(b) 最大の重み},title style={font=\footnotesize}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=d,y=maxw_raw]{code/ch09/out/scaling.csv};
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=d,y=maxw_scaled]{code/ch09/out/scaling.csv};
+\end{axis}
+\begin{axis}[xshift=0.68\linewidth,width=0.36\linewidth,height=0.34\linewidth,
+  xmode=log,log basis x=2,xlabel={次元 $\dhead$},ymin=0,ymax=0.4,ytick={0,0.1,...,0.4},
+  xtick={2,8,32,128,512},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  yticklabel style={/pgf/number format/fixed,/pgf/number format/precision=1},
+  title={(c) 勾配の大きさ},title style={font=\footnotesize}]
+\addplot[bookaccent,mark=*,mark size=1.2pt] table[col sep=comma,x=d,y=grad_raw]{code/ch09/out/scaling.csv};
+\addplot[bookblue,mark=square*,mark size=1.2pt] table[col sep=comma,x=d,y=grad_scaled]{code/ch09/out/scaling.csv};
+\end{axis}
+\end{tikzpicture}%
+\caption{$\sqrt{\dhead}$ で割る効果（\code{ch09/scaling.py}、キー 16 個、2000 回の平均）。
+(a) そのままの内積の分散は $\dhead$ に比例して増える（両対数で傾き 1 の直線）が、$\sqrt{\dhead}$ で割ると 1 のまま。
+(b) 16 個の重みのうち最大のものの平均。(c) softmax のヤコビ行列の大きさ（勾配の流れやすさの目安）。
+どの図も赤が「そのまま」、青が「$\div\sqrt{\dhead}$」。割らないと、次元が大きいほど重みが 1 個に張り付き、勾配が小さくなる。}
+\label{fig:attn-scaling}
+\end{figure}
+
+\figref{fig:attn-scaling}(a) を見ると、そのままの内積の分散は $\dhead$ とほぼ等しく（$\dhead=512$ で 516.3）、理論どおりです。
+$\sqrt{\dhead}$ で割ると、どの次元でも分散はほぼ 1 です。
+(b) の赤い線を見てください。
+割らない場合、最大の重みは $\dhead=2$ で 0.297 ですが、$\dhead=512$ では 0.943 に達します。
+16 個のキーがあるのに、ほぼ 1 個しか見ていない状態です。
+(c) の赤い線（勾配の大きさ）は 0.306 から 0.076 まで、4 分の 1 に落ちています。
+一方、(b)(c) の青い線（割った場合）は、どの次元でもほぼ一定です。
+$\sqrt{\dhead}$ で割ることで、次元をいくつに選んでも、softmax が同じ「ほどよい」領域で働くのです。
+
+この節で分かったことをまとめます。
+注意機構は、クエリとキーの内積でスコアを作り、softmax で重みに変え、バリューの重み付き平均を出力します。
+$\sqrt{\dhead}$ で割るのは、スコアのばらつきを次元によらず一定に保ち、softmax の飽和と勾配の消失を防ぐためです。
+
+\section{因果マスクと行列による実装}\label{sec:attn-causal}
+
+前節では、「自分と過去だけを見る」ために、未来のスコアを $-\infty$ にしました。
+この節では、なぜ未来を見てはいけないのか、なぜ $-\infty$ でよいのかを確かめます。
+そのうえで、注意機構を for 文で素朴に書いた版と、行列でまとめて書いた版を作り、両者が一致することを確かめます。
+
+\subsection*{なぜ未来を見てはいけないのか}
+
+言語モデルは、位置 $t$ の出力から次のトークン $x_{t+1}$ を予測します。
+もし位置 $t$ の注意が位置 $t+1$ を見られたら、どうなるでしょうか。
+予測すべき答え $x_{t+1}$ そのものが、入力に入っていることになります。
+モデルは「1 つ右のトークンを写す」だけで、損失をいくらでも小さくできてしまいます。
+これは、答えを見ながら試験を受けるのと同じです。
+しかも、文章を生成するときには、未来のトークンはまだ存在しません。
+学習のときだけ使えた手がかりが生成のときには無いので、学習したことがまったく役に立ちません。
+
+そこで、位置 $t$ は位置 $1,\dots,t$ だけを見られるように制限します。
+この制限を\term{因果マスク}{causal mask}と呼びます。
+「原因（過去）は結果（未来）より前にある」という意味での「因果」です。
+
+\subsection*{全位置を同時に学習できる}
+
+因果マスクには、もう一つ大きな利点があります。
+\chapref{ch:lm}で学んだ教師強制を思い出してください。
+学習のときは、正解の文をそのまま入力し、各位置で次のトークンを当てさせるのでした。
+長さ $T$ の文からは、「1 個目から 2 個目を当てる」「1〜2 個目から 3 個目を当てる」\dots と、$T$ 個の予測問題が作れます。
+
+因果マスク付きの注意なら、この $T$ 個の問題を\textbf{1 回の計算で同時に}解けます。
+位置 $t$ の出力は、マスクのおかげで位置 $1,\dots,t$ しか使っていないからです。
+つまり、位置 $t$ の出力は「長さ $t$ の文だけを入力した場合」とまったく同じになります。
+実際、\secref{sec:attn-multihead}で作るマルチヘッド注意で、位置 3 以降（0 始まり）の入力だけを別の乱数に取り替えてみると、位置 0〜2 の出力の差はちょうど 0 でした（\file{ch09/out/causal_check.txt}）。
+RNN では、$t$ 番目の計算は $t-1$ 番目が終わるまで始められませんでした。
+注意機構では、全位置の計算を一斉に行えます。
+\secref{sec:attn-why}の三つ目の条件「並列に計算できる」は、こうして満たされます。
+
+\subsection*{$-\infty$ を入れて softmax する}
+
+マスクの実装は、\figref{fig:attn-mask}のとおりです。
+スコア行列 $\mS$ の上三角（$s>t$ の部分）を $-\infty$ に置き換えてから、行ごとに softmax をとります。
+$\exp(-\infty)=0$ なので、未来の位置の重みはちょうど 0 になります。
+残りの重みは、過去の位置のあいだだけで和が 1 になるように自動的に正規化されます。
+式で書けば、
+\begin{equation}
+M_{ts} = \begin{cases} 0 & (s\le t)\\ -\infty & (s>t)\end{cases},\qquad
+\mA = \softmax\!\left(\frac{\mQ\mK^\T}{\sqrt{\dhead}} + \mM\right)
+\label{eq:attn-causal}
+\end{equation}
+です。
+$\mM$ を足すと、過去の位置は 0 を足すので変わらず、未来の位置だけが $-\infty$ になります。
+
+softmax の\textbf{後}で未来の重みを 0 にしても、残りを割り直せば同じ結果になります。
+スコアが $(2,0,2)$ で、3 番目が未来の位置だとして確かめます。
+先に $-\infty$ を入れると、指数は $(7.39,\ 1,\ 0)$、合計は $8.39$ で、重みは $(7.39/8.39,\ 1/8.39,\ 0)\approx(0.88,\ 0.12,\ 0)$ です。
+後から消す場合は、3 個での softmax $(0.468,\ 0.063,\ 0.468)$ の 3 番目を 0 にし、残りの和 $0.531$ で割り直します（\secref{sec:attn-qkv}の $(0.47, 0.06, 0.47)$ を 1 桁詳しく書いた値です）。
+$(0.468/0.531,\ 0.063/0.531,\ 0)\approx(0.88,\ 0.12,\ 0)$ で、確かに同じです。
+どちらも、「未来の分の指数を、分母の合計から除く」という同じ計算だからです。
+しかし、後から消す方法では、割り直しの式を自分で書く必要があり、書き忘れると和が 1 にならない重みで黙って計算が進んでしまいます。
+softmax の\textbf{前}に $-\infty$ を入れておけば、正規化は softmax が必ずやってくれるので、間違いようがありません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+  \matrix (S) [matrix of math nodes,nodes={cell,minimum size=8.5mm,font=\scriptsize},column sep=-\pgflinewidth,row sep=-\pgflinewidth] {
+    |[fill=figpurple]| s_{11} & |[fill=figgray]| -\infty & |[fill=figgray]| -\infty & |[fill=figgray]| -\infty \\
+    |[fill=figpurple]| s_{21} & |[fill=figpurple]| s_{22} & |[fill=figgray]| -\infty & |[fill=figgray]| -\infty \\
+    |[fill=figpurple]| s_{31} & |[fill=figpurple]| s_{32} & |[fill=figpurple]| s_{33} & |[fill=figgray]| -\infty \\
+    |[fill=figpurple]| s_{41} & |[fill=figpurple]| s_{42} & |[fill=figpurple]| s_{43} & |[fill=figpurple]| s_{44} \\
+  };
+  \node[lbl,above=1mm of S] {マスクしたスコア $\mS+\mM$};
+  \node[lbl,left=1mm of S,align=center] {見る側\\$t$};
+  \node[lbl,below=1mm of S] {見られる側 $s$};
+  \matrix (A) [right=18mm of S,matrix of math nodes,nodes={cell,minimum size=8.5mm,font=\scriptsize},column sep=-\pgflinewidth,row sep=-\pgflinewidth] {
+    |[fill=bookaccent!60]| 1 & 0 & 0 & 0 \\
+    |[fill=bookaccent!30]| a_{21} & |[fill=bookaccent!30]| a_{22} & 0 & 0 \\
+    |[fill=bookaccent!20]| a_{31} & |[fill=bookaccent!20]| a_{32} & |[fill=bookaccent!20]| a_{33} & 0 \\
+    |[fill=bookaccent!15]| a_{41} & |[fill=bookaccent!15]| a_{42} & |[fill=bookaccent!15]| a_{43} & |[fill=bookaccent!15]| a_{44} \\
+  };
+  \node[lbl,above=1mm of A] {注意の重み $\mA$};
+  \node[lbl,below=1mm of A] {各行の和は 1};
+  \draw[arr] (S.east) -- node[above,lbl]{行ごとに} node[below,lbl]{softmax} (A.west);
+  \node[lbl,right=2mm of A,align=left,text width=20mm] {$t$ 行目は「長さ $t$ の文を入れたときの位置 $t$」と同じ。\\$T$ 個の予測を 1 回で計算できる。};
+\end{tikzpicture}
+\caption{因果マスク。スコア行列の上三角（未来の位置）を $-\infty$ にしてから行ごとに softmax をとると、未来の重みはちょうど 0 になり、残りの重みの和は 1 になる。
+重み行列は下三角になる（\figref{fig:attn-avg}の平均の行列と同じ形で、中身が内容によって変わる）。}
+\label{fig:attn-mask}
+\end{figure}
+
+\figref{fig:attn-mask}の右の $\mA$ が、\figref{fig:attn-avg}の平均の行列と同じ下三角の形をしていることに注目してください。
+平均では各行の値が $1/t$ に固定されていましたが、注意ではそれが内容によって変わります。
+\secref{sec:attn-average}で目指した「中身が自由な $\mA$」が、ここに完成しました。
+
+\subsection*{for 文版と行列版}
+
+ここまでの内容を、二通りのコードで書きます。
+まず、式をそのまま写した for 文版です。
+
+\snippet{自己注意を for 文で 1 つずつ計算する}{code:attn-loop}{ch09/attention_steps.py}{attention-loop}
+
+引数の \code{X} は $(T, d)$ の入力、\code{W_q}, \code{W_k}, \code{W_v} は $(d, \dhead)$ の行列です。
+3〜4 行目で、トークン数 $T$ を取り出し、出力を入れる $(T,\dhead)$ のゼロ行列 \code{Y} を用意します（\code{W_v.size(1)} は \code{W_v} の列数で、$\dhead$ です）。
+5 行目のループで、見る側の位置 \code{t} を一つずつ選びます。
+6 行目でその位置のクエリ $\vq_t$ を作ります（\code{X[t] @ W_q} は式\eqref{eq:attn-qkv-vec}の $\mW_q^\T\vx_t$ を、行ベクトルの形で計算したものです）。
+7 行目の \code{scores} は、スコアをためていく空のリストです。
+8 行目の内側のループは \code{range(t + 1)} なので、自分と過去だけを回ります。
+ここで因果マスクが、for 文の範囲として自然に表現されています。
+9〜10 行目で、キー $\vk_s$ を作ってスコア $\vq_t^\T\vk_s/\sqrt{\dhead}$ を計算します（\code{len(q)} はクエリの長さで、$\dhead$ です）。
+11 行目の \code{torch.stack} は、リストに入った同じ形のテンソルを 1 個のテンソルにまとめる関数で、ここでは $t+1$ 個のスコアを長さ $t+1$ のベクトルにします。
+それに softmax をとったものが重みです。
+12〜13 行目で、バリューの重み付き和を \code{Y[t]} に足し込みます。
+
+次に、同じ計算を行列でまとめた版です。
+
+\snippet{自己注意を行列積でまとめて計算する}{code:attn-matrix}{ch09/attention_steps.py}{attention-matrix}
+
+4 行目で、全トークンのクエリ・キー・バリューを一度に作ります（$\mQ=\mX\mW_q$ など）。
+5 行目が $\mQ\mK^\T/\sqrt{\dhead}$、6〜7 行目が因果マスク、8 行目が softmax、9 行目が $\mA\mV$ です。
+式\eqref{eq:attn-sdpa}と式\eqref{eq:attn-causal}が、ほぼそのまま 6 行のコードになっています。
+二つを同じ入力（$T=5$、$d=8$、$\dhead=4$ の乱数）で比べます。
+
+\outputfile{ch09/out/loop_vs_matrix.txt}
+
+最後の行（5 番目のトークン）の出力が一致し、全体の最大の差も $10^{-6}$ 程度です。
+この差は、足し算の順序の違いによる浮動小数点の丸め誤差で、計算としては同じものです。
+行列版は for 文がないぶん、$T$ が大きいほど圧倒的に速くなります。
+GPU では、この行列積こそが得意な計算です（\chapref{ch:gpu}）。
+
+\begin{intuition}{ここまでの道のり}
+\begin{enumerate}[leftmargin=1.5em]
+\item 文脈を混ぜる操作は、重み行列との積 $\mY=\mA\mX$ で書ける。平均は $\mA$ を固定したもの（\secref{sec:attn-average}）。
+\item 注意機構は、クエリとキーの内積を $\sqrt{\dhead}$ で割って softmax し、$\mA$ を内容から作る。出力はバリューの重み付き平均（\secref{sec:attn-qkv}）。
+\item 因果マスクで未来を隠すと、$T$ 個の次トークン予測を 1 回の行列計算で同時に学習できる（本節）。
+\end{enumerate}
+この先は、注意を「複数」使う工夫（マルチヘッド）、実験による効果の確認、注意の性質、学習済みモデルの観察へと進みます。
+\end{intuition}
+
+この節で分かったことをまとめます。
+因果マスクは、スコアの未来の部分を $-\infty$ にしてから softmax する、という簡単な操作です。
+これによってカンニングを防ぎつつ、全位置の予測を一度に計算できます。
+
+\section{マルチヘッド注意}\label{sec:attn-multihead}
+
+前節までで、注意機構が一つ完成しました。
+しかし、一つの注意では足りない場面があります。
+この節では、注意を複数並べる\term{マルチヘッド注意}{multi-head attention}を作り、共有ライブラリの実装と一致させます。
+
+\subsection*{一つの注意では、一種類の見方しかできない}
+
+冒頭の「\code{25+48=}」に戻りましょう。
+「\code{=}」の位置で答えの十の位を書くには、十の位の「\code{2}」「\code{4}」が要ります。
+繰り上がりがあるかを知るには、一の位の「\code{5}」「\code{8}」も要ります。
+一つの注意でこの 4 個を見ようとすると、重みを 4 個に分けることになり、出力は 4 個のバリューの\textbf{重み付き平均}、つまり一本のベクトルに混ざってしまいます。
+
+混ざると何が困るのでしょうか。
+「\code{25+48=}」と「\code{52+84=}」を比べてみてください。
+どちらも、見るべき数字は「\code{2}」「\code{4}」「\code{5}」「\code{8}」の 4 個です。
+しかし前者では 2 と 4 が十の位（答えは 73）、後者では 5 と 8 が十の位です（答えは 136）。
+4 個を一本に混ぜたベクトルからは、「どの数字が十の位で、どの数字が一の位だったか」を取り出すのが難しくなります。
+（位置の情報を足しておけば少しは手がかりが残りますが、それも一緒に混ざってしまいます。）
+それよりも、「一人目の係は十の位の数字を取ってくる」「二人目の係は一の位の数字を取ってくる」と分担させ、それぞれの結果を別々のベクトルとして受け取れれば、情報は混ざらずに届きます。
+\figref{fig:attn-mh-idea}に、二つのやり方を並べました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[w/.style={cell,minimum size=6mm,font=\scriptsize}]
+  % (a) ヘッドが 1 個
+  \node[font=\small\bfseries,anchor=west] at (-3.2mm,7mm) {(a) 注意が 1 個};
+  \foreach \t [count=\i from 0] in {\textbackslash n,2,5,+,4,8,=} {
+    \node[tok,minimum width=6mm,font=\footnotesize] (a\i) at (\i*6.4mm,0) {\texttt{\t}};
+  }
+  \foreach \i/\v/\c in {0/0/0,1/.25/30,2/.25/30,3/0/0,4/.25/30,5/.25/30,6/0/0} {
+    \node[w,fill=bookpurple!\c] (aw\i) at (\i*6.4mm,-8mm) {\v};
+  }
+  \node[purplebox,minimum width=38mm,minimum height=6mm,font=\footnotesize] (ay) at (19.2mm,-23mm) {2, 5, 4, 8 が混ざった 1 本};
+  \draw[arr] (aw3.south) -- (ay.north);
+  \node[lbl,below=0.5mm of ay] {どれが十の位かは、取り出しにくい};
+  % (b) ヘッドが 2 個
+  \begin{scope}[xshift=66mm]
+  \node[font=\small\bfseries,anchor=west] at (-3.2mm,7mm) {(b) 注意が 2 個（係を分ける）};
+  \foreach \t [count=\i from 0] in {\textbackslash n,2,5,+,4,8,=} {
+    \node[tok,minimum width=6mm,font=\footnotesize] (b\i) at (\i*6.4mm,0) {\texttt{\t}};
+  }
+  \foreach \i/\v/\c in {0/0/0,1/.5/45,2/0/0,3/0/0,4/.5/45,5/0/0,6/0/0} {
+    \node[w,fill=bookaccent!\c] (bw\i) at (\i*6.4mm,-8mm) {\v};
+  }
+  \foreach \i/\v/\c in {0/0/0,1/0/0,2/.5/45,3/0/0,4/0/0,5/.5/45,6/0/0} {
+    \node[w,fill=bookblue!\c] (bx\i) at (\i*6.4mm,-14.4mm) {\v};
+  }
+  \node[redbox,minimum width=19mm,minimum height=6mm,font=\footnotesize] (by0) at (9.6mm,-23mm) {十の位：2, 4};
+  \node[box,minimum width=19mm,minimum height=6mm,font=\footnotesize] (by1) at (28.8mm,-23mm) {一の位：5, 8};
+  \draw[arr] (bw0.west) -- ++(-2.5mm,0) |- (by0.west);
+  \draw[arr] (bx6.east) -- ++(2.5mm,0) |- (by1.east);
+  \node[lbl,below=0.5mm of by0.south east] {別々のベクトルとして届く};
+  \end{scope}
+\end{tikzpicture}
+\caption{「\code{=}」の位置から 4 個の数字を見るときの注意の重み（説明のための理想像）。
+(a) 注意が 1 個だと、4 個のバリューが一本のベクトルに混ざる。
+(b) 2 個あれば、上の行が十の位、下の行が一の位を受け持ち、別々のベクトルとして届く。}
+\label{fig:attn-mh-idea}
+\end{figure}
+
+文章でも同じです。
+ある位置は、「直前のトークンは何か」「この文の主語は何か」「『それ』が指すものは何か」を同時に知りたいかもしれません。
+一つの softmax の重みは一つの確率分布なので、一度に一種類の「見方」しか表せません。
+
+\subsection*{ヘッドを $H$ 個並べる}
+
+そこで、クエリ・キー・バリューの射影を $H$ 組用意し、それぞれで独立に注意を計算します。
+一組を\term{ヘッド}{head}と呼びます。
+$h$ 番目のヘッドは、自分専用の行列 $\mW_q^{(h)},\mW_k^{(h)},\mW_v^{(h)}\in\R^{d\times\dhead}$ を持ち、
+\begin{equation}
+\mY^{(h)} = \mathrm{Attention}\big(\mX\mW_q^{(h)},\ \mX\mW_k^{(h)},\ \mX\mW_v^{(h)}\big) \in \R^{T\times\dhead}
+\end{equation}
+を計算します（因果マスク付き）。
+$H$ 個の出力を横に並べて $(T, H\dhead)$ の行列にし、最後にもう一つの行列 $\mW_o\in\R^{H\dhead\times d}$ を掛けます。
+\begin{equation}
+\mathrm{MultiHead}(\mX) = \big[\,\mY^{(1)}\ \mY^{(2)}\ \cdots\ \mY^{(H)}\,\big]\,\mW_o \in \R^{T\times d} .
+\label{eq:attn-multihead}
+\end{equation}
+$\mW_o$ は、各ヘッドが集めてきた情報を混ぜ合わせて、元の $d$ 次元に戻す役目をします。
+これも学習で決まります。
+
+ヘッドの次元は、ふつう $\dhead = d/H$ にします。
+本書の基盤モデルでは $d=192$、$H=4$ なので $\dhead=48$ です。
+こうすると、$d$ 行 $\dhead$ 列の $\mW_q^{(h)}$ を $H$ 個横に並べたものは、$H\dhead=d$ なので、全部で $d\times d$ の行列一枚分になります（基盤モデルなら、$192\times48$ が 4 個で $192\times192$）。
+$\mW_k$ と $\mW_v$ も同じで、$\mW_o$ も $H\dhead\times d$、つまり $d\times d$ です。
+パラメータ数は、$\mW_q,\mW_k,\mW_v,\mW_o$ の 4 枚で $4d^2$ になり、ヘッドをいくつに分けても変わりません。
+基盤モデルの 1 層あたりでは、$192^2=36{,}864$ の 4 倍で、$4\times192^2=147{,}456$ 個です。
+つまりマルチヘッドは、\textbf{同じ予算を、細い注意 $H$ 本に分けて使う}工夫です。
+一本一本は $\dhead=48$ 次元と細くなりますが、別々の場所を見られるようになります。
+
+\subsection*{形の変換：一枚の行列を $H$ 本に切り分ける}
+\skimread{ここから節末までの三つの小節は、実装の細部です。結論は「形を \code{view} と \code{transpose} で変えるだけで、$H$ 個のヘッドを 1 回の行列積で計算できる。自作したクラスの出力は、共有ライブラリ \code{llmbook} の注意と一致する」です。初読では、\tabref{tab:attn-mha-trace}を眺めたら節末のまとめへ進んでかまいません。}
+
+実装では、$H$ 個の小さな行列を別々に持つ代わりに、横に並べた $d\times d$ の行列を一枚だけ持ちます。
+$\mX$ にそれを掛けると $(T,d)$ の結果ができます。
+その $d$ 列を、左から $\dhead$ 列ずつ区切ったものが、各ヘッドのクエリです（\figref{fig:attn-mh-shapes}の上段）。
+行列積の $j$ 列目は、行列の $j$ 列目だけで決まるからです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[sh/.style={font=\scriptsize,text=bookgray},
+  seg/.style={draw=black!50,minimum height=5mm,minimum width=6mm,inner sep=0pt}]
+  % 上段: d 次元を H 本に切る
+  \node[font=\footnotesize,anchor=east] at (-2mm,0) {1 トークンの $\vq$（$d$ 次元）};
+  \foreach \c/\i in {bookblue/0,bookgreen/1,bookorange/2,bookpurple/3} {
+    \node[seg,fill=\c!35] (s\i) at (\i*6mm+3mm,0) {};
+  }
+  \node[sh,above=0.3mm of s0.north west,anchor=south west] {$\dhead$ ずつ};
+  \foreach \c/\i in {bookblue/0,bookgreen/1,bookorange/2,bookpurple/3} {
+    \node[seg,fill=\c!35] (h\i) at (40mm,6mm-\i*4mm) {};
+    \node[sh,right=0.5mm of h\i] {ヘッド \i};
+  }
+  \draw[arr] (s3.east) -- node[above,sh]{\code{view}} ($(h1.west)!0.5!(h2.west)+(-1mm,0)$);
+  % 下段: テンソルの形の流れ
+  \begin{scope}[yshift=-24mm]
+  \node[graybox,minimum width=17mm,font=\footnotesize] (a) at (0,0) {$(B,T,d)$};
+  \node[orangebox,minimum width=20mm,font=\footnotesize] (b) at (25mm,0) {$(B,T,H,\dhead)$};
+  \node[orangebox,minimum width=20mm,font=\footnotesize] (c) at (54mm,0) {$(B,H,T,\dhead)$};
+  \node[redbox,minimum width=20mm,font=\footnotesize] (d) at (85mm,0) {$(B,H,T,T)$};
+  \draw[arr] (a) -- node[midway,above=3.8mm,sh]{$\mW_q$, \code{view}} (b);
+  \draw[arr] (b) -- node[midway,above=3.8mm,sh]{\code{transpose(1,2)}} (c);
+  \draw[arr] (c) -- node[midway,above=3.8mm,sh]{$\mQ\mK^\T$, softmax} (d);
+  \node[greenbox,minimum width=20mm,font=\footnotesize] (e) at (85mm,-17mm) {$(B,H,T,\dhead)$};
+  \node[greenbox,minimum width=20mm,font=\footnotesize] (f) at (54mm,-17mm) {$(B,T,H,\dhead)$};
+  \node[graybox,minimum width=17mm,font=\footnotesize] (g) at (25mm,-17mm) {$(B,T,d)$};
+  \node[graybox,minimum width=17mm,font=\footnotesize] (h) at (0,-17mm) {$(B,T,d)$};
+  \draw[arr] (d) -- node[right,sh]{$\mA\mV$} (e);
+  \draw[arr] (e) -- node[midway,above=3.8mm,sh]{\code{transpose(1,2)}} (f);
+  \draw[arr] (f) -- node[midway,above=3.8mm,sh]{\code{reshape}} (g);
+  \draw[arr] (g) -- node[midway,above=3.8mm,sh]{$\mW_o$} (h);
+  \node[sh,below=0.5mm of c] {ヘッドの軸を前へ};
+  \node[sh,below=0.5mm of g] {ヘッドを横に並べ直す};
+  \end{scope}
+\end{tikzpicture}
+\caption{マルチヘッド注意での形の変換（$H=4$ の例）。上：$d$ 次元のクエリを $\dhead=d/H$ 次元ずつ $H$ 本に切り分ける。
+下：テンソルの形の流れ。ヘッドの軸を 2 番目に移すと、$(B,H)$ を「まとめて処理する束」とみなして、全ヘッドの注意を 1 回の行列積で計算できる。最後に逆の変換で $(B,T,d)$ に戻す。}
+\label{fig:attn-mh-shapes}
+\end{figure}
+
+コードでは、バッチの次元 $B$ も加わって、テンソルの形は $(B, T, d)$ です。
+\figref{fig:attn-mh-shapes}の下段を左上から順にたどってください。
+まず $\mW_q$ を掛けた $(B,T,d)$ を、\code{view} で $(B,T,H,\dhead)$ に見方を変えます（\chapref{ch:pytorch}の \code{view} は、データを動かさずに形だけ変える操作でした）。
+次に \code{transpose(1,2)} で $T$ と $H$ の軸を入れ替え、$(B,H,T,\dhead)$ にします。
+こうしておくと、PyTorch の \code{@} は最後の 2 軸で行列積をとり、前の $(B,H)$ の軸については「束ごとに」計算してくれます。
+全バッチ・全ヘッドの $\mQ\mK^\T$ が 1 回で計算でき、重みは $(B,H,T,T)$ になります。
+最後に $\mA\mV$ で $(B,H,T,\dhead)$ を作り、逆の変換で $(B,T,d)$ に戻して $\mW_o$ を掛けます。
+
+記号だけでは追いにくいので、\tabref{tab:attn-mha-trace}に、小さな具体例での形を並べました。
+$B=2$、$T=5$、$d=12$、$H=3$ で、$\dhead=12/3=4$ です。
+入口と出口（1 行目と 9 行目）は同じ形です。
+上から 3 行目を見てください。
+\code{view} の前後で、要素の数は $2\times5\times12=120$ 個と $2\times5\times3\times4=120$ 個で、変わっていません。
+最後の軸の 12 個を、4 個ずつ 3 組に区切り直しただけだからです。
+重み $\mA$ の形 $(2,3,5,5)$ は、「2 個の文それぞれに 3 個のヘッドがあり、各ヘッドが $5\times5$ の重み行列を持つ」と読めます。
+このあと作るクラスで実際に形を表示させると、表の 1・4・5・9 行目と同じ値になります（\file{ch09/out/shapes.txt}）。
+
+\begin{table}[tbp]
+\centering
+\caption{マルチヘッド注意の中での、テンソルの形の移り変わり（$B=2$、$T=5$、$d=12$、$H=3$、$\dhead=4$ の例）。
+入口と出口の形は同じで、途中でだけヘッドの軸が現れる。}
+\label{tab:attn-mha-trace}
+\small
+\begin{tabular}{clll}
+\toprule
+ & 操作 & 形（記号） & 形（この例） \\
+\midrule
+1 & 入力 \code{x} & $(B,T,d)$ & $(2,5,12)$ \\
+2 & $\mW_q$ を掛ける & $(B,T,d)$ & $(2,5,12)$ \\
+3 & \code{view} でヘッドに区切る & $(B,T,H,\dhead)$ & $(2,5,3,4)$ \\
+4 & \code{transpose(1,2)} でヘッドの軸を前へ（\code{q}） & $(B,H,T,\dhead)$ & $(2,3,5,4)$ \\
+5 & $\mQ\mK^\T$、マスク、softmax（重み \code{A}） & $(B,H,T,T)$ & $(2,3,5,5)$ \\
+6 & $\mA\mV$ & $(B,H,T,\dhead)$ & $(2,3,5,4)$ \\
+7 & \code{transpose(1,2)} で軸を戻す & $(B,T,H,\dhead)$ & $(2,5,3,4)$ \\
+8 & \code{reshape} でヘッドを横に並べ直す & $(B,T,d)$ & $(2,5,12)$ \\
+9 & $\mW_o$ を掛ける（出力 \code{y}） & $(B,T,d)$ & $(2,5,12)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{マルチヘッド注意を実装する}
+
+以上をクラスにまとめます。
+
+\snippet{マルチヘッド自己注意の自作版}{code:attn-mha}{ch09/multihead.py}{mha-class}
+
+6 行目の \code{assert} は、条件が成り立たなければその場で止まる文で、$d$ がヘッド数で割り切れることを確かめます。
+7 行目で、ヘッド数 $H$ と $\dhead=d/H$ を覚えておきます（\code{//} は整数の割り算です）。
+8〜11 行目の \code{nn.Linear(d, d, bias=False)} は、行列を掛けるだけの層です。
+8〜10 行目が、$H$ 個のヘッドの $\mW_q^{(h)}$ などを横に並べた $d\times d$ の行列、11 行目が式\eqref{eq:attn-multihead}の $\mW_o$ です
+（\code{nn.Linear} は \code{x @ weight.T} を計算するので、\code{weight} には $\mW_q^\T$ が入っています）。
+12〜13 行目の \code{register_buffer} は、学習しない定数（ここではマスク）をモデルに持たせる方法で、勾配では更新されませんが、モデルと一緒に GPU などへ移動します。
+15〜17 行目の \code{split} が、\figref{fig:attn-mh-shapes}の \code{view} と \code{transpose} です。
+本体の 21〜26 行目は前節の行列版と同じ計算で、違いはテンソルが 4 次元になり全ヘッドを一度に計算することだけです
+（24 行目の \code{self.mask[:T, :T]} は、大きめに作ったマスクから長さ $T$ の分を切り出します）。
+23 行目の \code{k.transpose(-2, -1)} は、2 次元のときの \code{K.T} にあたります。
+軸の番号の $-1$ は「最後の軸」、$-2$ は「最後から 2 番目の軸」で、4 次元の \code{k} の $(T,\dhead)$ の部分だけを転置し、前の $(B,H)$ はそのまま残します。
+27 行目でヘッドを横に並べ直して $(B,T,d)$ に戻し、28 行目で $\mW_o$ を掛けます。
+観察のために、注意の重み \code{A} も返します。
+21〜28 行目は、\tabref{tab:attn-mha-trace}の 2〜9 行目を上から順に書いたものです。
+
+\subsection*{共有ライブラリの実装と一致させる}
+
+本書の基盤モデルは、\code{llmbook.model} の \code{CausalSelfAttention} を使っています。
+自作のクラスと同じ重みを入れて、出力が一致するかを確かめます。
+\file{multihead.py} では、このコードの前に、自作版 \code{mha = MultiHeadAttention(d, H, block_size=8)} を作り、上と同じ乱数の入力 \code{x}（$B=2$、$T=5$、$d=12$、$H=3$）から出力 \code{y} を計算してあります。
+
+\snippet{llmbook と PyTorch の組み込み関数との比較}{code:attn-compare}{ch09/multihead.py}{compare}
+\outputfile{ch09/out/compare.txt}
+
+1 行目の \code{GPTConfig} は、\code{llmbook} のモデルの大きさをまとめた設定です。
+\code{n_embd} が本文の $d$、\code{n_head} が $H$、\code{block_size} が扱える最大の文脈長（マスクを作る大きさ）にあたります。
+\code{llmbook} の実装は、$\mW_q,\mW_k,\mW_v$ を縦に積んだ一枚の \code{qkv} という層にまとめています（1 回の行列積で三つを計算できるからです）。
+\code{nn.Linear} の \code{weight} の形は（出力の数, 入力の数）なので、$d$ 次元から $3d$ 次元を作る \code{qkv} では $(3d,d)$ で、$(d,d)$ を縦に 3 枚積んだ形です。
+そこで 4〜6 行目で、自作版の 3 枚の重みを \code{torch.cat(..., dim=0)}（縦につなぐ）で一枚にして \code{qkv} に、$\mW_o$ を \code{proj} に写します。
+\code{weight.copy_(...)} は、層が持っている重みの中身を、与えたテンソルの値で上書きする操作です。
+出力の差は 0 で、完全に一致しました。
+10〜12 行目は、PyTorch の組み込み関数 \code{F.scaled_dot_product_attention} との比較です。
+10 行目は、\code{W_q}, \code{W_k}, \code{W_v} の 3 つの層それぞれについて \code{mha.split(W(x))} を計算し、順に \code{q}, \code{k}, \code{v} に入れる書き方です（3 行に分けて書いたのと同じです）。
+この関数は式\eqref{eq:attn-sdpa}を一度に計算し、\code{is_causal=True} で因果マスクもかけます（\secref{sec:attn-reading}）。
+差は $6\times10^{-8}$ で、丸め誤差の範囲で一致しています。
+
+この節で分かったことをまとめます。
+マルチヘッド注意は、$d$ 次元を $H$ 本の細い注意に分け、それぞれが別の場所を見られるようにする工夫です。
+パラメータ数は 1 本のときと同じ $4d^2$ のままで、実装は \code{view} と \code{transpose} による形の変換で済みます。
+
+\section{実験：平均と注意で、計算ドリルの成績を比べる}\label{sec:attn-experiment}
+\skimread{結論は「文脈の混ぜ方だけを変えると、正答率は、混ぜない 1.2\%、平均 40.2\%、注意 96.0\% になる」です。初読では、\figref{fig:attn-exp-model}（「次の章へ」でも使います）と\tabref{tab:attn-experiment}だけで足ります。}
+
+ここまでで、注意機構を一から組み立て、本物の実装と一致させました。
+しかし、まだ確かめていないことがあります。
+注意機構は、\secref{sec:attn-average}の「ただの平均」より、本当に役に立つのでしょうか。
+この節では、小さな実験でそれを測ります。
+
+\subsection*{三つのモデル：違うのは混ぜ方だけ}
+
+題材は計算ドリルです。
+「\code{12+35=}」の続きの答え（ここでは 2 桁までの足し算）を当てる小さな言語モデルを、三通り作ります。
+三つのモデルは、文脈の混ぜ方、つまり重み行列 $\mA$ の決め方だけが違います。
+
+\begin{itemize}
+\item \textbf{混ぜない}：$\mA$ を単位行列にする。各位置は自分のトークンしか見ない。
+\item \textbf{平均}：$\mA$ を\secref{sec:attn-average}の平均の行列に固定する。
+\item \textbf{注意}：$\mA$ を 4 ヘッドの縮小付き内積注意で計算する（本章の方法）。
+\end{itemize}
+
+モデル全体の形は\figref{fig:attn-exp-model}のとおりです。
+左から順にたどってください。
+まず、各トークンの埋め込みに「位置ごとのベクトル」を足します。
+これは「何番目のトークンか」をモデルに伝えるための、学習で決まるベクトルです。
+なぜ必要かは\secref{sec:attn-properties}で、詳しい作り方は\chapref{ch:transformer}で説明します。
+次に、真ん中の「混ぜる層」で文脈を混ぜ、その結果を元のベクトルに足します（図の丸で囲んだ $+$。残差接続、\chapref{ch:training}）。
+続いて、各位置で小さな MLP（\chapref{ch:nn}）を通して、やはり元のベクトルに足します。
+最後に、各位置のベクトルを語彙の数のロジットに変えます。
+\textbf{三つのモデルで違うのは、図の赤い枠の中だけ}です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=5mm,
+  blk/.style={box,minimum height=10mm,align=center,font=\footnotesize}]
+  \node[tok,font=\footnotesize] (in) {\texttt{\textbackslash n12+35=}};
+  \node[blk,right=4mm of in] (emb) {埋め込み\\＋位置};
+  \node[blk,right=6mm of emb,draw=bookaccent,very thick,fill=figred] (mix) {混ぜる層\\（3 種類）};
+  \node[op,right=4mm of mix] (p1) {$+$};
+  \node[blk,right=4mm of p1] (mlp) {MLP};
+  \node[op,right=4mm of mlp] (p2) {$+$};
+  \node[blk,right=4mm of p2] (out) {ロジット};
+  \draw[arr] (in) -- (emb);
+  \draw[arr] (emb) -- coordinate[pos=0.4] (c1) (mix);
+  \draw[arr] (mix) -- (p1);
+  \draw[arr] (p1) -- coordinate[pos=0.3] (c2) (mlp);
+  \draw[arr] (mlp) -- (p2);
+  \draw[arr] (p2) -- (out);
+  \draw[arr] (c1) -- ++(0,-8mm) -| (p1);
+  \draw[arr] (c2) -- ++(0,-8mm) -| (p2);
+  \node[lbl,anchor=north] at ($(p1)!0.5!(p2)+(0,-8.5mm)$) {残差（元のベクトルを足す）};
+  \node[lbl,align=left,anchor=north west,text width=90mm] at ($(mix.south west)+(0,-13mm)$) {
+    混ぜない：$\mA=$ 単位行列\\
+    平均：$\mA=$ 下三角の平均の行列（固定）\\
+    注意：$\mA=\softmax(\mQ\mK^\T/\sqrt{\dhead}+\mM)$（4 ヘッド）};
+\end{tikzpicture}
+\caption{実験に使う小さな言語モデル（\file{ch09/average_vs_attention.py}）。三つのモデルは赤い枠の「混ぜる層」の中身、つまり重み行列 $\mA$ の決め方だけが違い、それ以外の部品と大きさ（$D=64$）はすべて同じ。}
+\label{fig:attn-exp-model}
+\end{figure}
+
+混ぜる層のコードは次のとおりです。
+
+\snippet{文脈を混ぜる層（混ぜ方だけを切り替える）}{code:attn-mixer}{ch09/average_vs_attention.py}{mixer}
+
+7〜8 行目の \code{qkv} と \code{proj} は三つのモデルに共通です（\code{D=64}、\code{H=4}、文脈長 \code{T=12}）。
+12 行目の \code{T_} は、実際に入ってきた入力の長さです（生成のときは 12 より短いことがあるので、全体の設定の \code{T} と区別しています）。
+13 行目では、\code{qkv(x)} の結果 $(B,T,3D)$ を \code{view} で $(B,T,3,H,D/H)$ に見直します。
+$3D$ 個の値を「$\mQ$・$\mK$・$\mV$ の 3 組 × $H$ ヘッド × $D/H$ 次元」と読み替えたわけです。
+\code{unbind(2)} は、大きさ 3 の軸 2 に沿ってテンソルを 3 つに切り離し、それぞれ $(B,T,H,D/H)$ の \code{q}, \code{k}, \code{v} にします。
+14 行目は、\figref{fig:attn-mh-shapes}と同じく、ヘッドの軸を前に移して $(B,H,T,D/H)$ にします。
+15 行目の \code{m} は、下三角のマスクの行列から、入力の長さの分だけを切り出したものです。
+16〜22 行目が三つのモデルの違いです。
+「混ぜない」は単位行列（\code{torch.eye}）、「平均」は下三角の行列を各行の和で割った平均の行列です（\code{keepdim=True} は\chapref{ch:pytorch}で見た、和の軸を長さ 1 で残す指定です）。
+\code{expand(B, H, T_, T_)} は、$(T,T)$ の一枚の行列を、データを複製せずに全バッチ・全ヘッドで使い回せる形に見せる操作です。
+「注意」だけが、21〜22 行目でクエリとキーから $\mA$ を計算します。
+23〜24 行目は共通なので、どのモデルも \code{v} と \code{proj} を学習します。
+違うのは、\textbf{どこを見るかを内容から選べるかどうか}だけです。
+
+\subsection*{学習と評価}
+
+学習には、1〜2 桁の足し算 20,000 行を使い、128 行ずつ 3,000 ステップ学習します。
+損失は答えの部分のトークン（「\code{=}」の次から行末まで）でだけ計算します。
+具体的には、答え以外の位置の正解に「無視してよい」という印（PyTorch の交差エントロピーでは \code{-100}）を付けておくと、その位置は損失の平均から外されます。
+問題の部分の数字はランダムなので、そこを当てさせても意味がないからです。
+
+評価には、学習用とは別の乱数の種で作った 500 問を使います。
+「\texttt{\textbackslash n12+35=}」を与えて答えを生成させ、完全に一致する割合を測ります。
+生成は\textbf{貪欲}に、つまり毎回いちばん確率の高いトークンを選んで行います。
+ただし、この 500 問は「モデルが一度も見ていない問題」ばかりではありません。
+0 から 99 までの数どうしの足し算は $100\times100=1$ 万通りしかなく、学習データは 20,000 行あるからです。
+実際に数えると、500 問のうち 428 問は、学習データにも同じ問題があります。
+したがって、ここでの正答率は三つのモデルを同じ条件で比べるための数字で、初見の問題を解く力だけを測ったものではありません。
+CPU で 3 モデル合わせて約 2 分半かかります（実行結果は \file{ch09/out/average_vs_attention.txt}）。
+
+\begin{table}[tbp]
+\centering
+\caption{文脈の混ぜ方だけを変えた 3 モデルの成績（\code{ch09/average_vs_attention.py}、1〜2 桁の足し算、テスト 500 問）。
+答えの損失は、答えの部分のトークンでの交差エントロピー。}
+\label{tab:attn-experiment}
+\small
+\begin{tabular}{llrr}
+\toprule
+モデル & 重み行列 $\mA$ & 答えの損失 & 正答率 \\
+\midrule
+混ぜない & 単位行列（自分だけ） & 1.695 & 1.2\% \\
+平均 & 下三角の平均の行列（固定） & 0.528 & 40.2\% \\
+注意 & $\softmax(\mQ\mK^\T/\sqrt{\dhead})$（内容から計算） & 0.032 & 96.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ymode=log,xlabel={学習ステップ},ylabel={答えの損失（テスト）},
+  legend columns=3,legend style={at={(0.98,0.78)},anchor=east},height=0.36\linewidth,xmin=0,xmax=3000]
+\addplot[bookgray,no marks] table[col sep=comma,x=step,y=none]{code/ch09/out/average_vs_attention.csv};
+\addlegendentry{混ぜない}
+\addplot[bookorange,no marks] table[col sep=comma,x=step,y=average]{code/ch09/out/average_vs_attention.csv};
+\addlegendentry{平均}
+\addplot[bookblue,no marks] table[col sep=comma,x=step,y=attention]{code/ch09/out/average_vs_attention.csv};
+\addlegendentry{注意}
+\end{axis}
+\end{tikzpicture}
+\caption{3 モデルの学習曲線（テスト 500 問の答えの部分の損失、縦軸は対数）。「混ぜない」はすぐに頭打ちになり、「平均」は 0.5 付近で止まる。
+「注意」だけが損失を 0.03 まで下げ続ける。}
+\label{fig:attn-exp-curve}
+\end{figure}
+
+結果を\tabref{tab:attn-experiment}と\figref{fig:attn-exp-curve}にまとめました。
+「混ぜない」モデルは、正答率 1.2\% とほとんど解けません。
+自分のトークン（たとえば「\code{=}」）しか見えないので、問題の数字が何だったのかを知るすべがないからです。
+「平均」モデルは 40.2\% まで解けます。
+平均の中にも、どの数字があったかという情報はある程度残っています。
+位置ごとのベクトルが足してあるので、「何番目にどの数字があったか」も、混ざった形ながら少しは読み取れるのでしょう。
+しかし、損失は 0.5 付近で止まり、それ以上は下がりません。
+「注意」モデルは 96.0\% で、損失も 0.032 まで下がります。
+学習曲線を見ると、「注意」の線だけが、ほかの 2 本と違って下がり続けています。
+
+同じパラメータを持ち、同じデータで学習しても、「どこを見るかを内容から選べる」かどうかで、これだけの差が付きました。
+ただし、これは 1 層だけの小さなモデルと、2 桁までの足し算という単純な課題での結果です。
+差の大きさをそのまま一般化することはできません。
+また、先に断ったとおり、96.0\% は初見の問題だけでの正答率ではありません（三つのモデルは同じデータで比べているので、比較としては公平です）。
+言えるのは、「必要な場所を選んで取ってくる」課題では、平均では足りず、注意機構が決定的に効く、ということです。
+
+この節で分かったことをまとめます。
+混ぜ方以外をすべてそろえた比較で、「混ぜない」は 1.2\%、「平均」は 40.2\%、「注意」は 96.0\% の正答率でした。
+必要な場所を内容から選んで取ってくることが、注意機構の力です。
+
+\section{注意の性質：計算量と語順}\label{sec:attn-properties}
+\skimread{結論は「注意の計算量とメモリは、系列長 $T$ の 2 乗で増える」「注意だけでは語順が分からないので、何番目かを表すベクトルを入力に足す（\chapref{ch:transformer}）」の二つです。初読では、\figref{fig:attn-cost}と\figref{fig:attn-order}だけで足ります。}
+
+ここまでで、注意機構の仕組みと効果が分かりました。
+この節では、二つの問いに答えます。
+文脈の長さを 2 倍にしたら、注意の計算は何倍重くなるでしょうか。
+「犬が猫を追う」と「猫が犬を追う」を、注意機構は区別できるでしょうか。
+どちらも、注意機構を実際の LLM で使うときに必ず問題になる性質です。
+
+\subsection*{計算量は系列長の 2 乗で増える}
+
+注意機構の中で、どの計算がどれだけ重いかを数えます。
+$(m,n)$ と $(n,p)$ の行列の積には $mnp$ 回の掛け算が要るのでした（\chapref{ch:math}）。
+1 層のマルチヘッド注意（$T$ トークン、隠れ次元 $d$）では、
+射影（$\mQ,\mK,\mV$ と $\mW_o$）が $(T,d)$ と $(d,d)$ の積 4 回で $4Td^2$ 回、
+スコア $\mQ\mK^\T$ が 1 ヘッドあたり $T^2\dhead$ 回で $H$ ヘッド合わせて $T^2d$ 回、
+重み付き和 $\mA\mV$ も同じく $T^2d$ 回です。
+$H$ ヘッドぶんを合わせるところでは、$H\dhead=d$ を使いました（$H\times T^2\dhead=T^2d$）。
+合計はおよそ $4Td^2 + 2T^2d$ 回で、オーダー記法で書けば $\calO(Td^2 + T^2d)$ です。
+基盤モデル（$T=128$、$d=192$）なら、$4Td^2=4\times128\times192^2\approx1{,}887$ 万回、$2T^2d=2\times128^2\times192\approx629$ 万回で、合わせて約 2,500 万回です。
+
+注目してほしいのは $T^2$ の項です。
+全トークンが全トークンを見るので、組み合わせの数 $T\times T$ だけ計算が要るのです。
+文脈長を 2 倍にすると、$(2T)^2=4T^2$ なので、この部分の計算は 4 倍になります。
+射影の項は $T$ に比例するので、2 倍にしかなりません。
+メモリも同じです。
+重み行列 $\mA$ は、1 ヘッド・1 層ごとに $T\times T$ 個の数を持ちます。
+
+これを実測してみましょう。
+基盤モデルと同じ 4 ヘッド・$\dhead=48$ で、$T$ を 128 から 4096 まで変えて、注意の計算（$\mQ\mK^\T$、softmax、$\mA\mV$）の時間を測ります。
+CPU は他の作業と共有しているので、7 回測った中央値をとります（\code{ch09/properties.py}。数値は \file{ch09/out/cost.txt}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.47\linewidth,height=0.36\linewidth,xmode=log,ymode=log,log basis x=2,
+  xlabel={系列長 $T$},ylabel={時間 [ms]},title={(a) 計算時間},title style={font=\footnotesize},
+  legend pos=north west,legend style={font=\scriptsize}]
+\addplot[bookblue,mark=*,mark size=1.2pt] table[col sep=comma,x=T,y=ms]{code/ch09/out/cost.csv};
+\addlegendentry{実測}
+\addplot[bookaccent,dashed,domain=512:4096,samples=2] {156.10*(x/4096)^2};
+\addlegendentry{$\propto T^2$}
+\end{axis}
+\begin{axis}[xshift=0.53\linewidth,width=0.47\linewidth,height=0.36\linewidth,xmode=log,ymode=log,log basis x=2,
+  xlabel={系列長 $T$},ylabel={重み行列 [MiB]},title={(b) 重み行列 $\mA$ のメモリ},title style={font=\footnotesize}]
+\addplot[bookgreen,mark=square*,mark size=1.2pt] table[col sep=comma,x=T,y=mib]{code/ch09/out/cost.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{注意の計算量の実測（4 ヘッド、$\dhead=48$、バッチ 1、CPU、7 回の中央値）。両対数のグラフ。
+(a) $T$ が大きくなると、計算時間は $T^2$ に比例する直線（破線、$T=4096$ の値に合わせた）に近づく。$T$ が小さいところでは、計算以外の固定の手間が目立つ。
+(b) 重み行列（float32）のメモリは、ちょうど $T^2$ に比例する。}
+\label{fig:attn-cost}
+\end{figure}
+
+\figref{fig:attn-cost}(b) のメモリは、$T$ が 2 倍になるたびにちょうど 4 倍になっています（$T=4096$ で 256 MiB）。
+重みは 4 ヘッドぶんで $4\times4096^2$ 個、float32 は 1 個 4 バイトなので（\chapref{ch:pytorch}）、$4\times4096^2\times4=2^{28}$ バイトです（$4096=2^{12}$）。
+1 MiB は $2^{20}$ バイトですから、$2^{28}/2^{20}=2^{8}=256$ MiB になります。
+(a) の時間も、$T=512$ から 1024 で約 3.4 倍、1024 から 2048 と 2048 から 4096 では約 4.0 倍と、$T$ が大きくなるにつれて「2 倍で 4 倍」に近づいていきます（$T$ が小さいうちは、関数を呼び出す手間などの固定の時間が目立ちます）。
+
+\subsection*{本物の LLM では}
+
+本書の基盤モデルの文脈長は 128 なので、重み行列は 1 ヘッドあたり $128^2=16{,}384$ 個で、まったく問題になりません。
+しかし、実際の LLM は桁違いに長い文脈を扱います（\tabref{tab:attn-scale}）。
+
+\begin{table}[tbp]
+\centering
+\caption{本書の基盤モデルと実際の LLM の注意の規模。最後の列は、1 ヘッド・1 層ぶんの重み行列 $\mA$ の要素数 $T^2$。
+（GPT-2 と Llama 3.1 の値は公開されている設定ファイルと論文\cite{radford2019language,dubey2024llama3}による。
+Llama 3.1 はキーとバリューのヘッドを 8 個に減らす工夫（\chapref{ch:modern-arch}）を使っている。）}
+\label{tab:attn-scale}
+\small\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrr}
+\toprule
+モデル（パラメータ数） & 層数 $L$ & 隠れ次元 $d$ & ヘッド数 $H$ & $\dhead$ & 文脈長 $T$ & $T^2$ \\
+\midrule
+本書のモデル（260 万） & 4 & 192 & 4 & 48 & 128 & $1.6\times10^4$ \\
+GPT-2（1.2 億） & 12 & 768 & 12 & 64 & 1,024 & $1.0\times10^6$ \\
+Llama 3.1（4,050 億） & 126 & 16,384 & 128 & 128 & 131,072 & $1.7\times10^{10}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Llama 3.1 の文脈長 131,072 では、$T^2$ は約 $1.7\times10^{10}$ です。
+1 個を 2 バイト（float32 の半分の 16 ビット）で持つとしても、$1.7\times10^{10}\times2$ バイトで、1 ヘッド・1 層の重み行列だけで約 34 GB になります。
+128 ヘッドぶんでは $34\times128\approx4{,}400$ GB、つまり約 4.4 TB です。
+これをそのまま作っていては、どんな GPU にも載りません。
+そこで実際には、重み行列全体を一度に作らず、小さなブロックに分けて計算する FlashAttention\cite{dao2022flashattention}のような工夫が使われます。
+計算の結果は式\eqref{eq:attn-sdpa}とまったく同じで、メモリの使い方だけが違います。
+また、生成のときに同じ計算を繰り返さないための KV キャッシュ（key–value cache）という仕組みもあります。
+これらは\chapref{ch:modern-arch}で扱うので、いまは名前だけ覚えておけば十分です。
+
+\subsection*{注意は語順を知らない}
+
+二つ目の性質は、語順です。
+「犬が猫を追う」と「猫が犬を追う」は、同じ語でできていますが、意味はまったく違います。
+ところが、ここまで作った注意機構には、トークンの\textbf{位置}を表す情報がどこにも入っていません。
+スコア $\vq_t^\T\vk_s$ は、二つのトークンの中身だけで決まり、二つがどれだけ離れているかとは関係がないのです。
+
+このことを正確に述べると、次のようになります。
+因果マスクを使わない注意機構で、入力のトークンの順番を並べ替えると、出力も\textbf{同じように並べ替わるだけ}で、中身は変わりません。
+この性質を\term{置換同変性}{permutation equivariance}と呼びます。
+理由は、注意の計算が「各トークンに同じ行列を掛ける」操作と、「全トークンについての和」の操作だけでできているからです。
+前者は順番に関係なく各行に同じことをし、後者は足す順番を変えても結果が同じです。
+
+実験で確かめましょう。
+ここで使う関数 \code{attention(X, W_q, W_k, W_v, causal)} は、\coderef{code:attn-matrix}の行列版に、因果マスクをかけるかどうかを選ぶ引数 \code{causal} を付けたものです（\file{properties.py} の先頭で定義しています）。
+
+\snippet{注意機構は語順を知らない}{code:attn-permutation}{ch09/properties.py}{permutation}
+\outputfile{ch09/out/permutation.txt}
+
+4 行目の \code{perm} は並べ替え方で、\code{X[perm]} は「元の 3 番目、0 番目、4 番目、\dots」の順にトークンを並べ替えた入力です。
+5〜8 行目は、マスクなしの注意で「並べ替えた入力の出力」と「出力を並べ替えたもの」を比べ、一致しました（1 行目の \code{True}）。
+比較に使う \code{torch.allclose(a, b, atol=1e-5)} は、\chapref{ch:pytorch}で見たとおり、二つのテンソルの全成分の差が許容誤差 \code{atol} 程度以内かを調べる関数です。
+9〜12 行目では、因果マスクありで同じことを試し、今度は一致しません。
+マスクは「何番目か」によって見られる範囲の\textbf{広さ}を変えるので、そのぶんだけ出力が位置によって変わるからです。
+しかし、マスクが教えるのは「自分より前に何個あるか」だけで、「前にあるものがどんな順で並んでいたか」ではありません。
+13〜16 行目を見てください。
+最後の位置は動かさず、その前の 4 個（過去）だけを並べ替えると、最後の位置の出力はまったく変わりませんでした（3 行目の \code{True}）。
+\textbf{過去のトークンが「どんな順で並んでいたか」は、注意機構からは見えない}のです。
+
+節の冒頭の二つ目の問いに戻りましょう（\figref{fig:attn-order}）。
+「犬が猫を追う」と「猫が犬を追う」の最後のトークン「追う」から見ると、過去にあるのはどちらも同じ「犬」「が」「猫」「を」の集まりです。
+だから、因果マスクがあっても、注意機構 1 層だけでは誰が誰を追ったのかを区別できません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+  \foreach \t/\c [count=\i from 0] in {犬/figred,が/figorange,猫/figblue,を/figorange} {
+    \node[tok,minimum width=8mm,fill=\c] (u\i) at (\i*9mm,0) {\t};
+  }
+  \node[tok,minimum width=10mm,fill=figgreen,draw=bookgreen] (u4) at (38mm,0) {追う};
+  \foreach \t/\c [count=\i from 0] in {猫/figblue,が/figorange,犬/figred,を/figorange} {
+    \node[tok,minimum width=8mm,fill=\c] (l\i) at (\i*9mm,-15mm) {\t};
+  }
+  \node[tok,minimum width=10mm,fill=figgreen,draw=bookgreen] (l4) at (38mm,-15mm) {追う};
+  \node[draw=black!45,dashed,thick,rounded corners=2pt,fit=(u0)(u3),inner sep=1.3mm] (ub) {};
+  \node[draw=black!45,dashed,thick,rounded corners=2pt,fit=(l0)(l3),inner sep=1.3mm] (lb) {};
+  \node[lbl,anchor=south west] at (ub.north west) {「追う」から見える過去};
+  \node[lbl,anchor=north west] at (lb.south west) {並び順だけが違う};
+  \node[purplebox,align=center,font=\footnotesize,minimum width=46mm,minimum height=11mm] (set) at (86mm,-7.5mm) {「犬」「が」「猫」「を」と自分の\\バリューの重み付き平均};
+  \draw[arr] (u4.east) -- ++(5mm,0) |- ($(set.west)+(0,2.5mm)$);
+  \draw[arr] (l4.east) -- ++(5mm,0) |- ($(set.west)+(0,-2.5mm)$);
+  \node[lbl,above=0.5mm of set] {「追う」の位置の出力};
+  \node[lbl,below=0.5mm of set] {どちらの文でも同じになる};
+\end{tikzpicture}
+\caption{注意は過去の並び順を見ない。二つの文で、「追う」から見える過去のトークンの集まり（破線の枠）は同じである。
+位置の情報がなければ「追う」の位置の出力も同じになり、誰が誰を追ったのか区別できない。}
+\label{fig:attn-order}
+\end{figure}
+
+語順を確実に伝えるには、位置の情報を明示的に与える必要があります。
+そこで Transformer では、各トークンのベクトルに「何番目か」を表すベクトルを足してから注意に入れます。
+これを\textbf{位置エンコーディング}と呼び、次の\chapref{ch:transformer}で詳しく扱います。
+\secref{sec:attn-experiment}の実験で「位置ごとのベクトルを足す」と書いたのは、このためでした。
+
+この節で分かったことをまとめます。
+注意機構の計算量とメモリは、系列長 $T$ の 2 乗で増えます。
+また、注意機構は語順を知らないので、位置の情報を別に与える必要があります。
+
+\section{学習済みモデルの注意を覗く}\label{sec:attn-visualize}
+\skimread{結論は「学習済みのミニGPT では、答えを書く位置で、ヘッドが必要な桁の数字を分担して見ている」です。初読では、\figref{fig:attn-heat-drill}と節末の囲みだけで足ります。コードは\chapref{ch:transformer}のあとのほうが楽に読めます。}
+
+ここまでは、小さな例と人工的な実験で注意機構を調べてきました。
+では、本物の言語モデルの中では、注意はどこを見ているのでしょうか。
+この節では、本書の基盤モデルから注意の重みを実際に取り出して、ヒートマップで眺めます。
+
+\begin{intuition}{この節で覗くモデル}
+\begin{itemize}[leftmargin=1.2em]
+\item 本書の基盤モデル（ミニGPT、\file{checkpoints/base.pt}）は、漱石の小説に計算ドリルの行（「\code{25+48=73}」のような行）を混ぜた文章で、次のトークンを当てる学習をしたモデルです。学習のやり方は\chapref{ch:pretraining}で扱い、ここでは完成品を借ります。
+\item 中身は、本章の因果マスク付きマルチヘッド注意（4 ヘッド）を 4 回重ねたものです。注意 1 回分とその周りの部品をまとめて\textbf{層}（コードでは \code{block}）と呼び、層 0〜3 があります。各層には、注意のほかに MLP などの部品が付いていますが、それらは\chapref{ch:transformer}で組み立てます。
+\item この節で見るのは、各層の注意の重み $\mA$（$4\times4=16$ 個のヘッドぶん）だけです。
+\end{itemize}
+\end{intuition}
+
+\subsection*{注意の重みを取り出す}
+
+\code{llmbook} の \code{CausalSelfAttention} は、出力だけを返し、注意の重みは返しません（\secref{sec:attn-reading}でコードを読みます）。
+そこで、モデルの部品を借りて、重みを計算し直す関数を書きます。
+
+\snippet{学習済みモデルから注意の重みを取り出す}{code:attn-get}{ch09/visualize.py}{get-attention}
+
+このコードのうち、本章で学んだ計算は 12〜17 行目だけです。
+残りの行（7、9〜11、18 行目）は、モデルの中で「注意の手前まで」値を運ぶための部分で、中身は\chapref{ch:transformer}で学びます。
+いまは「何をしているか」だけ分かれば十分です。
+
+7 行目で、トークンの埋め込みと位置の埋め込みを足して、最初の入力を作ります。
+これはモデル本体の \code{forward} と同じ計算です（位置の埋め込みは\chapref{ch:transformer}で説明します）。
+9 行目からのループで、層（ブロック）を一つずつ通ります。
+11 行目の \code{block.ln1} は、注意に入る前にベクトルの大きさをそろえるレイヤー正規化（\chapref{ch:training}）です。
+ブロックの中では、この正規化を通した値が注意に入ります。
+12〜17 行目は、\secref{sec:attn-multihead}で作った計算そのものです。
+学習済みの \code{qkv} 層でクエリとキーを作り、スコア・マスク・softmax で重みを求めます（バリューは重みには要らないので捨てています）。
+18 行目では、次の層への入力を、モデル本物のブロックで計算します。
+こうすれば、どの層でも、本物の \code{forward} とまったく同じ値から重みを計算できます。
+
+念のため、取り出した重みでバリューを混ぜ直して本物の注意層の出力と比べると、全層で差は 0 でした（比較の関数は \file{visualize.py} にあります）。
+
+\subsection*{計算ドリル「25+48=73」の注意}
+
+まず、計算ドリルの一行「\texttt{\textbackslash n25+48=73\textbackslash n}」を入れます。
+モデルは「\code{=}」の次に十の位「\code{7}」を確率 0.682 で予測し、正しく解けている問題です（\file{ch09/out/drill_heads.txt}）。
+トークン化の結果は、数字・記号が 1 文字 1 トークンです（\chapref{ch:tokenizer}で見たとおり、このトークナイザは数字どうしをまとめません）。
+16 個（4 層 × 4 ヘッド）のヘッドの重み行列を調べると、最後の層（層 3）のヘッドに、はっきりした規則性が見つかりました。
+そのうちの 3 個をヒートマップにしたのが\figref{fig:attn-heat-drill}です。
+行が見る側の位置、列が見られる側の位置で、色が濃いほど重みが大きいことを表します。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\chattnheat{code/ch09/out/heat_drill_L1H0.csv}{{\textbackslash n},2,5,+,4,8,{=},7,3,{\textbackslash n}}{(a) 層 1・ヘッド 0}{10}{9}{27mm}{}
+\end{tikzpicture}\hspace{1mm}%
+\begin{tikzpicture}
+\chattnheat{code/ch09/out/heat_drill_L3H1.csv}{{\textbackslash n},2,5,+,4,8,{=},7,3,{\textbackslash n}}{(b) 層 3・ヘッド 1}{10}{9}{40mm}{\draw[bookaccent,thick] (axis cs:-0.5,5.5) rectangle (axis cs:9.5,7.5);}
+\end{tikzpicture}\hspace{1mm}%
+\begin{tikzpicture}
+\chattnheat{code/ch09/out/heat_drill_L3H3.csv}{{\textbackslash n},2,5,+,4,8,{=},7,3,{\textbackslash n}}{(c) 層 3・ヘッド 3}{10}{9}{40mm}{\draw[bookaccent,thick] (axis cs:-0.5,5.5) rectangle (axis cs:9.5,7.5);}
+\end{tikzpicture}
+\caption{基盤モデルの注意の重み（入力「\texttt{\textbackslash n25+48=73\textbackslash n}」）。行が見る側、列が見られる側で、白が 0、濃い青が 1。右上の白い三角は因果マスクで消えた部分。
+(a)「\code{=}」より後のすべての位置が「\code{=}」を見ている。(b)(c) 赤い枠で囲んだ 2 行に注目。上の「\code{=}」の行（答えの十の位を予測する位置）は十の位の「\code{2}」「\code{4}」を、「\code{7}」の行（一の位を予測する位置）は、(b) が「\code{8}」、(c) が「\code{5}」を見ている。}
+\label{fig:attn-heat-drill}
+\end{figure}
+
+\figref{fig:attn-heat-drill}(b) と (c) の、赤い枠で囲んだ「\code{=}」の行と「\code{7}」の行に注目してください。
+重みの値は次のとおりです。
+
+\outputfile{ch09/out/drill_rows.txt}
+
+「\code{=}」の行では、ヘッド 1 が「\code{2}」に 0.58、「\code{4}」に 0.33、ヘッド 3 が「\code{2}」に 0.77、「\code{4}」に 0.22 の重みを置いています。
+答えの十の位を書く位置で、二つの数の十の位を見ているのです。
+「\code{7}」の行（答えの一の位を予測する位置）では、ヘッド 1 が「\code{8}」に 0.97、ヘッド 3 が「\code{5}」に 0.99 と、ほぼ 1 個に集中しています。
+二つのヘッドが、\textbf{一の位の二つの数字を分担して}取ってきているように見えます。
+これは、\secref{sec:attn-multihead}で述べた「係の分担」の一例です。
+ここで分担しているのは「十の位と一の位」ではなく「一の位の二つの数字」ですが、一つのヘッドでは混ざってしまう情報を、二つのヘッドが別々に運んでいることに変わりはありません。
+誰もこう設計していないのに、次のトークンを当てる学習だけで、このような分担が生まれました。
+
+(a) の層 1・ヘッド 0 は、また違う働きをしています。
+「\code{=}」より後ろのすべての位置が、「\code{=}」に重みを集めています。
+「いまは答えを書いている最中で、答えはここから始まった」という目印を、各位置に配っているのかもしれません。
+
+\begin{caution}{注意の重みは「理由」の説明ではない}
+第一に、重みが大きくても、そのバリューがほとんど情報を運んでいない（ベクトルが小さい）ことがあります。
+第二に、層を重ねると、各位置のベクトルにはすでに周りのトークンの情報が混ざっています。
+層 3 で「\code{2}」の位置を見ていても、そこにあるのは「\code{2} そのもの」の情報だけとは限りません。
+第三に、ここで見たのは数個の例だけです。
+「このヘッドは十の位を見る係だ」と言い切るには、多くの問題で確かめ、さらにそのヘッドを止めると成績が落ちることなどを示す必要があります。
+注意の重みは、モデルの中を覗く「手がかり」の一つであって、「モデルがそう判断した理由」の証明ではありません。
+\end{caution}
+
+この節で分かったことをまとめます。
+学習済みのミニGPT から注意の重みを取り出すと、計算ドリルでは答えの桁に対応する数字を、ヘッドが分担して見ている様子が観察できました。
+ただし、注意の重みは手がかりであり、モデルの判断の理由そのものではありません。
+
+\section{実装を読む：llmbook と PyTorch}\label{sec:attn-reading}
+\laterread{\chapref{ch:transformer}でミニGPT の全体のコードを読むときに戻れば足ります（\coderef{code:attn-class}がその注意の部分です）。飛ばしても、章末の「まとめ」と「次の章へ」は読めます。}
+
+最後に、本書の基盤モデルが実際に使っている注意の実装を読みます。
+自作のクラスとどこが同じで、どこが違うかを確かめれば、この章の内容がそのまま「本物」のコードにつながっていることが分かります。
+
+\snippet{共有ライブラリの因果マスク付き自己注意}{code:attn-class}{llmbook/model.py}{attention}
+
+読む前に、コードの名前と本文の記号の対応を確かめておきます。
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+コード & 本文の記号 & 基盤モデルの値 \\
+\midrule
+\code{C}（\code{= config.n_embd}） & 隠れ次元 $d$ & 192 \\
+\code{self.n_head} & ヘッド数 $H$ & 4 \\
+\code{C // self.n_head} & ヘッドの次元 $\dhead$ & 48 \\
+\code{T} & 系列長 $T$ & 最大 128 \\
+\code{config.block_size} & 扱える最大の文脈長（マスクの大きさ） & 128 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+骨組みは自作版（\coderef{code:attn-mha}）とまったく同じです。
+8 行目の \code{qkv} が $\mW_q,\mW_k,\mW_v$、9 行目の \code{proj} が $\mW_o$、21〜23 行目がヘッドへの分割、25 行目が $\mQ\mK^\T/\sqrt{\dhead}$（\code{k.size(-1)} が $\dhead$）、26〜27 行目がマスクと softmax、29 行目が $\mA\mV$、30〜31 行目がヘッドの結合と $\mW_o$ です。
+
+自作版との違いは、次の三つだけです。
+第一に、8 行目の \code{qkv} は $\mW_q,\mW_k,\mW_v$ をまとめた層で、$d$ 次元の入力から $3d$ 次元の出力を作ります（\code{weight} の形は $(3d,d)$）。
+19 行目の \code{split(C, dim=2)} で、この出力を $d$ ずつ \code{q}, \code{k}, \code{v} に切り分けます。
+第二に、10〜11 行目で作り、28 行目（重み $\mA$）と 31 行目（出力）で使う \code{Dropout} は、学習中にランダムに値を 0 にして過学習を防ぐドロップアウト（\chapref{ch:training}）です。
+基盤モデルは \code{dropout=0.0} で学習したので、実際には何もしていません。
+第三に、30 行目の \code{contiguous()} です。
+\code{transpose} はデータを動かさずに「読む順番」だけを入れ替えるので、メモリ上の並びが \code{view} の前提とずれます。
+そこで \code{contiguous()} でデータを実際に並べ直してから \code{view} します（自作版の \code{reshape} は、この並べ直しを必要なときに自動で行います）。
+なお、13〜15 行目でマスクを $(1,1,T,T)$ の 4 次元にしておくのは、26 行目で $(B,H,T,T)$ のスコアにブロードキャスト（\chapref{ch:pytorch}）で当てはめるためです。
+\code{mask.view(1, 1, *mask.shape)} の \code{*} は、形 \code{(128, 128)} を二つの数に展開して渡す Python の書き方で、\code{mask.view(1, 1, 128, 128)} と同じ意味です。
+\code{persistent=False} は「チェックポイントに保存しなくてよい」という指定で、マスクは毎回同じ式で作り直せるからです。
+
+\subsection*{PyTorch では 1 行}
+
+PyTorch には、縮小付き内積注意を一度に計算する関数があります。
+名前は \code{F.scaled_dot_product_attention} です（\secref{sec:attn-multihead}で、自作版と一致することを確かめました）。
+\coderef{code:attn-class}の 25〜29 行目は、次の 1 行に置き換えられます。
+
+\begin{pycode}
+y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # (B, H, T, C/H)
+\end{pycode}
+
+この関数を使う利点は、速さとメモリです。
+GPU の上では、\secref{sec:attn-properties}で触れた FlashAttention のような、重み行列全体をメモリに作らない計算方法を自動で選んでくれます。
+実務のコードでは、自分で softmax を書かずにこの関数を使うのが標準です。
+本書の \code{llmbook} が自分で書いているのは、読者が中身を一行ずつ読めるようにするためです。
+
+この節で分かったことをまとめます。
+基盤モデルの注意の実装は、本章で作った自作版とほぼ同じで、違いは $\mW_q,\mW_k,\mW_v$ をまとめた一枚の行列、ドロップアウト、メモリの並べ直しだけです。
+実務では、同じ計算を \code{F.scaled_dot_product_attention} の 1 行で書きます。
+
+\begin{summary}
+\item 次のトークンを予測するために見るべき場所は、位置ではなく内容で決まります。固定窓や RNN では、それを選べませんでした。
+\item 文脈を混ぜる操作は、重み行列との積 $\mY=\mA\mX$ で書けます。平均は $\mA$ を固定したもの、注意機構は $\mA$ を内容から計算するものです。
+\item 縮小付き内積注意は $\softmax(\mQ\mK^\T/\sqrt{\dhead})\mV$ です。クエリ（探すもの）とキー（見出し）の内積で重みを決め、バリュー（中身）を重み付き平均します。柔らかい辞書引きと見なせます。
+\item $\sqrt{\dhead}$ で割るのは、内積の分散が $\dhead$ に比例して大きくなり、softmax が飽和して勾配が消えるのを防ぐためです。
+\item 因果マスクは、未来のスコアを $-\infty$ にしてから softmax する操作です。カンニングを防ぎ、$T$ 個の次トークン予測を 1 回の計算で同時に学習できるようにします。
+\item マルチヘッド注意は、$d$ 次元を $H$ 本の細い注意に分け、別々の場所を同時に見られるようにします。パラメータ数は $4d^2$ のままです。
+\item 注意の計算量とメモリは系列長の 2 乗 $\calO(T^2d)$ で増えます。また注意は語順を知らないので、位置の情報を別に与える必要があります。
+\item 学習済みのミニGPT では、計算ドリルの答えを書く位置で、ヘッドが必要な桁の数字を分担して見ている様子が観察できました。
+\end{summary}
+
+\section*{次の章へ}
+
+注意機構は、各トークンが文脈から必要な情報を集めてくる仕組みでした。
+しかし、注意がするのは「集める」ことだけです。
+集めた情報を使って考える（計算する）部品は、まだありません。
+また、注意は語順を知らないので、位置の情報を足す必要がありました。
+そして、注意を 1 層だけでなく何層も積み重ねるには、学習を安定させる工夫が要ります。
+実は、\secref{sec:attn-experiment}の実験のモデル（\figref{fig:attn-exp-model}）は、位置のベクトル、MLP、残差接続をすでに備えていました。
+あれは、1 層だけの小さな Transformer だったのです。
+次の\chapref{ch:transformer}では、注意に「位置の情報」と「各位置で考える MLP」と「積み重ねるための工夫」を足して、Transformer をきちんと組み立てます。
+それが、本書の基盤モデルであるミニGPT の全体です。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Vaswani ら「Attention Is All You Need」\cite{vaswani2017attention}：縮小付き内積注意とマルチヘッド注意を提案した原論文。$\sqrt{d_k}$ で割る理由も脚注で述べている。
+\item Bahdanau ら\cite{bahdanau2015neural}：RNN による翻訳に注意機構を組み込んだ先駆的な論文。「どこを見るか」を学習するという発想の出発点。
+\item Karpathy「Neural Networks: Zero to Hero」\cite{karpathy2022zerotohero}：動画講義。「Let's build GPT」の回で、本章と同じく平均 → 行列 → 自己注意の順に組み立てる。
+\item Karpathy「nanoGPT」\cite{karpathy2022nanogpt}：本書の \code{llmbook.model} とほぼ同じ構造の、短く読みやすい GPT の実装。作者は 2025 年 11 月にこれを「古い」と書き、後継に nanochat（\chapref{ch:posttraining}の章末）を挙げたが、読み物としてはいまも役に立つ。
+\item Dao ら「FlashAttention」\cite{dao2022flashattention}：重み行列全体を作らずに注意を正確に計算する方法。\chapref{ch:modern-arch}の予習に。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 3}
+\item （手計算）\tabref{tab:attn-hand}の例で、2 番目のトークンの出力 $\vy_2$ を手で計算し、実行結果の \code{Y} の 2 行目 $(0.196, 0.804)$ と一致することを確かめてください。
+\item （手計算）\label{ex:attn-softmax-grad}softmax $a_i = e^{z_i}/\sum_k e^{z_k}$ を $z_j$ で微分し、式\eqref{eq:attn-softmax-grad} $\pd{a_i}{z_j}=a_i(\delta_{ij}-a_j)$ を導いてください（$i=j$ と $i\ne j$ に分けて、商の微分法を使います）。
+また、$a=(1,0,0)$ のときと $a=(\frac13,\frac13,\frac13)$ のときで、この微分の値を比べてください。
+\item （コード）\file{ch09/average_vs_attention.py} のヘッド数 \code{H} を 1 にして、正答率がどう変わるかを調べてください。\secref{sec:attn-visualize}で見た「ヘッドの分担」と結びつけて、結果を考察してください。
+\item （コード）\file{ch09/visualize.py} を使って、「\texttt{\textbackslash n12+35=47\textbackslash n}」（基盤モデルが貪欲だと誤答する問題）の注意を調べてください。「\code{=}」の行で、\figref{fig:attn-heat-drill}と同じヘッドはどこを見ているでしょうか。
+\item （計算）\tabref{tab:attn-scale}の GPT-2 について、1 層の注意の掛け算の回数 $4Td^2+2T^2d$ を、文脈長 $T=1024$ で計算してください。$4Td^2$ と $2T^2d$ のどちらが大きいでしょうか。$T$ がいくつより大きくなると、$T^2$ の項のほうが大きくなるでしょうか。
+\end{exercises}

@@ -1,0 +1,17 @@
+\chapter{演習問題の略解}\label{app:answers}
+
+各章の章末にある演習問題の、答えと考え方の要点をまとめます。
+番号は、章末の演習問題の番号と同じです。
+
+演習問題は、自分で手を動かしてこそ力になります。
+まず自分で解いてみて、行き詰まったときや、答えを確かめたいときに、ここを開いてください。
+「（コード）」と付いた問題の数値は、\appref{app:setup}の環境で実際に動かして得たものです。
+読者の環境では、少し違う値になることがあります（理由は\secref{sec:setup-repro}を見てください）。
+数値そのものより、「増えるのか減るのか」「何倍くらい違うのか」という傾向を比べてください。
+
+\newcommand{\ansinput}[1]{\IfFileExists{chapters/ans#1.tex}{\input{chapters/ans#1}}{\typeout{MISSING ANSWERS #1}}}
+\ansinput{01}\ansinput{02}\ansinput{03}\ansinput{04}\ansinput{05}
+\ansinput{06}\ansinput{07}\ansinput{08}\ansinput{09}\ansinput{10}
+\ansinput{11}\ansinput{12}\ansinput{13}\ansinput{14}\ansinput{15}
+\ansinput{16}\ansinput{17}\ansinput{18}\ansinput{19}
+\ansinput{20}\ansinput{21}\ansinput{22}\ansinput{23}\ansinput{24}\ansinput{25}

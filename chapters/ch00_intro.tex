@@ -1,0 +1,621 @@
+\chapter{はじめに：本書の歩き方}\label{ch:intro}
+
+\begin{chapterlead}
+\textbf{この章の問い}: 大規模言語モデル（LLM）とは結局のところ何をしている機械なのか。
+それを自分で作れるようになるには、何を、どの順に学べばよいのか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item LLM が「続きを予測する機械」であることを、実物を動かして確かめられます。
+\item LLM 開発の全工程（データから AI エージェントまで）を一枚の図で説明できます。
+\item 本書の 25 の章が、その図のどこを担当しているかが分かります。
+\item 本書のどこを先に読み、どこを後回しにしてよいかが分かります。
+\end{itemize}
+\end{chapterlead}
+
+対話型の AI に質問をすると、まるで人が書いたような答えが返ってきます。
+プログラムを書かせれば動くものが出てきますし、
+最近では、検索をし、ファイルを編集し、何十もの手順を自分で進める「AI エージェント」も珍しくなくなりました。
+
+中で何が起きているのでしょうか。
+特別な知能の部品が入っているのでしょうか。
+じつは、中心にある仕組みは驚くほど単純です。
+本書は、その単純な仕組みを\textbf{自分の手で一から作る}ための教科書です。
+最初の章では、まず完成品を先に動かしてみて、それから本書全体の地図を広げます。
+
+\section{続きを予測するだけの機械}\label{sec:intro-next-token}
+
+LLM の正体を一言で表すと、次のようになります。
+
+\begin{center}
+\textbf{LLM は、文章の途中までを受け取り、「次に来る言葉」を予測する機械である。}
+\end{center}
+
+これだけでは実感がわかないので、実物で確かめましょう。
+本書では、夏目漱石の小説を読ませて学習させた小さな言語モデルを、読者自身が作ります（完成するのは\chapref{ch:pretraining}です）。
+ここでは、できあがったモデルを先取りして使ってみます。
+このモデルに「どうも仕方が」という書きかけの文を渡し、次に来る言葉を予測させます。
+
+\snippet{次に来る言葉を予測させる}{code:intro-next-token}{ch00/hello_llm.py}{next-token}
+
+コードの細部はまだ分からなくてかまいません。
+いまは「文字列を数の列に直し（2 行目）、モデルに入れ（3 行目）、出てきた数を確率に直す（4 行目）」という流れだけを見てください。
+それぞれの行の意味は、本書を読み進めるうちに全部説明します。
+実行結果は次のとおりです。
+
+\outputfile{ch00/out/next_token.txt}
+
+左が「次に来る言葉」の候補、右がその確率です。
+モデルは一つの答えを返すのではありません。
+\textbf{あらゆる候補に対する確率}を返します。
+\figref{fig:intro-next-token}は、この結果を棒グラフにしたものです。
+このモデルは、「どうも仕方が」の次には「ない。」が来る可能性が最も高い（約 56\%）と判断しています。
+2 番目以降の候補も「ないから」「ないと」と、どれも「仕方がない」という言い回しの続きです。
+日本語を知っている人なら、納得のいく予測でしょう。
+この言い回しを、誰かがモデルに教えたわけではありません。
+モデルは小説を読んで、自分で覚えました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar,width=0.72\linewidth,height=48mm,
+  xmin=0,xmax=0.72,bar width=4.2mm,
+  symbolic y coords={ない,ないの,ないと,ないから,ない。},ytick=data,
+  yticklabels={「ない」,「ないの」,「ないと」,「ないから」,「ない。」},
+  y tick label style={font=\small},
+  xlabel={確率},xmajorgrids=true,ymajorgrids=false,
+  nodes near coords,nodes near coords style={font=\footnotesize,
+    /pgf/number format/fixed,/pgf/number format/precision=3},
+  enlarge y limits=0.14,axis line style={black!40},tick style={black!40}]
+\addplot[fill=figblue,draw=bookblue] coordinates
+  {(0.016,ない) (0.045,ないの) (0.064,ないと) (0.121,ないから) (0.559,ない。)};
+\end{axis}
+\end{tikzpicture}
+\caption{「どうも仕方が」に続く言葉の予測。モデルの出力は一つの単語ではなく、候補すべてに対する確率である。
+棒の長さが確率を表す（上位 5 個。残りの約 4,000 個の候補にも小さな確率が割り振られている）。}
+\label{fig:intro-next-token}
+\end{figure}
+
+なお、ここで「言葉」と呼んだ予測の単位は、単語とも文字とも少し違います。
+この単位を\term{トークン}{token}と呼びます。
+トークンとは何で、どう決めるのかは\chapref{ch:tokenizer}で扱います。
+それまでは「単語か、単語のかけら」と思っていてください。
+
+\subsection*{予測を繰り返すと文章になる}
+
+次のトークンを予測できるだけで、なぜ文章が書けるのでしょうか。
+答えは「予測を繰り返す」です。
+\figref{fig:intro-loop}を見てください。
+まず、予測された確率に従ってトークンを一つ選びます。
+選んだトークンを文の末尾に付け足します。
+少し長くなった文をもう一度モデルに入れ、さらに次のトークンを予測させます。
+これを繰り返すと、文が一つずつ伸びていきます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=5mm and 7mm]
+  \node[tok] (t2) {どうも};
+  \node[tok,right=1mm of t2] (t3) {仕方が};
+  \node[tok,right=1mm of t3,fill=white,draw=black!45,dashed,minimum width=11mm] (slot) {};
+  \node[box,right=9mm of slot,minimum width=22mm,minimum height=10mm] (lm) {言語モデル};
+  \node[plainbox,right=11mm of lm,align=left,font=\footnotesize] (dist)
+    {ない。\ \ \ 0.56\\ないから\ 0.12\\\ \ $\vdots$};
+  \node[tok,right=11mm of dist,fill=figgreen,draw=bookgreen] (new) {ない。};
+  \draw[arr] (slot) -- (lm);
+  \draw[arr] (lm) -- node[above,lbl]{確率} (dist);
+  \draw[arr] (dist) -- node[above,lbl]{選ぶ} (new);
+  \draw[arr,rounded corners=3pt] (new.south) -- ++(0,-8mm) -| node[pos=0.25,below,lbl]{選んだトークンを末尾に付け足し、もう一度モデルに入れる} (slot.south);
+  \node[lbl,above=0.5mm of t2.north east] {ここまでの文};
+\end{tikzpicture}
+\caption{文章生成の仕組み。「予測 $\to$ 一つ選ぶ $\to$ 付け足す」を繰り返すだけで、文が伸びていく。}
+\label{fig:intro-loop}
+\end{figure}
+
+実際にやってみましょう。
+書き出しを 2 種類与えて、続きを 40 トークンずつ書かせます。
+
+\snippet{予測を繰り返して文章を生成する}{code:intro-generate}{ch00/hello_llm.py}{generate}
+
+\outputfile{ch00/out/generate.txt}
+
+一つ目は、漱石風の文章の続きです。
+意味はところどころ怪しいものの、日本語らしい文になっています。
+途中に現れる「五十一」は、新聞連載小説の回の番号をまねたものです。
+二つ目の書き出しは「\code{12+35=}」です。
+このモデルは小説と一緒に、計算ドリル（「\code{12+35=47}」のような行）も読んで学習しています。
+そのため、式の続きとして答えの「\code{47}」を書きました。
+それだけではありません。
+続けて「\code{2+91=93}」「\code{885-4=881}」と、新しい問題を自分で作り、自分で解いています。
+ドリルの「続き」とは、次の問題と答えだからです。
+
+ただし、このモデルの計算はいつも正しいわけではありません。
+あとで測るとおり、正答率は 9 割弱です。
+じつは、この「\code{12+35=}」も際どい問題でした。
+モデルは、答えの 1 文字目として「\code{4}」よりも「\code{5}」のほうに、少し高い確率を付けています。
+上の実行では、確率に従ってくじを引くようにトークンを選んだ結果、正解の「\code{47}」が出ました。
+確率が最も高い候補だけを選び続けると、このモデルは「\code{57}」と誤答します。
+この「惜しい」モデルを育てて、正答率を上げていくことが、本書の後半の主題になります。
+
+ここで大事なのは、文章を書くことも計算することも、モデルにとっては\textbf{同じ一つの作業}だという点です。
+どちらも「続きを予測する」ことしかしていません。
+文法の規則も、足し算の手順も、誰もプログラムとして書き込んではいません。
+モデルは、大量の文章の続きを当てる練習をするうちに、それらを自分で身につけました。
+
+\begin{intuition}{なぜ「続きの予測」で賢くなるのか}
+推理小説の最後の一文「犯人は\underline{\hspace{2em}}だ」の空欄を当てるには、物語全体を理解している必要があります。
+「東京からパリまでの距離は約\underline{\hspace{2em}}キロメートル」の続きを当てるには、地理の知識が要ります。
+続きをうまく当てようとすると、文法・知識・推論のすべてが必要になるのです。
+だから、続きの予測を徹底的に練習させると、結果としてそれらの能力が育ちます。
+この考え方は\chapref{ch:lm}で、数式を使って正確に述べ直します。
+\end{intuition}
+
+この節で分かったことをまとめます。
+LLM は、次のトークンの確率を予測する機械です。
+予測を繰り返すと文章になります。
+そして、その予測の能力は、大量の文章から学習によって獲得されます。
+
+\section{本書のゴール：自分の手で作る}\label{sec:intro-goal}
+
+前節のモデルは、パラメータ（学習によって調整される数値）を約 260 万個しか持たない、とても小さなものでした。
+世の中で使われている LLM は、数十億から数千億個のパラメータを持ちます。
+それでも、両者の\textbf{仕組みは同じ}です。違うのは大きさだけです。
+
+そこで本書は、次のことをゴールにします。
+
+\begin{center}
+\begin{tcolorbox}[bookbox,colback=figblue!35,borderline west={2.5pt}{0pt}{bookblue},width=0.92\linewidth]
+\textbf{本書のゴール}\quad
+自作の LLM と AI エージェントを、一から作れるようになること。
+手元では小さなモデルしか動かせなくても、
+「あとはデータと計算機を増やせば、同じことをするだけだ」と言えるところまで到達すること。
+\end{tcolorbox}
+\end{center}
+
+「作れる」とは、ライブラリの関数を呼び出せるという意味ではありません。
+中身を自分で書けて、なぜそう作るのかを説明できる、という意味です。
+そのために本書では、ほとんどの部品を一度は自分の手で実装します。
+そのうえで、実務で使われる既製のライブラリではそれがどう書かれるかを示します。
+
+読み終えるまでに、読者は\tabref{tab:intro-artifacts}のものを自分で作ることになります。
+
+\begin{table}[tbp]
+\centering
+\caption{本書で読者が作るもの。どれも数十行から 200 行ほどの Python で書ける。}
+\label{tab:intro-artifacts}
+\small
+\begin{tabular}{lll}
+\toprule
+作るもの & 何をするものか & 章 \\
+\midrule
+自動微分エンジン & 複雑な式の微分を自動で計算する & \ref{ch:nn} \\
+トークナイザ & 文章をトークンの列に切り分ける & \ref{ch:tokenizer} \\
+注意機構（Attention） & 文脈のどこを見るかを決める & \ref{ch:attention} \\
+ミニGPT & Transformer による言語モデル本体 & \ref{ch:transformer}, \ref{ch:modern-arch} \\
+事前学習の一式 & データ整形から学習・監視まで & \ref{ch:pretraining} \\
+分散学習 & 複数のプロセスで一つのモデルを学習する & \ref{ch:distributed} \\
+計算アシスタント & 質問に答えるようにモデルを調整する & \ref{ch:posttraining} \\
+LoRA・蒸留・量子化 & 安く調整し、小さく速くする & \ref{ch:lora}, \ref{ch:distillation} \\
+強化学習 & 「結果の良し悪し」から学ばせる & \ref{ch:rl-basics}--\ref{ch:rl-llm} \\
+AI エージェント & ツールを使って仕事をさせる & \ref{ch:agent}, \ref{ch:agentic-rl} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{小さな実験と本物の距離}
+
+「小さなモデルで学んで、本当に本物が分かるのか」と不安に思うかもしれません。
+\tabref{tab:intro-scale}に、本書のモデルと、実際に公開されているモデルの規模を並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{本書のモデルと実際の LLM の規模。パラメータ数は 5 桁、学習データは 7 桁近く違う。
+しかし、三つとも設計は同じ Transformer であり、学習方法も共通である。
+（GPT-2 の値は\cite{radford2019language}と、その再現実装\cite{karpathy2022nanogpt}、Llama 3.1 の値は\cite{dubey2024llama3}による。）}
+\label{tab:intro-scale}
+\small
+\begin{tabular}{lrrl}
+\toprule
+モデル & パラメータ数 & 学習データ（トークン数） & 学習に使う計算機 \\
+\midrule
+本書のミニGPT & 260 万 & 約 250 万 & PC 1 台で数十分 \\
+GPT-2（2019 年） & 1.2 億 & 約 90 億 & GPU 8 枚で数日 \\
+Llama 3.1（2024 年） & 4,050 億 & 約 15.6 兆 & GPU 最大 1.6 万枚 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+数字の差は圧倒的です。
+ですが、三つのモデルは同じ設計図（Transformer）から作られ、同じ目標（次のトークンの予測）で学習されています。
+大きくするときに新しく必要になるのは、次の二つの知識です。
+
+\begin{itemize}
+\item \textbf{大きな計算を実行する技術}。GPU、複数の計算機への分散、計算量と費用の見積もりなど。本書の第 IV 部で扱います。
+\item \textbf{大きくしたときに初めて効いてくる工夫}。学習を安定させる部品や、推論を速くする仕組みなど。これらは登場するたびに「小さな実験ではこう、大規模ではこう」と対比して説明します。
+\end{itemize}
+
+本書では、大規模な計算機が手元になくても、原理を小さな実験で必ず確かめます。
+たとえば「複数の GPU で学習を分担する」仕組みは、1 台の PC の中で複数のプロセスを動かして再現します。
+こうしておけば、本物の計算機を手にしたときに、やることはすでに分かっています。
+
+\section{LLM 開発の全体図}\label{sec:intro-pipeline}
+
+では、LLM はどのような手順で作られるのでしょうか。
+細かい話に入る前に、全工程を一枚の図で見ておきます。
+本書を読んでいる途中で「いま自分はどこにいるのか」と迷ったら、この図に戻ってきてください。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 4mm,
+  stage/.style={box,minimum width=24mm,minimum height=11mm,font=\footnotesize},
+  chap/.style={font=\scriptsize,text=bookgray}]
+  % 上段: 基盤モデルを作る
+  \node[stage,orangebox] (data) {データ\\を集める};
+  \node[stage,orangebox,right=of data] (tok) {トークン化};
+  \node[stage,right=of tok] (pre) {\textbf{事前学習}\\続きを予測};
+  \node[stage,greenbox,right=of pre] (base) {基盤モデル};
+  \node[chap,below=0.3mm of data] {\ref{ch:pretraining} 章};
+  \node[chap,below=0.3mm of tok] {\ref{ch:tokenizer} 章};
+  \node[chap,below=0.3mm of pre] {\ref{ch:lm}--\ref{ch:pretraining} 章};
+  \draw[arr] (data) -- (tok); \draw[arr] (tok) -- (pre); \draw[arr] (pre) -- (base);
+  % 下段: 役立つものにする
+  \node[stage,below=16mm of base] (sft) {\textbf{事後学習}\\指示に従わせる};
+  \node[stage,purplebox,left=of sft] (rl) {\textbf{強化学習}\\結果から学ぶ};
+  \node[stage,left=of rl] (comp) {蒸留・量子化\\小さく速く};
+  \node[stage,redbox,left=of comp] (agent) {推論・\\エージェント};
+  \node[chap,below=0.3mm of sft] {\ref{ch:posttraining}, \ref{ch:lora} 章};
+  \node[chap,below=0.3mm of rl] {\ref{ch:rl-basics}--\ref{ch:rl-llm}, \ref{ch:agentic-rl} 章};
+  \node[chap,below=0.3mm of comp] {\ref{ch:distillation} 章};
+  \node[chap,below=0.3mm of agent] {\ref{ch:eval-serving}, \ref{ch:agent} 章};
+  \draw[arr] (base) -- (sft); \draw[arr] (sft) -- (rl); \draw[arr] (rl) -- (comp); \draw[arr] (comp) -- (agent);
+  % 土台
+  \node[graybox,minimum width=118mm,minimum height=7mm,font=\footnotesize,
+    below=11mm of $(agent.south)!0.5!(sft.south)$] (found)
+    {土台：数学（\ref{ch:math} 章）・機械学習とニューラルネット（\ref{ch:ml}--\ref{ch:training} 章）・Transformer（\ref{ch:embedding}--\ref{ch:modern-arch} 章）};
+  \node[graybox,minimum width=118mm,minimum height=7mm,font=\footnotesize,below=1mm of found] (infra)
+    {計算基盤：GPU（\ref{ch:gpu} 章）・分散学習（\ref{ch:distributed} 章）・見積もりとインフラ（\ref{ch:infra} 章）};
+  \node[lbl,above=0.5mm of data.north west,anchor=south west] {\textbf{基盤モデルを作る}};
+  \node[lbl,above=0.5mm of agent.north west,anchor=south west] {\textbf{役立つものに仕上げる}};
+\end{tikzpicture}
+\caption{LLM 開発の全工程と、本書の章の対応。上段で「続きを予測する」基盤モデルを作り、下段でそれを役立つものに仕上げる。
+すべての工程を、下の二つの土台（理論と計算基盤）が支えている。}
+\label{fig:intro-pipeline}
+\end{figure}
+
+\figref{fig:intro-pipeline}を、上段の左から順に見ていきます。
+
+\begin{enumerate}
+\item \textbf{データを集める}。学習の材料になる大量の文章を集め、整えます。本書では漱石の小説と計算ドリルを使います。
+\item \textbf{トークン化}。文章を、モデルが扱える数の列に直します。
+\item \textbf{事前学習}。「続きを予測する」練習を、大量の文章でひたすら行います。開発全体の中で最も計算量が大きい工程です。
+ここで得られるモデルを\textbf{基盤モデル}と呼びます。前節で動かしたのは、この基盤モデルです。
+\item \textbf{事後学習}。基盤モデルは続きを書くだけで、質問には答えてくれません。そこで、指示に従って答えるように調整します。
+\item \textbf{強化学習}。お手本をまねるだけでは届かない目標（計算の正答率を上げる、人に好まれる答え方をする、など）を、「結果の良し悪し」を手がかりに学ばせます。
+\item \textbf{蒸留・量子化}。できあがったモデルを、能力をなるべく保ったまま小さく速くします。
+\item \textbf{推論・エージェント}。モデルを利用者に届けます。さらに、ツール（検索や電卓など）を使わせて、複数の手順からなる仕事をさせます。
+\end{enumerate}
+
+この流れは、実際の LLM 開発でもそのまま使われているものです。
+本書の題材は小さいですが、\textbf{工程は一つも省略しません}。
+
+\section{本書の構成と題材}\label{sec:intro-structure}
+
+全体図が見えたところで、本書がそれをどの順に説明するかを述べます。
+本書は 7 つの部からなります。
+各部は、前の部が残した「まだできないこと」を解決する形でつながっています（\tabref{tab:intro-parts}）。
+
+\begin{table}[tbp]
+\centering
+\caption{本書の 7 つの部。各部は一つの問いに答える。}
+\label{tab:intro-parts}
+\small
+\begin{tabularx}{\linewidth}{llX}
+\toprule
+部 & 章 & 答える問い \\
+\midrule
+I\ \ 準備 & \ref{ch:math}--\ref{ch:pytorch} & これから使う数学とプログラミングの「言葉」は何か \\
+II\ \ 機械学習 & \ref{ch:ml}--\ref{ch:training} & データから学習するとは、何をどうすることか \\
+III\ \ 言語モデル & \ref{ch:lm}--\ref{ch:modern-arch} & 言葉を学習する問題はどう作るか。Transformer とは何か \\
+IV\ \ 大規模学習 & \ref{ch:gpu}--\ref{ch:infra} & 大きなモデルを学習するには、どんな計算機がどれだけ要るか \\
+V\ \ 事後学習 & \ref{ch:posttraining}--\ref{ch:eval-serving} & 続きを書くだけのモデルを、どうやって役立つものにするか \\
+VI\ \ 強化学習 & \ref{ch:rl-basics}--\ref{ch:rl-llm} & お手本がないとき、結果の良し悪しからどう学ぶか \\
+VII\ \ エージェント & \ref{ch:agent}--\ref{ch:capstone} & モデルに道具を使わせ、仕事をさせるには \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+各章の冒頭には、次のような帯を置きます。
+いま読んでいる章が 7 つの部のどこにあるかを、色で示したものです。
+\bookmap{3}
+その下の囲みには、「ここまでにできるようになったこと」「この章の問い」「この章を終えるとできること」を書きます。
+章を読み始める前に、まずここで現在地と目的地を確かめてください。
+
+\subsection*{全編を通して使う題材}
+
+本書では、最初から最後まで同じ題材を使い続けます。
+章ごとに題材が変わると、新しい題材を理解するだけで疲れてしまうからです。
+
+\begin{description}[leftmargin=1em,style=nextline]
+\item[学習データ] 夏目漱石の小説 14 作品（約 240 万字）と、計算ドリル（「\code{12+35=47}」のような足し算・引き算が 12 万行）。
+インターネット上の文章には小説も算数も含まれています。その縮小版と考えてください。
+\item[基盤モデル] この二つを混ぜたデータで事前学習した、約 260 万パラメータのミニGPT。
+\item[育てる目標] この基盤モデルを「計算アシスタント」に育てます。
+対話の形で質問に答えられるようにし（第 V 部）、結果の良し悪しから学ぶ強化学習を試し（第 VI 部）、
+最後は電卓というツールを使いこなすエージェントにします（第 VII 部）。
+\end{description}
+
+計算問題を選んだのには理由があります。
+答えが合っているかどうかを、プログラムで自動的に判定できるからです。
+モデルが良くなったかどうかを、いつでも数字で確かめられます。
+これは、後半の強化学習で特に重要になります。
+
+\section{本書の読み方}\label{sec:intro-how-to-read}
+
+最後に、本書を読むうえでの約束事をまとめます。
+
+\subsection*{前提とする知識}
+
+本書は、次の二つを前提にします。
+
+\begin{itemize}
+\item 大学 1 年生程度の線形代数（ベクトル、行列、行列の積）と微分積分（偏微分、合成関数の微分）を一度は学んだことがある。
+\item Python の基本的な文法（変数、関数、クラス、リスト、辞書、\code{for} 文）が分かる。
+\end{itemize}
+
+忘れていてもかまいません。必要な数学は\chapref{ch:math}で、使う場面と結びつけて復習します。
+一方、機械学習、ニューラルネットワーク、確率・統計、GPU、強化学習の知識は、まったく仮定しません。
+すべて本書の中で定義します。
+
+\subsection*{数式・図・コードの三つで説明する}
+
+本書では、大事な概念を必ず三つの方法で説明します。
+\textbf{数式}は、概念を正確に述べます。
+\textbf{図}は、それを直感的に捉えさせます。
+\textbf{コード}は、それが実際に動くことを確かめさせます。
+どれか一つでは分かりにくいことも、三つを見比べると分かります。
+そのため本文では、「式のこの部分が、コードのこの行です」という対応をくり返し示します。
+
+\subsection*{コードは必ず動かす}
+
+本書に載っているコードは、すべて実際に動かして結果を確かめたものです。
+掲載した実行結果も、実際の出力をそのまま載せています\footnote{学習には乱数を使うので、読者の環境では数値が少し異なることがあります。傾向は同じになります。}。
+コードは GPU のない普通の PC で動きます。
+ほとんどは数秒から数分で終わり、最も長い基盤モデルの事前学習でも 30〜40 分です。
+
+読むだけでなく、ぜひ手元で動かしてください。
+数値を変えて結果がどう変わるかを見ると、理解が何倍も深まります。
+コードの入手方法と、環境の準備、動かし方は\appref{app:setup}にまとめました。
+コードは章ごとのディレクトリ（\file{code/ch04/} など）に入っています。
+複数の章で共有する部品は \file{code/llmbook/} にあります。
+
+\subsection*{囲みの種類}
+
+本文中には、役割の違う囲みがいくつか出てきます。
+
+\begin{definition}[囲みの例]
+青い囲みは\textbf{定義}です。新しい用語や記号の意味を、正確に定めます。
+\end{definition}
+\vspace{-2mm}
+\begin{intuition}{緑の囲み}
+\textbf{直感}の囲みは、数式の意味を、たとえや図で言い直します。
+\end{intuition}
+\vspace{-2mm}
+\begin{caution}{赤の囲み}
+\textbf{注意}の囲みは、よくある誤解や、はまりやすい落とし穴を示します。
+\end{caution}
+
+このほかに、発展的な話題や歴史を紹介する「コラム」、現場での知恵を紹介する「実務メモ」、
+読み進める前に少し考えてもらう「確認」があります。
+コラムと実務メモは、飛ばしても先を読むのに支障はありません。
+
+\subsection*{章末の演習問題}
+
+各章の終わりには演習問題があります。
+手で計算する問題、コードを改造する問題、理由を考える問題を混ぜてあります。
+略解は\appref{app:answers}にあります。
+全部を解く必要はありませんが、各章で少なくとも一問は手を動かすことをお勧めします。
+
+\subsection*{読む順序}
+
+本書は、前の章で作ったものを次の章で使う構成になっています。
+ただし、すべての章を前から順に、同じ力で読む必要はありません。
+どこを先に読み、どこを後回しにしてよいかは、次の節で説明します。
+
+\section{どこから読み、どこを後回しにするか}\label{sec:intro-route}
+
+本書は 1,000 ページを超えます。
+最初のページから、全部を同じ力で読もうとすると、たいてい途中で止まります。
+止まるのは、長い導出や、まだ使い道の見えない細部のところです。
+
+そこで本書には、\textbf{読む優先度}を書き込んであります。
+初めて読むときは、背骨になる部分だけをたどってください。
+残りは、必要になったときに戻れば足ります。
+この節では、その道筋を説明します。
+
+\subsection*{三つの札}
+
+次の章からは、章の冒頭に「この章の読み方」という枠があります。
+枠の中では、節ごとに次の三つの札を付けています。
+
+\begin{description}[leftmargin=6.4em,labelwidth=5.6em,labelsep=0.8em,itemsep=1pt,font=\normalfont]
+\item[\rgmust] 本書の背骨です。ここを飛ばすと、後の必読の節が読めなくなります。
+\item[\rgskim] 結論だけ押さえれば、先へ進める節です。押さえる結論は、札の横に書いてあります。導出や実装の細部は、2 回目に読めば足ります。
+\item[\rglater] 初めて読むときは、飛ばしてよい節です。いつ、何のために戻ればよいかを、札の横に書いてあります。
+\end{description}
+
+枠の先頭に \rgpre の札があるときは、その章を読むのに要る前提が書いてあります。
+章を飛ばして来たときは、まずここを見てください。
+足りない知識がどの章のどの節にあるかが、番号で分かります。
+
+本文の中でも、流し読みできる節と後回しにできる節には、見出しのすぐ下に同じ札を置きました。
+札のない節は必読です。
+必読の節だけを順に読んでも、話がつながるように書いてあります。
+章末の演習問題には、\rgtag{bookblue}{初読} の札で、初めて読むときに解くとよい問題を示しました。
+
+\subsection*{3 周で読む}
+
+章の単位にも、優先度があります。
+本書は、\figref{fig:intro-route}のように、3 周に分けて読むことを勧めます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  ch/.style={minimum width=9.6mm,minimum height=6.5mm,inner sep=1pt,font=\small\bfseries},
+  nm/.style={font=\scriptsize,text=black!75,align=center,inner sep=0pt},
+  lane/.style={font=\footnotesize\bfseries,anchor=west,inner sep=0pt},
+  lanesub/.style={font=\footnotesize,text=bookgray,anchor=west,inner sep=0pt}]
+  \def\p{12.4mm}
+  % 1 周目
+  \node[lane,text=bookblue] (h1) at (0,8.5mm) {1 周目：背骨};
+  \node[lanesub,right=3mm of h1] {動くものを最後まで一度作る};
+  \foreach \i/\n/\t in {0/0/{はじめに},1/3/{機械学習},2/4/{誤差\\逆伝播},3/6/{言語\\モデル},4/8/{埋め込み},
+      5/9/{注意機構},6/10/{ミニGPT},7/13/{事前学習},8/16/{事後学習},9/23/{道具を\\使う}}{
+    \node[box,ch] (a\i) at (\i*\p+4.8mm,0) {\n};
+    \node[nm,below=1mm of a\i] {\t};
+  }
+  \foreach \i/\j in {0/1,1/2,2/3,3/4,4/5,5/6,6/7,7/8,8/9} \draw[arr] (a\i) -- (a\j);
+  % 2 周目
+  \node[lane,text=bookorange!85!black] (h2) at (0,-15.5mm) {2 周目：実用にする};
+  \node[lanesub,right=3mm of h2] {安定させ、速くし、安く調整し、測り、強化学習で磨く};
+  \foreach \i/\n/\t in {0/5/{学習の\\安定化},1/7/{トーク\\ナイザ},2/11/{現代の\\構成},3/12/{GPU},4/17/{LoRA},
+      5/19/{評価と\\推論},6/20/{強化学習\\の基礎},7/21/{方策勾配},8/22/{LLM の\\強化学習},9/25/{総仕上げ}}{
+    \node[orangebox,ch] (b\i) at (\i*\p+4.8mm,-24mm) {\n};
+    \node[nm,below=1mm of b\i] {\t};
+  }
+  \draw[arr] (b6) -- (b7); \draw[arr] (b7) -- (b8);
+  % 3 周目
+  \node[lane,text=black!70] (h3) at (0,-39.5mm) {3 周目：大きくする・運用する};
+  \foreach \i/\n/\t in {0/14/{分散学習},1/15/{見積もり},2/18/{蒸留と\\量子化},3/24/{Agentic\\RL},
+      4/E/{ベンチ\\マーク},5/F/{道具選び}}{
+    \node[graybox,ch] (c\i) at (\i*\p+4.8mm,-48mm) {\n};
+    \node[nm,below=1mm of c\i] {\t};
+  }
+  \draw[arr] (c0) -- (c1);
+  % 辞書
+  \node[plainbox,dashed,anchor=west,align=left,font=\scriptsize,inner sep=2.5pt,minimum height=12mm]
+    at (6*\p+4mm,-50mm) {\textbf{辞書として引く}\\第 1 章（数学）・第 2 章（PyTorch）\\付録 A（記号）・付録 C（用語集）};
+\end{tikzpicture}
+\caption{本書を 3 周で読む道筋。箱の数字は章の番号（E と F は付録）。
+1 周目は矢印の順に読む。2 周目と 3 周目は番号の順に読むのが基本で、矢印でつないだ章は続けて読む。}
+\label{fig:intro-route}
+\end{figure}
+
+\textbf{1 周目}は、本書の背骨です。
+第 0、3、4、6、8、9、10、13、16、23 章の 10 章を、この順に読みます。
+ページ数でいうと、本書のおよそ 3 分の 1 です。
+この 10 章で、学習の仕組みを知り、ミニGPT を自分で組み立てて学習させ、
+質問に答える計算アシスタントに育て、電卓を使うエージェントにするところまで進みます。
+細かい改良や、規模の大きい話は通りません。
+まず、動くものを最後まで一度作ってしまうのがねらいです。
+全体が見えてからのほうが、細部は楽に読めます。
+
+途中で、ほかの章や付録に短く立ち寄る場所がいくつかあります。
+\tabref{tab:intro-route-first}に、立ち寄る場所も含めた 1 周目の順路をまとめました。
+「読むところ」の列の節は、それぞれの章の冒頭の枠にも書いてあります。
+
+\begin{table}[tbp]
+\centering
+\caption{1 周目の順路。上から順に読む。「寄」は、ほかの周の章や付録への短い立ち寄り。
+右の列は、そこまで読んだときに手元に残るもの。}
+\label{tab:intro-route-first}
+\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}p{41mm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+章 & 読むところ & 読み終えると \\
+\midrule
+\ref{ch:intro} & 全部 & 完成品を動かし、全体図を持っている \\
+付録 \ref{app:setup}（寄） & \secref{sec:setup-requirements}〜\secref{sec:setup-run} & 本書のコードが手元で動く \\
+\ref{ch:math}・\ref{ch:pytorch}（寄） & 必読の小節だけ。残りは辞書 & 記号と、テンソルの形が読める \\
+\ref{ch:ml} & 必読の節 & 学習のループ（予測 → 損失 → 勾配 → 更新）が書ける \\
+\ref{ch:nn} & 必読の節。長い\secref{sec:nn-backprop}も飛ばさない & \code{loss.backward()} の中身を自作している \\
+\ref{ch:lm} & すべての節 & 「次のトークンの予測」を損失として書け、文章を生成できる \\
+\ref{ch:tokenizer}（寄） & 必読の 3 か所だけ & 「トークン」と「語彙」の意味が分かる \\
+\ref{ch:embedding} & 必読の節 & 埋め込みを使う、最初のニューラル言語モデルが動く \\
+\ref{ch:attention} & 必読の節（注意の式と因果マスク） & 注意機構を式から実装できる \\
+\ref{ch:training}（寄） & \figref{fig:training-map}と、各節の「この節のまとめです」の 2 行 & 残差接続とレイヤー正規化が何をする部品かが分かる \\
+\ref{ch:transformer} & 必読の節 & \textbf{ミニGPT が動く}（最初の到達点） \\
+\ref{ch:gpu}（寄） & \secref{sec:gpu-flops}だけ & 学習の計算量を $6ND$ で見積もれる \\
+\ref{ch:pretraining} & 必読の節 & 基盤モデル \file{base.pt} ができる \\
+\ref{ch:posttraining} & 必読の節 & 質問に答える計算アシスタント \file{sft.pt} ができる \\
+\ref{ch:agent} & \secref{sec:agent-mini}まで & \textbf{電卓を使うエージェントが動く}（二つ目の到達点） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{2 周目}は、1 周目で作ったものを実用に近づける章です。
+学習を安定させる部品、トークナイザの中身、現代の LLM の設計、GPU、
+安く調整する LoRA、評価と推論、強化学習、そして全工程を通す総仕上げを読みます。
+2 周目は、1 周目を終えるまで待たなくてもかまいません。
+1 周目の途中で「なぜこの部品が要るのか」「もっと速くならないか」と気になったら、その場で寄り道してください。
+
+\textbf{3 周目}は、大きくする話と、運用する話です。
+複数の GPU での分散学習、計算機と費用の見積もり、蒸留と量子化、エージェントの強化学習、
+それに、ベンチマークと道具選びの二つの付録です。
+大きな計算機を使うことになったときや、既製の LLM を仕事で使うときに読めば足ります。
+
+2 周目と 3 周目の章には、読む順序についての注意がいくつかあります。
+\tabref{tab:intro-route-later}にまとめました。
+
+\begin{table}[tbp]
+\centering
+\caption{2 周目と 3 周目の章。右の列は、読む順序についての注意。}
+\label{tab:intro-route-later}
+\small
+\begin{tabularx}{\linewidth}{@{}ll>{\raggedright\arraybackslash}p{45mm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+周 & 章 & 手に入るもの & 読む順序の注意 \\
+\midrule
+2 & \ref{ch:training} & 深いネットワークを学習させる部品 & \chapref{ch:pretraining}の学習ループの部品は、ここで作る \\
+2 & \ref{ch:tokenizer} & トークナイザの実装 & 必読の 3 か所は 1 周目に読む \\
+2 & \ref{ch:modern-arch} & 現代の LLM の部品 & KV キャッシュは\chapref{ch:eval-serving}が使う \\
+2 & \ref{ch:gpu} & 速さとメモリの見積もり & \chapref{ch:distributed}と\chapref{ch:infra}の前提 \\
+2 & \ref{ch:lora} & 小さな追加部品だけを学習する方法 & \chapref{ch:posttraining}の SFT が前提 \\
+2 & \ref{ch:eval-serving} & 正答率のぶれの測り方と、推論を速くする仕組み & \secref{sec:es-what}〜\secref{sec:es-bench}は\chapref{ch:rl-llm}より前に読む \\
+2 & \ref{ch:rl-basics}〜\ref{ch:rl-llm} & 強化学習を言語モデルに使う方法 & 3 章は記号を引き継ぐので、続けて読む \\
+2 & \ref{ch:capstone} & 全工程を通すスクリプトと、規模を上げる手引き & 先に\secref{sec:infra-pipeline}と\secref{sec:infra-memory}を読む \\
+\midrule
+3 & \ref{ch:distributed} & 複数の GPU で学習する方法 & \chapref{ch:gpu}が前提 \\
+3 & \ref{ch:infra} & GPU 時間と費用の見積もり & 先に\secref{sec:dist-comm}と、\secref{sec:dist-cluster}の障害の小節を読む \\
+3 & \ref{ch:distillation} & モデルを小さく速くする方法 & 飛ばしても\chapref{ch:eval-serving}は読める \\
+3 & \ref{ch:agentic-rl} & エージェントを強化学習で磨く方法 & \chapref{ch:rl-llm}と\chapref{ch:agent}が前提 \\
+3 & 付録 \ref{app:benchmarks}・\ref{app:toolmap} & ベンチマークと道具の一覧 & 既製の LLM や道具を選ぶときに引く \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection*{辞書として使う章と付録}
+
+\chapref{ch:math}（数学）と\chapref{ch:pytorch}（PyTorch）は、通読する章ではありません。
+必読の小節だけを先に読み、あとは辞書のように使ってください。
+先の章で式やコードが読めなくなったら、そこへ戻ります。
+戻る場所は、各章の \rgpre の札が節の番号で教えます。
+記号を忘れたときは\appref{app:notation}、用語を忘れたときは\appref{app:glossary}が引けます。
+コードを手元で動かす準備は\appref{app:setup}にあります。
+\chapref{ch:pytorch}のコードを動かす前に、PC の前で一度通してください。
+
+\subsection*{迷ったときの読み方}
+
+どの章でも、次の順に読めば道を外しません。
+まず、章の冒頭の囲みで、問いと到達点を確かめます。
+次に、「この章の読み方」の枠で、必読の節を確かめます。
+そして、必読の節を順に読み、章末の「まとめ」と「次の章へ」を読みます。
+札の付いた節は、見出しの下の一言だけ読んで、先へ進んでかまいません。
+
+すでに機械学習の経験がある読者は、第 I 部と第 II 部を章末の「まとめ」で確認するだけにして、
+第 III 部から読み始めてもかまいません。
+
+\begin{summary}
+\item LLM は、文章の途中までを受け取って、次に来るトークンの確率を予測する機械です。
+\item 「予測 $\to$ 一つ選ぶ $\to$ 付け足す」を繰り返すと、文章が生成されます。
+\item 予測の能力は、大量の文章の続きを当てる練習（事前学習）によって身につきます。
+\item LLM 開発は、データ収集、トークン化、事前学習、事後学習、強化学習、蒸留・量子化、推論・エージェント、という工程からなります。
+\item 本書の小さなモデルと実際の LLM は、規模が何桁も違いますが、仕組みと工程は同じです。
+\item 本書は、漱石の小説と計算ドリルで学習したミニGPT を、計算アシスタント、そして電卓を使うエージェントへと育てていきます。
+\item 本書は 3 周に分けて読めます。1 周目は、必読の札の付いた 10 章の背骨だけをたどり、動くものを最後まで一度作ります。
+\end{summary}
+
+\section*{次の章へ}
+
+この章では、できあがったモデルを外から眺めました。
+中身はまだ一つも説明していません。
+「確率を返す」とは数式でどう書くのでしょうか。「学習する」とは何を計算することなのでしょうか。
+それを正確に述べるには、言葉をそろえる必要があります。
+次の\chapref{ch:math}では、本書全体で使う数学の言葉を、使う場面と一緒に準備します。

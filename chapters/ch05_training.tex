@@ -1,0 +1,1420 @@
+\chapter{深いネットワークを学習させる技術}\label{ch:training}
+\bookmap{2}
+
+% この章の図で共通に使う pgfplots のスタイル（名前に章の接頭辞 training を付けている）
+\pgfplotsset{
+  training small/.style={width=64mm,height=40mm,title style={font=\small,yshift=-1mm},
+    legend style={font=\scriptsize},tick label style={font=\scriptsize}},
+  training valley/.style={width=52mm,height=39mm,xmin=-4.6,xmax=1.4,ymin=-1.35,ymax=1.35,
+    xtick={-4,-2,0},ytick={-1,0,1},xlabel={$w_1$},grid=none,
+    title style={font=\small,yshift=-1mm},tick label style={font=\scriptsize}},
+  training contour/.style={domain=0:360,samples=73,black!28,thin,forget plot},
+}
+
+\begin{chapterlead}
+\textbf{ここまで}: \chapref{ch:nn}で、多層パーセプトロン（MLP）と誤差逆伝播法を学び、5 行の学習ループを書きました。
+ところが章の最後で、層を 10 枚に増やしただけで、学習がまったく進まなくなりました。\\[1mm]
+\textbf{この章の問い}: 深いネットワークは、なぜ学習が難しいのか。
+現代の LLM が必ず使っている「標準の部品」は何で、それぞれ何を解決しているのか。\\[1mm]
+\textbf{この章を終えると}:
+\begin{itemize}
+\item 重みの初期値の大きさを、層の入力の数から計算で決められます。
+\item レイヤー正規化と残差接続を自分で実装し、隠れ層 50 枚の MLP を学習させられます。
+\item SGD、モーメンタム、Adam、AdamW の更新式を 1 行ずつ説明し、数行で自作できます。
+\item 学習率スケジュール、勾配クリッピング、ドロップアウト、重み減衰を、学習ループのどこに足すかが分かります。
+\item 学習曲線を読んで、うまくいかない学習の原因を切り分けられます。
+\end{itemize}
+\end{chapterlead}
+
+\begin{readingguide}
+\item[\rgpre] この章は 2 周目に回してかまいません。ただし\chapref{ch:transformer}へ進む前に、\figref{fig:training-map}と、\secref{sec:training-norm}〜\secref{sec:training-schedule}の各節にある「この節のまとめです」で始まる 2 行だけは読んでください。レイヤー正規化（式\eqref{eq:training-layernorm}）、残差接続（式\eqref{eq:training-residual}）、AdamW を、\chapref{ch:transformer}がそのまま使います。
+\item[\rgmust] \secref{sec:training-init}〜\secref{sec:training-residual}：初期化、レイヤー正規化、残差接続。10 枚で動かなかった MLP を 50 枚まで学習させる、章の本筋です。
+\item[\rgmust] \secref{sec:training-optim}の更新式（SGD の弱点から Adam、AdamW まで）、\secref{sec:training-schedule}、\secref{sec:training-diagnosis}：\chapref{ch:pretraining}の学習ループの部品と、学習がうまくいかないときの調べ方です。
+\item[\rgskim] \secref{sec:training-init}の「計算」、\secref{sec:training-norm}の「バッチ正規化」、\secref{sec:training-optim}の「自作して、既製品と比べる」「渦巻きデータで比べる」：導出と実装と実測です。見出しの下の札に書いた結論だけ押さえれば、先へ進めます。
+\item[\rgskim] \secref{sec:training-regularization}：過学習への 3 つの対策。「訓練の成績を少し手放して、検証データでの成績を上げる」という結論だけ押さえます。細部は\chapref{ch:posttraining}を読むときに戻れば足ります。
+\end{readingguide}
+
+\chapref{ch:nn}の最後の実験を思い出しましょう。
+渦巻きのデータを、隠れ層 2 枚の MLP は正解率 100\% で分類できました。
+ところが、同じ ReLU の MLP を隠れ層 10 枚にすると、損失は 1.099 のまま動きませんでした（\tabref{tab:nn-depth}）。
+1.099 は $\log 3$ で、3 つのクラスを当てずっぽうで答えるときの値です。
+深いモデルのほうが表現力は高いはずなのに、何も学べなかったのです。
+
+これは小さな実験だけの話ではありません。LLM は、層を何枚も重ねた深いネットワークです。
+深いネットワークを学習させられなければ、LLM は作れません。
+
+この章では、学習できなかった MLP を、部品を 1 つずつ足しながら直していきます。
+\figref{fig:training-map}が、この章の地図です。
+左がモデルの側に足す部品、右が学習ループの側に足す部品です。
+\chapref{ch:nn}の 5 行（順伝播、損失、\code{zero_grad}、\code{backward}、\code{step}）は、そのまま残っています。
+この章でするのは、5 行を書き換えることではなく、その周りに部品を足すことです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+% 左: モデルの側
+\node[font=\small\bfseries] at (20,52) {モデルの側};
+\node[plainbox,minimum width=22mm] (in) at (20,3) {入力 $\vh$};
+\node[greenbox,minimum width=22mm] (ln) at (20,14) {正規化};
+\node[box,minimum width=22mm] (fc) at (20,24) {全結合層};
+\node[box,minimum width=22mm] (act) at (20,33.5) {ReLU};
+\node[op] (add) at (20,43) {$+$};
+\draw[arr] (in) -- (ln); \draw[arr] (ln) -- (fc); \draw[arr] (fc) -- (act); \draw[arr] (act) -- (add);
+\draw[arr] (add) -- (20,49);
+\draw[arr,bookorange] (in.west) -- (3,3) -- (3,43) -- (add.west);
+\node[lbl,text=bookorange,rotate=90] at (0.5,23) {残差接続（\secref{sec:training-residual}）};
+\node[lbl,anchor=west] at (32.5,14) {\secref{sec:training-norm}};
+\node[lbl,anchor=west,align=left] at (32.5,24) {初期化\\（\secref{sec:training-init}）};
+\node[lbl,anchor=west,align=left] at (32.5,35) {ドロップアウト\\（\secref{sec:training-regularization}）};
+\draw[black!40,dashed,rounded corners=2pt] (7,8.5) rectangle (31.5,38.5);
+\node[lbl] at (20,-3.5) {この 1 段を何十回も重ねる};
+% 右: 学習ループの側
+\node[font=\small\bfseries] at (88,52) {学習ループの側};
+\node[orangebox,minimum width=50mm,minimum height=6mm] (s0) at (88,45) {このステップの学習率を決める};
+\node[graybox,minimum width=50mm,minimum height=6mm] (s1) at (88,37) {(1) 順伝播 \ \code{logits = model(X)}};
+\node[graybox,minimum width=50mm,minimum height=6mm] (s2) at (88,30) {(2) 損失 \ \code{F.cross_entropy}};
+\node[graybox,minimum width=50mm,minimum height=6mm] (s3) at (88,23) {(3) \code{optimizer.zero_grad()}};
+\node[graybox,minimum width=50mm,minimum height=6mm] (s4) at (88,16) {(4) \code{loss.backward()}};
+\node[orangebox,minimum width=50mm,minimum height=6mm] (s45) at (88,8) {勾配クリッピング};
+\node[purplebox,minimum width=50mm,minimum height=6mm] (s5) at (88,0) {(5) \code{optimizer.step()}};
+\foreach \a/\b in {s0/s1,s1/s2,s2/s3,s3/s4,s4/s45,s45/s5} \draw[arr] (\a) -- (\b);
+\node[lbl,anchor=west] at (114,45) {\secref{sec:training-schedule}};
+\node[lbl,anchor=west] at (114,8) {\secref{sec:training-schedule}};
+\node[lbl,anchor=west,align=left] at (114,0) {AdamW\\（\secref{sec:training-optim}）};
+\end{tikzpicture}
+\caption{この章の地図。左はモデルの 1 段の中に足す部品、右は学習ループに足す部品である。
+灰色の 5 行は\chapref{ch:nn}のままで、色の付いた箱がこの章で加わる。括弧の中は、その部品を扱う節の番号。}
+\label{fig:training-map}
+\end{figure}
+
+章の前半（\secref{sec:training-init}〜\secref{sec:training-residual}）では、モデルの側を直します。
+後半（\secref{sec:training-optim}以降）では、学習ループの側を強くします。
+どの部品も、\chapref{ch:transformer}の Transformer と、\chapref{ch:pretraining}の事前学習で、そのまま使います。
+
+\section{初期化：信号の大きさを保って始める}\label{sec:training-init}
+
+最初に直すのは、学習を始める前の重み、つまり\term{初期化}{initialization}です。
+\chapref{ch:nn}の\figref{fig:nn-grad-norms}では、初期値の標準偏差を 1.0 にすると勾配が爆発しました。
+PyTorch の標準の初期値では、逆に小さくなりました。「調整した初期値」の 0.25 だけが、うまくいきました。
+この 0.25 という数は、どこから来たのでしょうか。この節では、それを実験と計算の両方で突き止めます。
+
+\subsection*{実験：信号は層を進むたびに何倍になるか}
+
+勾配の前に、まず順伝播を調べます。
+入力がネットワークを進むとき、各層の出力（以下、信号と呼びます）の大きさがどう変わるかを測ります。
+隠れ層を 50 枚、幅を 32 にして、活性化関数は ReLU にします。
+重みは、平均 0、標準偏差 $s$ の正規分布（\chapref{ch:math}）から選び、バイアスは 0 にします。
+$s$ を 0.10、0.20、0.25、0.30 と変えて、渦巻きのデータ 300 点を流します。学習はしません。
+
+出力の「大きさ」は、成分の 2 乗の平均の平方根で測ります。
+成分が平均してどのくらい 0 から離れているかを表す量です。
+2 乗するのは、符号に関係なく、0 からの離れ具合だけを測るためです。
+たとえば成分が $(3,-4)$ なら、2 乗の平均は $(9+16)/2=12.5$ で、その平方根は約 3.54 です。
+偶然の影響を減らすために、乱数の種を変えた 100 個のネットワークで測って平均しました（\file{ch05/init_stats.py}）。
+結果が\figref{fig:training-init-signal}です。縦軸は対数目盛りです。
+値が $10^{-20}$ から $10^{3}$ まで何十桁も違うので、ふつうの目盛りでは 1 枚に描けないからです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.7\linewidth,height=41mm,ymode=log,xmin=0,xmax=51,ymin=1e-21,ymax=1e6,
+  ytick={1e-20,1e-15,1e-10,1e-5,1,1e5},xlabel={層の番号},ylabel={出力の大きさ},
+  legend style={font=\scriptsize,at={(1.03,0.5)},anchor=west}]
+\addplot[bookorange] table[col sep=comma,x=layer,y=s030]{code/ch05/out/init_stats.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x=layer,y=s025]{code/ch05/out/init_stats.csv};
+\addplot[bookblue] table[col sep=comma,x=layer,y=s020]{code/ch05/out/init_stats.csv};
+\addplot[bookaccent] table[col sep=comma,x=layer,y=s010]{code/ch05/out/init_stats.csv};
+\legend{$s=0.30$,$s=0.25$,$s=0.20$,$s=0.10$}
+\end{axis}
+\end{tikzpicture}
+\caption{重みの標準偏差 $s$ と、各層の出力の大きさ（幅 32、隠れ層 50 枚、縦軸は対数目盛り）。
+$s=0.25$ の線だけが水平で、ほかは一定の傾きで上がるか下がる。直線になるのは、1 層ごとに同じ倍率が掛かるためである。}
+\label{fig:training-init-signal}
+\end{figure}
+
+\outputfile{ch05/out/init_stats.txt}
+
+「理論値」の列と下の 2 行は、このあとの計算で説明します。
+1 枚目の層だけは入力が 2 個なので、どの $s$ でも同じ決め方（標準偏差 1）にしてあります。
+「1 層あたりの倍率」は、第 1 層から第 50 層までの 49 回、毎回同じ倍率が掛かったとして求めた値です。
+$s=0.20$ の行なら、$8.68\times10^{-6}\div0.418$ の 49 乗根で、0.802 になります。
+
+見てほしいのは、線の傾きです。
+$s=0.25$ のときだけ、信号の大きさが 50 層を通っても変わりません。
+$s=0.20$ では 1 層ごとに約 0.8 倍になり、50 層で約 5 万分の 1 になります。
+第 1 層の 0.418 が、第 50 層では $8.68\times10^{-6}$ です。割り算をすると $0.418\div(8.68\times10^{-6})\approx4.8$ 万です。
+$s=0.30$ では 1 層ごとに約 1.2 倍になり、50 層で数千倍に膨らみます（$3.69\times10^{3}\div0.418\approx8{,}800$ 倍）。
+初期値を 2 割変えただけで、この差です。\chapref{ch:nn}で見た「掛け算の繰り返し」が、順伝播でも起きています。
+
+\subsection*{計算：倍率を式で求める}
+\skimread{結論は 2 つです。1 層を通るたびに、信号の 2 乗の平均は $n s^2/2$ 倍になります（式\eqref{eq:training-var-layer}。$n$ は層の入力の数、$s$ は重みの標準偏差）。
+$s=\sqrt{2/n}$ にすれば倍率は 1 で、これが He の初期化です。PyTorch の標準の初期値は $s=1/\sqrt{3n}$ と小さく、信号が 1 層ごとに約 0.4 倍に縮みます。導出は 2 周目に回せます。}
+
+倍率が 1 になる $s$ を、計算で求めましょう。
+ある層の 1 個のニューロンに注目します。入力を $x_1,\dots,x_n$、重みを $w_1,\dots,w_n$ とします。
+バイアスは 0 なので、活性化関数に入る前の値は
+\[ u=w_1x_1+w_2x_2+\dots+w_nx_n \]
+です。$n$ は入力の数で、いまの実験では $n=32$ です。
+重みはそれぞれ独立に、平均 0、分散 $s^2$ の分布から選びます（分散は標準偏差の 2 乗でした）。
+ここからの「平均」と「分散」は、重みを何度も選び直したときのものです。入力 $x_i$ は、決まった数として扱います。
+
+$u$ の分散を求めるのに、分散の性質を 2 つ使います。
+\begin{itemize}
+\item 独立な値を足すと、分散も足し算になります。
+たとえばサイコロ 1 個の目の分散は 2.917 で（\chapref{ch:math}）、2 個の目の合計の分散は、その 2 倍の 5.833 です。
+\item 平均 0・分散 $s^2$ の重み $w$ を、それと無関係な数 $x$ に掛けると、$wx$ の分散は $s^2x^2$ です。
+$x$ 倍すれば散らばりの幅も $x$ 倍になり、分散はその 2 乗倍になるからです。
+たとえば $x=3$ なら、$wx$ の散らばりの幅は $w$ の 3 倍で、分散は 9 倍の $9s^2$ です。
+\end{itemize}
+入力の 2 乗の平均を $q=\frac{1}{n}(x_1^2+\dots+x_n^2)$ と書きます。先ほど測った「大きさ」の 2 乗です。
+2 つの性質を使うと、$u$ の分散は
+\begin{equation}
+\Var[u]=s^2x_1^2+s^2x_2^2+\dots+s^2x_n^2=s^2\,(x_1^2+x_2^2+\dots+x_n^2)=n\,s^2\,q
+\label{eq:training-var-u}
+\end{equation}
+です。最初の等号では、$w_ix_i$ の分散 $s^2x_i^2$（2 つ目の性質）を、$n$ 個足しました（1 つ目の性質）。
+最後の等号は、$q$ の決め方から $x_1^2+\dots+x_n^2=nq$ となるからです。
+
+重みの平均が 0 なので、$w_ix_i$ の平均も、それらを足した $u$ の平均も 0 です。
+分散は「平均からの差の 2 乗の平均」でした。平均が 0 なら、分散は $u^2$ の平均そのものです。
+層の 32 個のニューロンは、それぞれ別の重みを引いた $u$ なので、32 個にわたる 2 乗の平均も、この値に近くなります。
+つまり、全結合層を通ると、2 乗の平均は $n s^2$ 倍になります。
+
+次に ReLU を通します。重みは 0 を中心に左右対称に散らばるので、$u$ は正の値と負の値を同じ確からしさでとります。
+ReLU は負の値を 0 にするので、$u^2$ の平均のうち、負の側の半分が消えます。
+出力 $h=\relu(u)$ の 2 乗の平均は、$u$ のときの半分です（\figref{fig:training-variance}）。
+まとめると、1 層を通るたびに、2 乗の平均は
+\begin{equation}
+q_{\text{出力}}=\frac{n\,s^2}{2}\,q_{\text{入力}}
+\label{eq:training-var-layer}
+\end{equation}
+になります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+\node[plainbox,minimum width=24mm,align=center] (x) at (0,0) {入力 $x_1,\dots,x_n$\\[-0.5mm]{\footnotesize 2 乗の平均 $q$}};
+\node[box,minimum width=30mm,align=center] (u) at (46,0) {$u=\sum_i w_ix_i$\\[-0.5mm]{\footnotesize 2 乗の平均 $n s^2 q$}};
+\node[greenbox,minimum width=30mm,align=center] (h) at (96,0) {$h=\relu(u)$\\[-0.5mm]{\footnotesize 2 乗の平均 $\frac{1}{2}n s^2 q$}};
+\draw[arr] (x) -- node[above,lbl] {$n$ 個を足す} node[below,lbl] {$\times\, n s^2$} (u);
+\draw[arr] (u) -- node[above,lbl] {負の半分が 0 に} node[below,lbl] {$\times\,\frac{1}{2}$} (h);
+\end{tikzpicture}
+\caption{1 層を通るときの、2 乗の平均の変化。全結合層で $n s^2$ 倍、ReLU で半分になる。
+$n s^2/2=1$ なら、信号の大きさは何層通っても変わらない。}
+\label{fig:training-variance}
+\end{figure}
+
+何層通っても大きさを保つには、式\eqref{eq:training-var-layer}の倍率が 1 であればよいことになります。
+$n s^2/2=1$ を $s$ について解くと、$s=\sqrt{2/n}$ です。
+$n=32$ なら $\sqrt{2/32}=\sqrt{1/16}=0.25$ です。\chapref{ch:nn}の「調整した初期値」の正体は、これでした。
+
+実験と照らし合わせましょう。測った「大きさ」は 2 乗の平均の平方根なので、1 層あたりの倍率も平方根をとって $\sqrt{n s^2/2}$ です。
+$n=32$ を入れると、$\sqrt{32s^2/2}=\sqrt{16s^2}=4s$ になります。
+$s=0.20$ なら $4\times0.20=0.8$、$s=0.30$ なら 1.2 になるはずです。
+先ほどの出力の「理論値」の列がこの値で、測定値と小数第 2 位まで合っています。
+
+\begin{definition}[He の初期化]
+入力の数が $n$ の全結合層の重みを、平均 0、分散 $2/n$（標準偏差 $\sqrt{2/n}$）の正規分布から独立に選び、
+バイアスを 0 にする決め方を、\term{He の初期化}{He initialization}と呼びます。活性化関数が ReLU のときに使います。
+\end{definition}
+
+名前は、2015 年にこの方法を提案した Kaiming He に由来します\cite{he2015delving}。
+それより前に、Glorot と Bengio は、シグモイドや tanh のための初期化を提案していました\cite{glorot2010understanding}。
+こちらは\term{Xavier の初期化}{Xavier initialization}と呼ばれます（Xavier は Glorot の名です）。
+tanh は ReLU のように半分を消さないので、分散は約 $1/n$ にします。「層を通っても信号の大きさを変えない」という考えは同じです。
+逆伝播でも、勾配は同じ重みの行列を逆向きに通ります（式\eqref{eq:nn-layer-backward}）。
+層の入力と出力の数が同じなら、同じ条件で勾配の大きさも保たれます。
+
+では、PyTorch の標準の初期値は、なぜうまくいかなかったのでしょうか。
+\code{nn.Linear} は、重みを $-1/\sqrt{n}$ から $1/\sqrt{n}$ までの一様な乱数で初期化します。
+$-a$ から $a$ までの一様な乱数は、平均が 0 です。分散は $x^2$ の平均なので、$\frac{1}{2a}\int_{-a}^{a}x^2\,dx=\frac{a^2}{3}$ です
+（積分の値 $\frac{2a^3}{3}$ を、区間の長さ $2a$ で割りました）。
+標準偏差は、その平方根の $a/\sqrt{3}$ です。
+$a=1/\sqrt{n}$ を入れると、重みの標準偏差は $1/\sqrt{3n}$ になります。$n=32$ なら $1/\sqrt{96}\approx0.10$ です。
+\figref{fig:training-init-signal}でいちばん急に落ちていた線と同じです。
+倍率は $4s=4\times0.10=0.4$ なので、信号は 1 層ごとに約 0.4 倍になります。10 層で $0.4^{10}\approx0.0001$、つまり約 1 万分の 1 です。
+層が 2〜3 枚なら問題になりませんが、深くすると信号が届きません。
+
+\subsection*{He の初期化で学習し直す}
+
+ここまでの結論は、「重みの標準偏差を $\sqrt{2/n}$ にすれば、信号の大きさは何層通っても変わらない」でした。
+この決め方が He の初期化です。$n$ は層の入力の数です。
+PyTorch で He の初期化をするには、層 \code{layer} を作ったあとで、重みを上書きします（\file{ch05/deepmlp.py} の \code{he_init_}）。
+\begin{pycode}
+std = math.sqrt(2.0 / layer.in_features)
+nn.init.normal_(layer.weight, mean=0.0, std=std)
+nn.init.zeros_(layer.bias)       # バイアスは 0 から始める
+\end{pycode}
+\code{layer.in_features} は、その層の入力の数 $n$ です。
+\code{nn.init.normal_} は、テンソルの中身を正規分布の乱数で上書きします。
+同じことをする関数 \code{nn.init.kaiming_normal_} も PyTorch に用意されています。
+
+これで、\chapref{ch:nn}で学習できなかった隠れ層 10 枚の MLP を学習し直します（\file{ch05/deep_train.py}）。
+学習率 0.1 の SGD で 1,000 ステップ学習させると、訓練損失は 0.000 まで下がり、正解率は 100\% になりました。
+テストデータの正解率も 99\% です。乱数の種を変えて 5 回試すと、5 回とも学習できました。
+以下、「学習できた」は、訓練データの正解率が 99\% 以上になったことを指します。
+初期値を変えただけで、学習できるようになりました。
+
+ただし、これで解決ではありません。
+同じ方法で隠れ層を 20 枚にすると、5 回のうち学習できたのは 2 回だけでした。50 枚では、1 回も学習できませんでした。
+\chapref{ch:nn}の最後では 20 枚も学習できましたが、あれは乱数の種が 1 つだけの結果でした。
+He の初期化が保証するのは、学習を始める瞬間の、しかも平均としての釣り合いだけです。
+学習が始まれば重みは動き、釣り合いは少しずつ崩れます。層が多いほど、小さな崩れが掛け算で増幅されます。
+なお、\chapref{ch:nn}では学習率を 0.5 にしていましたが、ここでは 0.1 に下げています。
+0.5 のままだと、10 枚でも損失が跳ね回って学習に失敗します。この問題は\secref{sec:training-schedule}で解決します。
+
+\begin{quiz}
+幅 512 の全結合層（入力の数 $n=512$）を ReLU と組み合わせます。He の初期化の標準偏差はいくつでしょうか。
+PyTorch の標準の初期値のままにすると、信号は 1 層ごとに約何倍になるでしょうか。
+\end{quiz}
+
+答えを確かめます。標準偏差は $\sqrt{2/512}=\sqrt{1/256}=1/16=0.0625$ です。幅が広いほど、重みは小さくします。
+標準の初期値の標準偏差は $1/\sqrt{3n}$ なので、式\eqref{eq:training-var-layer}の倍率は $n\cdot\frac{1}{3n}\cdot\frac{1}{2}=\frac{1}{6}$ です。
+大きさの倍率はその平方根で、約 0.41 倍です。この倍率は幅 $n$ によりません。
+
+この節のまとめです。初期値の大きさは、信号が層を通るときの倍率を決めます。
+ReLU なら標準偏差を $\sqrt{2/n}$ にすると、倍率がちょうど 1 になります。
+
+\section{正規化：途中で大きさをそろえ直す}\label{sec:training-norm}
+
+初期化で釣り合いをとれるのは、学習を始める瞬間だけでした。
+それなら、学習の途中でも、信号の大きさを測ってそろえ直せばよいのではないでしょうか。
+この考えを形にしたのが\term{正規化}{normalization}です。
+この節では、2 つの方式を比べ、LLM が使っているほうを自作します。
+
+\subsection*{バッチ正規化とその弱点}
+\skimread{結論は「バッチ正規化は、同じバッチに入ったほかのデータに出力が左右される。そのため LLM では使わない」です。
+\figref{fig:training-norm-axes}と\tabref{tab:training-bn-example}を見たら、次の小節（必読）へ進めます。}
+
+最初に広まったのは、2015 年の\term{バッチ正規化}{batch normalization}です\cite{ioffe2015batch}。
+ミニバッチ（\chapref{ch:ml}）の $B$ 件のデータを層に通すと、出力は $B\times d$ の表になります（$d$ は層の幅）。
+バッチ正規化は、この表を縦に見ます（\figref{fig:training-norm-axes}の左）。
+ニューロン 1 個ごとに、$B$ 件にわたる平均と分散を求めます。そして、平均が 0、分散が 1 になるように、平均を引いてから標準偏差で割ります。
+これで、画像を扱う深いネットワークの学習が格段に安定しました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+\foreach \ox/\ttl in {0/{バッチ正規化},70/{レイヤー正規化}} {
+  \node[font=\small\bfseries] at (\ox+18,31) {\ttl};
+  \foreach \r in {0,...,3} \foreach \c in {0,...,5}
+    \node[cell,minimum size=6mm] at (\ox+\c*6+3,\r*6+3) {};
+  \node[lbl,rotate=90] at (\ox-4,12) {データ（$B$ 件）};
+  \node[lbl] at (\ox+18,-3.5) {ニューロン（$d$ 個）};
+}
+\draw[bookaccent,very thick,fill=figred,fill opacity=0.6] (12,0) rectangle (18,24);
+\node[lbl,text=bookaccent,anchor=west,align=left] at (38,12) {縦に平均：\\ほかのデータが\\混ざる};
+\draw[bookgreen,very thick,fill=figgreen,fill opacity=0.6] (70,12) rectangle (106,18);
+\node[lbl,text=bookgreen,anchor=west,align=left] at (108,15) {横に平均：\\自分だけで\\決まる};
+\end{tikzpicture}
+\caption{2 つの正規化が、平均と分散を求める範囲。表の 1 行がデータ 1 件、1 列がニューロン 1 個である。
+バッチ正規化は列（縦）ごとに、レイヤー正規化は行（横）ごとに計算する。}
+\label{fig:training-norm-axes}
+\end{figure}
+
+しかし、バッチ正規化には弱点があります。縦に平均をとるので、あるデータの出力が、同じバッチに入ったほかのデータに左右されるのです。
+実際に確かめましょう。データ $(1, 2, 6)$ を、別々の仲間と組ませてバッチ正規化にかけました（\file{ch05/layernorm.py}）。
+仲間 A は $(0,1,2)$ と $(2,3,1)$、仲間 B は $(9,0,5)$ と $(4,8,0)$ です。結果を\tabref{tab:training-bn-example}に並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{データ $(1,2,6)$ を、2 通りの仲間と同じバッチに入れて正規化した結果。
+バッチ正規化の出力は仲間によって変わるが、レイヤー正規化の出力は変わらない（\protect\file{ch05/layernorm.py}）。}
+\label{tab:training-bn-example}
+\small
+\begin{tabular}{llll}
+\toprule
+ & 仲間のデータ & バッチ正規化の出力 & レイヤー正規化の出力 \\
+\midrule
+仲間 A & $(0,1,2)$ と $(2,3,1)$ & $(0,\ 0,\ 1.389)$ & $(-0.926,\ -0.463,\ 1.389)$ \\
+仲間 B & $(9,0,5)$ と $(4,8,0)$ & $(-1.111,\ -0.392,\ 0.889)$ & $(-0.926,\ -0.463,\ 1.389)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+仲間 A と組むと、出力は $(0, 0, 1.389)$ でした。1 列目は $(1,0,2)$ で平均が 1 なので、注目するデータの 1 は 0 になります。
+3 列目は $(6,2,1)$ です。平均は 3 で、平均との差は $(3,-1,-2)$ です。
+分散は $(9+1+4)/3\approx4.667$、標準偏差は約 2.160 なので、注目するデータの 6 は $(6-3)/2.160\approx1.389$ になります。
+仲間 B と組むと、出力は $(-1.111, -0.392, 0.889)$ です。
+1 列目が $(1,9,4)$ に変わり、平均は約 4.667、標準偏差は約 3.300 になります。同じ 1 が、今度は $(1-4.667)/3.300\approx-1.111$ です。
+入力は同じなのに、仲間が変わると出力が変わってしまいます。
+このため、バッチが小さいと平均と分散が安定しません。
+また、文章を 1 本ずつ生成するときにはバッチの仲間がいないので、学習中にためておいた平均を代わりに使います。
+学習時と推論時で計算が変わるので、不具合のもとになりやすい方式です。
+
+\subsection*{レイヤー正規化}
+
+そこで、層の出力を並べた表（1 行がデータ 1 件、1 列がニューロン 1 個）を、縦ではなく横に見ることにします（\figref{fig:training-norm-axes}の右）。
+データ 1 件ごとに、その $d$ 個の成分の平均と分散を求めて、そろえます。
+これが\term{レイヤー正規化}{layer normalization}です\cite{ba2016layer}。
+出力はそのデータだけで決まります。データ $(1,2,6)$ で計算してみます。
+平均は $(1+2+6)/3=3$ で、平均との差は $(-2,-1,3)$ です。分散は $(4+1+9)/3\approx4.667$、標準偏差は約 2.160 です。
+差を標準偏差で割ると、$(-0.926,-0.463,1.389)$ になります。
+同じバッチにどんなデータがいても、この計算は変わりません（\tabref{tab:training-bn-example}の右の列）。
+Transformer は、こちらを使います。
+
+\begin{definition}[レイヤー正規化]
+ベクトル $\vu\in\R^{d}$ の成分の平均を $\mu=\frac{1}{d}\sum_{j}u_j$、分散を $\sigma^2=\frac{1}{d}\sum_{j}(u_j-\mu)^2$ とします。
+レイヤー正規化は、各成分を
+\begin{equation}
+\mathrm{LN}(\vu)_j=\gamma_j\,\frac{u_j-\mu}{\sqrt{\sigma^2+\epsilon}}+\beta_j
+\label{eq:training-layernorm}
+\end{equation}
+に変える操作です。$\gamma_j$ と $\beta_j$ は学習するパラメータで、最初は $\gamma_j=1$、$\beta_j=0$ にします。
+$\epsilon$ は 0 で割るのを防ぐための小さな数（標準は $10^{-5}$）です。成分がすべて同じ値だと $\sigma^2=0$ になるので、その備えです。
+\end{definition}
+
+\snippet{レイヤー正規化の自作}{code:training-layernorm}{ch05/layernorm.py}{layernorm}
+
+\coderef{code:training-layernorm}は、この式をそのままコードにしたものです。
+\code{nn.Parameter} は、テンソルを「学習するパラメータ」として登録する書き方です。
+こうしておくと \code{model.parameters()} に含まれ、オプティマイザが更新してくれます。
+\code{dim=-1} は「最後の軸」、つまり 1 件のデータの中の $d$ 個の成分にわたって平均をとる指定です。
+\code{keepdim=True} で軸を長さ 1 のまま残すので、次の行の引き算は 1 件ごとに行われます。
+
+小さな例を手で計算します。$\vu=(2, 4, 6, 8)$ とします。平均は $\mu=5$ です。
+平均との差は $(-3,-1,1,3)$ で、その 2 乗の平均が分散なので、$\sigma^2=(9+1+1+9)/4=5$、$\sigma\approx 2.236$ です。
+差を $\sigma$ で割ると、$(-1.342, -0.447, 0.447, 1.342)$ になります（$\epsilon$ は小さいので無視しました）。
+出力の平均は 0、分散は 1 です。自作のコードも、同じ値を出しました。
+
+ここで、入力を 10 倍の $(20, 40, 60, 80)$ にしてみます。
+平均との差も $\sigma$ も 10 倍になるので、割り算で打ち消し合い、出力は同じ $(-1.342, -0.447, 0.447, 1.342)$ です。
+つまり、入ってきた信号がどれだけ大きくても小さくても、出ていく信号の大きさは同じになります。
+前の層までで釣り合いが崩れていても、ここで仕切り直せるのです。
+
+$\gamma$ と $\beta$ は、そろえすぎを防ぐためにあります。
+平均 0・分散 1 がいつも最適とは限らないので、倍率 $\gamma$ とずらす量 $\beta$ を、モデルが学習で調整できるようにします。
+最初は $\gamma=1$、$\beta=0$ なので、学習の出発点では大きさがそろっています。
+パラメータは $\gamma$ と $\beta$ が 32 個ずつで、全結合層（$32\times32+32=1{,}056$ 個）に比べればわずかです。
+幅 32 の乱数の入力で PyTorch の \code{nn.LayerNorm} と比べると、自作との出力の差は最大で $4.8\times10^{-7}$ でした。計算の丸めの範囲です。
+
+\subsection*{深い MLP に入れる}
+
+MLP には、全結合層と ReLU の間に入れます。
+全結合層の出力、つまり ReLU に入る前の値の大きさをそろえてから、ReLU に通すためです。コードでは次の 1 行です。
+\begin{pycode}
+h = torch.relu(norm(layer(h)))
+\end{pycode}
+He の初期化にレイヤー正規化を加えて、隠れ層 20 枚の MLP をもう一度 5 回学習させました。
+学習できたのは 3 回です。正規化なしの 2 回と、ほとんど変わりません。50 枚では、やはり 1 回も学習できませんでした。
+信号の大きさをそろえるだけでは、深いネットワークは学習できないのです。
+レイヤー正規化が力を発揮するのは、次の節の部品と組み合わせたときです。
+
+この節のまとめです。レイヤー正規化は、データ 1 件ごとに成分の平均を 0、分散を 1 にそろえ直します。
+バッチの仲間に左右されないので、Transformer の標準の部品になっています。
+
+\section{残差接続：勾配の高速道路}\label{sec:training-residual}
+
+初期化と正規化を入れても、20 枚は学習できたりできなかったりで、50 枚には届きません。
+実用の LLM は 100 枚を超える層を重ねます。どうすれば、もっと深くできるのでしょうか。
+答えは、配線を 1 か所変えるだけです。
+
+\subsection*{置き換えるのをやめて、足し込む}
+
+これまでの層は、入力 $\vh$ を受け取り、新しい値 $F(\vh)$ で\emph{置き換えて}いました。
+$F$ は「全結合層と活性化関数」をまとめて書いたものです。
+\term{残差接続}{residual connection}は、これを\emph{足し込む}形に変えます。
+\begin{equation}
+\vh\leftarrow\vh+F(\vh)
+\label{eq:training-residual}
+\end{equation}
+入力 $\vh$ をそのまま出力へ運ぶ近道を作り、層の出力はそこに足すだけにします（\figref{fig:training-residual}）。
+層 $F$ が学ぶのは、入力からの「差分」だけです。この差分を残差と呼ぶのが、名前の由来です。
+2015 年に画像認識のモデル ResNet で提案され、152 層という当時としては桁違いの深さを実現しました\cite{he2016deep}。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+% 左: ふつうの層
+\node[font=\small\bfseries] at (10,40) {ふつうの層};
+\node[plainbox,minimum width=14mm] (a0) at (10,0) {$\vh$};
+\node[box,minimum width=14mm] (a1) at (10,16) {$F$};
+\node[plainbox,minimum width=14mm] (a2) at (10,32) {$F(\vh)$};
+\draw[arr] (a0) -- (a1); \draw[arr] (a1) -- (a2);
+\draw[darr,bookaccent] (20,29) -- node[right,lbl,text=bookaccent,align=left] {勾配は必ず\\$F$ を通る} (20,3);
+% 右: 残差接続
+\node[font=\small\bfseries] at (75,40) {残差接続};
+\node[plainbox,minimum width=14mm] (b0) at (75,0) {$\vh$};
+\node[box,minimum width=14mm] (b1) at (75,13) {$F$};
+\node[op] (b2) at (75,24) {$+$};
+\node[plainbox,minimum width=20mm] (b3) at (75,34) {$\vh+F(\vh)$};
+\draw[arr] (b0) -- (b1); \draw[arr] (b1) -- (b2); \draw[arr] (b2) -- (b3);
+\draw[arr,bookorange,very thick] (b0.west) -- (60,0) -- (60,24) -- (b2.west);
+\node[lbl,text=bookorange,anchor=east,align=right] at (58,12) {近道：\\$\vh$ をそのまま運ぶ};
+\draw[darr,bookaccent] (84.5,21) -- (84.5,3);
+\draw[darr,bookgreen,very thick] (91,30) -- (91,3);
+\node[lbl,text=bookgreen,anchor=west,align=left] at (93,18) {勾配が近道を\\そのまま通る};
+\end{tikzpicture}
+\caption{ふつうの層と残差接続。実線が順伝播、破線が逆伝播である。
+残差接続では、勾配が $F$ を通る道（赤）のほかに、何も掛けられずに戻る道（緑）がある。}
+\label{fig:training-residual}
+\end{figure}
+
+なぜこれで深くできるのかを、逆伝播で考えます。
+\figref{fig:training-residual}の右では、$\vh$ が 2 か所で使われています。近道と、$F$ の入力です。
+\chapref{ch:nn}で学んだように、値が枝分かれしたところでは、逆伝播のときに勾配を足します（式\eqref{eq:nn-fanout}）。
+出力側から届いた勾配を $\vg$ とすると、$\vh$ に届く勾配は
+\begin{equation}
+\underbrace{\vg}_{\text{近道を通る分}}+\underbrace{(F\text{ を逆向きに通った }\vg)}_{F\text{ を通る分}}
+\label{eq:training-residual-grad}
+\end{equation}
+です。足し算の局所勾配は 1 でした（\tabref{tab:nn-local-grads}）。
+届いた勾配に 1 を掛けて渡すだけなので、近道を通る分は $\vg$ のままです。
+
+ふつうの層を 50 枚重ねると、勾配は 50 個の $F$ を次々に通ります。どこかで小さくなれば、その先には届きません。
+残差接続があれば、$F$ を通る道がどれだけ細くても、近道の分は必ず残ります。
+近道は 50 段すべてにつながっているので、出力側の勾配は、どの層にも直接届きます。
+これが、残差接続が勾配の「高速道路」と呼ばれる理由です。
+
+\subsection*{正規化と組み合わせる}
+
+ただし、残差接続だけを加えると失敗します。
+足し算をするたびに、$\vh$ が大きくなるからです。
+He の初期化では、$F(\vh)$ の 2 乗の平均は $\vh$ とほぼ同じです（\secref{sec:training-init}）。
+しかも、どちらも ReLU を通った 0 以上の値なので、足しても打ち消し合いません。
+0 以上の数 $a$ と $b$ では、$(a+b)^2=a^2+2ab+b^2$ は $a^2+b^2$ 以上になります。
+$a^2$ と $b^2$ の平均がほぼ同じなら、足したあとの 2 乗の平均は、1 段ごとに 2 倍以上です。
+50 段なら $2^{50}$ 倍以上になります。$2^{10}\approx10^{3}$ なので、$2^{50}=(2^{10})^5\approx10^{15}$ 倍です。
+実際、正規化なしで残差接続だけを入れた 50 枚の MLP は、学習前の損失が約 $4\times10^{9}$ になり、1 ステップで発散しました。
+
+そこで、$F$ に入れる前に正規化します。
+\secref{sec:training-norm}では全結合層のあとに正規化を置きましたが、ここからは前に置きます。
+\begin{equation}
+\vh\leftarrow\vh+F(\mathrm{LN}(\vh))
+\label{eq:training-preln}
+\end{equation}
+こうすると、$\vh$ がどれだけ大きくなっていても、$F$ に入る値の大きさは一定です。足される量も一定になり、倍々には増えません。
+近道そのものには何も置かないので、高速道路はそのままです。
+この形は\jterm{事前正規化}（Pre-LN）と呼ばれ、GPT-2 以降の LLM の標準です\cite{xiong2020layer}。
+\figref{fig:training-map}の左側が、この配線でした。
+
+\snippet{残差接続と正規化を切り替えられる順伝播}{code:training-deepmlp-forward}{ch05/deepmlp.py}{deepmlp-forward}
+
+\code{self.first} は入力 2 個を幅 32 に広げる全結合層、\code{self.out} は 3 クラスの値を出す全結合層です。
+\code{self.layers} には間の全結合層が、\code{self.norms} には対応するレイヤー正規化が並んでいます。
+正規化を使わない設定では、\code{norm} は何もしない部品になります。
+残差接続を使うときは \code{h + ...} で足し込み、使わないときは置き換えます。この 1 行で、正規化の位置も変わります。
+最後の \code{self.last_norm} は、大きくなった $\vh$ を出力層の前でそろえるレイヤー正規化です。正規化と残差接続を両方使うときだけ入ります。
+正規化なしで残差接続だけを使う設定には、この正規化もありません。先ほどの約 $4\times10^{9}$ という損失は、その設定で測った値です。
+
+\subsection*{50 枚で比べる}
+
+ここまでの部品を、隠れ層 10 枚、20 枚、50 枚で比べます。
+幅は 32、学習率 0.1 の SGD で 1,000 ステップという設定は、すべて同じです。
+結果は初期値の乱数に左右されるので、乱数の種を変えて 5 回ずつ学習させ、学習できた回数を数えました（\tabref{tab:training-depth}）。
+
+\begin{table}[tbp]
+\centering
+\caption{部品の組み合わせと、5 回のうち学習できた回数。「発散」は、5 回とも損失が計算できなくなったことを表す
+（\protect\file{ch05/deep_train.py} を乱数の種 0〜4 で実行し、\protect\file{ch05/deep_summary.py} で集計）。}
+\label{tab:training-depth}
+\small
+\begin{tabular}{lccc}
+\toprule
+設定 & 隠れ層 10 枚 & 20 枚 & 50 枚 \\
+\midrule
+PyTorch の標準の初期値 & 0 回 & 0 回 & 0 回 \\
+He の初期化 & 5 回 & 2 回 & 0 回 \\
+He＋レイヤー正規化 & 5 回 & 3 回 & 0 回 \\
+He＋残差接続（正規化なし） & 発散 & 発散 & 発散 \\
+He＋レイヤー正規化＋残差接続 & 5 回 & 5 回 & 5 回 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+3 つをそろえた最後の行だけが、すべての深さで 5 回とも学習できています。
+50 枚でも、訓練損失は 0.000、訓練データとテストデータの正解率は 5 回とも 100\% でした。
+部品が欠けた行は、10 枚なら学習できても、20 枚では運任せになり、50 枚では 1 回も学習できません。
+正規化のない残差接続は、15 回すべてで発散しました。
+
+最後の 2 行の間では、残差接続のほかに、正規化の位置と出力層の前の正規化も変わっています。
+どれが効いたのかを、50 枚で 1 つずつ確かめました（\file{ch05/deep_ablation.py}。どれも 5 回ずつ）。
+正規化を前に移しても、残差接続がなければ 0 回です。
+逆に、正規化を\secref{sec:training-norm}の位置に置いたままでも、残差接続を足せば 5 回とも学習できました。決め手は残差接続です。
+ただし、正規化を前に置く形で出力層の前の正規化を外すと、5 回とも発散しました。
+「He＋レイヤー正規化」は、学習率を 0.01 や 0.03 に下げても、\secref{sec:training-optim}で学ぶ Adam に替えても、0 回のままでした。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=curve,training small,xmode=log,xmin=1,xmax=1000,ymin=0,ymax=2.1,unbounded coords=jump,restrict y to domain=-1:10,
+  xlabel={ステップ（対数目盛り）},ylabel={訓練損失},title={(a) 学習曲線}]
+\addplot[bookorange] table[col sep=comma,x expr=\thisrow{step}+1,y=he]{code/ch05/out/deep_train_curves.csv};
+\addplot[bookblue] table[col sep=comma,x expr=\thisrow{step}+1,y=he_ln]{code/ch05/out/deep_train_curves.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x expr=\thisrow{step}+1,y=he_res_ln]{code/ch05/out/deep_train_curves.csv};
+\end{axis}
+\begin{axis}[at={(curve.east)},anchor=west,xshift=17mm,training small,ymode=log,xmin=0,xmax=51,ymin=1e-22,ymax=1e2,
+  xtick={1,10,20,30,40,50},
+  ytick={1e-20,1e-15,1e-10,1e-5,1},xlabel={層の番号（1 が入力側）},ylabel={勾配の大きさ},title={(b) 学習前の勾配},
+  legend to name=trainingdepthlegend,legend columns=4,
+  legend style={draw=none,font=\scriptsize,/tikz/every even column/.append style={column sep=3mm}}]
+\addplot[bookaccent] table[col sep=comma,x=layer,y=default]{code/ch05/out/grad_flow.csv};
+\addplot[bookorange] table[col sep=comma,x=layer,y=he]{code/ch05/out/grad_flow.csv};
+\addplot[bookblue] table[col sep=comma,x=layer,y=he_ln]{code/ch05/out/grad_flow.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x=layer,y=he_res_ln]{code/ch05/out/grad_flow.csv};
+\legend{標準の初期値,He,He＋正規化,He＋正規化＋残差}
+\end{axis}
+\end{tikzpicture}\\[0.5mm]
+\pgfplotslegendfromname{trainingdepthlegend}
+\caption{隠れ層 50 枚の MLP（乱数の種 0）。色は (a) と (b) で共通である。(a) 残差接続を入れたモデル（緑）だけが、数十ステップで損失を下げる。He の初期化だけのモデル（橙）は 732 ステップ目で発散し、線が途切れている。
+(b) 学習前に測った、各層の重みについての勾配の大きさ。標準の初期値（赤。(a) にはない）では、入力側で $10^{-20}$ まで小さくなる。}
+\label{fig:training-depth50}
+\end{figure}
+
+\figref{fig:training-depth50}(a) は、50 枚のときの学習曲線です。
+残差接続を入れたモデルは、最初の数十ステップで損失が急に下がっています。
+He＋正規化は 1.1 の近くから動かず、He だけのモデルは途中で発散します。
+(b) は、学習前の各層の勾配の大きさです（\file{ch05/grad_flow.py}）。
+標準の初期値では、入力側の層の勾配が $10^{-20}$ ほどしかありません。これでは重みは動きません。
+残差接続を入れたモデルは、すべての層で勾配が $0.1$ 前後にそろっています。高速道路が働いています。
+
+ここまでで説明できたことと、できていないことを分けておきます。
+説明できたのは 2 つです。標準の初期値の失敗は、勾配が入力側に届かないためでした。
+正規化のない残差接続の発散は、信号が倍々に大きくなるためでした。
+説明できていないのは、He の初期化を使った 2 つのモデルの失敗です。
+(b) の橙と青の線のとおり、学習前の勾配は入力側まで届いています。それでも 50 枚は学習できませんでした。
+残差接続がなぜここまで効くのかは、勾配の大きさ以外の面からも、いまも研究が続いています。
+確かなのは、深いネットワークを学習させるときに、残差接続が欠かせないという経験上の事実です。
+
+この節のまとめです。残差接続は、層の出力を入力に足し込む配線です。
+勾配が何も掛けられずに戻る近道ができ、正規化と組み合わせると 50 枚の MLP も学習できます。
+
+\subsection*{ここまでの道のり}
+
+章の半分まで来ました。モデルの側に足した 3 つの部品を、3 行で振り返ります。
+\begin{itemize}
+\item 初期化：重みの標準偏差を $\sqrt{2/n}$ にして、学習の出発点で信号の大きさを保ちます（\secref{sec:training-init}）。
+\item 正規化：レイヤー正規化で、学習の途中でも信号の大きさをそろえ直します（\secref{sec:training-norm}）。
+\item 残差接続：層の出力を足し込む形にして、勾配の近道を作ります（\secref{sec:training-residual}）。
+\end{itemize}
+ここからは、学習ループの側に目を移します。同じモデルを、もっと速く、もっと安定に学習させる方法です。
+
+後半では、実験ごとにモデルと設定が変わります。\tabref{tab:training-experiments}に、この章の実験の設定をまとめました。
+「いまどのモデルの話か」を見失ったら、この表に戻ってください。
+データはどれも渦巻きの訓練用 300 点で、モデルの幅は断らない限り 32 です。
+
+\begin{table}[tbp]
+\centering
+\caption{この章の学習実験の設定。前半はモデルの側だけを変え、後半は学習ループの側を変えている。
+「部品」の「標準」は PyTorch の標準の初期値、「He」は He の初期化だけ、「全部」は He の初期化・レイヤー正規化・残差接続の 3 つを指す。
+「3 手法」は SGD・モーメンタム・Adam で、学習率を 10 通りずつ試した。
+「点数」は 1 ステップの勾配の計算に使う訓練データの数で、300 なら全部である。1 バッチの実験は、同じ 8 点を使い続ける。}
+\label{tab:training-experiments}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{lllllrr}
+\toprule
+節 & 実験 & 隠れ層の枚数 & 部品 & 手法（学習率） & ステップ & 点数 \\
+\midrule
+\ref{sec:training-init}〜\ref{sec:training-residual} & 深さの比較 & 10・20・50 & 切り替え & SGD（0.1） & 1,000 & 300 \\
+\ref{sec:training-optim} & 手法の比較 & 2 & 標準 & 3 手法 & 300 & 300 \\
+\ref{sec:training-schedule} & スケジュール & 20 & 全部 & Adam（最大 0.1） & 400 & 32 \\
+\ref{sec:training-schedule} & クリッピング & 10 & He & SGD（0.5） & 500 & 300 \\
+\ref{sec:training-regularization} & 過学習 & 2（幅 128） & 標準 & AdamW（0.01） & 2,000 & 300 \\
+\ref{sec:training-diagnosis} & 1 バッチ & 10 & 全部 & Adam（0.01） & 300 & 8 \\
+\ref{sec:training-diagnosis} & 標準セット & 50 & 全部 & AdamW（最大 0.01） & 300 & 32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{最適化手法：SGD から AdamW へ}\label{sec:training-optim}
+
+これまで、パラメータの更新には SGD を使ってきました。勾配の逆向きに、学習率を掛けた分だけ動く方法です。
+しかし、LLM の学習に SGD は使われません。使われるのは AdamW という方法です。
+SGD のどこが困るのでしょうか。そして、AdamW はそれをどう直したのでしょうか。
+
+\subsection*{SGD の弱点：細長い谷でのジグザグ}
+
+弱点が見えるように、パラメータが 2 個だけの損失を用意します。
+\begin{equation}
+\calL(w_1, w_2)=\tfrac{1}{2}\left(w_1^2+100\,w_2^2\right)
+\label{eq:training-valley}
+\end{equation}
+最小は原点 $(0,0)$ です。$w_2$ の向きは $w_1$ の向きより 100 倍も急で、等高線は細長い楕円になります。
+たとえば損失が 8 になる点は、$w_1$ 軸の上では $w_1=\pm4$、$w_2$ 軸の上では $w_2=\pm0.4$ です（$\frac12\times4^2=8$、$\frac12\times100\times0.4^2=8$）。
+横に 10 倍長い楕円で、谷底が $w_1$ の向きに長く伸びた、細長い谷です。
+ニューラルネットワークの損失も、向きによって急さが大きく違います。この谷は、その最も簡単な模型です。
+
+$w_1$ で偏微分すると $w_1$、$w_2$ で偏微分すると $100\,w_2$ なので、勾配は $(w_1, 100\,w_2)$ です。
+出発点 $(-4, 1)$ では $(-4, 100)$ になります。
+谷底に沿って進みたい $w_1$ の向きの勾配は小さく、谷の壁の向きの勾配ばかりが大きいのです。
+ここに SGD の板挟みがあります。
+
+学習率を大きくすると、$w_2$ の向きで谷を飛び越え、反対側の壁に当たります。
+SGD の 1 歩で、$w_2$ は $w_2-\eta\cdot100\,w_2=(1-100\,\eta)\,w_2$ になります。1 歩ごとに、$w_2$ に $(1-100\,\eta)$ が掛かるのです。
+学習率が $\eta=0.019$ なら、この倍率は $-0.9$ です。符号が変わるので谷底を飛び越えますが、大きさは 0.9 倍に縮みます。
+$\eta=0.021$ なら倍率は $-1.1$ で、飛び越すたびに谷底から遠ざかります。
+境目は倍率が $-1$ になる $\eta=0.02$ で、これを超えると発散します。
+
+学習率を小さくすると、今度は $w_1$ の向きにほとんど進みません。
+同じ計算で、$w_1$ に掛かる倍率は $(1-\eta)$ です。$\eta=0.005$ なら 0.995 で、100 歩進んでも $0.995^{100}\approx0.606$ 倍にしかなりません。
+実際に 100 歩進めた結果が次です（\file{ch05/optim2d.py}）。数字は損失で、出発点では $\frac12(4^2+100\times1^2)=58$ です。
+
+\outputfile{ch05/out/optim2d_1.txt}
+
+SGD は、学習率 0.021 で発散しました。限界ぎりぎりの 0.019 でも、100 歩後の損失は 0.173 です。
+これらの数は、先ほどの倍率から出せます。
+学習率 0.005 では、$w_1$ は $-4\times0.606\approx-2.424$ までしか進みません。$w_2$ は 1 歩ごとに 0.5 倍になり、すぐ 0 に近づきます。損失は $\frac12\times2.424^2\approx2.94$ です。
+学習率 0.019 では、$w_1$ が $0.981^{100}\approx0.147$ 倍の $-0.588$ になり、損失は $\frac12\times0.588^2\approx0.173$ です。
+\figref{fig:training-valley}の左が、学習率 0.019 のときの軌跡です。谷を左右に飛び越えながら、ジグザグに進んでいます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=p1,training valley,ylabel={$w_2$},title={SGD（学習率 0.019）}]
+\foreach \r in {2,4,6,8,10.77} {\addplot[training contour] ({\r*cos(x)},{\r/10*sin(x)});}
+\addplot[bookaccent,thin,mark=*,mark size=0.7pt] table[col sep=comma,x=w1,y=w2]{code/ch05/out/optim2d_sgd.csv};
+\end{axis}
+\begin{axis}[name=p2,at={(p1.east)},anchor=west,xshift=5mm,training valley,yticklabels={},title={モーメンタム（0.005）}]
+\foreach \r in {2,4,6,8,10.77} {\addplot[training contour] ({\r*cos(x)},{\r/10*sin(x)});}
+\addplot[bookblue,thin,mark=*,mark size=0.7pt] table[col sep=comma,x=w1,y=w2]{code/ch05/out/optim2d_momentum.csv};
+\end{axis}
+\begin{axis}[at={(p2.east)},anchor=west,xshift=5mm,training valley,yticklabels={},title={Adam（0.1）}]
+\foreach \r in {2,4,6,8,10.77} {\addplot[training contour] ({\r*cos(x)},{\r/10*sin(x)});}
+\addplot[bookgreen,thin,mark=*,mark size=0.7pt] table[col sep=comma,x=w1,y=w2]{code/ch05/out/optim2d_adam.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{細長い谷（式\eqref{eq:training-valley}）を下る 3 つの方法の軌跡。灰色の楕円は等高線、点は 1 歩ごとの位置で、左上の $(-4,1)$ から出発して原点を目指す。
+括弧の中は学習率。SGD は上下にジグザグし、100 歩たっても原点に届かない。モーメンタムは大きく揺れるが、100 歩で原点に着く。Adam は、はじめ斜め 45 度に進む。}
+\label{fig:training-valley}
+\end{figure}
+
+\subsection*{モーメンタム：勢いをつける}
+
+ジグザグの軌跡を見ると、$w_2$ の向きの動きは、行ったり来たりで打ち消し合っています。
+一方、$w_1$ の向きの動きは、小さいけれど、いつも同じ向きです。
+それなら、過去の勾配を足し合わせて使えば、揺れは消え、一貫した向きだけが残るはずです。
+これが\term{モーメンタム}{momentum}です~\cite{polyak1964some}。勾配をためておく変数 $\vv$ を用意し、次のように更新します。
+\begin{align}
+\vv&\leftarrow\beta\,\vv+\vg &&\text{（過去の分を $\beta$ 倍に薄めて、今の勾配を足す）}\label{eq:training-momentum-v}\\
+\vw&\leftarrow\vw-\eta\,\vv &&\text{（勾配の代わりに $\vv$ で動く）}\label{eq:training-momentum-w}
+\end{align}
+$\vg$ は今の勾配、$\eta$ は学習率です。$\beta$ はふつう 0.9 にします。$\vv$ は 0 から始めます。
+
+坂を転がるボールは、今いる場所の傾きだけでなく、それまでの勢いでも動きます。$\vv$ がその速度にあたります。
+同じ勾配 $g$ が続く場合を、$\beta=0.9$ で計算してみます。
+$v$ は 0 から始まるので、1 歩目は $0.9\times0+g=g$、2 歩目は $0.9\times g+g=1.9g$、3 歩目は $0.9\times1.9g+g=2.71g$ です。
+このまま続けると、$v$ は $g(1+0.9+0.9^2+\cdots)$ に近づきます。括弧の中は等比数列の和で、$1/(1-0.9)=10$ です。
+つまり、一貫した向きには、最大で 10 倍の速さで進めます。
+逆に、勾配が $g$、$-g$、$g$ と交互に符号を変えると、$v$ は $g$、$-0.1g$、$0.91g$ となります。
+足し合わせるたびに打ち消し合うので、$v$ は $g$ より大きくなりません。
+
+先ほどの出力を見ると、モーメンタムは学習率 0.005 のままで、100 歩後の損失が 0.0005 まで下がっています。同じ学習率の SGD は 2.94 でした。
+\figref{fig:training-valley}の中央では、勢い余って大きく揺れています。それでも $w_1$ の向きには速く進み、100 歩で原点に着きました。
+
+\subsection*{歩幅をパラメータごとにそろえる}
+
+もう 1 つ、別の直し方があります。困っていたのは、向きによって勾配の大きさが 100 倍も違うことでした。
+それなら、パラメータごとに、勾配をその「ふだんの大きさ」で割ってしまえばよいでしょう。
+いつも勾配が大きいパラメータは小さく、いつも勾配が小さいパラメータは大きく動かすのです。
+ふだんの大きさは、勾配の 2 乗の平均の平方根で測ります。この考え方の代表が RMSProp（root mean square propagation）という手法です~\cite{tieleman2012rmsprop}。
+2 乗の平均を $v\leftarrow\beta v+(1-\beta)\,g^2$ で覚えておき、$w\leftarrow w-\eta\,g/\sqrt{v}$ と更新します。
+先ほどの出力では、RMSProp は 30 歩後の損失が 0.39 で、最初の進みがいちばん速くなっています。
+
+\subsection*{Adam：2 つを組み合わせる}
+
+モーメンタムと、歩幅をそろえる工夫を組み合わせたのが \textbf{Adam} です\cite{kingma2015adam}。
+名前は adaptive moment estimation（適応的なモーメントの推定）の略です。
+Adam は、パラメータ 1 個ごとに 2 つの数を覚えておきます。勾配の平均 $m$ と、勾配の 2 乗の平均 $v$ です。
+1 ステップの計算は、次の 5 行です。$t$ は、何ステップ目かを表す番号で、1 から数えます。
+\begin{align}
+m&\leftarrow\beta_1 m+(1-\beta_1)\,g &&\text{（勾配の平均：進む向き）}\label{eq:training-adam-m}\\
+v&\leftarrow\beta_2 v+(1-\beta_2)\,g^2 &&\text{（2 乗の平均：ふだんの大きさ）}\label{eq:training-adam-v}\\
+\hat m&=\frac{m}{1-\beta_1^{\,t}} &&\text{（バイアス補正）}\label{eq:training-adam-mhat}\\
+\hat v&=\frac{v}{1-\beta_2^{\,t}} &&\text{（バイアス補正）}\label{eq:training-adam-vhat}\\
+w&\leftarrow w-\eta\,\frac{\hat m}{\sqrt{\hat v}+\epsilon} &&\text{（向き $\div$ ふだんの大きさ）}\label{eq:training-adam-w}
+\end{align}
+1 行ずつ読みます。
+
+式\eqref{eq:training-adam-m}は、モーメンタムと同じ考えです。モーメンタムの $\vv$ にあたるのが $m$ です（Adam の $v$ は 2 乗の平均で、別のものです）。
+違いは、今の勾配に $(1-\beta_1)$ を掛けている点です。古い値を 9 割残し、新しい値を 1 割混ぜます。
+こうすると $m$ は「最近の勾配の平均」になります。このような平均を\jterm{指数移動平均}と呼びます。$\beta_1$ の標準は 0.9 です。
+
+式\eqref{eq:training-adam-v}は、勾配の 2 乗について同じことをします。$\beta_2$ の標準は 0.999 で、$m$ よりも長い期間の平均をとります。
+古い勾配の重みは、1 ステップごとに $\beta$ 倍に薄まるからです。
+$\beta_1=0.9$ では、10 ステップ前の勾配の重みは $0.9^{10}\approx0.35$ 倍になっています。
+$\beta_2=0.999$ では、同じくらい薄まるのに 1,000 ステップかかります（$0.999^{1000}\approx0.37$）。
+
+式\eqref{eq:training-adam-w}が更新です。$\sqrt{\hat v}$ は勾配のふだんの大きさなので、$\hat m/\sqrt{\hat v}$ は、だいたい $-1$ から $1$ の間の数になります。
+つまり、Adam の 1 歩の大きさは、勾配の大小によらず、ほぼ学習率 $\eta$ で決まります。
+勾配が同じ向きに続けば 1 歩は $\eta$ に近く、向きがばらばらなら $m$ が打ち消し合って 1 歩は小さくなります。
+$\epsilon$ は 0 で割るのを防ぐ小さな数（標準は $10^{-8}$）です。
+
+残る式\eqref{eq:training-adam-mhat}と式\eqref{eq:training-adam-vhat}が\jterm{バイアス補正}です。
+これは、$m$ と $v$ を 0 から始めることの後始末です。
+最初のステップ（$t=1$）を考えます。
+式\eqref{eq:training-adam-m}の右辺の $m$ に 0 を入れると、$m=0.9\times0+0.1\,g=0.1g$ です。
+同じように、式\eqref{eq:training-adam-v}から $v=0.999\times0+0.001\,g^2=0.001g^2$ です。
+どちらも、本当の値（$g$ と $g^2$）よりずっと小さくなっています。0 から始めたので、平均が 0 のほうへ引っぱられているのです。
+補正なしで更新すると、1 歩の大きさは $\eta\times0.1\abs{g}/\sqrt{0.001g^2}$ です。
+$\sqrt{0.001}\approx0.0316$ なので、$0.1/0.0316\approx3.2$ で、1 歩は約 $3.2\,\eta$ になります。
+学習が最も不安定な最初に、ねらいの 3 倍以上も動いてしまいます。
+補正をすると、$\hat m=0.1g/(1-0.9)=g$、$\hat v=0.001g^2/(1-0.999)=g^2$ と、本当の値に戻ります。
+1 歩は $\eta\,g/\abs{g}$、つまり大きさがちょうど $\eta$ です。
+$t$ が大きくなると $\beta^{\,t}$ は 0 に近づき、補正は自然に消えます。
+たとえば $t=50$ では $0.9^{50}\approx0.005$ で、$\hat m$ は $m$ とほとんど同じです。
+
+谷の例で、5 行の式に数を入れて確かめます（\figref{fig:training-adam-flow}）。
+学習率は $\eta=0.1$、最初の勾配は $(-4, 100)$ です。
+$m$ は勾配の 0.1 倍で $(-0.4, 10)$、$v$ は勾配の 2 乗の 0.001 倍で $(0.016, 10)$ です。
+補正をすると、$\hat m=(-4, 100)$、$\hat v=(16, 10000)$ に戻ります。
+$\hat m$ を $\sqrt{\hat v}=(4, 100)$ で割ると、$(-1, 1)$ です。
+動く量は、これに $-\eta$ を掛けた $(0.1, -0.1)$ になります。\file{ch05/optim2d.py} を実行した結果も、同じ値でした。
+勾配の大きさは 25 倍も違うのに、動いた量はどちらも 0.1 です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+\node[plainbox,minimum width=16mm,align=center] (g) at (0,0) {勾配 $g$\\[-0.5mm]{\footnotesize $(-4,\ 100)$}};
+\node[box,minimum width=20mm,align=center] (m) at (25,9) {$m$：$g$ の平均\\[-0.5mm]{\footnotesize $(-0.4,\ 10)$}};
+\node[box,minimum width=20mm,align=center] (v) at (25,-9) {$v$：$g^2$ の平均\\[-0.5mm]{\footnotesize $(0.016,\ 10)$}};
+\node[greenbox,minimum width=20mm,align=center] (mh) at (51,9) {補正した $\hat m$\\[-0.5mm]{\footnotesize $(-4,\ 100)$}};
+\node[greenbox,minimum width=20mm,align=center] (vh) at (51,-9) {補正した $\hat v$\\[-0.5mm]{\footnotesize $(16,\ 10000)$}};
+\node[orangebox,minimum width=17mm,align=center] (r) at (77,0) {$\hat m/\sqrt{\hat v}$\\[-0.5mm]{\footnotesize $(-1,\ 1)$}};
+\node[purplebox,minimum width=19mm,align=center] (d) at (107,0) {動く量\\[-0.5mm]{\footnotesize $(0.1,\ -0.1)$}};
+\draw[arr] (g) -- (m.west); \draw[arr] (g) -- (v.west);
+\draw[arr] (m) -- (mh); \draw[arr] (v) -- (vh);
+\draw[arr] (mh.east) -- (r); \draw[arr] (vh.east) -- (r);
+\draw[arr] (r) -- node[above,lbl] {$\times(-\eta)$} (d);
+\node[lbl] at (25,17) {$0.9\,m+0.1\,g$};
+\node[lbl] at (25,-17) {$0.999\,v+0.001\,g^2$};
+\node[lbl] at (51,17) {$m\div(1-0.9)$};
+\node[lbl] at (51,-17) {$v\div(1-0.999)$};
+\node[lbl,anchor=west] at (69,-9) {大小の差が消える};
+\node[lbl] at (107,-8) {$\eta=0.1$};
+\end{tikzpicture}
+\caption{Adam の最初の 1 ステップ（$t=1$）を、谷の出発点の勾配 $(-4,100)$ でたどる。括弧の中は $(w_1, w_2)$ の順。
+上の段が式\eqref{eq:training-adam-m}と式\eqref{eq:training-adam-mhat}、下の段が式\eqref{eq:training-adam-v}と式\eqref{eq:training-adam-vhat}、右の 2 つが式\eqref{eq:training-adam-w}にあたる。
+勾配は 25 倍違うのに、割り算のあとはどちらも大きさ 1 になり、動く量がそろう。}
+\label{fig:training-adam-flow}
+\end{figure}
+
+\figref{fig:training-valley}の右で、Adam が斜め 45 度に進み始めるのはこのためです。
+100 歩後の損失は 0.0007 でした。
+
+\begin{quiz}
+SGD で同じ最初の 1 歩を計算してください。出発点は $(-4, 1)$、勾配は $(-4, 100)$、学習率は 0.019 です。
+$w_1$ と $w_2$ は、それぞれどれだけ動きますか。Adam の 1 歩と比べて、何が違いますか。
+\end{quiz}
+
+答えを確かめます。動く量は「$-$学習率 $\times$ 勾配」なので、$w_1$ は $+0.076$、$w_2$ は $-1.9$ です。
+$w_2$ は 1 から $-0.9$ へと、谷底を飛び越えます。進みたい $w_1$ の向きには、その 25 分の 1 しか動きません。
+Adam は、どちらの向きにも同じ 0.1 だけ動きました。
+
+\subsection*{自作して、既製品と比べる}
+\skimread{結論は「\code{torch.optim} の SGD や Adam の中身は、ここまでの更新式をそのまま書いた数十行で、自作しても結果が一致する」です。
+あとの AdamW の説明で\coderef{code:training-adam}の 1 行を指すので、コードの場所だけ覚えておいてください。}
+
+3 つの手法をクラスとして書きます。まず SGD です。\chapref{ch:nn}から使ってきた \code{torch.optim.SGD} の中身は、これだけです。
+
+\snippet{SGD の自作}{code:training-sgd}{ch05/optim.py}{sgd}
+
+\code{zero_grad} が学習ループの (3)、\code{step} が (5) にあたります。\code{p.grad = None} は、勾配を 0 に戻すのと同じ働きです。
+\code{@torch.no_grad()} は、関数の中身全体を \code{with torch.no_grad():} で囲むのと同じ意味の書き方です。
+モーメンタムと Adam は、このクラスを\emph{継承}して作ります。
+\code{class Adam(SGD)} と書くと、\code{SGD} の機能を引き継いだ新しいクラスになり、違う部分だけを書けば済みます。
+モーメンタムは、速度 \code{v} を用意し、\code{step} の中の更新を次の 2 行に替えるだけです（全体は \file{ch05/optim.py} にあります）。
+\begin{pycode}
+v.mul_(self.beta).add_(p.grad)   # v ← βv + g
+p -= self.lr * v                 # w ← w − ηv
+\end{pycode}
+\code{mul_} や \code{add_} のように末尾に \code{_} が付いたメソッドは、テンソルをその場で書き換えます。
+Adam は、覚えておく数が増えるぶん、少し長くなります。
+
+\snippet{Adam（と AdamW）の自作}{code:training-adam}{ch05/optim.py}{adam}
+
+\code{torch.zeros_like(p)} は、\code{p} と同じ形で中身が 0 のテンソルです。
+\code{step} の後半の 5 行が、式\eqref{eq:training-adam-m}から式\eqref{eq:training-adam-w}にそのまま対応しています。
+「重み減衰」の行は、すぐあとで説明します。
+自作のクラスと \code{torch.optim} の既製品で、隠れ層 2 枚の同じ MLP を 200 ステップ学習させて比べました。
+SGD、モーメンタム、Adam、AdamW のどれでも、損失は 6 桁目まで一致し、パラメータの差は最大でも $3\times10^{-14}$ でした。
+既製品の中身は、この数十行と同じです。
+
+\subsection*{渦巻きデータで比べる}
+\skimread{結論は「本物のネットワークでも、Adam は SGD の約 10 倍速く、うまくいく学習率の範囲も広い」です。
+\figref{fig:training-optim-mlp}だけ見れば足ります。}
+
+2 次元の谷ではなく、本物のネットワークでも比べます。
+\chapref{ch:nn}と同じ隠れ層 2 枚の MLP を、3 つの手法で 300 ステップ学習させました（\file{ch05/optim_mlp.py}）。
+公平にするため、学習率は手法ごとに 0.0001 から 3 まで 10 通り試しています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=curve,training small,xmin=0,xmax=300,ymin=0,ymax=1.2,
+  xlabel={ステップ},ylabel={訓練損失},title={(a) いちばんよい学習率での学習曲線}]
+\addplot[bookaccent] table[col sep=comma,x=step,y=sgd]{code/ch05/out/optim_mlp_curves.csv};
+\addplot[bookblue] table[col sep=comma,x=step,y=momentum]{code/ch05/out/optim_mlp_curves.csv};
+\addplot[bookgreen] table[col sep=comma,x=step,y=adam]{code/ch05/out/optim_mlp_curves.csv};
+\legend{SGD,モーメンタム,Adam}
+\end{axis}
+\begin{axis}[at={(curve.east)},anchor=west,xshift=17mm,training small,xmode=log,ymin=0,ymax=1.2,
+  xlabel={学習率},ylabel={300 ステップ後の損失},title={(b) 学習率を変えたとき},legend pos=south west]
+\addplot[bookaccent,mark=*,mark size=1pt] table[col sep=comma,x=lr,y=sgd]{code/ch05/out/optim_mlp_sweep.csv};
+\addplot[bookblue,mark=*,mark size=1pt] table[col sep=comma,x=lr,y=momentum]{code/ch05/out/optim_mlp_sweep.csv};
+\addplot[bookgreen,mark=*,mark size=1pt] table[col sep=comma,x=lr,y=adam]{code/ch05/out/optim_mlp_sweep.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{渦巻きデータの MLP で 3 つの手法を比べる。(a) 損失が 0.05 を切るのは、SGD が 246 ステップ目、モーメンタムが 92、Adam が 24 である。
+(b) 横軸は対数目盛りで、色は (a) と同じ。Adam は、損失が低くなる学習率の範囲が広い。}
+\label{fig:training-optim-mlp}
+\end{figure}
+
+\figref{fig:training-optim-mlp}(a) は、それぞれいちばんよかった学習率での学習曲線です。
+損失が 0.05 を切るまでに、SGD は 246 ステップ、モーメンタムは 92 ステップ、Adam は 24 ステップかかりました。$246\div24\approx10$ なので、Adam は SGD の約 10 倍の速さです。
+SGD の線は、途中で何度も跳ね上がっています。最後の損失で選んだ学習率 1 は、SGD には大きすぎる歩幅なのです。それより小さい学習率では、300 ステップでは下がりきりません。
+(b) は、学習率ごとの最後の損失です。
+SGD で損失が 0.1 を切るのは学習率 1 のときだけで、3 にすると学習できなくなります。
+Adam は、0.003 から 0.3 まで、100 倍の範囲で損失が 0.1 を切ります（上端の 0.3 では途中で損失が跳ね回ります。\secref{sec:training-diagnosis}で見ます）。
+学習率を細かく調整しなくても、うまくいきやすいのです。大きなモデルでは何度も試し直せないので、この性質は大きな利点です。
+
+\subsection*{AdamW：重み減衰を切り離す}
+
+最後の仕上げが \textbf{AdamW} です\cite{loshchilov2019decoupled}。
+\chapref{ch:ml}で、損失に $\lambda\norm{\vw}^2$ を足して重みを小さく保つ L2 正則化を学びました（式\eqref{eq:ml-l2}）。
+この項を微分すると $2\lambda\vw$ なので、勾配に「重みに比例した量」が加わります。
+SGD の更新に入れると、$\vw\leftarrow\vw-\eta\,(\vg+2\lambda\vw)=(1-2\eta\lambda)\,\vw-\eta\,\vg$ です。
+毎ステップ、重みが $(1-2\eta\lambda)$ 倍に縮んでから、勾配の分だけ動きます。
+
+ところが Adam では、これがうまく働きません。
+勾配に加えた $2\lambda\vw$ も、式\eqref{eq:training-adam-w}で $\sqrt{\hat v}$ で割られてしまうからです。
+勾配が大きいパラメータほど、縮む量が小さくなります。罰の強さが、パラメータごとにばらばらになるのです。
+AdamW は、重みを縮める操作を勾配から切り離し、更新のときに直接行います。
+\begin{equation}
+w\leftarrow w-\eta\,\lambda\,w
+\label{eq:training-weight-decay}
+\end{equation}
+これを\term{重み減衰}{weight decay}と呼びます。$\lambda$ は減衰の強さで、LLM では 0.1 がよく使われます。
+式は $w\leftarrow(1-\eta\lambda)\,w$ とも書けます。$\eta=0.01$、$\lambda=0.1$ なら、1 ステップごとに重みを 0.999 倍にする操作です。
+$\sqrt{\hat v}$ で割られないので、どのパラメータも同じ割合で縮みます。
+\coderef{code:training-adam}では \code{p -= self.lr * self.weight_decay * p} の 1 行がこれにあたります。
+Adam との違いは、この 1 行だけです。重み減衰の効果は、\secref{sec:training-regularization}で実験します。
+
+PyTorch では \code{torch.optim.AdamW} を使います。
+LLM の学習では、Adam の $\beta_2$ を 0.95 にし、重み減衰は行列の形をした重みにだけかけるのが通例です\cite{karpathy2022nanogpt,touvron2023llama}。
+本書の \code{llmbook.train.make_optimizer} も、この設定で AdamW を作ります。
+なぜそうするのかは、基盤モデルを学習させる\secref{sec:pt-loop}で説明します。いまは「標準の値から少し変える習慣がある」と知っておけば十分です。
+
+ここまでの 5 つの手法を、\tabref{tab:training-optimizers}に並べます。
+上から順に、1 つ前の手法の困りごとを 1 つずつ直してきました。
+
+\begin{table}[tbp]
+\centering
+\caption{この節の最適化手法の比較。$g$ は勾配、$\eta$ は学習率。「直した点」は、1 つ上の手法から変えたところ。「谷の損失」は、式\eqref{eq:training-valley}の谷を 100 歩進んだあとの損失で、括弧の中は学習率である（出発点の損失は 58）。
+SGD は、学習率を限界に近い 0.019 にしても 0.173 だった。AdamW は、谷では試していない。}
+\label{tab:training-optimizers}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{llllr}
+\toprule
+手法 & 覚える数 & 1 ステップで動く量 & 直した点 & 谷の損失 \\
+\midrule
+SGD & なし & $-\eta\,g$ & （出発点） & 2.94（0.005） \\
+モーメンタム & $v$：勾配の和 & $-\eta\,v$ & 勢いをつける & 0.0005（0.005） \\
+RMSProp & $v$：2 乗の平均 & $-\eta\,g/\sqrt{v}$ & 歩幅をそろえる & 0.028（0.1） \\
+Adam & $m$ と $v$ & $-\eta\,\hat m/(\sqrt{\hat v}+\epsilon)$ & 上の 2 つを合わせる & 0.0007（0.1） \\
+AdamW & $m$ と $v$ & Adam の量 $-\,\eta\lambda w$ & 重み減衰を切り離す & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+この節のまとめです。モーメンタムは過去の勾配をためて向きを安定させ、Adam はさらにパラメータごとに歩幅をそろえます。
+AdamW は Adam に重み減衰を正しく組み合わせたもので、LLM の学習の標準です。
+
+\section{学習率スケジュールと勾配クリッピング}\label{sec:training-schedule}
+
+最適化手法を AdamW に替えても、学習率という数は残ります。
+これまで、学習率は最初から最後まで同じ値でした。しかし、学習の最初と最後では、望ましい歩幅が違います。
+では、いつ大きく、いつ小さくすればよいのでしょうか。
+また、ときどき現れる異常に大きな勾配にも、備えが必要です。この節では、学習ループに足す 2 つの安全装置を作ります。
+
+\subsection*{ウォームアップとコサイン減衰}
+
+学習率を、ステップごとに決まった計画で変えていくことを、\jterm{学習率スケジュール}と呼びます。
+LLM の学習の定番は、2 つの部分からなります。
+
+前半が\term{ウォームアップ}{warmup}です。学習率を 0 の近くから始め、最初の数百〜数千ステップで、まっすぐ最大値まで上げます。
+なぜ最初は小さくするのでしょうか。
+学習を始めた直後の重みは乱数で、勾配は大きく、しかも 1 歩ごとに向きが大きく変わります。
+Adam が頼りにする $m$ と $v$ も、まだ数ステップ分の勾配しか見ていないので、当てになりません。
+バイアス補正が直すのは、0 から始めた分のずれだけです。見た勾配が少ないことは変わりません。
+足元が分からないうちは小さな歩幅で進み、様子が分かってから歩幅を広げるのです。
+
+後半が\jterm{コサイン減衰}です。最大値から、コサイン（余弦）のカーブに沿って、なめらかに学習率を下げていきます\cite{loshchilov2017sgdr}。
+学習の終盤には、パラメータは良い場所の近くまで来ています。大きな歩幅のままでは、その周りを跳ね回るだけで、底に落ち着けません。
+\chapref{ch:ml}で予告した「学習率を途中で下げる工夫」が、これです。
+
+本書の共有ライブラリでは、次の関数が学習率を決めます。
+
+\snippet{学習率スケジュール（ウォームアップ＋コサイン減衰）}{code:training-lr-at}{llmbook/train.py}{lr-at}
+
+\code{step} が \code{warmup_steps} より小さい間は、学習率は \code{step + 1} に比例して増えます。1 を足すのは、最初の学習率を 0 にしないためです。
+そのあとの \code{progress} は、残りの道のりのうち、どこまで進んだかを 0 から 1 で表します。
+\code{cosine} は、\code{progress} が 0 のとき 1、1 のとき 0 になる、なめらかな下り坂です（$\cos 0=1$、$\cos\pi=-1$ だからです）。
+\code{max} と \code{min} は、0 で割ることや、予定のステップ数を超えたときへの備えです。
+最後の行で、学習率は最大値から、その \code{min_lr_ratio} 倍（標準では 1 割）まで下がります。
+
+数を入れて確かめます。本書の基盤モデルの設定は、最大値 $10^{-3}$、ウォームアップ 200 ステップ、全体 4,000 ステップです。
+ステップ 0 の学習率は $10^{-3}\times1/200=5\times10^{-6}$ です。ステップ 199 で $10^{-3}\times200/200=10^{-3}$ に届きます。
+ステップ 2,100 は、残りの 3,800 ステップのちょうど半分なので、\code{progress} は 0.5 です。
+$\cos(0.5\pi)=0$ なので \code{cosine} は 0.5 になり、学習率は $10^{-3}\times(0.1+0.9\times0.5)=5.5\times10^{-4}$ です。
+ステップ 4,000 では \code{cosine} が 0 になり、学習率は最大値の 1 割の $10^{-4}$ です。
+\figref{fig:training-schedule}(a) は、同じ設定で、この関数をすべてのステップについて描いたものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=sched,training small,xmin=0,xmax=4000,ymin=0,ymax=1.15,
+  xlabel={ステップ},ylabel={学習率（$\times10^{-3}$）},title={(a) 基盤モデルの学習率},
+  xtick={0,1000,2000,3000,4000},scaled x ticks=false,xticklabel style={/pgf/number format/1000 sep={,}}]
+\addplot[bookblue] table[col sep=comma,x=step,y expr=\thisrow{lr}*1000]{code/ch05/out/schedule.csv};
+\draw[dashed,bookgray] (axis cs:200,0) -- (axis cs:200,1.15);
+\node[lbl,anchor=west] at (axis cs:260,0.12) {ウォームアップ};
+\node[lbl,anchor=west] at (axis cs:2150,0.72) {コサイン減衰};
+\end{axis}
+\begin{axis}[at={(sched.east)},anchor=west,xshift=17mm,training small,xmin=0,xmax=60,ymin=0,ymax=3.1,
+  xlabel={ステップ},ylabel={ミニバッチの損失},title={(b) 学習の最初の 60 ステップ}]
+\addplot[bookaccent] table[col sep=comma,x=step,y=const]{code/ch05/out/schedule_curves.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x=step,y=warmcos]{code/ch05/out/schedule_curves.csv};
+\legend{ウォームアップなし,ウォームアップあり}
+\end{axis}
+\end{tikzpicture}
+\caption{(a) 基盤モデルの学習率スケジュール。200 ステップで最大値 $10^{-3}$ まで上げ、4,000 ステップ目に $10^{-4}$ まで下げる。
+(b) 隠れ層 20 枚の MLP を、わざと大きな学習率 0.1 で学習させたときの最初の部分。ウォームアップがないと、損失が学習前（約 1.1）より跳ね上がる。}
+\label{fig:training-schedule}
+\end{figure}
+
+効果を実験で確かめます（\file{ch05/schedule.py}）。
+モデルは隠れ層 20 枚の MLP（正規化と残差接続つき）、手法は Adam、ミニバッチは 32 件、400 ステップです。
+違いが見えやすいように、最大の学習率をわざと大きめの 0.1 にしました。乱数の種を変えた 3 回の平均が\tabref{tab:training-schedule}です。
+
+\begin{table}[tbp]
+\centering
+\caption{学習率スケジュールの比較（3 回の平均）。「最初の最大」は、最初の 50 ステップで損失が最も高くなったときの値。ウォームアップは 40 ステップ。}
+\label{tab:training-schedule}
+\small
+\begin{tabular}{lccc}
+\toprule
+スケジュール & 最初の最大 & 最後の訓練損失 & テスト正解率 \\
+\midrule
+一定（ずっと 0.1） & 2.67 & 0.1066 & 96.4\% \\
+コサイン減衰だけ & 2.67 & 0.0024 & 99.1\% \\
+ウォームアップ＋コサイン減衰 & 1.41 & 0.0025 & 99.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+2 つのことが読み取れます。
+第一に、減衰の効果です。学習率が一定のままだと、最後の訓練損失は 0.107 で止まります。減衰させると 0.002 まで下がりました。
+第二に、ウォームアップの効果です。ウォームアップがないと、最初の 50 ステップで損失が 2.67 まで跳ね上がります。学習前の 1.1 より悪い値です。
+\figref{fig:training-schedule}(b) の赤い線が、その様子です。ウォームアップを入れると、跳ね上がりは 1.41 に収まりました。
+この小さな実験では、跳ね上がってもあとで回復できています。
+しかし、何日もかかる LLM の学習では、最初の乱れがそのまま発散につながることがあります。ウォームアップは、そのための保険です。
+
+\subsection*{勾配クリッピング：大きすぎる 1 歩を止める}
+
+もう 1 つの安全装置は、勾配そのものに上限をかけます。
+学習の途中で、損失の地形の崖のような場所に当たると、勾配が突然、ふだんの何十倍にもなることがあります。
+そのまま更新すると、パラメータは遠くへ飛ばされ、それまでの学習が台無しになります。
+
+\term{勾配クリッピング}{gradient clipping}は、勾配のノルム（長さ）が上限を超えたら、向きはそのままに、長さだけを上限まで縮めます\cite{pascanu2013difficulty}。
+たとえば勾配が $(3, 4)$ で、上限が 1 だとします。ノルムは $\sqrt{3^2+4^2}=5$ です。
+上限を超えているので、全体を $1/5$ 倍して $(0.6, 0.8)$ にします。ノルムは 1 になり、向きは変わりません。
+ノルムが上限以下なら、何もしません。
+ノルムは、モデルの全パラメータの勾配を 1 本のベクトルとみなして計算します。
+
+\snippet{勾配クリッピングの自作}{code:training-clip}{ch05/clip.py}{clip}
+
+\code{total} が、全パラメータの勾配の 2 乗を足して平方根をとったノルムです。上限を超えたときだけ、すべての勾配に同じ倍率を掛けます。
+返り値は縮める前のノルムで、学習の様子を見張るのに使えます。
+勾配 $(3, 4)$ で実行すると $(0.6, 0.8)$ になり、PyTorch の \code{torch.nn.utils.clip_grad_norm_} も同じ値を返しました。
+学習ループでは、勾配を求めたあと、更新の前に入れます。(4) の \code{loss.backward()} と (5) の \code{optimizer.step()} の間です。
+
+\secref{sec:training-init}で残した宿題で試します。隠れ層 10 枚の MLP は、He の初期化でも、学習率 0.5 では学習が不安定でした。
+同じ設定で、クリッピング（上限 1.0）の有無だけを変えて 500 ステップ学習させます（\figref{fig:training-clip}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=gn,training small,ymode=log,xmin=0,xmax=500,ymin=0.005,ymax=100,
+  xlabel={ステップ},ylabel={勾配のノルム},title={(a) クリッピングなしの勾配}]
+\addplot[bookaccent,thin] table[col sep=comma,x=step,y=norm_off]{code/ch05/out/clip.csv};
+\draw[dashed,black] (axis cs:0,1) -- (axis cs:500,1);
+
+\end{axis}
+\begin{axis}[at={(gn.east)},anchor=west,xshift=17mm,training small,xmin=0,xmax=500,ymin=0,ymax=7.2,
+  xlabel={ステップ},ylabel={訓練損失},title={(b) 損失}]
+\addplot[bookaccent,thin] table[col sep=comma,x=step,y=loss_off]{code/ch05/out/clip.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x=step,y=loss_on]{code/ch05/out/clip.csv};
+\legend{クリッピングなし,あり}
+\end{axis}
+\end{tikzpicture}
+\caption{勾配クリッピングの効果（隠れ層 10 枚、SGD、学習率 0.5）。(a) 破線は上限にする 1.0 で、クリッピングを入れると、これより上の勾配が破線まで縮められる。勾配のノルムは 1 の前後を上下し、ときどき 10 を超える。
+(b) クリッピングがないと、そのたびに損失が跳ね上がり、学習が進まない。}
+\label{fig:training-clip}
+\end{figure}
+
+クリッピングなしでは、勾配のノルムが最大 25.0 まで跳ね、損失は最大 6.89 になりました。
+500 ステップ後の訓練損失は 0.794、正解率は 56\% です。
+クリッピングを入れると、損失の最大は 1.13 に収まり、最後の損失は 0.0005、正解率は訓練・テストとも 100\% になりました。
+変えたのは 1 行だけです。
+
+上限の値は、LLM の学習では 1.0 がよく使われます。本書の基盤モデルも 1.0 です。
+この実験では、500 ステップのうち 153 回、約 3 割で勾配を縮めていました。それでも学習は妨げられず、損失の跳ね上がりだけが消えています。
+
+この節のまとめです。学習率は、ウォームアップで少しずつ上げ、コサイン減衰でなめらかに下げます。
+勾配クリッピングは、大きすぎる勾配の長さを上限まで縮めて、学習の事故を防ぎます。
+
+\section{過学習を抑える：重み減衰・ドロップアウト・早期終了}\label{sec:training-regularization}
+\skimread{結論は 3 つです。重み減衰・ドロップアウト・早期終了は、どれも訓練の成績を少し手放して、検証データでの成績を上げます。
+ドロップアウトを使うモデルでは、学習の前に \code{model.train()} を、評価の前に \code{model.eval()} を呼びます。
+LLM の事前学習ではドロップアウトを 0 にすることが多いので、細部は\chapref{ch:posttraining}を読むときに戻れば足ります。}
+
+ここまでの部品は、訓練損失を速く、確実に下げるためのものでした。
+しかし\chapref{ch:ml}で学んだように、訓練損失が下がることと、初めて見るデータで当たることは別です（\secref{sec:ml-generalization}）。
+下げる力が強くなったぶん、\jterm{過学習}にも備えなければなりません。この節では、過学習を抑える 3 つの方法を比べます。
+
+\subsection*{過学習を起こしてみる}
+
+まず、わざと過学習を起こします。渦巻きデータの訓練用 300 点のうち、47 点（約 16\%）のラベルを、間違ったクラスに書き換えました。
+現実のデータにも、このような間違いやノイズは必ず混ざっています。
+モデルは、隠れ層 2 枚、幅 128 の MLP です。パラメータは約 1 万 7 千個あり、300 点を丸暗記するには十分です
+（内訳は $(2\times128+128)+(128\times128+128)+(128\times3+3)=17{,}283$ 個）。
+これを AdamW（学習率 0.01）で 2,000 ステップ学習させます。
+検証データとテストデータは、別の乱数の種で作った 300 点ずつで、正しいラベルのままです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=of,training small,xmin=0,xmax=2000,ymin=0,ymax=0.8,
+  xlabel={ステップ},ylabel={損失},title={(a) 対策なし},scaled x ticks=false,
+  xticklabel style={/pgf/number format/1000 sep={,}},legend pos=north east]
+\addplot[bookblue] table[col sep=comma,x=step,y=train]{code/ch05/out/regularize.csv};
+\addplot[bookaccent,very thick] table[col sep=comma,x=step,y=val]{code/ch05/out/regularize.csv};
+\draw[dashed,bookgray] (axis cs:150,0) -- (axis cs:150,0.8);
+\node[lbl,anchor=west] at (axis cs:160,0.04) {検証損失が最小};
+\legend{訓練,検証}
+\end{axis}
+\begin{axis}[at={(of.east)},anchor=west,xshift=17mm,training small,xmin=0,xmax=2000,ymin=0,ymax=0.8,
+  xlabel={ステップ},ylabel={検証損失},title={(b) 対策をしたときの検証損失},scaled x ticks=false,
+  xticklabel style={/pgf/number format/1000 sep={,}},legend pos=north east]
+\addplot[bookaccent,very thick] table[col sep=comma,x=step,y=val]{code/ch05/out/regularize.csv};
+\addplot[bookgreen] table[col sep=comma,x=step,y=val_wd]{code/ch05/out/regularize.csv};
+\addplot[bookpurple] table[col sep=comma,x=step,y=val_drop]{code/ch05/out/regularize.csv};
+\legend{対策なし,重み減衰 1.0,ドロップアウト 0.5}
+\end{axis}
+\end{tikzpicture}
+\caption{ラベルの約 16\% が間違っている訓練データでの学習。(a) 訓練損失は下がり続けるのに、検証損失はステップ 150 を底に上がっていく。過学習である。
+(b) 重み減衰やドロップアウトを入れると、検証損失は低いまま保たれる。}
+\label{fig:training-overfit}
+\end{figure}
+
+\figref{fig:training-overfit}(a) が結果です。
+訓練損失（青）は、最後まで下がり続けます。
+検証損失（赤）は、ステップ 150 で 0.183 まで下がったあと、上がり始め、最後は 0.443 になりました。
+モデルが、間違ったラベルまで覚え込み始めたのです。
+なお、最初のうち検証損失のほうが低いのは、検証データのラベルに間違いがないからです。
+
+\subsection*{3 つの対策}
+
+\textbf{重み減衰。}
+\secref{sec:training-optim}の AdamW に入っていた仕組みです。毎ステップ、重みを少しずつ 0 に近づけます。
+間違ったラベルの点を 1 つずつ覚えるには、境界を細かく曲げる大きな重みが要ります。
+重み減衰は、データの全体から繰り返し支持される重みだけを残し、少数の点のための重みを育ちにくくします。
+
+\textbf{ドロップアウト。}
+\term{ドロップアウト}{dropout}は、学習中、隠れ層の出力の一部を、でたらめに選んで 0 にします\cite{srivastava2014dropout}。
+0 にする割合 $p$ は、0.1 から 0.5 くらいにします。どの成分を消すかは、順伝播のたびに選び直します。
+こうすると、モデルは特定のニューロンの組み合わせに頼れなくなります。
+どのニューロンがいなくても答えられるように、情報を分散して持つようになり、丸暗記がしにくくなります。
+
+\snippet{ドロップアウトの自作}{code:training-dropout}{ch05/regularize.py}{dropout}
+
+1 が 8 個並んだ入力に $p=0.5$ でかけると、出力は $(0,2,0,0,0,2,0,2)$ になりました（\figref{fig:training-dropout}）。
+残した成分を $1/(1-p)$ 倍しているところに注意してください。$p=0.5$ なら 2 倍です。
+半分を 0 にすると、出力の平均も半分になってしまいます。残りを 2 倍にして、平均を元に戻すのです。
+1 を 10 万個並べて試すと、出力の平均は 1.002 でした。
+評価のときは、何も消さず、入力をそのまま返します。
+モデルの中では、ReLU のあとに入れます。実験では、同じ働きをする \code{nn.Dropout} を使いました。
+モデルに \code{self.drop} として持たせ、順伝播に \code{h = self.drop(torch.relu(self.fc1(x)))} と書きます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\small]
+\node[lbl,anchor=east] at (-2,24) {入力};
+\node[lbl,anchor=east] at (-2,12) {学習中の出力};
+\node[lbl,anchor=east] at (-2,0) {評価時の出力};
+\foreach \c in {0,...,7} {
+  \node[cell,minimum size=7mm] (i\c) at (\c*8+4,24) {1};
+  \node[cell,minimum size=7mm,fill=figgreen] at (\c*8+4,0) {1};
+}
+\foreach \c/\val in {0/0,1/2,2/0,3/0,4/0,5/2,6/0,7/2} {
+  \ifnum\val=0
+    \node[cell,minimum size=7mm,fill=black!12,text=black!45] (o\c) at (\c*8+4,12) {0};
+  \else
+    \node[cell,minimum size=7mm,fill=figred] (o\c) at (\c*8+4,12) {2};
+  \fi
+  \draw[arr] (i\c) -- (o\c);
+}
+\node[lbl,anchor=west,align=left] at (66,12) {でたらめに選んで 0 にし、\\残りを $1/(1-p)=2$ 倍する};
+\node[lbl,anchor=west,align=left] at (66,0) {何も消さず、\\入力をそのまま返す};
+\end{tikzpicture}
+\caption{ドロップアウト（$p=0.5$）の動作。学習中は、順伝播のたびに選び直した成分を 0 にし、残りを 2 倍にする。
+この例では 8 個のうち 5 個が消え、残った 3 個が 2 になった。評価時は入力をそのまま返すので、学習中と評価時で動作が違う。}
+\label{fig:training-dropout}
+\end{figure}
+
+\begin{caution}{\code{model.train()} と \code{model.eval()}}
+ドロップアウトは、学習中と評価時で動作が違います。PyTorch では、この切り替えをモデルに伝える必要があります。
+学習の前に \code{model.train()} を、評価や生成の前に \code{model.eval()} を呼びます。
+\code{nn.Dropout} は、この状態を見て、消すか消さないかを決めます。
+\code{model.eval()} を忘れると、評価のたびに結果が変わり、成績も実力より悪く出ます。
+\file{ch05/regularize.py} では、損失を測る関数の最初で \code{model.eval()} を、最後で \code{model.train()} を呼んでいます。
+\end{caution}
+
+\textbf{早期終了。}
+\term{早期終了}{early stopping}は、いちばん単純な対策です。検証損失が最小になったところで、学習をやめます。
+実際には、学習中に一定の間隔で検証損失を測り、最小を更新したときのパラメータを保存しておきます。
+\figref{fig:training-overfit}(a) なら、ステップ 150 のモデルを使います。
+
+\subsection*{比べる}
+
+3 つの対策の結果が\tabref{tab:training-regularization}です（\file{ch05/regularize.py}）。
+
+\begin{table}[tbp]
+\centering
+\caption{過学習への対策の比較（2,000 ステップ後。早期終了だけはステップ 150 の値）。
+訓練データは間違ったラベルを含むので、訓練の正解率が 100\% に近いほど、間違いまで覚えたことになる。}
+\label{tab:training-regularization}
+\small
+\begin{tabular}{lccccc}
+\toprule
+設定 & 訓練損失 & 訓練正解率 & 検証損失 & テスト損失 & テスト正解率 \\
+\midrule
+対策なし & 0.120 & 95.7\% & 0.443 & 0.440 & 89.0\% \\
+重み減衰 0.1 & 0.246 & 91.0\% & 0.349 & 0.270 & 92.7\% \\
+重み減衰 1.0 & 0.452 & 83.7\% & 0.223 & 0.241 & 98.3\% \\
+ドロップアウト 0.2 & 0.243 & 90.7\% & 0.295 & 0.294 & 93.7\% \\
+ドロップアウト 0.5 & 0.401 & 84.7\% & 0.219 & 0.245 & 97.0\% \\
+早期終了 & 0.410 & 84.0\% & 0.183 & 0.207 & 97.3\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+対策なしでは、訓練の正解率が 95.7\% です。ラベルが正しい点は約 84\% しかないので、間違ったラベルの多くを覚えてしまっています。
+その結果、テスト正解率は 89.0\% にとどまりました。
+対策を入れると、訓練の正解率は 84\% 前後に下がります。間違ったラベルを覚えなくなったのです。
+代わりに、テスト正解率は 97〜98\% に上がりました。
+訓練の成績を少し手放して、初めて見るデータでの成績を得る。これが正則化です。
+
+強さの選び方にも注意が要ります。重み減衰 0.1 やドロップアウト 0.2 では、効果は半分ほどでした。
+どの強さがよいかは、データとモデルによって変わります。
+ここでも、強さは検証損失を見て選び、テストデータは最後の報告にだけ使っています（\chapref{ch:ml}の約束です）。
+
+なお、LLM の事前学習では、ドロップアウトの割合を 0 にする設定がよく使われます\cite{karpathy2022nanogpt}。本書の基盤モデルも 0 です。
+データが非常に多く、同じ文章を何度も見ることがほとんどないので、丸暗記が起こりにくいからです。
+少ないデータで追加の学習をするとき（\chapref{ch:posttraining}）には、過学習がまた問題になります。
+
+この節のまとめです。重み減衰は重みを小さく保ち、ドロップアウトは特定のニューロンへの依存を防ぎ、早期終了は覚え込みが始まる前に止めます。
+どれも、訓練データの丸暗記を防いで、検証データでの成績を上げるための方法です。
+
+\section{学習を診断する}\label{sec:training-diagnosis}
+
+部品はそろいました。しかし実際の学習では、設定を 1 つ間違えただけで、損失は下がらなくなります。
+しかも、ニューラルネットワークは、間違っていてもエラーを出しません。黙って悪い結果を返すだけです。
+うまくいかないとき、どこを見ればよいのでしょうか。この節では、学習の「健康診断」の方法をまとめます。
+
+\subsection*{学習曲線を読む}
+
+最初に見るのは、損失の\jterm{学習曲線}です。
+\figref{fig:training-curves}は、隠れ層 2 枚の MLP（\secref{sec:training-optim}の比較で使ったもの）を、Adam の学習率だけを 3 通りに変えて学習させたものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.72\linewidth,height=0.36\linewidth,xmin=0,xmax=300,ymin=0,ymax=1.6,
+  xlabel={ステップ},ylabel={訓練損失},legend pos=outer north east,legend cell align=left]
+\addplot[bookorange] table[col sep=comma,x=step,y=small]{code/ch05/out/optim_mlp_lr.csv};
+\addplot[bookgreen,very thick] table[col sep=comma,x=step,y=good]{code/ch05/out/optim_mlp_lr.csv};
+\addplot[bookaccent,thin] table[col sep=comma,x=step,y=large]{code/ch05/out/optim_mlp_lr.csv};
+\legend{小さすぎる（0.0001）,ちょうどよい（0.01）,大きすぎる（0.3）}
+\end{axis}
+\end{tikzpicture}
+\caption{学習率と学習曲線の形（隠れ層 2 枚の MLP、Adam。括弧の中は学習率）。
+小さすぎると横ばいのまま、大きすぎると上下に跳ね回る。ちょうどよいと、最初に速く下がり、だんだんなだらかになる。}
+\label{fig:training-curves}
+\end{figure}
+
+学習率が小さすぎると、損失はほぼ横ばいで、少しずつしか下がりません。
+大きすぎると、損失は上下に跳ね回ります。運よく下がることもありますが、当てにはできません。
+ちょうどよいときは、最初に速く下がり、だんだんなだらかになります。
+曲線の形を見れば、学習率をどちらに動かすべきかが分かります。
+訓練損失と検証損失を並べて見れば、\figref{fig:training-overfit}(a) のように、過学習も読み取れます。
+訓練損失は下がり続けるのに、検証損失が途中から上がり始めたら、訓練データの丸暗記が始まった合図です。
+
+\subsection*{最初の損失を検算する}
+
+学習を始める前にできる検査もあります。最初の損失を、手計算と比べるのです。
+学習前のモデルは何も知らないので、どのクラスにもほぼ同じ確率を出すはずです。
+クラスが $K$ 個なら、正解の確率は $1/K$ で、損失は $-\log(1/K)=\log K$ です（\chapref{ch:math}）。
+
+渦巻きデータは 3 クラスなので $\log 3=1.099$ です。学習前の MLP で測ると 1.122 で、ほぼ合っています（\file{ch05/diagnose.py}）。
+本書の基盤モデルは語彙が 4,096 なので、$\log 4096=8.318$ から始まるはずです。
+最初の損失がこの値より大幅に大きければ、初期化が大きすぎるか、損失の計算が間違っています。
+\secref{sec:training-residual}で、正規化なしの残差接続の最初の損失が $4\times10^{9}$ だったのは、その例でした。
+
+\subsection*{1 バッチだけを覚えさせる}
+
+次の検査は、\jterm{1 バッチ過学習テスト}です。データをごく少数（たとえば 8 件）に絞り、同じデータだけで何百ステップも学習させます。
+正しく書けたモデルなら、8 件くらいは丸暗記できます。損失は、ほぼ 0 まで下がるはずです。
+下がらなければ、モデルか損失か学習ループのどこかに、バグがあります。
+データが少ないので数秒で終わります。長い学習を始める前に、必ず試す価値があります。
+
+わざとバグを入れて試します。損失の計算に、よくある間違いを 1 つ仕込みました（\file{ch05/diagnose.py}）。
+\begin{pycode}
+probs = torch.softmax(model(x), dim=1)   # バグ: 先に softmax をかけた
+return F.cross_entropy(probs, y)         # 中でもう一度 softmax がかかる
+\end{pycode}
+\code{F.cross_entropy} は、中で softmax を計算します。ロジットをそのまま渡す約束でした（\chapref{ch:nn}）。
+ここでは、先に softmax をかけた確率を渡してしまっています。エラーは出ません。
+
+\outputfile{ch05/out/diagnose_2.txt}
+
+正しいコードでは、損失は 0.0001 まで下がりました。
+バグ入りのコードでは、0.5515 で止まっています。8 件すら覚えられないので、どこかがおかしいと分かります。
+止まる理由も説明できます。いちばんうまくいっても、渡す確率は $(1,0,0)$ です。これにもう一度 softmax をかけると、正解の確率は $e^1/(e^1+e^0+e^0)=e/(e+2)\approx0.576$ にしかなりません。
+損失は $-\log 0.576=0.5514$ より下がれないのです。
+注目してほしいのは、バグ入りでも正解率は 100\% だという点です。softmax を何度かけても、いちばん大きい成分は変わらないからです。
+正解率だけを見ていたら、このバグには気づけません。損失の値そのものを見る習慣が大切です。
+
+\subsection*{よくある失敗の一覧}
+
+この章で出会った症状を、\tabref{tab:training-failures}にまとめます。困ったときは、ここから始めてください。
+下の 2 行は、\secref{sec:training-regularization}で扱った症状です。
+ドロップアウトは、学習中だけ、隠れ層の出力の一部をでたらめに 0 にする部品でした。
+評価の前に \code{model.eval()} を呼んで止めないと、評価のたびに結果が変わります。
+
+\begin{table}[tbp]
+\centering
+\caption{学習がうまくいかないときの症状と、最初に疑うこと。}
+\label{tab:training-failures}
+\small
+\begin{tabular}{p{0.27\linewidth}p{0.3\linewidth}p{0.33\linewidth}}
+\toprule
+症状 & 疑うこと & 対処 \\
+\midrule
+損失が $\log K$ のまま動かない & 勾配が届いていない。学習率が小さすぎる & 初期化、正規化、残差接続を見直す \\\addlinespace[2pt]
+最初の損失が $\log K$ よりずっと大きい & 信号が層ごとに大きくなっている & 初期化と正規化を見直す \\\addlinespace[2pt]
+損失が \code{nan} になる、跳ね回る & 学習率が大きすぎる & 学習率を下げる。ウォームアップ、勾配クリッピング \\\addlinespace[2pt]
+損失がゆっくりしか下がらない & 学習率が小さすぎる & 学習率を上げる。Adam を使う \\\addlinespace[2pt]
+1 バッチも覚えられない & コードのバグ & 損失の計算、データとラベルの対応を確かめる \\\addlinespace[2pt]
+訓練損失だけが下がる & 過学習 & 重み減衰、ドロップアウト、早期終了 \\\addlinespace[2pt]
+評価のたびに結果が変わる & \code{model.eval()} の呼び忘れ & 評価の前に \code{model.eval()} を呼ぶ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{標準セットを組み上げる}
+
+最後に、この章の部品をすべて組み合わせます。
+モデルは、隠れ層 50 枚の MLP です。He の初期化、レイヤー正規化、残差接続を入れます。
+学習ループには、AdamW、ウォームアップとコサイン減衰、勾配クリッピングを入れます。
+
+\snippet{標準セットの学習ループ}{code:training-standard}{ch05/standard.py}{standard}
+
+(1) から (5) の 5 行は、\chapref{ch:nn}のままです。
+足したのは、モデルとオプティマイザを作る 2 行、学習率を決める 3 行、ミニバッチを選ぶ 1 行、クリッピングの 1 行です。
+\code{optimizer.param_groups} は、オプティマイザが持っている設定の一覧で、ここに学習率を書き込みます。
+\code{torch.randint} は、300 点の中から 32 点の番号をでたらめに選びます。
+定数は、\code{MAX_STEPS} が 300、\code{WARMUP} が 30、\code{MAX_LR} が 0.01、\code{BATCH} が 32 です。
+このモデルはドロップアウトを使わないので、\code{model.train()} と \code{model.eval()} の切り替えは省いています。
+
+\outputfile{ch05/out/standard_1.txt}
+
+章の最初には 10 枚で動かなかった MLP が、50 枚でも、わずか 300 ステップで学習できました。
+訓練データの正解率は 100\%、テストデータでも 98.7\% です。
+学習率が、ウォームアップで上がり、そのあと下がっていく様子も読み取れます。
+ステップ 0 の 0.00033 は $0.01\times1/30$ で、最後の 0.00100 は最大値 0.01 の 1 割です。
+ミニバッチごとの損失は、選ばれた 32 点によって上下します。
+パラメータ数は、最初の層 96、間の 49 段（全結合層 1,056 と正規化 64）、出力層の前の正規化 64、出力層 99 の合計です。$96+49\times1{,}120+64+99=55{,}139$ になります。
+なお、98.7\% は 1 回の実行の値です。計算に使うスレッドの数などの環境が違うと、同じ乱数の種でも 1 ポイントほど変わることがあります。
+
+正直に書くと、この小さな問題では、学習ループの側の部品の差は出ません。
+同じモデルを、同じミニバッチと 300 ステップで、ただの SGD（学習率 0.1）で学習させても、訓練 100\%、テスト 98.7\% でした（\file{ch05/standard.py} の後半）。
+学習ループの側の部品が効くのは、\secref{sec:training-optim}や\secref{sec:training-schedule}の実験のように、損失の地形が険しいときや、学習率を大きくとるときです。
+何日もかかり、やり直しのきかない LLM の学習では、それに備えて全部を入れておきます。
+
+このループは、LLM の学習ループと同じ形をしています。
+本書の基盤モデルを学習する \code{llmbook.train.train_lm} も、モデルが Transformer に、データが文章に替わるだけで、同じ部品を同じ順に並べています。
+\tabref{tab:training-scale}は、この章の実験と、本書の基盤モデル、実際の LLM の設定を並べたものです。
+
+\begin{table}[tbp]
+\centering
+\caption{学習の設定の比較。規模は何桁も違うが、部品の組み合わせは同じである。「—」は論文に記載がないもの。
+GPT-2 は、それを再現する公開コード nanoGPT の設定\cite{karpathy2022nanogpt}、LLaMA は 7B\cite{touvron2023llama}、Llama 3 は 405B\cite{dubey2024llama3}。}
+\label{tab:training-scale}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+ & この章 & 基盤モデル & GPT-2 & LLaMA & Llama 3 \\
+\midrule
+パラメータ数 & 5.5 万 & 258 万 & 1.24 億 & 約 70 億 & 約 4,050 億 \\
+最適化手法 & AdamW & AdamW & AdamW & AdamW & AdamW \\
+最大の学習率 & $1\times10^{-2}$ & $1\times10^{-3}$ & $6\times10^{-4}$ & $3\times10^{-4}$ & $8\times10^{-5}$ \\
+ウォームアップ（ステップ） & 30 & 200 & 2,000 & 2,000 & 8,000 \\
+全体のステップ数 & 300 & 4,000 & 600,000 & — & 1,200,000 \\
+減衰 & コサイン & コサイン & コサイン & コサイン & コサイン \\
+重み減衰 & 0.1 & 0.1 & 0.1 & 0.1 & — \\
+クリッピングの上限 & 1.0 & 1.0 & 1.0 & 1.0 & — \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+パラメータ数は 7 桁も違うのに、表の下半分はほとんど同じです。
+違うのは最大の学習率で、モデルが大きいほど小さくなります。
+大きなモデルほど、学習が不安定になりやすいからです。ウォームアップも、それに合わせて長くなります。
+
+この節のまとめです。学習の不調の多くは、学習曲線、最初の損失、1 バッチ過学習テストで見つけられます。
+この章の学習ループは、そのまま LLM の学習ループの形です。
+
+\begin{summary}
+\item 重みの初期値の大きさは、信号が層を通るたびの倍率を決めます。ReLU では標準偏差を $\sqrt{2/n}$ にする（He の初期化）と、倍率が 1 になります。
+\item レイヤー正規化は、データ 1 件ごとに成分の平均を 0、分散を 1 にそろえ直します。バッチの仲間に左右されないので、Transformer で使われます。
+\item 残差接続 $\vh\leftarrow\vh+F(\vh)$ は、勾配がそのまま戻る近道を作ります。正規化と組み合わせると、50 枚の MLP も学習できました。
+\item モーメンタムは過去の勾配をためて向きを安定させます。Adam は、さらにパラメータごとに歩幅をそろえます。AdamW は、それに重み減衰を加えたものです。
+\item 学習率は、ウォームアップで少しずつ上げ、コサイン減衰でなめらかに下げます。勾配クリッピングは、大きすぎる勾配を上限まで縮めます。
+\item 過学習は、重み減衰、ドロップアウト、早期終了で抑えます。
+\item 学習の不調は、学習曲線の形、最初の損失、1 バッチ過学習テストで診断します。
+\item LLM の学習の標準セットは「AdamW ＋ ウォームアップとコサイン減衰 ＋ レイヤー正規化 ＋ 残差接続 ＋ 勾配クリッピング」です。
+\end{summary}
+
+\section*{次の章へ}
+
+これで、深いネットワークを学習させる道具がそろいました。
+残差接続とレイヤー正規化は、\chapref{ch:transformer}で Transformer のブロックを組み立てるときに、そのままの形で使います。
+AdamW と学習率スケジュール、勾配クリッピングは、\chapref{ch:pretraining}で基盤モデルを事前学習するときの学習ループになります。
+ただし、ここまで学習させてきたのは、平面上の点を 3 色に分けるモデルでした。本書の目標は、言葉を扱うモデルです。
+ところが、文章には座標もなければ、誰かが付けた正解ラベルもありません。
+何を入力にし、何を正解にすれば、同じ 5 行のループで学習できるのでしょうか。
+\chapref{ch:lm}では、いよいよ「言語」に進みます。
+次のトークンを予測するという問題を、いちばん簡単なモデルから作り始めます。
+
+\section*{さらに学ぶために}
+
+\begin{itemize}
+\item Goodfellow ほか『Deep Learning』\cite{goodfellow2016deep}：第 7 章（正則化）と第 8 章（最適化）が、この章の内容を数式でていねいに扱っています。
+\item Zhang ほか『Dive into Deep Learning』\cite{zhang2023d2l}：最適化手法ごとに、動かせるコードと図で比べられます。無料で読めます。
+\item スタンフォード大学 CS231n の講義ノート\cite{cs231n}：初期化、学習率、学習の診断について、実践的な助言がまとまっています。
+\item Karpathy の動画講義\cite{karpathy2022zerotohero}：活性化と勾配の分布を層ごとに描きながら、初期化と正規化を説明する回があります。
+\item 原論文：He の初期化\cite{he2015delving}、残差接続\cite{he2016deep}、Adam\cite{kingma2015adam}、AdamW\cite{loshchilov2019decoupled}。この章の式や図と見比べてみてください。
+\end{itemize}
+
+\begin{exercises}
+\exfirst{1 と 3}
+\item （手計算）ベクトル $(1, 3, 5, 7)$ にレイヤー正規化（$\gamma_j=1$、$\beta_j=0$、$\epsilon$ は無視）をかけてください。本文の $(2,4,6,8)$ の結果と比べて、気づくことを述べてください。
+\item （手計算）勾配が 2 ステップ続けて $g=2$ でした。$\beta_1=0.9$、$\beta_2=0.999$ として、Adam の $\hat m$ と $\hat v$ を 2 ステップ分計算し、2 ステップ目に動く量が $\eta$ の何倍かを求めてください。
+\item （コード）\file{ch05/optim.py} の \code{Adam} で、\code{m_hat} と \code{v_hat} の代わりに \code{m} と \code{v} を使ってください。\file{ch05/optim2d.py} の最初の 1 歩は、本文の「約 3.2 倍」になるでしょうか。
+\item （コード）\file{ch05/deep_train.py} の深さを 100 に変えて、「He＋レイヤー正規化＋残差接続」が学習できるか試してください。次に、\file{ch05/deepmlp.py} の \code{forward} で \code{norm(h)} を \code{h} に変え、深さ 10、50、100 で最初の損失がどうなるかを確かめてください（出力層の前の正規化は残ります）。
+\item （コード）\file{ch05/standard.py} で、ウォームアップを 0 ステップにし、最大の学習率を 0.1 に上げて、損失の推移を比べてください。
+\item （考察）バッチ正規化は、文章を 1 トークンずつ生成する LLM には使いにくいと述べました。理由を、学習時と生成時のバッチの違いから説明してください。
+\end{exercises}

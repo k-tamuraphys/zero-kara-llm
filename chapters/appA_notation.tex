@@ -1,0 +1,244 @@
+\chapter{記号一覧}\label{app:notation}
+
+この付録は、本書で使う記号を分野ごとに表にまとめたものです。
+通読する必要はありません。本文で記号に迷ったときに引いてください。
+「初出」の欄は、その記号を最初に定義した章・節です。そこに戻れば、記号の意味と使い方をもう一度確かめられます。
+
+あらかじめ、本書全体の約束を三つ書いておきます。
+第一に、数式の添字（位置・データ番号・時刻）は 1 から数え、コードの番号は 0 から数えます（ただし強化学習の時刻 $t$ は、コードに合わせて 0 から数えます）。
+第二に、$\log$ はいつも\textbf{自然対数}（底 $e$）です。底 2 のときだけ $\log_2$ と書きます。
+第三に、同じ文字を別の意味に使っている箇所があります。それらは最後の\tabref{tab:notation-overload}にまとめました。
+
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{書き方の約束、数と集合、線形代数、微分。}
+\label{tab:notation-basic}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$x,\ y,\ \alpha$ & スカラー（数 1 個）。細字で書く & \secref{sec:math-notation} \\
+$\vx,\ \vw$ & ベクトル（太字小文字）。数式では縦に並べた列ベクトル & \secref{sec:math-notation} \\
+$\mW,\ \mX$ & 行列・テンソル（太字大文字） & \secref{sec:math-notation} \\
+$x_i,\ W_{ij}$ & 成分。添字は 1 始まり（コードは 0 始まり） & \secref{sec:math-notation} \\
+$x^{(i)}$ & $i$ 番目のデータ（上付きの丸かっこ） & \secref{sec:math-notation} \\
+$\R^{n},\ \R^{m\times n}$ & $n$ 個の実数を並べたベクトルの集まり、$m$ 行 $n$ 列の実行列の集まり & \secref{sec:math-notation} \\
+$\defeq$ & 「左辺を右辺で定義する」 & \secref{sec:math-notation} \\
+$\leftarrow$ & 左辺を右辺の値で置き換える（更新する） & \secref{sec:ml-gd} \\
+$(B,T,d)$ & テンソルの形。コードでは \code{(B, T, C)} & \secref{sec:pt-tensor} \\
+\midrule
+$\mW^\T$ & 転置（行と列を入れ替える） & \secref{sec:math-linalg} \\
+$\va^\T\vb$ & 内積 & \secref{sec:math-linalg} \\
+$\norm{\va}$ & ベクトルの長さ（ノルム） & \secref{sec:math-linalg} \\
+$\calO(\cdot)$ & 計算量のオーダー（大きさの目安） & \secref{sec:math-linalg} \\
+$\sum,\ \prod$ & 和、積 & \secref{sec:math-notation} \\
+\midrule
+$\dd{f}{x},\ \pd{f}{x}$ & 微分、偏微分（ほかの変数を止めて 1 つだけ動かす） & \secref{sec:math-calculus} \\
+$\nabla_{\vtheta}f$ & 勾配（偏微分を並べたベクトル。$f$ が最も増える向き） & \secref{sec:math-calculus} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{確率・情報量。}
+\label{tab:notation-prob}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$p(x),\ p(y\mid x)$ & 確率、条件付き確率（$x$ が分かったときの $y$ の確率） & \secref{sec:math-prob} \\
+$x_{<t}$ & $t$ より前のトークン $x_1,\dots,x_{t-1}$ & \secref{sec:math-prob} \\
+$\E_{x\sim p}[\cdot]$ & 期待値（$x$ を $p$ に従って引いたときの平均） & \secref{sec:math-prob} \\
+$\Var$ & 分散 & \secref{sec:math-prob} \\
+$\calN(\mu,\sigma^2)$ & 平均 $\mu$、分散 $\sigma^2$ の正規分布 & \secref{sec:math-prob} \\
+$\pdata,\ \ptheta$ & データの真の分布、モデルの分布 & \secref{sec:lm-objective} \\
+$\hat\theta,\ \hat p$ & 帽子はデータから求めた推定値（最尤推定、経験分布、測った正答率） & \secref{sec:math-mle} \\
+$H(p)$ & エントロピー（$p$ に従う結果の平均の驚き） & \secref{sec:math-info} \\
+$H(p,q)$ & 交差エントロピー（本当は $p$ のとき、予測 $q$ で測った平均の驚き） & \secref{sec:math-info} \\
+$\KL{p}{q}$ & KL ダイバージェンス（$p$ と $q$ のずれ。0 以上） & \secref{sec:math-info} \\
+$\softmax(\vz)$ & ロジットを足して 1 になる確率に直す関数 & \secref{sec:math-softmax} \\
+$\mathrm{SE}$ & 標準誤差（測った正答率がどのくらいぶれるか） & \secref{sec:es-stats} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{機械学習とニューラルネットワークの学習。}
+\label{tab:notation-ml}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$\calD=\{(x^{(i)},y^{(i)})\}_{i=1}^{N}$ & データセット。$N$ はデータの個数 & \secref{sec:ml-supervised} \\
+$f_\theta,\ \vtheta$ & モデルと、そのパラメータ全体 & \secref{sec:ml-supervised} \\
+$\calL(\vtheta),\ \ell$ & 損失（全体の平均）、1 件ごとの損失 & \secref{sec:ml-supervised} \\
+$\eta$ & 学習率（1 回の更新で進む大きさ） & \secref{sec:ml-gd} \\
+$\eta_t,\ \eta_{\max},\ t_w$ & ステップ $t$ の学習率、最大学習率、ウォームアップのステップ数 & \secref{sec:pt-loop} \\
+$B,\ \mathcal{B}$ & バッチサイズ、ミニバッチ（データの束） & \secref{sec:ml-sgd} \\
+$K$ & 分類のクラス数 & \secref{sec:ml-classification} \\
+$\sigmoid(z)$ & シグモイド関数（0〜1 に押し込む） & \secref{sec:ml-classification} \\
+$\lambda$ & 正則化・重み減衰の強さ & \secref{sec:ml-generalization} \\
+$u,\ h,\ \phi$ & 活性化関数に入る前の値、通した後の値、活性化関数 & \secref{sec:nn-neuron} \\
+$\relu,\ \gelu$ & 活性化関数 ReLU、GELU & \secref{sec:nn-neuron} \\
+$\vdelta$ & 逆伝播で層の出力に届く、損失の勾配 & \secref{sec:nn-backprop} \\
+$P$ & パラメータの個数（第 4 章。第 12 章以降は $N$） & \secref{sec:nn-mlp} \\
+$\vgamma,\ \vbeta,\ \epsilon$ & レイヤー正規化の倍率、ずらす量、割り算を守る小さな数 & \secref{sec:training-norm} \\
+$\beta_1,\ \beta_2,\ \hat m,\ \hat v$ & Adam の移動平均の係数と、補正した 1 次・2 次の移動平均 & \secref{sec:training-optim} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{言語モデルと Transformer。}
+\label{tab:notation-lm}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$\calV,\ V=\abs{\calV}$ & 語彙と、その大きさ（トークンの種類の数） & \secref{sec:lm-definition} \\
+$x_1,\dots,x_T$ & トークン列（長さ $T$） & \secref{sec:lm-definition} \\
+$\vz$ & ロジット（softmax に入れる前のスコア） & \secref{sec:math-softmax} \\
+$\tau$ & 温度（ロジットを $\tau$ で割ってから softmax。大きいほど平らな分布） & \secref{sec:lm-generation} \\
+$\mE,\ \ve_x$ & 埋め込み表（$V\times d$）と、トークン $x$ の行 & \secref{sec:emb-lookup} \\
+$\vh_t$ & 位置 $t$ の隠れ状態（その位置のベクトル） & \secref{sec:emb-rnn} \\
+$d$ & 埋め込み次元（隠れ次元。\code{n_embd}） & \secref{sec:emb-lookup} \\
+$\mQ,\ \mK,\ \mV$ & クエリ・キー・バリューの行列 & \secref{sec:attn-qkv} \\
+$\mW_q,\ \mW_k,\ \mW_v,\ \mW_o$ & クエリ・キー・バリューを作る重み、出力射影の重み & \secref{sec:attn-qkv} \\
+$s_{ts},\ \mS$ & スコア（$\vq_t^\T\vk_s$）とスコア行列 & \secref{sec:attn-qkv} \\
+$\mA$ & 注意の重み（$T\times T$。各行の和が 1） & \secref{sec:attn-qkv} \\
+$\mM$ & 因果マスク（未来の位置に $-\infty$） & \secref{sec:attn-causal} \\
+$H,\ \dhead=d/H$ & ヘッド数、1 ヘッドの次元 & \secref{sec:attn-multihead} \\
+$L,\ \ell$ & 層（ブロック）の数、層の番号 & \secref{sec:tf-overview} \\
+$\vp_t,\ \mP,\ T_{\max}$ & 位置埋め込み、その表、文脈長の上限（\code{block_size}） & \secref{sec:tf-position} \\
+$\mW_1,\ \mW_2$；$4d$ & MLP の重み；MLP の中間の次元 & \secref{sec:tf-mlp} \\
+$\omega_i,\ m\omega_i,\ \mR(\phi)$ & RoPE の組 $i$ の周波数、位置 $m$ での回転角、回転行列 & \secref{sec:ma-rope} \\
+$\mW_g,\ \mW_u,\ \mW_d$ & SwiGLU のゲート・上げる・下げる重み & \secref{sec:ma-swiglu} \\
+$H_{\mathrm{kv}}$ & キーとバリューのヘッド数（GQA） & \secref{sec:ma-gqa} \\
+$E,\ k,\ g_e,\ \mW_r$ & MoE のエキスパート数、選ぶ数、エキスパート $e$ の重み、ルータの重み & \secref{sec:ma-moe} \\
+$\calL_{\mathrm{aux}}$ & MoE の負荷分散損失 & \secref{sec:ma-moe} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{計算量とインフラ、効率化と事後学習（LoRA・蒸留・量子化）。}
+\label{tab:notation-infra}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$N,\ D,\ C\approx6ND$ & パラメータ数、学習トークン数、学習の総計算量（FLOPs） & \secref{sec:gpu-flops} \\
+MFU & $6N$ に基づく実効 FLOP/s を公称 FLOP/s で割った割合 & \chapref{ch:gpu} \\
+$D\approx20N$ & Chinchilla の目安（パラメータ 1 個あたり 20 トークン） & \secref{sec:pt-scaling} \\
+$W,\ b=B/W$ & ワールドサイズ（プロセスの数）、1 プロセスあたりのバッチ & \secref{sec:dist-ddp} \\
+$S,\ \alpha,\ \beta$ & 送るバイト数、1 回の送信の固定時間、通信の帯域 & \secref{sec:dist-comm} \\
+$T_{\mathrm{fail}},\ c$ & 平均故障間隔、チェックポイント 1 回の保存時間 & \secref{sec:dist-cluster} \\
+$P,\ G$ & GPU 1 枚の公称 FLOP/s、GPU の枚数 & \secref{sec:infra-pipeline} \\
+$m_{\text{kv}}$ & KV キャッシュの 1 トークンあたりのバイト数 & \secref{sec:infra-memory} \\
+\midrule
+$\calL_{\text{SFT}},\ \mathcal{M}$ & SFT の損失、損失を数える位置の集合（損失マスク） & \secref{sec:post-sft} \\
+$\mW_0+\tfrac{\alpha}{r}\mB\mA$ & LoRA。$\mW_0$ は凍結した重み、$\mB\mA$ が学習する低ランクの差分 & \secref{sec:lora-def} \\
+$r,\ \alpha$ & LoRA のランク、倍率の係数（本書は $\alpha=2r$） & \secref{sec:lora-def} \\
+$d_{\text{in}},\ d_{\text{out}}$ & LoRA を付ける層の入力・出力の次元 & \secref{sec:lora-def} \\
+$\vv,\ \vz$ & 蒸留の教師ロジット、生徒ロジット & \secref{sec:distill-loss} \\
+$\vp^\tau,\ \vq^\tau$ & 温度 $\tau$ で softmax した教師・生徒の分布 & \secref{sec:distill-loss} \\
+$\alpha$（蒸留） & 蒸留の項と正解の項を混ぜる割合 & \secref{sec:distill-loss} \\
+$s,\ z_0,\ b$ & 量子化のスケール、ゼロ点、ビット数 & \secref{sec:distill-quant} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{強化学習と LLM の強化学習。}
+\label{tab:notation-rl}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.56\linewidth}>{\raggedright\arraybackslash}p{0.10\linewidth}}
+\toprule
+記号 & 意味 & 初出 \\
+\midrule
+$s,\ a,\ r$；$\calS,\ \calA$ & 状態・行動・報酬；状態の集合・行動の集合 & \secref{sec:rlb-mdp} \\
+$s_t,\ a_t,\ r_t$ & 時刻 $t$（0 始まり）の状態・行動・その直後の報酬 & \secref{sec:rlb-mdp} \\
+$P(s'\mid s,a)$ & 遷移確率 & \secref{sec:rlb-mdp} \\
+$\pi(a\mid s),\ \pitheta$ & 方策、パラメータ $\vtheta$ で表した方策 & \secref{sec:rlb-return} \\
+$\tau,\ R(\tau)$ & 軌跡（1 エピソードの記録）、その収益 & \secref{sec:rlb-return} \\
+$\gamma$ & 割引率（先の報酬ほど $\gamma$ 倍ずつ軽く数える） & \secref{sec:rlb-return} \\
+$G_t$ & 時刻 $t$ からの収益（割引報酬和） & \secref{sec:rlb-return} \\
+$V^\pi(s),\ Q^\pi(s,a)$ & 状態価値、行動価値 & \secref{sec:rlb-value} \\
+$V^\ast,\ Q^\ast,\ \pi^\ast$ & 最適価値関数、最適方策 & \secref{sec:rlb-dp} \\
+$\delta_t$ & TD 誤差 $r_t+\gamma V(s_{t+1})-V(s_t)$ & \secref{sec:rlb-mc-td} \\
+$\varepsilon$ & $\varepsilon$-貪欲法で、ランダムに行動する確率 & \secref{sec:rlb-q} \\
+$J(\vtheta)$ & 強化学習の目的関数（期待収益） & \secref{sec:pg-param} \\
+$A^\pi(s,a),\ \hat A_t$ & アドバンテージ $Q^\pi-V^\pi$、その推定値 & \secref{sec:pg-variance} \\
+$b(s_t)$ & ベースライン & \secref{sec:pg-variance} \\
+$V_\phi$ & 価値ネット（クリティック） & \secref{sec:pg-actor-critic} \\
+$\lambda$（GAE） & GAE の、遠い TD 誤差をどれだけ使うかの係数 & \secref{sec:pg-actor-critic} \\
+$\rho_t,\ \pi_{\theta_{\text{old}}}$ & 確率比 $\pitheta/\pi_{\theta_{\text{old}}}$、データを集めたときの方策 & \secref{sec:pg-surrogate} \\
+$\epsilon$（PPO） & PPO のクリップの幅（標準は 0.2） & \secref{sec:pg-ppo} \\
+$c_V,\ c_H$ & PPO の価値損失・エントロピー項の係数 & \secref{sec:pg-ppo} \\
+\midrule
+$q,\ o,\ \abs{o}$ & 質問（プロンプト）、応答、応答の長さ & \secref{sec:rl-map} \\
+$G,\ \hat A_i$ & GRPO のグループの応答数、$i$ 本目の応答のアドバンテージ & \secref{sec:rl-grpo} \\
+$\pi_{\text{ref}},\ \beta$ & 参照モデル、KL 罰則の強さ（本書は $\beta=0.04$） & \secref{sec:rl-grpo} \\
+$x,\ y_w,\ y_l$ & 選好データのプロンプト、好まれた応答、好まれなかった応答 & \secref{sec:rl-rlhf} \\
+$r_\phi$ & 報酬モデル & \secref{sec:rl-rlhf} \\
+$c,\ n_{\text{call}}$ & Agentic RL の 1 回の呼び出しのコスト、呼び出し回数 & \secref{sec:arl-env} \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{数式の記号と、本書のコード（\file{llmbook/model.py} の \code{GPTConfig} など）の名前の対応。}
+\label{tab:notation-code}
+\begin{tabular}{l>{\raggedright\arraybackslash}p{0.33\linewidth}>{\raggedright\arraybackslash}p{0.38\linewidth}}
+\toprule
+記号 & コードでの名前 & 意味 \\
+\midrule
+$B$ & \code{B}（\code{batch_size}） & バッチサイズ \\
+$T$ & \code{T}、上限は \code{block_size} & 系列長（文脈長） \\
+$d$ & \code{C}、\code{n_embd} & 埋め込み次元 \\
+$V$ & \code{vocab_size} & 語彙の大きさ \\
+$L$ & \code{n_layer} & 層（ブロック）の数 \\
+$H$ & \code{n_head} & ヘッド数 \\
+$\dhead$ & \code{C // n_head} & 1 ヘッドの次元 \\
+$\vz$ & \code{logits} & ロジット。形 \code{(B, T, vocab_size)} \\
+$\calL$ & \code{loss} & 損失 \\
+$\eta$ & \code{lr} & 学習率 \\
+$\vtheta$ & \code{model.parameters()} & パラメータ全体 \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip
+
+\par\medskip\noindent\begin{minipage}{\linewidth}
+\centering\footnotesize
+\captionof{table}{同じ文字の使い分け。迷ったら、まわりの文章がどの分野の話をしているかで見分ける。}
+\label{tab:notation-overload}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.10\linewidth}>{\raggedright\arraybackslash}p{0.83\linewidth}}
+\toprule
+文字 & 使い分け \\
+\midrule
+$H$ & \textbf{ヘッド数}（\chapref{ch:attention}以降の Transformer の話）と、\textbf{エントロピー} $H(p)$（\chapref{ch:math}、第 21 章の $c_H$ の項）。エントロピーは必ず後ろにかっこ（分布）が付くので、かっこの有無で見分けられる。第 22 章の $G$ はグループの大きさで、収益 $G_t$ とは添字の有無で区別する \\
+$L$, $\calL$, $\ell$ & 細字の $L$ は\textbf{層の数}、筆記体の $\calL$ は\textbf{損失}、$\ell$ は 1 件ごとの損失（第 3 章）または層の番号（第 10 章）。PPO の $L^{\mathrm{CLIP}}$ は損失ではなく大きくしたい目的関数なので細字の $L$ で書いている \\
+$T$ & \textbf{系列長}（トークン列の長さ、文脈長）と、強化学習の\textbf{軌跡の長さ}（第 20 章）。温度は本書では $\tau$ と書く。論文では温度を $T$ と書くことが多いので、論文を読むときは注意（第 18 章） \\
+$N$ & \textbf{データの個数}（第 3〜6 章。損失の平均を取る個数）と、\textbf{パラメータ数}（第 12 章以降の $6ND$、$D\approx20N$）。第 4 章では、データ数と区別するためにパラメータ数を $P$ と書いた \\
+$\tau$ & \textbf{温度}（第 6・18 章）と\textbf{軌跡}（第 20〜24 章）。温度は割り算の分母や上付き（$\vp^\tau$）に、軌跡は $R(\tau)$ や $\tau\sim\pitheta$ のように確率の対象として現れる。第 15 章では保存の間隔にも使っている \\
+$\alpha$ & 加算平滑化の量（第 6 章）、1 回の送信の固定時間（第 14 章）、LoRA の係数（第 17 章）、蒸留で混ぜる割合（第 18 章）、TD 学習の学習率（第 20 章）、スケーリング則の指数 $\alpha_N$（第 13 章）。どれもその章の中でだけ使う \\
+$\beta$ & レイヤー正規化のずらす量 $\vbeta$ と Adam の係数 $\beta_1,\beta_2$（第 5 章）、通信の帯域（第 14 章）、KL 罰則の強さ（第 22・24 章） \\
+$d$ & \textbf{埋め込み次元}（モデルの幅）。$\dhead$ は 1 ヘッドの次元、$d_{\text{in}},d_{\text{out}}$ は LoRA を付ける層の入出力の次元、$d_h$ は第 8 章の隠れ層の幅 \\
+$V$, $\calV$, $V^\pi$ & 細字の $V$ は\textbf{語彙の大きさ}、筆記体の $\calV$ は\textbf{語彙そのもの}、上付き $\pi$ の付いた $V^\pi(s)$ は\textbf{状態価値}、太字の $\mV$ は注意の\textbf{バリュー行列}。かっこ（状態）が付くかどうかで見分ける \\
+$A$ & 太字の $\mA$ は\textbf{注意の重み}（第 9 章）と LoRA の\textbf{低ランク行列}（第 17 章）。細字の $A^\pi(s,a)$、$\hat A_t$ は\textbf{アドバンテージ}。第 15 章の $A$ は活性化のメモリ \\
+$P$ & パラメータの個数（第 4 章）、遷移確率 $P(s'\mid s,a)$（第 20 章）、パイプラインの段数（第 14 章）、GPU の公称 FLOP/s（第 15 章）。太字の $\mP$ は位置埋め込みの表 \\
+$\theta$ & 太字の $\vtheta$ はモデルの\textbf{パラメータ}。細字の $\theta$ はコインの表の確率（第 1 章）、RoPE の基数 $10000$（第 11 章）、倒立振子の角度（第 21 章） \\
+$\sigma$ & 標準偏差（$\sigma^2$ が分散）とシグモイド関数 $\sigmoid(z)$。関数として $\sigma(\cdot)$ と書かれていればシグモイド \\
+$\epsilon$, $\varepsilon$ & $\epsilon$ は割り算を守る小さな数（レイヤー正規化、Adam）と PPO のクリップの幅。$\varepsilon$ は $\varepsilon$-貪欲法の確率と、第 3 章の誤差（ずれ） \\
+$r$ & 報酬（強化学習）と、LoRA のランク（第 17 章）。第 4 章では残差 $\hat y-y$、第 13 章では学習率の下限の比 \\
+$s$ & 状態（強化学習）、注意で見られる側の位置（$s_{ts}$）、量子化のスケール（第 18 章） \\
+$\delta$ & 太字の $\vdelta$ は逆伝播で届く勾配（第 4 章）、細字の $\delta_t$ は TD 誤差（第 20・21 章） \\
+\bottomrule
+\end{tabular}
+\end{minipage}\par\medskip

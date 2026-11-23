@@ -1,0 +1,3 @@
+for 文       5.36 秒
+PyTorch      3.68 ミリ秒
+for 文は PyTorch の 1,455 倍の時間がかかる

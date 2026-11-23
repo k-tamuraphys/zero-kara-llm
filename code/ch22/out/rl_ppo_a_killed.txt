@@ -1,0 +1,7 @@
+iter    0 upd    0  val 0.838  test 0.826  (18s)
+  it 0 reward 0.578 kept 0.66 ep 4 clip 0.073 akl 0.0157 klref 0.1108 (38s)
+  it 1 reward 0.496 kept 0.69 ep 4 clip 0.104 akl 0.0200 klref 0.0476 (58s)
+  it 2 reward 0.555 kept 0.73 ep 4 clip 0.111 akl 0.0150 klref 0.1042 (78s)
+  it 5 reward 0.510 kept 0.80 ep 4 clip 0.112 akl 0.0391 klref 0.9969 (145s)
+iter   10 upd   39  val 0.776  test 0.763  (251s)
+  it 10 reward 0.512 kept 0.70 ep 4 clip 0.167 akl 0.0507 klref 40.4077 (273s)

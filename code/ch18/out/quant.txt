@@ -1,0 +1,18 @@
+W: shape (768, 192), min -0.1930, max 0.1937
+bits=8 group=None: mean |error| 0.000201
+bits=8 group=32: mean |error| 0.000151
+bits=4 group=None: mean |error| 0.003409
+bits=4 group=32: mean |error| 0.002565
+bits=3 group=None: mean |error| 0.007318
+bits=3 group=32: mean |error| 0.005503
+bits=2 group=None: mean |error| 0.017062
+bits=2 group=32: mean |error| 0.012933
+
+fp32: 10.34 MB
+fp32             10.34 MB  acc 0.826
+int8-row          2.64 MB  acc 0.824
+int4-row          1.35 MB  acc 0.760
+int4-g32          1.63 MB  acc 0.823
+int3-row          1.03 MB  acc 0.690
+int3-g32          1.30 MB  acc 0.750
+int2-g32          0.98 MB  acc 0.403

@@ -1,0 +1,7 @@
+fc1.weight  形 (32, 2)
+fc1.bias    形 (32,)
+fc2.weight  形 (32, 32)
+fc2.bias    形 (32,)
+fc3.weight  形 (3, 32)
+fc3.bias    形 (3,)
+パラメータ数: 1251

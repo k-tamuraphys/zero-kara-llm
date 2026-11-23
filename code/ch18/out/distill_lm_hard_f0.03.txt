@@ -1,0 +1,12 @@
+cond=hard frac=0.03 train_tokens=40,898 val_tokens=68,778 steps=400 tau=2.0 alpha=0.5
+teacher val loss: 4.8738
+step     0 val 8.3375 (3s)
+step    50 val 8.0331 (33s)
+step   100 val 8.0286 (61s)
+step   150 val 7.8468 (92s)
+step   200 val 7.9137 (123s)
+step   250 val 8.0470 (153s)
+step   300 val 8.1963 (184s)
+step   350 val 8.3551 (215s)
+step   400 val 8.4072 (250s)
+best val 7.8468 at step 150; final val 8.4072; time 250s

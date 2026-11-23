@@ -1,0 +1,27 @@
+step     0  acc1000 0.826  (3s)
+            reward 0.773  signal 0.69  kl 0.0000
+  step 1 6.0s
+  step 2 7.6s
+  step 3 9.3s
+  step 4 10.8s
+step    25  acc1000 0.833  (46s)
+            reward 0.578  signal 0.84  kl 0.0335
+step    50  acc1000 0.832  (89s)
+            reward 0.699  signal 0.72  kl 0.0409
+step    75  acc1000 0.836  (134s)
+            reward 0.707  signal 0.72  kl 0.0355
+step   100  acc1000 0.843  (178s)
+            reward 0.773  signal 0.56  kl 0.0184
+step   125  acc1000 0.828  (222s)
+            reward 0.785  signal 0.66  kl 0.0249
+step   150  acc1000 0.857  (264s)
+            reward 0.742  signal 0.56  kl 0.0418
+step   175  acc1000 0.834  (308s)
+            reward 0.746  signal 0.75  kl 0.3265
+step   200  acc1000 0.834  (352s)
+            reward 0.746  signal 0.66  kl 0.0599
+step   225  acc1000 0.816  (395s)
+            reward 0.684  signal 0.69  kl 0.0582
+step   250  acc1000 0.847  (439s)
+total 439s
+saved /workspace/llm-textbook/code/checkpoints/ch22_rl_q32.pt best {'step': 150, 'acc': 0.857, 'reward': 0.7421875, 'signal': 0.5625, 'kl': 0.041813287883996964}

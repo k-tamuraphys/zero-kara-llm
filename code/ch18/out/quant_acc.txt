@@ -1,0 +1,8 @@
+fp32: 10.34 MB
+fp32             10.34 MB  acc 0.826
+int8-row          2.64 MB  acc 0.824
+int4-row          1.35 MB  acc 0.760
+int4-g32          1.63 MB  acc 0.823
+int3-row          1.03 MB  acc 0.690
+int3-g32          1.30 MB  acc 0.750
+int2-g32          0.98 MB  acc 0.403

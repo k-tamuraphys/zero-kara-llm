@@ -1,0 +1,22 @@
+語彙 4078 字, 訓練 2,287,519 字, 検証 120,395 字
+一様分布 ln V      : 8.313
+ユニグラム（頻度） : 5.198
+バイグラム         : 3.677
+パラメータ数 1,318,912
+step    0 | train 8.318 | val 8.320 |    2 秒
+step  100 | train 4.357 | val 4.189 |   27 秒
+step  200 | train 4.031 | val 3.868 |   54 秒
+step  300 | train 3.857 | val 3.746 |   80 秒
+step  400 | train 3.752 | val 3.587 |  109 秒
+step  500 | train 3.636 | val 3.524 |  141 秒
+step  600 | train 3.559 | val 3.464 |  174 秒
+step  700 | train 3.448 | val 3.356 |  206 秒
+step  800 | train 3.400 | val 3.265 |  239 秒
+step  900 | train 3.357 | val 3.231 |  272 秒
+step 1000 | train 3.275 | val 3.171 |  306 秒
+step 1100 | train 3.242 | val 3.135 |  339 秒
+step 1200 | train 3.208 | val 3.117 |  372 秒
+step 1300 | train 3.176 | val 3.122 |  406 秒
+step 1400 | train 3.170 | val 3.070 |  439 秒
+step 1500 | train 3.129 | val 3.042 |  473 秒
+所要時間 474 秒

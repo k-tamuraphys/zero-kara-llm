@@ -1,0 +1,12 @@
+sft.pt: 最初の 1 トークンの確率
+  37×48は？                <|tool|> 0.000  <|assistant|> 0.000
+  123掛ける45は？             <|tool|> 0.000  <|assistant|> 0.000
+  25×4に7を足すといくつですか？      <|tool|> 0.000  <|assistant|> 0.000
+  12+35は？                <|tool|> 0.000  <|assistant|> 0.000
+  63-4は？                 <|tool|> 0.000  <|assistant|> 0.000
+ch23_tool_sft.pt: 最初の 1 トークンの確率
+  37×48は？                <|tool|> 0.998  <|assistant|> 0.000
+  123掛ける45は？             <|tool|> 0.998  <|assistant|> 0.000
+  25×4に7を足すといくつですか？      <|tool|> 0.999  <|assistant|> 0.001
+  12+35は？                <|tool|> 0.000  <|assistant|> 0.999
+  63-4は？                 <|tool|> 0.000  <|assistant|> 0.998

@@ -1,0 +1,9 @@
+実行時間（4 コア共有機、ほかのジョブと並走。2026-11-22 測定）
+gridworld.py        4.4 秒（NumPy のみ）
+policy_eval.py      0.6 秒
+value_iteration.py  0.7 秒
+mc_td.py            63 秒（α 3 通り × 100 回の実行 × 300 エピソード）
+bandit.py           34 秒（ε 3 通り × 2,000 回の実行 × 500 回）
+q_learning.py       79 秒（ε 3 通り × 20 回の実行 × 2,000 エピソード + 評価）
+q_net.py            10 秒（PyTorch、1 スレッド）
+実行順: value_iteration.py が out/q_star.npy を作り、q_learning.py がそれを読む。
