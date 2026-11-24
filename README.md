@@ -10,7 +10,7 @@
 
 ## 読む
 
-組版済みの PDF（B5、約 1,040 ページ）は、[Releases](https://github.com/k-tamuraphys/zero-kara-llm/releases) にあります。
+組版済みの PDF（B5、約 1,040 ページ）は、[`build/main.pdf`](build/main.pdf) です。
 
 | 部 | 章 |
 |---|---|
@@ -79,6 +79,7 @@ tools/build_chapter.sh ch10_transformer   # 1 章だけ → build/ch10_transform
 | `main.tex`, `preamble.tex`, `refs.bib` | 本全体の入口、共通の設定とマクロ、参考文献 |
 | `code/` | サンプルコード。`llmbook/` が共有ライブラリ、`scripts/` がデータとモデルを作るスクリプト、`chNN/` が各章のスクリプトと実行結果 |
 | `tools/` | 組版のためのスクリプト |
+| `build/main.pdf` | 組版済みの PDF（`tools/build.sh` が作り直します） |
 
 ## この本の作り方について
 
