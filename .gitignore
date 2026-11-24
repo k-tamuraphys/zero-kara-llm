@@ -1,5 +1,6 @@
-# 組版の出力（tools/build.sh が作る）
-/build/
+# 組版の出力（tools/build.sh が作る）。本全体の PDF だけは残す
+/build/*
+!/build/main.pdf
 
 # 自分の PC で作るデータとモデル（付録 B の手順）。本文の図が読む学習ログだけは残す
 /code/data/
