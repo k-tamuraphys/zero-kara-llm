@@ -3,14 +3,14 @@
 \begin{chapterlead}
 \textbf{ここまで}: \chapref{ch:posttraining}で、基盤モデルをお手本の対話で学習させ（SFT）、計算アシスタント \file{sft.pt} を作りました。
 \chapref{ch:policy-gradient}では、方策勾配法を倒立振子で学び、REINFORCE・ベースライン・PPO を実装しました。\\
-\textbf{この章の問い}: 言語モデルを強化学習で鍛えるとは、具体的に何を方策・行動・報酬とすることでしょうか。
+\textbf{この章の問い}: 言語モデルを強化学習で学習させるとは、具体的に何を方策・行動・報酬とすることでしょうか。
 「正解したかどうか」や「人がどちらを好んだか」という情報だけから、モデルはどう学ぶのでしょうか。\\
 \textbf{この章を終えると}:
 \begin{itemize}
 \item 言語モデルの生成を MDP として読み、SFT の損失と方策勾配の式の違いを「重み」と「データを誰が作るか」で説明できます。
-\item 正誤の報酬だけで計算アシスタントを鍛える GRPO を、式（DeepSeekMath の原式）から実装できます。
-\item KL 正則化と参照モデルの役割を説明し、学習率を上げると KL が跳ねて正答率が崩れることを、実験の数値で示せます。
-\item RLHF の 3 段階と報酬モデル（Bradley--Terry）を説明し、報酬ハッキングの種になる「報酬モデルの穴」を実例で示せます。
+\item 正誤の報酬だけで計算アシスタントを学習させる GRPO を、式（DeepSeekMath の原式）から実装できます。
+\item KL 正則化と参照モデルの役割を説明し、学習率を上げると KL の推定値が急に大きくなり、正答率が下がることを、実験の数値で示せます。
+\item RLHF の 3 段階と報酬モデル（Bradley--Terry）を説明し、報酬ハッキングの原因になる「報酬モデルの穴」（意図と違う応答に高い点数を付けてしまうこと）を実例で示せます。
 \item DPO の損失を RLHF の目的関数から 1 行ずつ導き、実装して、その長所と落とし穴を説明できます。
 \item 強化学習が効く場面と効かない場面を、SFT との比較実験から見分けられます。
 \end{itemize}
@@ -21,7 +21,7 @@
 \item[\rgmust] \secref{sec:rl-map}〜\secref{sec:rl-grpo}：言語モデルの生成を MDP として読み、GRPO を式から実装するまで。\chapref{ch:agentic-rl}は、この式とコードを、道具を使う軌跡にそのまま広げます。
 \item[\rgmust] \secref{sec:rl-exp}：強化学習で 82.6\% → 84.7\%、SFT の継続で 88.6\%。強化学習の使いどころを決める数字で、\chapref{ch:agentic-rl}と\chapref{ch:capstone}が比べる相手です。小節「設定を変えた試行と、二つの教訓」だけは流し読み可。
 \item[\rgmust] \secref{sec:rl-rlhf}：人の好みから報酬モデルを作る RLHF と、報酬ハッキング。報酬の穴は、エージェントの報酬を設計するときにもう一度出てきます。
-\item[\rgskim] \secref{sec:rl-dpo}の導出（段階 1〜3）と小節「実装」：「最適方策は $\pi_{\text{ref}}e^{r/\beta}$ に比例し、報酬について解いて差をとると、計算できない定数が消える」という結論だけ押さえます。段階 4 の損失の式と、DPO が壊れる実験は読んでください。
+\item[\rgskim] \secref{sec:rl-dpo}の導出（段階 1〜3）と小節「実装」：「最適方策は $\pi_{\text{ref}}e^{r/\beta}$ に比例し、報酬について解いて差をとると、計算できない定数が消える」という結論だけ押さえます。段階 4 の損失の式と、DPO で正答率が大きく下がる実験は読んでください。
 \item[\rglater] \secref{sec:rl-variants}の小節「GRPO の変種」：DAPO などの改良版の一覧。ライブラリで GRPO を使うときに戻ってくれば足ります。同じ節の「落とし穴」と「コストと使い分け」は読んでください。
 \end{readingguide}
 
@@ -46,11 +46,11 @@
 この本の小さなモデルでは、強化学習による伸びは 82.6\% から 84.7\% へ、約 2 ポイントにとどまります。
 計算問題は正解付きのお手本をいくらでも作れるので、SFT を続けたほうが速く伸びるのです（88.6\%）。
 それでも強化学習を学ぶのは、\textbf{お手本は書けないが採点はできる}課題、たとえば難しい数学やプログラム、道具を使う仕事では、これが頼りになる方法だからです。
-採点が簡単な計算問題は、そのための練習台です。
+採点が簡単な計算問題は、そのための練習の題材です。
 強化学習がどんな場面で効き、どんな場面で効かないかを数値で見分けることも、この章の目標にします。
 
 この章では、まず言語モデルと強化学習の対応を正確に書き（\secref{sec:rl-map}）、
-正誤の報酬で \file{sft.pt} を鍛える GRPO を作って動かします（\secref{sec:rl-rlvr}〜\secref{sec:rl-exp}）。
+正誤の報酬で \file{sft.pt} を学習させる GRPO を作って動かします（\secref{sec:rl-rlvr}〜\secref{sec:rl-exp}）。
 後半では、「どちらの返答が丁寧か」のように正解が決まらない課題を人の好みから学ぶ方法として、
 RLHF（\secref{sec:rl-rlhf}）と DPO（\secref{sec:rl-dpo}）を導き、最後に現場の変種と落とし穴をまとめます（\secref{sec:rl-variants}）。
 
@@ -60,8 +60,171 @@ RLHF（\secref{sec:rl-rlhf}）と DPO（\secref{sec:rl-dpo}）を導き、最後
 \chapref{ch:policy-gradient}の最後で、倒立振子と言語モデルの対応を予告しました（\tabref{tab:pg-llm-map}）。
 この節の問いは、「その対応を、計算アシスタントの 1 回の応答について、トークン単位で正確に書くとどうなるか」です。
 これが決まれば、前章の式がそのまま使えます。
+細かい対応に入る前に、学習の 1 周の全体を図で見ておきます。
+
+\subsection{学習の 1 周を先に見る}\label{sec:rl-cycle}
+
+この章の前半で行う強化学習は、\figref{fig:rl-cycle}の 5 つのコマを何度もくり返すことです。
+図の数は、\secref{sec:rl-exp}の最初の実験の設定です（\file{rl_arith.py} の既定値）。
+
+\begin{figure}[tbp]
+\centering
+% ④ の色：sweep_group_step.csv から、行ごとの正解の数 k を数え、
+% 重み（報酬 − 行の平均 k/8）の大きさで色の濃さを決める（数値は手で写さない）
+\pgfplotstableread[col sep=comma]{code/ch22/out/sweep_group_step.csv}\rlcyctab
+\pgfplotstablegetrowsof{\rlcyctab}\pgfmathtruncatemacro\rlcycn{\pgfplotsretval-1}
+\def\rlG{8}
+\foreach \q in {1,...,16}{\expandafter\xdef\csname rlk\q\endcsname{0}}
+\foreach \n in {0,...,\rlcycn}{%
+  \pgfplotstablegetelem{\n}{q}\of\rlcyctab\edef\rlq{\pgfplotsretval}%
+  \pgfplotstablegetelem{\n}{r}\of\rlcyctab\edef\rlr{\pgfplotsretval}%
+  \expandafter\xdef\csname rlk\rlq\endcsname{\the\numexpr\csname rlk\rlq\endcsname+\rlr\relax}}
+% \rlcycell{n}：n 行目のマスの位置 \rlci・\rlcq と色 \rlcol を決める
+\newcommand\rlcycell[1]{%
+  \pgfplotstablegetelem{#1}{i}\of\rlcyctab\edef\rlci{\pgfplotsretval}%
+  \pgfplotstablegetelem{#1}{q}\of\rlcyctab\edef\rlcq{\pgfplotsretval}%
+  \pgfplotstablegetelem{#1}{r}\of\rlcyctab\edef\rlcr{\pgfplotsretval}%
+  \pgfplotstablegetelem{#1}{c}\of\rlcyctab\edef\rlcc{\pgfplotsretval}%
+  \pgfmathsetmacro\rlcw{abs(\rlcr-\csname rlk\rlcq\endcsname/\rlG)}%
+  \pgfmathtruncatemacro\rlcpct{20+80*\rlcw}%
+  \ifnum\rlcc=2 \def\rlcol{black!22}%
+  \else\ifnum\rlcr=1 \edef\rlcol{bookgreen!\rlcpct}%
+  \else \edef\rlcol{bookaccent!\rlcpct}\fi\fi}
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\scriptsize},
+  fr/.style={draw=bookgray,rounded corners=2pt,minimum width=41mm,minimum height=52mm,anchor=north west,inner sep=0pt},
+  ft/.style={font=\footnotesize\bfseries,text=bookblue,anchor=north west},
+  qb/.style={draw=bookblue,fill=figblue,rounded corners=1pt,minimum width=32mm,minimum height=4.6mm,anchor=north west,font=\scriptsize},
+  tx/.style={anchor=north west,align=left,font=\scriptsize,inner sep=0pt}]
+  % 上の段：①②③（左から右へ）。下の段：④（右）⑤（中）と評価（左）
+  \node[fr] (f1) at (0,0) {};
+  \node[fr] (f2) at (44.5,0) {};
+  \node[fr] (f3) at (89,0) {};
+  \node[fr,minimum height=61mm] (f4) at (89,-57) {};
+  \node[fr,minimum height=61mm] (f5) at (44.5,-57) {};
+  % ① 問題を集める
+  \node[ft] at (1.5,-1.5) {① 問題を集める};
+  \node[qb] at (4.5,-9) {\code{487+256は？}};
+  \node[qb] at (4.5,-15) {\code{57足す73は？}};
+  \node[qb] at (4.5,-21) {\code{903引く48は？}};
+  \node[anchor=north] at (20.5,-26) {$\vdots$};
+  \node[tx,text width=36mm] at (3,-33) {問題集から $Q=16$ 問。\\プログラムで毎回新しく作り、正解の数も同時に分かる。};
+  % ② 応答を生成する
+  \node[ft] at (46,-1.5) {② 応答を生成する};
+  \begin{scope}[shift={(48.5,-44.2)},x=2.2mm,y=2.2mm]
+    \fill[figgray] (0,0) rectangle (8,16);
+    \draw[black!35,step=1] (0,0) grid (8,16);
+  \end{scope}
+  \node[tx,text width=17mm] at (68,-9) {1 行が 1 問の\\グループ\\（$G=8$ 本）。\\[1mm]1 マスが 1 本の応答＝\textbf{1 エピソード}。\\[1mm]温度 1、\\最大 8 トークン。};
+  \node[anchor=north west] at (47,-45.5) {$16\times8=128$ 本のエピソード};
+  % ③ 採点する
+  \node[ft] at (90.5,-1.5) {③ 採点する（報酬）};
+  \begin{axis}[at={(93mm,-9mm)},anchor=north west,x=2.2mm,y=2.2mm,y dir=reverse,
+    xmin=0.5,xmax=8.5,ymin=0.5,ymax=16.5,hide axis,clip=false,scale only axis,
+    scatter/classes={0={mark=square*,mark size=1.1mm,draw=white,fill=bookaccent!55},
+                     1={mark=square*,mark size=1.1mm,draw=white,fill=bookgreen!55}}]
+  \addplot[scatter,only marks,scatter src=explicit symbolic]
+    table[col sep=comma,x=i,y=q,meta=r]{code/ch22/out/sweep_group_step.csv};
+  \end{axis}
+  \node[tx,text width=17mm] at (112.5,-9) {採点プログラムが 1 本ずつ\\正解 1（緑）\\不正解 0（赤）\\を付ける。\\[1mm]この例では 128 本中 97 本が正解。};
+  % ④ 方策を更新する（色の濃さ＝重みの大きさ。重み＝報酬−行の平均を CSV から計算）
+  \node[ft] at (90.5,-58.5) {④ 方策を 1 回更新する};
+  \foreach \n in {0,...,\rlcycn} {
+    \rlcycell{\n}
+    \fill[\rlcol,draw=white,line width=0.4pt] (93+\rlci*2.2-2.2,-66-\rlcq*2.2+2.2) rectangle ++(2.2,-2.2);
+  }
+  \foreach \q in {5,8} {
+    \draw[black,line width=0.6pt] (93,-66-\q*2.2+2.2) rectangle ++(17.6,-2.2);
+    \node[anchor=east,font=\tiny,inner sep=0.5pt] at (93,-66-\q*2.2+1.1) {\q};
+  }
+  \node[tx,text width=17mm] at (112.5,-66) {行ごとに、報酬から行の平均を引いて重みを作る。\\[1mm]緑：確率を上げる（重みが正）\\赤：確率を下げる（重みが負）\\色が濃いほど重みが大きい（例は左下）\\灰：重み 0（全員同じ点の 2 行）\\[1mm]128 本ぶんの損失で $\vtheta$ を 1 回動かす。};
+  % ⑤ 捨てて次の周へ
+  \node[ft] at (46,-58.5) {⑤ 捨てて、次の周へ};
+  \begin{scope}[shift={(48.5,-101.2)},x=2.2mm,y=2.2mm]
+    \fill[black!4] (0,0) rectangle (8,16);
+    \draw[black!15,step=1] (0,0) grid (8,16);
+    \draw[bookgray,dashed,thick] (0,0) -- (8,16) (0,16) -- (8,0);
+  \end{scope}
+  \node[tx,text width=17mm] at (68,-66) {使った 128 本は捨てる。\\[1mm]更新したモデルで、新しい 16 問から ① をやり直す。\\[1mm]①〜⑤の 1 周が 1 学習ステップ。80 ステップで $128\times80$\\$=10{,}240$ 本。};
+  % 評価（1 周の外）
+  \node[graybox,anchor=north west,text width=37mm,align=left,font=\scriptsize] at (0,-60) {\textbf{評価（1 周の外で）}\\10 ステップごとに、学習に使わない問題を貪欲生成で解かせ、正答率を測る。報酬とは別の量で、勾配には入らない（\secref{sec:rl-exp}）。};
+  % ④ の重みの大きさの例（5 行目と 8 行目を拡大）
+  \draw[bookgray,dashed,rounded corners=2pt] (0,-79) rectangle (41,-118);
+  \node[tx,font=\scriptsize\bfseries] at (1.5,-80.5) {④ の重みの大きさ（2 行の例）};
+  \node[tx,text width=38mm] at (1.5,-84.3) {重み＝報酬 $-$ 行の平均};
+  \foreach \q/\y in {5/-88.5,8/-103.3} {
+    \pgfmathtruncatemacro\rlk{\csname rlk\q\endcsname}
+    \pgfmathsetmacro\rlm{\rlk/\rlG}
+    \pgfmathsetmacro\rlwp{1-\rlm}
+    \node[tx] at (1.5,\y) {\q 行目：\rlk 本が正解、平均 \pgfmathprintnumber[fixed,precision=3]{\rlm}};
+    \foreach \i in {1,...,8} {
+      \pgfmathtruncatemacro\rln{(\q-1)*8+\i-1}
+      \rlcycell{\rln}
+      \fill[\rlcol,draw=white,line width=0.6pt] (4.5+\i*4-4,\y-3.5) rectangle ++(4,-4);
+    }
+    \node[tx] at (1.5,\y-8.3) {緑（正解）：$+\pgfmathprintnumber[fixed,precision=3]{\rlwp}$ が \rlk 本};
+    \node[tx] at (1.5,\y-11.3) {赤（不正解）：$-\pgfmathprintnumber[fixed,precision=3]{\rlm}$ が \the\numexpr\rlG-\rlk\relax\ 本};
+  }
+  % 矢印
+  \draw[arr] (f1.east) -- (f2.west);
+  \draw[arr] (f2.east) -- (f3.west);
+  \draw[arr] (f3.south) -- (f4.north);
+  \draw[arr] (f4.west) -- (f5.east);
+  \draw[arr,rounded corners=2pt] (f5.north) -- ++(0,2.5) -| (f1.south);
+\end{tikzpicture}
+\caption{学習の 1 周（コマ割りの図。本章の前半の設定）。①〜⑤を 1 回まわるのが 1 学習ステップである。
+③④のマスは、\file{sft.pt} に訓練用と同じ作り方の 16 問を 8 本ずつ実際に答えさせた結果（\file{sweep_group.py}。学習の 1 ステップ目そのものではない）。
+④の色の濃さは重み（報酬 $-$ 行の平均）の大きさで、正解の多い行ほど、正解の重みは小さく、不正解の重みは大きい。左下の枠は 5 行目と 8 行目を拡大し、重みの値を書いたもの。GRPO ではさらに行ごとの標準偏差で割るので値は変わるが、符号は同じ。
+④では、生成した時点の方策と参照モデルの対数確率も勾配なしで計算しておく（\secref{sec:rl-grpo}）。}
+\label{fig:rl-cycle}
+\end{figure}
+
+コマを順に読みます。
+\begin{enumerate}
+\item \textbf{問題を集める}。問題集から $Q=16$ 問の計算問題を選びます。本章の問題はプログラムで作るので、毎回新しい問題を作れます。正解の数も同時に分かります。
+\item \textbf{応答を生成する}。いまのモデルに、1 問につき $G=8$ 本の応答を、温度 1 のサンプリングで書かせます（1 本は最大 8 トークン）。
+この 1 本 1 本が強化学習の\textbf{エピソード}で、1 周で $16\times8=128$ 本のエピソードができます。同じ問題への 8 本のまとまりを\textbf{グループ}と呼びます（\secref{sec:rl-rlvr}）。
+\item \textbf{採点する}。採点プログラムが、各応答に、正解なら 1、不正解なら 0 の\textbf{報酬}を付けます。図の例では、128 本のうち 97 本が正解でした。
+\item \textbf{方策を 1 回更新する}。グループごとに、各応答の報酬から 8 本の平均を引いて重みを作ります（\secref{sec:rl-baseline}。GRPO ではさらに標準偏差で割ります。\secref{sec:rl-grpo}）。
+平均より良かった応答のトークンは確率を上げ、悪かった応答のトークンは確率を下げる向きに、パラメータ $\vtheta$ を 1 回だけ動かします。
+8 本とも正解のグループ（図の灰色の 2 行）は、重みがすべて 0 になり、更新に寄与しません。8 本とも不正解のグループも同じです。
+\item \textbf{捨てて、次の周へ}。使った 128 本は捨て、更新したモデルで 1. に戻ります。
+\end{enumerate}
+
+最後の「捨てる」が、SFT との大きな違いです。
+SFT のお手本は学習の前に用意した固定のデータで、同じものを何周（何エポック）も使えました。
+強化学習で学ぶのは、\textbf{いまのモデルが書いた応答}です。
+1 回更新するとモデルが変わるので、前の周の応答は「いまのモデルの応答」ではなくなります。
+このように、学習中の方策そのもので集めたデータで学ぶ方法を、オンポリシーの方法と呼ぶのでした（\chapref{ch:policy-gradient}）。
+前章の倒立振子の REINFORCE でも、集めたエピソードを 1 回の更新に使って捨てていました。
+同じ生成で何回か更新する工夫もあり、\secref{sec:rl-exp-trials}で試します。
+
+\paragraph{「ステップ」の二つの意味。}
+\chapref{ch:rl-basics}と\chapref{ch:policy-gradient}では、エピソードの中の 1 手を「ステップ」と呼びました（倒立振子なら 500 ステップで 1 エピソード）。
+この章では、\figref{fig:rl-cycle}の 1 周、つまり\textbf{パラメータの更新 1 回}を「ステップ」（学習ステップ）と呼びます。
+エピソードの中の 1 手は、「時刻 $t$」または「トークン 1 つ」と呼んで区別します。
+たとえば「GRPO を 80 ステップ回す」は、1 周を 80 回くり返すことです。
+1 ステップで 128 本のエピソードを作り、1 本は最大 8 トークンなので、1 ステップの中の行動は最大 $128\times8=1{,}024$ 回です。
+80 ステップでは、合わせて $128\times80=10{,}240$ 本のエピソードを作ります。
+
+\paragraph{五つの問いへの答え。}
+ここまでで、LLM の強化学習についての五つの問いに、一文ずつで答えられます（本章の前半の設定での答えです）。
+\begin{itemize}
+\item \textbf{何をゴールとしてやらせるのか}：問題集から選んだ質問にモデルがサンプリングで答えたときの報酬の期待値、つまり正答率を最大にすることです（式\eqref{eq:rl-objective}）。
+\item \textbf{エピソードは何に当たるのか}：1 つの質問への 1 回の応答（\code{<|end|>} を書くか、最大の長さに達するまで）が、1 つのエピソードです。
+\item \textbf{どういうデータを集めるのか}：前もって用意するのは質問と採点プログラムだけで、応答と報酬は毎ステップいまのモデルに作らせ、1 回の更新に使ったら捨てます。
+\item \textbf{どういう訓練をするのか}：応答の各トークンの対数確率に「その応答が同じ質問の平均よりどれだけ良かったか」という重みを掛けて足した損失（式\eqref{eq:rl-pg-loss}）を、勾配降下法で小さくします。
+\item \textbf{どうやってエピソードを評価し、最適化するのか}：エピソードは採点プログラムが 1 本ずつ 0 か 1 で評価し（報酬）、その報酬から同じ質問の $G$ 本の平均を引いた値を重みにして最適化します。
+\end{itemize}
+最後の問いの「評価」は、モデル全体の出来を測る評価とは別のものです。
+モデル全体は、学習に使わない問題を貪欲生成で解かせた正答率で、学習とは別に測ります（\figref{fig:rl-cycle}の左の灰色の箱、\secref{sec:rl-exp}）。
+この正答率は勾配には入りません。
 
 \subsection{1 回の応答は 1 つのエピソード}
+
+ここからは、\figref{fig:rl-cycle}の②の 1 マス、つまり 1 本の応答の中身を見ます。
+考えるのは、1 つの質問に 1 回答え、最後に採点プログラムで採点する場合です。
+これが本章の前半の設定で、単発の RLVR（検証可能な報酬による強化学習。\secref{sec:rl-rlvr}）と呼ばれます。
+RLHF・DPO・道具を使う場合に何が変わるかは、この節の最後の\tabref{tab:rl-settings}にまとめます。
 
 具体例から始めます。
 利用者が「12+35は？」と尋ね、モデルが「47です。」と答える場面です。
@@ -80,8 +243,14 @@ RLHF（\secref{sec:rl-rlhf}）と DPO（\secref{sec:rl-dpo}）を導き、最後
 \item \textbf{方策} $\pitheta(a_t\mid s_t)$ は、言語モデルが出す次トークンの確率 $\pitheta(o_t\mid q,o_{<t})$ そのものです。
 \item \textbf{遷移}は決定的です。行動 $o_t$ を選ぶと、次の状態は「いまの列の末尾に $o_t$ を付けたもの」になります。
 \item \textbf{エピソード}は、\code{<|end|>} を書くまでの 1 回の応答 $o=(o_1,\dots,o_{\abs{o}})$ です。$\abs{o}$ は応答のトークン数で、\code{<|end|>} を書き終えた状態が\chapref{ch:rl-basics}の終端状態にあたります。
-\item \textbf{報酬}は、応答を書き終えたあとに一度だけ届きます。正解なら $r=1$、不正解なら $r=0$ とします。割引率は $\gamma=1$ です（割り引きません）。
+\code{<|end|>} を書かないまま最大の長さ（本章では 8 トークン）に達したら、そこで打ち切ってエピソードを終えます。このときは「◯◯です。」と一致しないので、採点は 0 点です。
+\item \textbf{報酬}は、応答を書き終えたあとに一度だけ届きます。正解なら $r=1$、不正解なら $r=0$ とします。途中のトークンの報酬は 0 です。割引率は $\gamma=1$ です（割り引きません）。
 \end{itemize}
+割り引かない理由は二つあります。
+一つは、エピソードが必ず数トークンで終わるので、割り引かなくても収益が有限の値になることです。
+もう一つは、割り引くと、同じ正解でも長い応答ほど収益が小さくなり、答えの長さで点数が変わってしまうことです。
+本書では、道具を使う\chapref{ch:agentic-rl}でも $\gamma=1$ とします。
+
 記号を一つ決めておきます。
 この章では、プロンプト（質問）を $q$、モデルの応答を $o$ と書きます（question と output の頭文字で、GRPO の原論文\cite{shao2024deepseekmath}の書き方に合わせました）。
 RLHF や DPO の論文では、同じものを $x$ と $y$ と書く習慣があるので、\secref{sec:rl-rlhf}からはそちらに切り替えます。
@@ -91,23 +260,26 @@ RLHF や DPO の論文では、同じものを $x$ と $y$ と書く習慣があ
 \begin{tikzpicture}[node distance=2mm and 3mm, every node/.style={font=\footnotesize}]
   \node[box,minimum width=30mm] (s1) {$s_1$: \code{<|user|>12+35は？}\\\code{<|end|><|assistant|>}};
   \node[greenbox,right=6mm of s1] (a1) {$o_1=$\code{4}};
-  \node[box,right=6mm of a1,minimum width=16mm] (s2) {$s_2=s_1$＋\code{4}};
+  \node[box,right=6mm of a1,minimum width=20mm] (s2) {$s_2$：$s_1$ の\\末尾に \code{4}};
   \node[greenbox,right=6mm of s2] (a2) {$o_2=$\code{7}};
   \draw[arr] (s1) -- node[above,lbl]{$\pitheta$} (a1);
-  \draw[arr] (a1) -- (s2);
+  \draw[arr] (a1) -- node[above,lbl,font=\scriptsize]{遷移} (s2);
   \draw[arr] (s2) -- node[above,lbl]{$\pitheta$} (a2);
-  \node[box,below=9mm of s2,minimum width=16mm] (s3) {$s_3=s_2$＋\code{7}};
+  \node[box,below=9mm of a2.south east,anchor=north east,minimum width=20mm] (s3) {$s_3$：$s_2$ の\\末尾に \code{7}};
   \node[greenbox,left=6mm of s3] (a3) {$o_3=$\code{です。}};
-  \node[greenbox,left=6mm of a3] (a4) {$o_4=$\code{<|end|>}};
-  \draw[arr] (a2.south) |- (s3.east);
+  \node[box,left=6mm of a3,minimum width=20mm] (s4) {$s_4$：$s_3$ の\\末尾に \code{です。}};
+  \node[greenbox,left=6mm of s4] (a4) {$o_4=$\code{<|end|>}};
+  \draw[arr] (a2.south) -- node[right,lbl,font=\scriptsize]{遷移} (a2.south |- s3.north);
   \draw[arr] (s3) -- node[above,lbl]{$\pitheta$} (a3);
-  \draw[arr] (a3) -- node[above,lbl]{$\pitheta$} (a4);
-  \node[orangebox,below=6mm of a4,minimum width=40mm] (r) {採点：「47です。」と一致 $\Rightarrow r=1$};
-  \draw[arr] (a4) -- (r);
+  \draw[arr] (a3) -- node[above,lbl,font=\scriptsize]{遷移} (s4);
+  \draw[arr] (s4) -- node[above,lbl]{$\pitheta$} (a4);
+  \node[orangebox,below=6mm of a4.south west,anchor=north west,minimum width=40mm] (r) {採点：「47です。」と一致 $\Rightarrow r=1$};
+  \draw[arr] (a4.south) -- (a4.south |- r.north);
   \node[lbl,anchor=west,text width=46mm,align=left] at ($(r.east)+(4mm,0)$) {報酬は最後に 1 回だけ。\\途中の $o_1,o_2,o_3$ には報酬 0。};
 \end{tikzpicture}
 \caption{「12+35は？」への 1 回の応答を MDP として読む。状態はここまでのトークン列、行動は次のトークン、
-遷移はトークンを末尾に付け足すだけ（決定的）。報酬は \code{<|end|>} を書いたあとに 1 回だけ届く。}
+遷移はトークンを列の末尾に付け足すだけ（決定的。「末尾に \code{4}」は列に文字を付け足すことで、数の足し算ではない）。
+$\pitheta$ の付いた 4 本の矢印は方策（言語モデル）の仕事で、その時点の状態（列の全体）を見て次のトークンを選ぶ。「遷移」の 3 本の矢印は環境の仕事で、トークンを末尾に付けるだけ。報酬は \code{<|end|>} を書いたあとに 1 回だけ届く。}
 \label{fig:rl-token-mdp}
 \end{figure}
 
@@ -115,6 +287,51 @@ RLHF や DPO の論文では、同じものを $x$ と $y$ と書く習慣があ
 倒立振子では「方策ネット」と「物理法則」という別々のものが交互に働きました。
 言語モデルでは、環境の仕事は「トークンを末尾に付ける」ことと「最後に採点する」ことだけです。
 難しいことはすべて方策（言語モデル）の側にあります。
+
+\subsection{第 20 章の迷路と比べる}\label{sec:rl-vs-maze}
+
+\chapref{ch:rl-basics}では、12 マスの迷路（格子世界。\figref{fig:rlb-gridworld}、状態遷移図は\figref{fig:rlb-mdp-graph}）で強化学習の言葉を学びました。
+迷路で学んだことのうち、何がそのまま使え、何が使えなくなるのでしょうか。
+状態・行動・報酬などの項目ごとの対応は、\chapref{ch:rl-basics}の最後の\tabref{tab:rlb-maze-llm}にまとめてあります。
+ここでは、学習の仕方に関わる\textbf{違い}に絞って並べます（\tabref{tab:rl-vs-maze}）。
+
+\begin{table}[tbp]
+\centering
+\caption{\chapref{ch:rl-basics}の迷路（格子世界）と、本章の計算アシスタントの強化学習の違い（項目ごとの対応は\tabref{tab:rlb-maze-llm}）。
+計算アシスタントの欄は、本章の前半の設定（単発の RLVR）。}
+\label{tab:rl-vs-maze}
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{52mm}}
+\toprule
+ & 迷路（\chapref{ch:rl-basics}） & 計算アシスタント（本章） \\
+\midrule
+状態の数 & 11 個（壁を除くマス） & 天文学的。応答の 8 トークンの並べ方だけで $4096^8\approx8\times10^{28}$ 通り \\
+行動の数 & 上・右・下・左の 4 通り & 次に書くトークン 1 つ（4,096 通り） \\
+遷移 & 確率的（床が滑る。選んだ向きへ進むのは確率 0.8） & 決定的（選んだトークンを列の末尾に付けるだけ） \\
+報酬 & ゴールに入れば $+1$、穴に入れば $-1$ & 応答を書き終えたあとに 1 回（正解 1、不正解 0） \\
+割引率 & $\gamma=0.9$ & $\gamma=1$ \\
+同じ状態に二度来るか & 来る（同じマスを何度も通る） & 来ない（列は 1 手ごとに長くなる） \\
+どこから始めるか & いつもスタートのマス & 質問ごとに違う。ただし同じ質問から何度でも始め直せる（$G$ 本） \\
+価値の持ち方 & マスごとの表 $V(s)$ & 表は作れない。同じ質問の $G$ 本の報酬の平均で、出発点の価値だけを見積もる \\
+確率的なもの & 遷移と方策の二つ & 方策だけ（遷移は末尾に付けるだけで、はじめから分かっている） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+違いのうち、学習の仕方を大きく変えるのは二つです。
+
+一つ目は、\textbf{同じ状態に二度来ない}ことです。
+迷路では同じマスを何度も通るので、通るたびに「そこから先の収益」を集めて平均すれば、マスの価値が見積もれました（モンテカルロ法。\secref{sec:rlb-mc-td}の\figref{fig:rlb-mc-spacetime}）。
+LLM の状態はトークン列で、列は伸びる一方なので、1 つのエピソードの中で同じ状態には戻りません。
+状態の数も天文学的なので、価値の表は作れません。
+そこで LLM では、\textbf{同じ質問からわざと $G$ 回始め直し}、$G$ 本の報酬の平均を、その質問（出発点の状態）の価値の見積もりにします。
+これが\secref{sec:rl-baseline}のグループのベースラインで、迷路のモンテカルロ法と同じ「実際に得た収益の平均」です。
+
+二つ目は、\textbf{遷移が決定的で、はじめから分かっている}ことです。
+迷路には、環境の遷移確率と方策という二つの確率モデルがありました（\tabref{tab:rlb-two-models}）。
+学習するのは方策で、遷移確率は与えられたものでした。
+LLM の単発の応答で確率的なのは、方策だけです。学習するのも方策だけで、この点は迷路と同じです。
+そのかわり報酬は最後に 1 回しか届かないので、どのトークンが正解に役立ったのかを割り振るのは、迷路よりずっと難しくなります。
 
 \subsection{応答全体の確率と方策勾配}
 
@@ -142,7 +359,7 @@ J(\vtheta)=\E_{q\sim\calD}\;\E_{o\sim\pitheta(\cdot\mid q)}\bigl[r(q,o)\bigr].
 =\E_{q,\;o\sim\pitheta}\Biggl[\,\sum_{t=1}^{\abs{o}}\nabla_{\vtheta}\log\pitheta(o_t\mid q,o_{<t})\,\bigl(r(q,o)-b(q)\bigr)\Biggr].
 \label{eq:rl-pg}
 \end{equation}
-報酬が最後に 1 回だけで割引率 $\gamma=1$ なので、どの時刻の収益 $G_t$ も最終報酬 $r$ に等しくなります。
+報酬が最後に 1 回だけ（途中の報酬が 0）で、割引率が $\gamma=1$ なので、どの時刻の収益 $G_t$ も最終報酬 $r$ に等しくなります。
 そのため、応答のすべてのトークンが同じ重み $r-b$ を受け取ります。
 ベースライン $b(q)$ は質問だけで決まる数で、勾配の期待値を変えずに分散を減らすのでした（\chapref{ch:policy-gradient}）。
 
@@ -157,13 +374,16 @@ J(\vtheta)=\E_{q\sim\calD}\;\E_{o\sim\pitheta(\cdot\mid q)}\bigl[r(q,o)\bigr].
 \qquad o_i\sim\pitheta(\cdot\mid q_i).
 \label{eq:rl-pg-loss}
 \end{align}
-上の $o^\ast$ は人が用意したお手本の応答です。
+上の $o^\ast$ は、あらかじめ用意したお手本の応答です（人が書くことも、本書のようにプログラムで作ることもあります）。
 下の $o_i$ はモデル自身がサンプリングした $i$ 番目の応答で、$N$ はその本数です。
 $\calL_{\text{PG}}$ を $\vtheta$ で微分すると（$r_i-b$ は $\vtheta$ によらない定数として扱います）、式\eqref{eq:rl-pg}の期待値をサンプル平均で置き換えたものの符号を反転したものになります。
+なお、\chapref{ch:posttraining}の $\calL_{\text{SFT}}$ は、学習に使う全トークンについての平均でした。
+ここでは式\eqref{eq:rl-pg-loss}と比べやすいように、応答ごとにトークンの対数確率を足し、応答の数で割っています。
+データ全体で見れば、二つの違いは定数倍（応答の平均の長さ）だけです。
 
 二つの式の形は同じです。
 違いは二つだけです（\figref{fig:rl-loss-contrast}、\tabref{tab:rl-sft-vs-rl}）。
-一つ目は\textbf{データを誰が作るか}で、SFT は人が書いたお手本 $o^\ast$、強化学習はモデル自身の応答 $o_i$ です。
+一つ目は\textbf{データを誰が作るか}で、SFT は学習の前に用意したお手本 $o^\ast$、強化学習は学習中のモデル自身の応答 $o_i$ です。
 二つ目は\textbf{重み}で、SFT ではどのお手本も重み 1、強化学習では $r_i-b$ です。
 良かった応答は正、悪かった応答は負の重みを受け、負の重みは「この応答の確率を\textbf{下げよ}」という意味になります。
 これは\chapref{ch:policy-gradient}の\tabref{tab:pg-ce-vs-pg}で見た見方を、言語モデルに当てはめたものです。
@@ -174,7 +394,7 @@ $\calL_{\text{PG}}$ を $\vtheta$ で微分すると（$r_i-b$ は $\vtheta$ に
   tk/.style={cell,minimum width=8mm,minimum height=5.5mm}]
   % SFT
   \node[anchor=west,font=\footnotesize\bfseries,text=bookblue] at (-0.2,1.55) {SFT（式\eqref{eq:rl-sft-loss}）};
-  \node[lbl,anchor=west] at (-0.2,1.05) {人が書いたお手本 $o^\ast$};
+  \node[lbl,anchor=west] at (-0.2,1.05) {あらかじめ用意したお手本 $o^\ast$};
   \node[tk,fill=figgreen] at (0.3,0.45) {4};
   \node[tk,fill=figgreen] at (1.15,0.45) {7};
   \node[tk,fill=figgreen,minimum width=10mm] at (2.1,0.45) {です。};
@@ -207,21 +427,58 @@ SFT はお手本のトークンを重み $+1$ で上げるだけだが、強化�
 \caption{SFT と、言語モデルの強化学習の比較。損失の形は同じで、違うのは「誰の応答で学ぶか」と「重み」。}
 \label{tab:rl-sft-vs-rl}
 \small
-\begin{tabular}{lll}
+\begin{tabular}{>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{52mm}}
 \toprule
  & SFT（\chapref{ch:posttraining}） & 強化学習（この章） \\
 \midrule
-学ぶ応答 & 人が書いたお手本 $o^\ast$ & モデルが自分でサンプリングした $o_i$ \\
+学ぶ応答 & あらかじめ用意したお手本 $o^\ast$ & モデルが自分でサンプリングした $o_i$ \\
+データの使い方 & 同じお手本を何周（エポック）も使う & 毎ステップ作り直し、1 回の更新に使って捨てる \\
 各トークンの重み & 1 & $r_i-b$（正にも負にもなる） \\
 必要なもの & お手本の応答 & 応答を採点する方法（報酬） \\
-到達できる上限 & おおむねお手本の質 & 報酬が測れる限り、お手本を超えうる \\
+到達できる上限 & おおむねお手本の質 & 報酬が測れる限り、お手本を超えうる（本章の小さな実験では超えなかった。\secref{sec:rl-exp}） \\
 1 ステップの主な計算 & 順伝播・逆伝播 & \textbf{生成}＋順伝播・逆伝播 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\subsection{単発の RLVR 以外では、何が変わるか}\label{sec:rl-settings}
+
+ここまでの読み方（1 回の応答が 1 エピソード、遷移は決定的、報酬は最後に 1 回、$\gamma=1$）は、本章の前半の単発の RLVR についてのものです。
+章の後半の RLHF と DPO、\chapref{ch:agentic-rl}の道具を使うエージェントでは、いくつかの項目が変わります（\tabref{tab:rl-settings}）。
+まだ説明していない言葉もあるので、各節を読み終えたら、この表に戻ってきてください。
+
+\begin{table}[tbp]
+\centering
+\caption{手法ごとの、強化学習の言葉の読み替え。どの手法が優れているかの比較ではない（使い分けと議論は\secref{sec:rl-variants}）。}
+\label{tab:rl-settings}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{26mm}}
+\toprule
+ & 単発の RLVR（GRPO。\secref{sec:rl-rlvr}〜\secref{sec:rl-exp}） & RLHF（PPO。\secref{sec:rl-rlhf}） & DPO（\secref{sec:rl-dpo}） & 道具を使う RL（\chapref{ch:agentic-rl}） \\
+\midrule
+エピソード & 1 回の応答 & 1 回の応答 & なし（学習中に生成しない） & 質問から最終応答まで。発話と道具の結果が何回も続く \\ \addlinespace
+遷移 & 決定的（末尾に付ける） & 決定的（末尾に付ける） & 使わない & 道具の結果は環境が書く。電卓なら決まった値、検索などは確率的 \\ \addlinespace
+報酬 & 最後に 1 回（採点プログラム） & 最後に報酬モデルの点数。各トークンに KL の項 & 観測しない。暗黙の報酬 $\beta\log(\pitheta/\pi_{\text{ref}})$ として定義されるだけ & 最後に 1 回（仕事の成否） \\ \addlinespace
+データを作るのは誰か & いまの方策（毎ステップ） & 選好は前もって人が作る。応答はいまの方策が毎ステップ & 学習の前に集めた選好の組（固定） & いまの方策と環境（毎ステップ） \\ \addlinespace
+学習するもの & 方策 & 先に報酬モデル。次に方策と価値ネット & 方策だけ & 方策 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表の読み方を三つ補います。
+一つ目は、\textbf{DPO にはエピソードがない}ことです。
+DPO は RLHF と同じ目的関数から出発しますが、学習の手続きは、前もって集めた選好の組の上での 2 クラス分類で、学習中に自分の応答を見ません。
+二つ目は、道具を使う RL では、\textbf{遷移の一部を環境が決める}ことです。
+1 つのエピソードは何回もの発話と道具の結果からなり、「1 回の応答 = 1 エピソード」でも「遷移は決定的」でもなくなります。
+三つ目は、報酬が最後の 1 回だけとは限らないことです。
+RLHF の PPO では、各トークンに KL の項が付きます（\secref{sec:rl-rlhf}）。
+推論の途中の段階ごとに報酬を与える方法もあり、DeepSeekMath が試しています\cite{shao2024deepseekmath}。
+そのような場合は、式\eqref{eq:rl-pg}の下で述べた「どの時刻の収益も最終報酬に等しい」が成り立ちません。
+
 この節で分かったことを言い直します。
-言語モデルの 1 回の応答は 1 つのエピソードで、方策は言語モデルそのもの、行動はトークン、報酬は最後に 1 回です。
+単発の RLVR では、言語モデルの 1 回の応答は 1 つのエピソードで、方策は言語モデルそのもの、行動はトークン、報酬は最後に 1 回です。
+学習は「問題を集める → 応答を生成する → 採点する → 1 回更新する → 捨てる」の 1 周のくり返しです。
 損失は SFT と同じ形をしていて、違いは「自分で書いた応答を、報酬で重み付けして学ぶ」点だけです。
 
 %======================================================================
@@ -258,7 +515,7 @@ SFT の交差エントロピーは、これらの代わりの指標にすぎま�
 対話形式で一度も答えられない基盤モデル（正答率 0\%）にいきなり強化学習をしても、ほとんど進みません。
 そのため実際の開発では、SFT で「答え方の形」を教えてから、強化学習で「答えの質」を上げるのが標準です\cite{ouyang2022training,guo2025deepseekr1}。
 逆に、この前提（ときどきは正解を出せること）が基盤モデルの時点で満たされていれば、SFT は省けます。
-大きな事前学習済みモデルには、SFT なしで強化学習だけで鍛えた例もあります（\secref{sec:rl-variants}の DeepSeek-R1-Zero）。
+大きな事前学習済みモデルには、SFT なしで強化学習だけで学習させた例もあります（\secref{sec:rl-variants}の DeepSeek-R1-Zero）。
 本書のミニGPT は、そうではありません。
 \end{caution}
 
@@ -268,11 +525,11 @@ SFT の交差エントロピーは、これらの代わりの指標にすぎま�
 次の節から、計算アシスタントでこれを実際に行います。
 
 %======================================================================
-\section{検証可能な報酬で鍛える：部品を作る}\label{sec:rl-rlvr}
+\section{検証可能な報酬で学習させる：部品を作る}\label{sec:rl-rlvr}
 
 前節で、強化学習には「採点する方法」が要ると分かりました。
 計算問題では、採点はプログラムで確実にできます。
-この節の問いは、「正誤の報酬で計算アシスタントを鍛えるには、どんな部品が要り、それぞれ何行のコードになるか」です。
+この節の問いは、「正誤の報酬で計算アシスタントを学習させるには、どんな部品が要り、それぞれ何行のコードになるか」です。
 
 \subsection{検証可能な報酬}
 
@@ -299,7 +556,7 @@ Tülu 3 は RLVR を PPO で行い、DeepSeek-R1 は GRPO で行いました\cit
 ここで言語モデルならではの手が使えます。
 \textbf{同じ質問に何回も答えさせる}のです。
 前章の倒立振子の実験では、同じ状態から何度もやり直すことはしませんでした。
-言語モデルでは、同じプロンプトを何度でも入力できます。
+言語モデルでは、同じプロンプトを何度でも入力できます（\tabref{tab:rl-vs-maze}の「どこから始めるか」の行）。
 同じ質問 $q$ への $G$ 本の応答のまとまりを\term{グループ}{group}と呼びます。
 
 \snippet{同じプロンプトから $G$ 本の応答をサンプリングする}{code:rl-rollout}{ch22/common.py}{rollout}
@@ -313,8 +570,30 @@ Tülu 3 は RLVR を PPO で行い、DeepSeek-R1 は GRPO で行いました\cit
 \code{END} は \code{<|end|>} のトークン番号です。
 後半の 3 行は、\chapref{ch:policy-gradient}のロールアウトと同じ役目の\textbf{マスク}（学習に使う位置が 1、使わない位置が 0）を作ります。
 早く \code{<|end|>} を書いた応答も、ほかの応答が終わるまでトークンを生成し続けるので、\code{<|end|>} より後ろを学習から外すのです。
-たとえば 3 トークン目が \code{<|end|>} の応答なら、\code{is_end} は $[0,0,1,0,0]$、その累積和 \code{cumsum} は $[0,0,1,1,1]$、
-自分自身を引くと $[0,0,0,1,1]$ で、これが正の位置（\code{<|end|>} より後ろ）を 0 にした $[1,1,1,0,0]$ が \code{mask} です。
+たとえば、5 トークンのうち 3 トークン目が \code{<|end|>} の応答を考えます（\tabref{tab:rl-mask-example}）。
+\code{is_end} は、\code{<|end|>} の位置だけが 1 の列です。
+その累積和 \code{cumsum} は、\code{<|end|>} の位置から後ろがすべて 1 になります。
+そこから \code{is_end} 自身を引くと、\code{<|end|>} より\textbf{後ろ}の位置だけが 1 の列になります。これがコードの \code{after_end} です。
+\code{after_end} が 1 の位置を 0、それ以外を 1 にしたものが \code{mask} です。
+
+\begin{table}[!htbp]
+\centering
+\caption{マスクを作る計算の例（5 トークンのうち 3 トークン目が \code{<|end|>} の応答）。}
+\label{tab:rl-mask-example}
+\small
+\begin{tabular}{lccccc}
+\toprule
+位置 & 1 & 2 & 3 & 4 & 5 \\
+応答のトークン（例） & \code{4} & \code{7} & \code{<|end|>} & （続き） & （続き） \\
+\midrule
+\code{is_end} & 0 & 0 & 1 & 0 & 0 \\
+\code{is_end.cumsum(dim=1)} & 0 & 0 & 1 & 1 & 1 \\
+累積和 $-$ \code{is_end}（\code{after_end}） & 0 & 0 & 0 & 1 & 1 \\
+\code{mask} & 1 & 1 & 1 & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \code{<|end|>} 自身は 1 のまま残します。「ここで書き終える」こともモデルの行動だからです。
 
 \subsection{各トークンの対数確率}
@@ -335,23 +614,54 @@ Tülu 3 は RLVR を PPO で行い、DeepSeek-R1 は GRPO で行いました\cit
 結果の $i$ 行 $t$ 列が $\log\pitheta(o_{i,t}\mid q,o_{i,<t})$ です。
 これは SFT の交差エントロピーの計算（\chapref{ch:posttraining}）と同じで、符号が逆なだけです。
 
+この取り出し方を、プロンプトが 3 トークン（$P=3$）、応答が 4 トークン（$T'=4$）の小さな例で描いたのが\figref{fig:rl-logprob-shift}です。
+上の段が入力の列、下の段が各位置の出力が予測する「次のトークン」です。
+位置 2（プロンプトの最後の位置 $P-1$）から右の 4 つの出力が、ちょうど応答の $o_1$〜$o_4$ を予測しています。
+
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[node distance=3mm and 5mm, every node/.style={font=\footnotesize}]
-  \node[box,minimum width=20mm] (q) {問題集から\\質問 $q$ を選ぶ};
-  \node[purplebox,right=of q,minimum width=22mm] (g) {生成（いまの方策で）\\$o_1,\dots,o_G\sim\pitheta(\cdot\mid q)$};
-  \node[orangebox,right=of g,minimum width=20mm] (r) {採点\\$r_1,\dots,r_G\in\{0,1\}$};
-  \node[box,right=of r,minimum width=20mm] (a) {アドバンテージ\\$\hat A_1,\dots,\hat A_G$};
-  \node[greenbox,below=9mm of a,minimum width=24mm] (u) {損失を計算し\\$\vtheta$ を更新};
-  \node[box,left=of u,minimum width=30mm] (lp) {$\log\pitheta(o_{i,t}\mid q,o_{i,<t})$\\（\coderef{code:rl-logprobs}）};
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\footnotesize},
+  c/.style={cell,minimum width=10mm,minimum height=6mm}]
+  \node[lbl,anchor=east] at (27,7) {コードの位置};
+  \node[lbl,anchor=east,align=right] at (27,0) {\code{idx}\\（入力の列）};
+  \node[lbl,anchor=east,align=right] at (27,-14) {各位置の出力が\\予測するトークン};
+  \foreach \j/\t/\f in {0/q_1/figblue,1/q_2/figblue,2/q_3/figblue,3/o_1/figgreen,4/o_2/figgreen,5/o_3/figgreen,6/o_4/figgray} {
+    \node[lbl] at (33+\j*11,7) {\j};
+    \node[c,fill=\f] (in\j) at (33+\j*11,0) {$\t$};
+  }
+  \foreach \j/\t/\f in {0/q_2/figgray,1/q_3/figgray,2/o_1/figgreen,3/o_2/figgreen,4/o_3/figgreen,5/o_4/figgreen} {
+    \node[c,fill=\f] (out\j) at (33+\j*11,-14) {$\t$};
+    \draw[arr] (in\j.south) -- (out\j.north);
+  }
+  \node[lbl,anchor=north west,align=left] at (94.5,-4.5) {入力から外す\\（\code{idx[:, :-1]}）};
+  \draw[bookaccent,thick,rounded corners=2pt] (49.5,-18) rectangle (93.5,-10);
+  \node[lbl,anchor=north west,align=left,text=bookaccent] at (49.5,-19) {\code{logits[:, len(prompt)-1:]} で取り出す 4 位置。\\各位置で、実際の $o_t$ の欄を \code{gather} で拾うと $\log\pitheta(o_t\mid q,o_{<t})$};
+  \node[lbl,anchor=north,align=center] at (38.5,-19) {使わない};
+\end{tikzpicture}
+\caption{応答の対数確率を取り出すときの位置のずれ（$P=3$、$T'=4$ の例。実際のプロンプトはもっと長い）。
+位置 $j$ の出力は、位置 $j+1$ のトークンを予測する。最後のトークン $o_4$ の「次」は要らないので入力から外し、
+位置 $P-1=2$ から右の出力を取り出すと、応答の $o_1$〜$o_4$ と 1 対 1 に並ぶ。}
+\label{fig:rl-logprob-shift}
+\end{figure}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\footnotesize}]
+  \node[box,minimum width=20mm] (q) at (10,0) {$Q=16$ 問を選び\\1 問ずつ右へ};
+  \node[purplebox,minimum width=28mm] (g) at (41,0) {生成（いまの方策で）\\$o_1,\dots,o_G\sim\pitheta(\cdot\mid q)$};
+  \node[orangebox,minimum width=20mm] (r) at (73,0) {採点\\$r_1,\dots,r_G\in\{0,1\}$};
+  \node[box,minimum width=20mm] (a) at (100,0) {アドバンテージ\\$\hat A_1,\dots,\hat A_G$};
+  \node[box,minimum width=44mm,align=center] (lp) at (46,-19) {各トークンの対数確率（\coderef{code:rl-logprobs}）\\$\log\pitheta$（勾配あり）\\$\log\pi_{\vtheta_{\text{old}}}$ と $\log\pi_{\text{ref}}$（どちらも勾配なし）};
+  \node[greenbox,minimum width=24mm] (u) at (100,-19) {損失を作り（式\eqref{eq:rl-pg-loss}）、\\16 問ぶんの勾配で\\$\vtheta$ を 1 回更新};
   \draw[arr] (q) -- (g); \draw[arr] (g) -- (r); \draw[arr] (r) -- (a);
   \draw[arr] (a) -- (u); \draw[arr] (lp) -- (u);
-  \draw[arr] (g.south) |- (lp.west);
-  \draw[darr,rounded corners=3pt] (u.east) -- ++(4mm,0) |- ($(q.north)+(0,4mm)$) -- (q.north);
-  \node[lbl] at ($(g.north)+(12mm,7mm)$) {次のステップ（新しい $\vtheta$ で生成し直す）};
+  \draw[arr] (g.south) -- (g.south |- lp.north);
+  \draw[darr,rounded corners=3pt] (u.east) -- ++(4mm,0) |- ($(q.north)+(0,5mm)$) -- (q.north);
+  \node[lbl,anchor=south] at (62,10.5) {次のステップ（使った応答は捨て、新しい $\vtheta$ で生成し直す）};
 \end{tikzpicture}
 \caption{検証可能な報酬による強化学習の 1 ステップ。質問ごとに $G$ 本生成して（\coderef{code:rl-rollout}）採点し（\coderef{code:rl-reward}）、
-報酬から作ったアドバンテージを各トークンの対数確率に掛けて更新する。}
+報酬から作ったアドバンテージを各トークンの対数確率に掛ける。上の段を $Q=16$ 問それぞれについて行い、16 問ぶんの勾配をためてから $\vtheta$ を 1 回更新する
+（\figref{fig:rl-cycle}の②〜④）。$\pi_{\vtheta_{\text{old}}}$ と参照モデル $\pi_{\text{ref}}$ の役割は\secref{sec:rl-grpo}で説明する。}
 \label{fig:rl-loop}
 \end{figure}
 
@@ -401,6 +711,8 @@ $\hat A_i$ は「平均より良かったか悪かったか」を表します。
 前章の言葉でいえば、$\bar r$ は状態価値 $V^\pi(q)$ のモンテカルロ推定（実際に得た収益の平均で価値を見積もること。\chapref{ch:rl-basics}）で、$\hat A_i$ はアドバンテージの推定です。
 前章では、価値を見積もるために価値ネット $V_\phi$ を学習しました（この価値ネットを「クリティック」とも呼びます）。
 ここでは、価値ネットを学習しなくても、同じ質問に何回も答えさせるだけで、価値が推定できるのです。
+\chapref{ch:rl-basics}の迷路では、マスの価値を、そのマスを通ったエピソードの収益の平均で見積もりました。
+ここでは、出発点の状態（質問 $q$）についてだけ、同じことをしています（\tabref{tab:rl-vs-maze}の「価値の持ち方」の行）。
 
 \begin{example}[グループのアドバンテージを手で計算する]
 「487+256は？」（正解 743）に $G=4$ 本答えさせたところ、\tabref{tab:rl-adv-example}のようになったとします。
@@ -463,6 +775,7 @@ r_i-\frac{1}{G-1}\sum_{j\ne i}r_j
   }
 \end{tikzpicture}
 \caption{グループの平均をベースラインにしたときの学習信号（各行は 1 つの質問への $G=4$ 本の報酬）。
+マスの色と数字は報酬（緑：報酬 1、赤：報酬 0）で、\figref{fig:rl-cycle}④の色（重みの符号と大きさ）とは意味が違う。
 全員正解や全員不正解のグループはアドバンテージがすべて 0 で、勾配は正解と不正解が混ざる質問からだけ生まれる。}
 \label{fig:rl-group-signal}
 \end{figure}
@@ -478,9 +791,65 @@ r_i-\frac{1}{G-1}\sum_{j\ne i}r_j
 学習が進むのは、問題の難しさがモデルの実力に合っているときだけです。
 実際の開発で、問題集の難しさをモデルに合わせて選ぶ工夫（\secref{sec:rl-variants}の DAPO の動的サンプリング）があるのはこのためです。
 
+\subsection{グループの大きさ $G$ を変えると}
+
+では、グループの大きさ $G$ はいくつにすればよいのでしょうか。
+$G$ が小さいと、正解と不正解が混ざる学びどきのグループが減りそうです。
+これを確かめるために、\file{sft.pt} に、訓練と同じ作り方の 200 問を 32 本ずつ温度 1 で答えさせました。
+そして 32 本を $G$ 本ずつのグループに区切り、$G=2,4,8,16,32$ の 5 通りで、グループの種類を数えました（\file{sweep_group.py}。約 40 秒）。
+学習はしていないので、\file{sft.pt} で学習を始めた直後の様子に当たります。
+
+\begin{figure}[tbp]
+\begin{minipage}[t]{0.55\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\linewidth,height=44mm,xmode=log,log basis x=2,xmin=1.6,xmax=40,ymin=0,ymax=1,
+  xtick={2,4,8,16,32},xticklabels={2,4,8,16,32},xlabel={グループの大きさ $G$},ylabel={グループの割合},
+  ytick={0,0.25,0.5,0.75,1},label style={font=\footnotesize}]
+\addplot[bookblue,thick,mark=*,mark size=1.4pt] table[col sep=comma,x=G,y=signal]{code/ch22/out/sweep_group.csv};
+\addplot[bookgreen,thick,dashed,mark=square*,mark size=1.3pt] table[col sep=comma,x=G,y=all1]{code/ch22/out/sweep_group.csv};
+\addplot[bookaccent,thick,dotted,mark=x,mark size=2pt] table[col sep=comma,x=G,y=all0]{code/ch22/out/sweep_group.csv};
+\node[font=\scriptsize,text=bookblue,anchor=north west] at (axis cs:2.1,0.98) {学びどき（正解と不正解が混ざる）};
+\node[font=\scriptsize,text=bookgreen,anchor=south west] at (axis cs:10,0.27) {全員正解};
+\node[font=\scriptsize,text=bookaccent,anchor=south west] at (axis cs:2.1,0.10) {全員不正解};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.42\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,width=\linewidth,height=44mm,bar width=6pt,xmin=0,xmax=1,ymin=0,ymax=75,
+  xlabel={質問ごとの正答率（32 本中）},ylabel={質問の数},xtick={0,0.2,0.4,0.6,0.8,1},
+  label style={font=\footnotesize},tick label style={font=\scriptsize}]
+\addplot[draw=bookblue,fill=figblue] table[col sep=comma,x expr=\thisrow{lo}+0.05,y=count]{code/ch22/out/sweep_group_phat.csv};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{グループの大きさ $G$ を変えたときの、グループの種類の割合（左）と、質問ごとの正答率の分布（右）。
+\file{sft.pt} に訓練と同じ作り方の 200 問を 32 本ずつ答えさせ（温度 1）、32 本を $G$ 本ずつに区切って数えた（\file{sweep_group.py}）。
+変えたのは $G$ だけで、モデル・問題・サンプルは共通。学習はしていない。
+左の横軸は対数目盛（$G$ が 2 倍ずつ）。右の棒は正答率 0.1 刻みで、最後の棒は 0.9 以上 1.0 以下（32 本とも正解の質問を含む）。}
+\label{fig:rl-group-sweep}
+\end{figure}
+
+結果が\figref{fig:rl-group-sweep}です。
+左のグラフの青い線（学びどきのグループの割合）を見てください。
+$G=2$ では 0.27 しかなく、グループの 4 分の 3 近くが全員同じ点で、何も学びません。
+$G=8$ では 0.69、$G=32$ では 0.94 まで増えます。
+本章の実験（$G=8$）の学習中の記録でも、学びどきのグループの割合（\file{rl_arith.py} の \code{signal}）は 0.44〜0.88 で、同じくらいでした。
+
+$G$ が小さいと学ばない理由は、右のグラフにあります。
+\file{sft.pt} はすでに 8 割近く正解するので、質問ごとの正答率は 0.8 以上に偏っています（200 問中 123 問）。
+正答率 0.9 の質問なら、2 本とも正解する確率は $0.9^2=0.81$ ですが、8 本とも正解する確率は $0.9^8\approx0.43$ に下がります。
+$G$ を大きくすると、易しい問題でもときどき出る誤答を拾えるようになるのです。
+その代わり、1 ステップで生成する本数は $Q\times G$ に比例して増えます（$Q=16$ なら、$G=32$ で 512 本）。
+生成は強化学習でいちばん重い計算なので（\secref{sec:rl-variants}）、$G$ は、学びどきのグループの割合と生成の費用との兼ね合いで決めます。
+実際の開発では、DeepSeekMath が $G=64$、DeepSeek-R1-Zero が $G=16$ を使いました（\tabref{tab:rl-scale}）。
+
 この節の要点です。
 報酬が 0/1 のとき、ベースラインなしの REINFORCE は「正解で SFT」と同じで、間違いを減らす力が弱く、易しい問題に勾配を浪費します。
 同じ質問への $G$ 本の平均を引くと、正解は上げ、不正解は下げる信号になり、勾配は学びどきの問題に集中します。
+学びどきのグループの割合は $G$ を大きくすると増えますが、生成の費用も $G$ に比例して増えます。
 
 %======================================================================
 \section{GRPO：グループで比べる方策最適化}\label{sec:rl-grpo}
@@ -496,12 +865,14 @@ r_i-\frac{1}{G-1}\sum_{j\ne i}r_j
 前章の PPO は、アドバンテージを GAE で計算するために、価値ネット $V_\phi$（クリティック）を方策と一緒に学習しました。
 GAE は、価値ネットの出力から作る TD 誤差 $\delta_t=r_t+\gamma V_\phi(s_{t+1})-V_\phi(s_t)$ を、先の時刻のものほど割り引いて足し合わせる、アドバンテージの推定でした（\secref{sec:pg-actor-critic}）。
 ここで大事なのは、PPO には価値ネットというもう一つのネットが要る、という点だけです。
-言語モデルでこれをやると、価値ネットも言語モデルと同じくらい大きなネットになり、メモリも計算も 2 倍近くかかります。
+言語モデルの状態はトークン列なので、その価値を見積もるには、文を読み取る力が要ります。
+そのため価値ネットも、ふつうは言語モデルと同じくらい大きなネットになり、メモリも計算も 2 倍近くかかります。
 しかも報酬が最後に 1 回しかないので、途中のトークンの価値を正確に学ぶのは難しいのです。
 
-GRPO の答えは単純です。
-\textbf{価値ネットをやめ、同じ質問への $G$ 本の応答の平均をベースラインにする}。
+GRPO が選んだ方法は単純です。
+\textbf{価値ネットをやめ、同じ質問への $G$ 本の応答の平均をベースラインにする}のです。
 前節で見たとおり、これは価値のモンテカルロ推定になっています。
+ただし、価値ネットを使う PPO と使わない GRPO のどちらが良いかは、いまも報告が分かれています（\secref{sec:rl-variants}の\tabref{tab:rl-debate}）。
 
 \subsection{GRPO の目的関数}
 
@@ -539,9 +910,14 @@ DeepSeekMath の原論文\cite{shao2024deepseekmath}の式を、本書の記号�
 （$\hat A>0$ なら $\rho>1+\epsilon$、$\hat A<0$ なら $\rho<1-\epsilon$ のときです）。
 1 回の生成で何度も更新しても、方策が動きすぎないようにする仕組みでした。
 \item $\hat A_{i,t}$ は、前節のグループのベースラインを引いたうえで、さらにグループの標準偏差で割ったものです。
-標準偏差は「平均からのずれの典型的な大きさ」なので、それで割った値はおよそ $\pm1$ の大きさになります（\tabref{tab:rl-adv-example}では $\pm0.87$）。
+標準偏差は「平均からのずれの典型的な大きさ」なので、それで割ると、グループの中でのずれの典型的な大きさが 1 くらいにそろいます（\tabref{tab:rl-adv-example}では $\pm0.87$）。
 報酬をすべて 10 倍にしても、分子と分母がどちらも 10 倍になるので、値は変わりません。
-報酬の尺度がどんな課題でも、アドバンテージの大きさがそろうのです。
+報酬の尺度がどんな課題でも、アドバンテージの尺度がそろうのです。
+ただし、1 本ずつの値が $\pm1$ 前後になるのは、正解と不正解が半々に近いときだけです。
+たとえば $G=8$ で 7 本が正解、1 本が不正解なら、標準偏差は約 0.354 で、正解の 7 本は $+0.35$、不正解の 1 本は $-2.47$ になります。
+少数派の応答ほど大きな重みを受けるのです。
+また、ほぼ全員が正解する易しい問題（や、ほぼ全員が不正解の難しい問題）では標準偏差が小さいので、割った後の重みが大きくなります。
+この性質は、\secref{sec:rl-variants}の Dr.\ GRPO が偏りとして問題にしています。
 \item $-\beta\,\KL{\pitheta}{\pi_{\text{ref}}}$ は、学習中の方策 $\pitheta$ が参照モデル $\pi_{\text{ref}}$ から離れすぎないようにする罰則です。
 応答 $i$ の位置 $t$ での、次のトークンの分布どうしの KL を表します（次の小節で詳しく見ます）。
 \end{itemize}
@@ -557,27 +933,32 @@ DeepSeekMath の原論文\cite{shao2024deepseekmath}の式を、本書の記号�
 \begin{tikzpicture}[every node/.style={font=\footnotesize},
   tk/.style={cell,minimum width=8mm,minimum height=5mm}]
   \node[lbl] at (0,0.7) {報酬 $r_i$};
-  \node[lbl] at (2.0,0.7) {$\hat A_i$};
-  \node[lbl,anchor=west] at (3.3,0.7) {応答のトークン（色は重み $\hat A_i$ の符号）};
+  \node[lbl] at (2.6,0.7) {$\hat A_i$};
+  \node[lbl,anchor=west] at (3.9,0.7) {応答のトークン（色は重み $\hat A_i$ の符号）};
+  \node[draw=bookblue,fill=figblue,rounded corners=2pt,minimum width=9mm,minimum height=24mm,align=center,font=\scriptsize] (st) at (1.2,-0.93) {平均\\0.5\\[1mm]std\\0.577};
   \foreach \row/\r/\A/\ta/\tb/\col in {0/1/{+0.87}/7/4/figgreen, 1/0/{-0.87}/7/3/figred,
                                        2/1/{+0.87}/7/4/figgreen, 3/0/{-0.87}/6/4/figred} {
-    \node[tk,fill=figorange] (r\row) at (0,-\row*0.62) {\r};
-    \node[tk,fill=\col,minimum width=12mm] (A\row) at (2.0,-\row*0.62) {$\A$};
-    \draw[arr] (r\row) -- (A\row);
-    \node[tk,fill=\col] (t\row) at (3.8,-\row*0.62) {\ta};
-    \node[tk,fill=\col] at (4.65,-\row*0.62) {\tb};
-    \node[tk,fill=\col] at (5.5,-\row*0.62) {3};
-    \node[tk,fill=\col,minimum width=10mm] at (6.45,-\row*0.62) {です。};
-    \node[tk,fill=\col,minimum width=13mm] at (7.65,-\row*0.62) {\code{<|end|>}};
-    \node[tk,fill=figgray,minimum width=13mm,text=bookgray] at (9.0,-\row*0.62) {（除く）};
+    \node[tk,fill=figorange,minimum width=6mm] (r\row) at (0,-\row*0.62) {\r};
+    \node[tk,fill=\col,minimum width=11mm] (A\row) at (2.6,-\row*0.62) {$\A$};
+    \draw[arr] (r\row.east) -- (r\row.east -| st.west);
+    \draw[arr] (A\row.west -| st.east) -- (A\row.west);
+    \node[tk,fill=\col] (t\row) at (4.4,-\row*0.62) {\ta};
+    \node[tk,fill=\col] at (5.25,-\row*0.62) {\tb};
+    \node[tk,fill=\col] at (6.1,-\row*0.62) {3};
+    \node[tk,fill=\col,minimum width=10mm] at (7.05,-\row*0.62) {です。};
+    \node[tk,fill=\col,minimum width=13mm] at (8.25,-\row*0.62) {\code{<|end|>}};
+    \node[tk,fill=figgray,minimum width=13mm,text=bookgray] at (9.6,-\row*0.62) {（除く）};
     \draw[arr] (A\row) -- (t\row);
   }
-  \node[lbl,align=center] at (1.0,-2.55) {平均 0.5 を引き、\\std 0.577 で割る};
-  \node[lbl,align=center] at (5.7,-2.55) {どのトークンにも同じ $\hat A_i$ を配り、\\応答ごとに $\frac{1}{\abs{o_i}}=\frac15$ を掛けて足す};
-  \node[lbl,align=center] at (9.3,-2.55) {\code{<|end|>} より後ろは\\マスクで除く};
+  \node[lbl,align=center] at (1.3,-2.75) {4 本\textbf{まとめて}平均と\\std を求め、各 $r_i$ から\\平均を引いて std で割る};
+  \node[lbl,align=center] at (5.9,-2.85) {どのトークンにも\\同じ $\hat A_i$ を割り当て、応答\\ごとに $\frac{1}{\abs{o_i}}=\frac15$ を掛けて足す};
+  \node[lbl,align=center] at (9.8,-2.75) {\code{<|end|>} より後ろは\\マスクで除く};
 \end{tikzpicture}
 \caption{GRPO が 1 つのグループから損失を作る流れ（\tabref{tab:rl-adv-example}の 4 本の応答）。
-正規化したアドバンテージを応答のすべてのトークンに配る。緑は確率を上げる向き、赤は下げる向きに押されるトークン。}
+$\hat A_i$ は自分の $r_i$ だけでなく、グループの 4 本全部の平均と標準偏差から決まる。
+正規化したアドバンテージを応答のすべてのトークンに割り当てる。緑は確率を上げる向き、赤は下げる向きに押されるトークン。
+「（除く）」は \code{<|end|>} より後ろの位置を 1 マスで代表させたもの（最大 8 トークンなら 3 マスある）。
+式\eqref{eq:rl-grpo}の確率比のクリップと KL の項は、この図では省いた（\figref{fig:rl-kl-role}）。}
 \label{fig:rl-grpo-weights}
 \end{figure}
 
@@ -585,7 +966,10 @@ DeepSeekMath の原論文\cite{shao2024deepseekmath}の式を、本書の記号�
 式\eqref{eq:rl-grpo}には、$\pitheta$ 以外に 2 つのモデルが出てきます（\figref{fig:rl-kl-role}）。
 $\pi_{\vtheta_{\text{old}}}$ は「このステップで応答を生成したときの方策」で、ステップごとに新しくなり、確率比 $\rho$ の分母として 1 回の生成の中での「動きすぎ」を測ります。
 $\pi_{\text{ref}}$ は\textbf{参照モデル}で、ふつうは強化学習を始める前の SFT モデルを凍結したものです。
-たとえるなら、$\pi_{\vtheta_{\text{old}}}$ は「1 歩の歩幅の制限」、$\pi_{\text{ref}}$ は「家から遠くへ行きすぎない紐」です。
+役割を平らな言葉で言うと、次のとおりです。
+$\pi_{\vtheta_{\text{old}}}$ を基準にするクリップは、1 回の生成で何回か更新するとき、各トークンの確率が生成した時点から何倍まで変わってよいかを制限します。
+$\pi_{\text{ref}}$ を基準にする KL 罰則は、学習を始めたときの SFT モデルの分布から離れるほど大きくなる罰を、目的関数に加えます。
+前者は 1 回の生成の中での動き、後者は学習全体での動きを抑えるものです。
 \end{intuition}
 
 \subsection{KL 正則化と、その推定}
@@ -594,9 +978,9 @@ KL ダイバージェンス $\KL{\pi}{\pi'}$ は、分布 $\pi$ が分布 $\pi'$
 なぜ参照モデルからの距離を罰するのでしょうか。
 理由は三つあります。
 \begin{enumerate}
-\item \textbf{報酬の穴を突かせない}。報酬が不完全なとき、方策は報酬の穴（\secref{sec:rl-rlhf}で実例を見ます）を突く方向へ遠くまで動きがちです。KL はそれを抑えます。
+\item \textbf{報酬の穴を突かせない}。報酬が不完全なときには、報酬は高いのに意図に合わない応答があります。これを報酬の\textbf{穴}と呼びます（\secref{sec:rl-rlhf}で実例を見ます）。方策は、その穴の方向へ遠くまで動きがちです。KL はそれを抑えます。
 \item \textbf{言葉としての自然さを保つ}。SFT モデルは文法的に自然な文を書けます。そこから遠く離れると、報酬は高いが読めない文になることがあります。
-\item \textbf{忘れさせない}。強化学習で鍛えていない能力（ほかの話題での受け答えなど）は、SFT モデルの近くにいれば保たれやすくなります。
+\item \textbf{忘れさせない}。強化学習で学習させていない能力（ほかの話題での受け答えなど）は、SFT モデルの近くにいれば保たれやすくなります。
 \end{enumerate}
 
 \begin{figure}[tbp]
@@ -613,20 +997,26 @@ KL ダイバージェンス $\KL{\pi}{\pi'}$ は、分布 $\pi$ が分布 $\pi'$
   \draw[arr,bookblue] (p1) -- (p2);
   \draw[arr,bookblue] (p2) -- (p3);
   \foreach \p in {p1,p2,p3} \fill[bookblue] (\p) circle (1.3pt);
-  \node[anchor=south,text=bookblue] at (p3) {$\pitheta$};
-  \node[text=bookblue,anchor=north west,align=left] at (0.75,0.3) {1 歩の幅：\\クリップ（$\pi_{\vtheta_{\text{old}}}$ が基準）};
+  \node[anchor=north west,text=bookblue,inner sep=1.5pt] at (p2) {$\pi_{\vtheta_{\text{old}}}$};
+  \node[anchor=north west,text=bookblue,inner sep=1.5pt] at (p3) {$\pitheta$};
+  \node[text=bookblue,anchor=north west,align=left] at (0.45,-0.05) {点：1 回ずつの更新のあとの方策。\\最後の矢印（$\pi_{\vtheta_{\text{old}}}\to\pitheta$）が\\1 回の生成の中での動きで、\\クリップがその大きさを制限する};
   \draw[darr,bookaccent] (p3) to[bend right=50] node[above left,text=bookaccent,pos=0.4]{$-\beta\,$KL} (ref.north);
-  \node[redbox,minimum width=12mm,minimum height=5mm,font=\scriptsize] at (3.0,1.35) {報酬の穴};
+  \node[redbox,minimum width=12mm,minimum height=5mm,font=\scriptsize] (hole) at (3.05,1.55) {報酬の穴};
+  \draw[darr,bookaccent!70] (p3) -- node[pos=0.55,below right,text=bookaccent,inner sep=1pt]{報酬に引かれる} (hole.south west);
   \node[lbl,font=\scriptsize] at (0,-1.7) {参照モデルの近く（自然な文）};
+  \node[lbl,font=\scriptsize] at (0,-2.05) {（平面の 1 点＝1 つの方策）};
 \end{tikzpicture}
-\caption{2 つの歯止め。クリップは生成時の方策からの 1 歩の幅を抑え、KL 罰則は出発点 $\pi_{\text{ref}}$ へ引き戻す。}
+\caption{2 つの制限（模式図）。平面の 1 点が 1 つの方策で、$\pi_{\text{ref}}$ からの離れ具合の目安が KL。
+クリップは 1 回の生成の中での動きを抑え（本章の主な実験の \code{mu=1} では働かない）、
+KL 罰則は $\pi_{\text{ref}}$ から離れるほど大きな罰を課す。灰色の円は越えられない境界ではなく、罰が小さい範囲の目安。
+報酬の穴は、報酬は高いが意図に合わない応答を出す方策。}
 \label{fig:rl-kl-role}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.47\linewidth}
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=\linewidth,height=39mm,xmin=0,xmax=4,ymin=-1.2,ymax=2.2,
-  xlabel={$u=\pi_{\text{ref}}/\pitheta$},xtick={0,1,2,3,4},ytick={-1,0,1,2},
+\begin{axis}[width=\linewidth,height=42mm,xmin=0,xmax=4,ymin=-1.2,ymax=3.4,
+  xlabel={$u=\pi_{\text{ref}}/\pitheta$},ylabel={1 点での KL の推定値},xtick={0,1,2,3,4},ytick={-1,0,1,2,3},
   legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east},label style={font=\footnotesize}]
 \addplot[bookblue,thick,domain=0.05:4,samples=80] {x-ln(x)-1};
 \addlegendentry{$u-\log u-1$}
@@ -661,7 +1051,7 @@ GRPO は、この期待値を、実際にサンプリングしたトークン $o
 この章では、確率比 $\rho_{i,t}$（式\eqref{eq:rl-ratio}）と混ざらないよう、文字を $u$ にしました。
 この推定量は、二つの性質を持ちます。
 
-一つ目は、$o_{i,t}\sim\pitheta$ のもとで\textbf{期待値が KL に等しい}ことです。
+一つ目は、$o_{i,t}\sim\pitheta$ のもとで\textbf{期待値が KL に等しい}ことです（応答を生成したのは $\pi_{\vtheta_{\text{old}}}$ ですが、\code{mu=1} なら生成した方策と学習中の方策が同じなので、この条件が満たされます）。
 $\E_{v\sim\pitheta}[u]=\sum_v\pitheta(v)\frac{\pi_{\text{ref}}(v)}{\pitheta(v)}=\sum_v\pi_{\text{ref}}(v)=1$ なので、$\E[u-1]=0$ です。
 残る $\E[-\log u]$ は、上の KL の定義そのものです。
 二つ目は、\textbf{いつも 0 以上}であることです（\figref{fig:rl-kl-estimator}。$u=1$ で最小値 0）。
@@ -686,7 +1076,7 @@ $-\log u$ だけでも期待値は KL になりますが、1 点ずつ見ると�
 
 \snippet{GRPO の損失（式\eqref{eq:rl-grpo}の符号を反転したもの）}{code:rl-grpo-loss}{ch22/rl_arith.py}{grpo-loss}
 
-1 行目の \code{A.unsqueeze(1)} で $(G,1)$ にし、応答の全トークンに同じアドバンテージを配ります（\figref{fig:rl-grpo-weights}）。
+3 行目の \code{A.unsqueeze(1)} で $(G,1)$ にし、応答の全トークンに同じアドバンテージを割り当てます（\figref{fig:rl-grpo-weights}）。
 GRPO のときは、\code{torch.exp(logp - logp_old)} が確率比 $\rho_{i,t}$（式\eqref{eq:rl-ratio}）です。対数の差の指数をとると比になります。
 \code{surr} が式\eqref{eq:rl-grpo}の $\min(\cdot,\cdot)$ の部分で、\code{torch.clamp(ratio, 1 - eps, 1 + eps)} が $\mathrm{clip}$ です。
 \code{d} は $\log(\pi_{\text{ref}}/\pitheta)$ で、\code{kl} が式\eqref{eq:rl-kl-k3}の $u-\log u-1$ です（$u=e^{d}$）。
@@ -724,10 +1114,10 @@ GRPO は、PPO から価値ネットを除き、同じ質問への $G$ 本の報
 参照モデルへの KL 罰則は、$u-\log u-1$ という 0 以上の推定量で、サンプリングしたトークンだけから計算できます。
 
 %======================================================================
-\section{実験：正誤の報酬で計算アシスタントを鍛える}\label{sec:rl-exp}
+\section{実験：正誤の報酬で計算アシスタントを学習させる}\label{sec:rl-exp}
 
 部品とアルゴリズムがそろいました。
-この節の問いは、「\file{sft.pt} を正誤の報酬だけで鍛えると、正答率は上がるのか。上がるなら、どれだけの学習量が要り、SFT と比べてどうなのか」です。
+この節の問いは、「\file{sft.pt} を正誤の報酬だけで学習させると、正答率は上がるのか。上がるなら、どれだけの学習量が要り、SFT と比べてどうなのか」です。
 答えを三つの実験で順に確かめます。80 ステップの GRPO、250 ステップの GRPO、そして物差しとしての SFT の継続です。
 
 \subsection{最初の 80 ステップ：伸びは本物か}
@@ -744,6 +1134,32 @@ GRPO を 80 ステップ回します（\code{python ch22/rl_arith.py grpo --save
 評価は\chapref{ch:posttraining}と同じ 200 問（種 12345）を\textbf{貪欲生成}で答えさせた正答率で、10 ステップごとに測ります。
 学習中のロールアウトは温度 1 のサンプリングなので、「報酬の平均」と「貪欲生成の正答率」は別の量です。
 
+この章では、「点数」や「正答率」と呼べる量が何種類も出てきます。
+どれが勾配に入り、どれが入らないかを、\tabref{tab:rl-measures}で先に整理しておきます。
+勾配に入るのは、1 行目の報酬だけです。
+残りは、学習の外からモデルを測るための物差しです。
+\chapref{ch:ml}の言葉でいえば、結果を報告する 1,000 問は\textbf{テストデータ}に、途中のモデルを選ぶ 500 問は\textbf{検証データ}に当たります（\secref{sec:ml-generalization}）。
+q32 などのように最後のモデルをそのまま報告する実験では、選ぶ作業がないので、検証データは使っていません。
+
+\begin{table}[tbp]
+\centering
+\caption{この章に出てくる「点数」と「正答率」。勾配に入るのは報酬だけで、ほかは学習の外からの評価。}
+\label{tab:rl-measures}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{21mm}>{\raggedright\arraybackslash}p{12mm}>{\raggedright\arraybackslash}p{24mm}}
+\toprule
+名前 & 何を測るか & 生成の仕方 & 数（問・本・組） & 勾配 & 使い道 \\
+\midrule
+報酬 $r_i$ & 学習中の 1 本ごとの正誤 & 温度 1 & 1 ステップに 128 本（q32 は 256 本） & 入る & 更新の重みを作る（\secref{sec:rl-baseline}） \\ \addlinespace
+200 問の正答率 & 学習の途中経過 & 貪欲 & 200 問（種 12345） & 入らない & 推移を見る（ぶれ約 2.4 ポイント） \\ \addlinespace
+1,000 問の正答率 & 最終的な成績（テスト） & 貪欲・温度 1 & 1,000 問（種 777） & 入らない & 結果の報告（ぶれ約 1.2 ポイント） \\ \addlinespace
+検証用 500 問の正答率 & 途中のモデルの良さ & 貪欲 & 500 問（種 555） & 入らない & ppo の試行でモデルを選ぶ（\secref{sec:rl-exp-trials}） \\ \addlinespace
+正しく並べた割合 & 報酬モデルの出来 & --- & テスト用の 200 組 & 入らない & 報酬モデルの確認（\secref{sec:rl-rlhf}） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 GRPO の 200 問の正答率は、最後のステップで 0.905 と、出発点の 0.870 より高くなりました。
 しかし途中は 0.855〜0.890 を上下しています。
 グループ平均を引く REINFORCE（0.830〜0.870）とベースラインなしの REINFORCE（0.855〜0.890）も、出発点のまわりを上下しただけでした。
@@ -755,18 +1171,18 @@ GRPO の 200 問の正答率は、最後のステップで 0.905 と、出発点
 問題数が 5 倍になったので、ぶれは約半分になりました。
 貪欲生成の正答率は 0.826 から 0.833、温度 1 では 0.691 から 0.703 で、どちらも標準誤差（約 1.2 ポイント）程度しか動いていません。
 \textbf{80 ステップ（合計 $128\times80=10{,}240$ 本の応答）では、正答率が上がったとは言えません}。
-学習量が足りないと強化学習は出発点のまわりを揺れるだけで、小さな評価セットではその揺れが「伸び」に見えてしまうのです。
+学習量が足りないと、強化学習のモデルの正答率は出発点のまわりを上下するだけで、小さな評価セットではその上下が「伸び」に見えてしまうのです。
 以下では、この 1,000 問を物差しにします。
 
-\subsection{学習率を上げると崩れる：KL は計器になる}
+\subsection{学習率を上げると正答率が下がる：KL は異常の目安になる}
 
-学習量を増やす前に、学習率を上げて近道できないかを試します。
+学習量を増やす前に、学習率を上げれば少ないステップで伸ばせないかを試します。
 学習率だけを 5 倍の $10^{-4}$ にして 30 ステップ回した結果が\figref{fig:rl-highlr}です（引数は \code{grpo --lr 1e-4 --steps 30 --tag highlr}）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[name=acc,width=0.5\linewidth,height=38mm,xmin=0,xmax=80,ymin=0.68,ymax=0.93,
+\begin{axis}[name=acc,width=0.5\linewidth,height=38mm,xmin=0,xmax=80,ymin=0.58,ymax=0.93,
   xlabel={ステップ},ylabel={正答率（200 問）},ytick={0.7,0.8,0.9},
   legend style={font=\scriptsize,at={(0.97,0.05)},anchor=south east}]
 \addplot[bookblue,thick,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=acc]{code/ch22/out/rl_grpo.csv};
@@ -780,17 +1196,21 @@ GRPO の 200 問の正答率は、最後のステップで 0.905 と、出発点
 \addplot[bookaccent,thick,mark=x,mark size=2pt] table[col sep=comma,x=step,y=kl]{code/ch22/out/rl_grpo_highlr_kl.csv};
 \end{axis}
 \end{tikzpicture}
-\caption{学習率を 5 倍にした GRPO（赤）。10 ステップ目に正答率が 0.715 へ落ち（左）、
-同時に参照モデルからの KL の推定値が 0.48 に跳ねた（右）。青は学習率 $2\times10^{-5}$。}
+\caption{学習率を 5 倍にした GRPO（赤）。10 ステップ目に正答率が 0.715 へ下がり（左）、
+同時に参照モデルからの KL の推定値が 0.48 まで急に大きくなった（右）。30 ステップ目に正答率は 0.83 まで戻ったが、出発点の 0.87 には届かない。
+赤の KL は 10・20 ステップ目だけを記録した。青は学習率 $2\times10^{-5}$。}
 \label{fig:rl-highlr}
 \end{figure}
 
-10 ステップ目に正答率は 0.715 まで落ちました。
+10 ステップ目に正答率は 0.715 まで下がりました。
 このとき KL の推定値は 0.48 で、学習率 $2\times10^{-5}$ のとき（0.01〜0.04）の 10 倍以上です。
-$\beta=0.04$ の罰則が付いていても、1 歩が大きすぎれば方策は一気に遠くへ動いてしまいます。
-KL 罰則は離れた方策を少しずつ引き戻す力で、大きすぎる 1 歩そのものは止められないのです。
-それでも KL の値は、正答率を測らなくても毎ステップ分かる\textbf{崩れの計器}になります。
-強化学習では、報酬の平均と並べて KL を必ず記録し、ふだんの何倍にも跳ねたら学習率を疑います。
+$\beta=0.04$ の罰則が付いていても、1 回の更新が大きすぎれば、方策は一度に参照モデルから遠くへ動いてしまいます。
+KL 罰則は、離れた分に比例する罰を損失に足すだけで、1 回の更新の大きさそのものを制限するものではないからです。
+その後、正答率は 20 ステップ目に 0.76、30 ステップ目に 0.83 まで戻りました。
+しかし出発点の 0.87 には届かず、20 ステップ目の KL も 0.49 と大きいままでした（30 ステップ目の KL は記録していません）。
+つまり、正答率が戻っても、方策は参照モデルから遠く離れたままです。
+KL の値は、正答率を測らなくても毎ステップ分かるので、\textbf{学習がおかしくなったことを知らせる目安}になります。
+強化学習では、報酬の平均と並べて KL を必ず記録し、ふだんの何倍にも大きくなったら学習率を疑います。
 
 \subsection{250 ステップに増やす}
 
@@ -802,10 +1222,14 @@ KL 罰則は離れた方策を少しずつ引き戻す力で、大きすぎる 1
 これが検証可能な報酬の強みです。
 
 最後のモデルを \file{ch22_rl.pt} として保存し（引数は \code{--threads 4 --tag q32 --save --out ch22_rl.pt}）、1,000 問で \file{sft.pt} と比べたのが\figref{fig:rl-eval-bars}です。
-貪欲生成の正答率は 0.826 から 0.847 へ 2.1 ポイント、温度 1 では 0.691 から 0.726 へ 3.5 ポイント上がりました
-（温度 1 の正答率は目的関数 $J(\vtheta)$ の推定値なので、こちらが大きく動くのは自然です）。
-ただし貪欲生成の伸びは標準誤差の 2 倍弱（$2.1/1.2\approx1.8$）で、途中の評価も 0.816〜0.857 を上下しています（\figref{fig:rl-long}の青。橙の ppo\_b は、あとの小節で試す別の設定です）。
-\textbf{伸びは約 2 ポイントで、目標にした「はっきりした伸び」（5 ポイント以上）には届きませんでした}。
+貪欲生成の正答率は 0.826 から 0.847 へ 2.1 ポイント、温度 1 では 0.691 から 0.726 へ 3.5 ポイント上がりました。
+温度 1 のほうが大きく動いたのは、GRPO が直接上げようとしている量が、温度 1 で答えさせたときの正答率、つまり目的関数 $J(\vtheta)$（式\eqref{eq:rl-objective}）そのものだからです。
+貪欲生成の正答率は、その結果として上がる量です。
+ただし、2.1 ポイントの伸びは誤差の幅と同じくらいです。
+1 つのモデルの正答率の標準誤差は約 1.2 ポイントでした。
+二つのモデルの\textbf{差}の標準誤差は、二つを別々の問題で測ったとすれば $\sqrt2\times1.2\approx1.7$ ポイントです（同じ 1,000 問で比べているので、実際にはこれより少し小さくなりえます）。
+途中の評価も 0.816〜0.857 を上下しています（\figref{fig:rl-long}の青。橙の ppo\_b は、あとの小節で試す別の設定です）。
+\textbf{伸びは約 2 ポイントで、誤差よりはっきり大きい伸び（たとえば 5 ポイント以上）には届きませんでした}。
 
 \begin{figure}[tbp]
 \begin{minipage}[t]{0.56\linewidth}
@@ -826,7 +1250,9 @@ KL 罰則は離れた方策を少しずつ引き戻す力で、大きすぎる 1
 \end{axis}
 \end{tikzpicture}
 \caption{固定の 1,000 問での正答率の推移。点線は出発点の 0.826（\file{sft.pt}）、灰色の帯はその標準誤差（$\pm1.2$ ポイント）。
-GRPO は帯のすぐ上を上下し、正解付きの SFT 継続は 0.886 まで伸びる。}
+GRPO は帯の少し下から少し上までを上下し、正解付きの SFT 継続は 0.886 まで伸びる。
+横軸の更新 1 回の中身は線ごとに違う（SFT：64 問のお手本で 1 回、q32：256 本を生成して 1 回、ppo\_b：512 本の生成 1 回につき 4 回）。
+計算量の比較は本文の所要時間で行う。}
 \label{fig:rl-long}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.41\linewidth}
@@ -844,7 +1270,7 @@ GRPO は帯のすぐ上を上下し、正解付きの SFT 継続は 0.886 まで
 \addlegendentry{\file{ch22_rl.pt}}
 \end{axis}
 \end{tikzpicture}
-\caption{強化学習の前後（同じ 1,000 問）。「3 桁どうし」は、二つの数がどちらも 3 桁の 91 問。}
+\caption{強化学習の前後（同じ 1,000 問）。「3 桁どうし」は、二つの数がどちらも 3 桁の 91 問。縦軸は 0.4 から始まる（差を読むときは棒の上の数で）。}
 \label{fig:rl-eval-bars}
 \end{minipage}
 \end{figure}
@@ -855,7 +1281,7 @@ GRPO は帯のすぐ上を上下し、正解付きの SFT 継続は 0.886 まで
 つまり\textbf{学習信号は届いています}。
 それでも遅い理由は、二つ考えられます。
 一つは、約 260 万パラメータのモデルが「繰り上がり」を規則として身につけるには、同じ向きの更新を多く積み重ねる必要があることです。
-もう一つは、前の小節で見たとおり、学習率の安全な範囲が狭いことです（q32 でも 175 ステップ目に KL が 0.33 に跳ねました）。
+もう一つは、前の小節で見たとおり、学習率の安全な範囲が狭いことです（q32 でも、175 ステップ目に KL が 0.33 まで急に大きくなりました）。
 
 \subsection{設定を変えた試行と、二つの教訓}\label{sec:rl-exp-trials}
 \skimread{結論は「温度を下げても、難しい問題を増やしても、同じ生成を 4 回使っても、q32 を上回らなかった」です。教訓は二つあります。クリップは各生成の 1 回目の更新を守らないこと。モデルを選ぶ問題と、結果を報告する問題を分けること。}
@@ -863,6 +1289,8 @@ GRPO は帯のすぐ上を上下し、正解付きの SFT 継続は 0.886 まで
 設定を変えれば、もっと伸びるのでしょうか。
 設定を変えた試行も、結果は同じでした（\tabref{tab:rl-runs}）。
 生成の温度を下げる、3 桁どうしの問題を増やす、同じ生成を $K=4$ 回使ってクリップを働かせる（\file{rl_ppo.py}。$K$ はコードの \code{mu} と同じものです）、のどれも q32 を上回りませんでした。
+ただし温度を下げた t07・t05 は、学習率も $5\times10^{-5}$ に上げているので、温度だけの効果は分けられていません。
+ppo\_a〜ppo\_c は、ファイル名に ppo と付いていますが、価値ネットは使っていません。中身は「同じ生成で 4 回更新する GRPO」で、PPO のように 1 回の生成を何回も使い回すことを指して名付けました。
 この試行から、二つの教訓が得られました。
 
 一つ目は、\textbf{クリップは 1 回目の更新を守らない}ことです。
@@ -928,7 +1356,7 @@ SFT は正解のトークンを直接教えますが、強化学習は「合っ�
 
 この節の要点です。
 80 ステップの GRPO で 200 問に見えた伸びは、1,000 問で測り直すと誤差の範囲でした。
-250 ステップで 0.826 から 0.847 に上がりましたが、学習率を上げると KL が跳ねて崩れます。
+250 ステップで 0.826 から 0.847 に上がりましたが、学習率を上げると KL が急に大きくなり、正答率が下がります。
 正解付きの SFT を続けると 0.886 まで伸びます。お手本が作れる課題では SFT が速く、強化学習の出番は、お手本が作れず採点だけができる課題です。
 伸びを主張する前に、評価のぶれを必ず見積もります。
 
@@ -968,25 +1396,28 @@ InstructGPT\cite{ouyang2022training}で確立した手順は、次の 3 段階�
 \begin{enumerate}
 \item \textbf{SFT}：お手本の対話で基盤モデルを学習させる（\chapref{ch:posttraining}）。
 \item \textbf{報酬モデルの学習}：SFT モデルの応答を人に比べてもらって選好データを集め、応答に点数を付けるモデル $r_\phi(x,y)$ を学習する。
-\item \textbf{強化学習}：報酬モデルの点数を報酬にして、SFT モデルを PPO で鍛える。SFT モデルから離れすぎないよう、KL 罰則を付ける。
+\item \textbf{強化学習}：報酬モデルの点数を報酬にして、SFT モデルを PPO で学習させる。SFT モデルから離れすぎないよう、KL 罰則を付ける。
 \end{enumerate}
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[node distance=3mm and 5mm, every node/.style={font=\footnotesize}]
-  \node[graybox,minimum width=18mm] (base) {基盤モデル};
-  \node[purplebox,right=of base,minimum width=22mm] (sft) {\textbf{1. SFT}\\お手本をまねる};
-  \node[orangebox,right=of sft,minimum width=26mm] (rm) {\textbf{2. 報酬モデル} $r_\phi$\\選好 $(x,y_w,y_l)$ から};
-  \node[greenbox,right=of rm,minimum width=26mm] (ppo) {\textbf{3. 強化学習}\\$r_\phi$ を報酬に PPO\\＋KL 罰則};
-  \draw[arr] (base) -- (sft); \draw[arr] (sft) -- (rm); \draw[arr] (rm) -- (ppo);
-  \node[box,above=6mm of rm,minimum width=26mm] (hum) {人が 2 つの応答を比べる};
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\footnotesize}]
+  \node[graybox,minimum width=16mm] (base) at (0,0) {基盤モデル};
+  \node[purplebox,minimum width=22mm] (sft) at (25,0) {\textbf{1. SFT}\\お手本をまねる};
+  \node[orangebox,minimum width=30mm] (rm) at (78,13) {\textbf{2. 報酬モデル} $r_\phi$\\選好 $(x,y_w,y_l)$ から学ぶ};
+  \node[greenbox,minimum width=30mm] (ppo) at (78,-13) {\textbf{3. 強化学習}\\$r_\phi$ を報酬に PPO\\＋KL 罰則};
+  \node[box,minimum width=30mm] (hum) at (78,31) {人が応答を比べる};
+  \draw[arr] (base) -- (sft);
+  \draw[arr] (sft.east) -- ++(5,0) coordinate (fk) |- node[pos=0.68,above,lbl]{本体を引き継ぐ} (rm.west);
+  \draw[arr] (fk) |- node[pos=0.78,above,lbl,align=center]{方策の初期値\\（コピー）} (ppo.west);
   \draw[arr] (hum) -- (rm);
-  \draw[darr] (sft.north) |- (hum.west);
-  \node[lbl,anchor=east] at ($(sft.north)+(-1mm,7mm)$) {SFT モデルの応答};
-  \draw[darr,rounded corners=3pt] (sft.south) -- ++(0,-6mm) -| node[pos=0.25,below,lbl]{参照モデル $\pi_{\text{ref}}$ として凍結し、KL の基準にする} (ppo.south);
+  \draw[arr] (rm.south) -- node[right,lbl,align=left]{点数を報酬\\として渡す} (ppo.north);
+  \draw[darr] (sft.north) |- node[pos=0.25,left,lbl]{SFT モデルの応答} (hum.west);
+  \draw[darr,rounded corners=3pt] (sft.south) -- ++(0,-19) -| node[pos=0.25,below,lbl]{凍結して参照モデル $\pi_{\text{ref}}$ にし、KL の基準にする} (ppo.south);
 \end{tikzpicture}
 \caption{RLHF の 3 段階（InstructGPT の手順）。SFT モデルの応答への人の選好から報酬モデルを学び、
-その点数を報酬にして強化学習する。SFT モデルは凍結して、KL 罰則の基準（参照モデル）にする。}
+その点数を報酬にして、SFT モデルのコピーを強化学習で学習させる。報酬モデルは点数を渡すだけで、段階 3 では学習しない。
+SFT モデルは三つの役で使われる：報酬モデルの本体（本章の \file{reward_model.py} では \file{sft.pt} に頭を付け替える）、学習させる方策の初期値、凍結した参照モデル。}
 \label{fig:rl-rlhf}
 \end{figure}
 
@@ -1048,6 +1479,36 @@ $\succ$ は「より好まれる」を表す記号、$\sigma(z)=1/(1+e^{-z})$ �
 GPT の順伝播（\chapref{ch:transformer}）を \code{lm_head} の手前の最終層の正規化 \code{ln_f} まで実行し、
 各系列の\textbf{最後のトークン}（\code{<|end|>}）の位置の $d=192$ 次元のベクトルを、新しく付けた線形層（192 次元 → 1 次元）で 1 つの数 $r_\phi(x,y)$ にするのです。
 因果マスクのおかげで、最後の位置のベクトルは応答全体を見ています。
+\figref{fig:rl-rm-flow}は、言語モデルと報酬モデルで、どこまでが同じで、どこを付け替えたのかを並べたものです。
+上の段と下の段で、GPT 本体（埋め込みから \code{ln_f} まで）は同じものです。
+違うのは最後の 1 段だけです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\footnotesize}]
+  % 上の段：言語モデル。下の段：報酬モデル（最後の段を 2 つの箱に分け、T が消える位置を示す）
+  \node[graybox,minimum width=21mm,align=center] (x1) at (10.5,0) {トークン列\\$(x,y)$};
+  \node[purplebox,minimum width=30mm,align=center] (b1) at (46,0) {GPT 本体\\（埋め込み〜\code{ln_f}）};
+  \node[box,minimum width=24mm,align=center] (h1) at (84,0) {\code{lm_head}\\（192 → 4,096）};
+  \node[lbl,anchor=west,align=left] (o1) at (110,0) {次のトークン\\の確率\\（言語モデル）};
+  \draw[arr] (x1) -- node[above,lbl]{$(T)$} (b1);
+  \draw[arr] (b1) -- node[above,lbl]{$(T,192)$} (h1);
+  \draw[arr] (h1) -- node[above,lbl]{$(T,4096)$} (o1);
+  \node[graybox,minimum width=21mm,align=center] (x2) at (10.5,-17) {トークン列\\$(x,y)$};
+  \node[purplebox,minimum width=30mm,align=center] (b2) at (46,-17) {GPT 本体\\（\file{sft.pt} から）};
+  \node[orangebox,minimum width=20mm,align=center] (h2a) at (82.5,-17) {最後の位置を\\取り出す};
+  \node[orangebox,minimum width=20mm,align=center] (h2b) at (111,-17) {線形層\\（192 → 1）};
+  \node[lbl,anchor=north,align=center] (o2) at (111,-30) {点数 $r_\phi(x,y)$（報酬モデル）};
+  \draw[arr] (x2) -- node[above,lbl]{$(T)$} (b2);
+  \draw[arr] (b2) -- node[above,lbl]{$(T,192)$} (h2a);
+  \draw[arr] (h2a) -- node[above,lbl]{$(192)$} (h2b);
+  \draw[arr] (h2b.south) -- node[right,lbl]{1 つの数} (o2.north);
+\end{tikzpicture}
+\caption{言語モデル（上）と報酬モデル（下）の違い（\file{reward_model.py} の \code{RewardModel}）。
+GPT 本体は同じで、最後の段だけを付け替える。報酬モデルは、最後のトークン（\code{<|end|>}）の位置の 192 次元のベクトルだけを使い、
+新しい線形層で 1 つの数にする。下の段では、付け替えた最後の段を「取り出す」と「線形層」の 2 つの箱に分けて描いた（$T$ がなくなるのは取り出すところ）。$T$ は列の長さ。}
+\label{fig:rl-rm-flow}
+\end{figure}
 
 損失は式\eqref{eq:rl-rm-loss}そのもので、好まれた応答と好まれなかった応答の点数 \code{r_w}、\code{r_l} から \code{-F.logsigmoid(r_w - r_l).mean()} の 1 行で計算します
 （\code{F.logsigmoid} は $\log\sigma(\cdot)$ を数値的に安定に計算する関数です）。
@@ -1079,7 +1540,7 @@ GPT の順伝播（\chapref{ch:transformer}）を \code{lm_head} の手前の最
 この報酬モデルを報酬にして強化学習したら、何が起きるでしょうか。
 方策は、点数を上げる最も簡単な方法を見つけるはずです。
 上の点数に従えば、「答えは答えは答えは……」と繰り返す応答や、数がでたらめでも「答えは」で始まる応答が、高い報酬を得ます
-（本章では実行していないので、これは点数からの予想です。\coderef{code:rl-train-step}の \code{reward} を報酬モデルの点数に差し替えれば確かめられます。演習問題にしました）。
+（本文では実行していないので、これは点数からの予想です。\coderef{code:rl-train-step}の \code{reward} を報酬モデルの点数に差し替えれば確かめられます。演習問題にし、縮小した設定で実際に回した結果を\appref{app:answers}の略解に載せました）。
 このように、方策が報酬の\textbf{意図}ではなく\textbf{穴}を突いて点数を上げることを、\term{報酬ハッキング}{reward hacking}と呼びます\cite{amodei2016concrete}。
 
 報酬モデルは、選好データの範囲でしか正しくありません。
@@ -1090,6 +1551,10 @@ DeepSeek-R1 が推論の課題で学習した報酬モデルを使わず、規�
 \subsection{KL 罰則付きの目的関数}
 
 報酬ハッキングへの第一の対策が、参照モデルからの KL 罰則です。
+ここからは、応答 $y$ 全体を 1 つの行動とみて式を書きます。
+応答の確率は式\eqref{eq:rl-seq-prob}のとおりトークンの確率の積なので、\secref{sec:rl-map}のトークン単位の見方と矛盾しません。
+応答全体の分布どうしの KL は、各位置の次トークンの分布どうしの KL を応答に沿って足したものの期待値に等しくなります。
+GRPO の式\eqref{eq:rl-grpo}の KL 項は、その 1 項ずつを、サンプリングしたトークンで見積もっていたものです。
 RLHF の強化学習の段階で最大化するのは、次の目的関数です\cite{ouyang2022training}。
 \begin{equation}
 \max_{\pitheta}\;\E_{x\sim\calD,\;y\sim\pitheta(\cdot\mid x)}\bigl[r_\phi(x,y)\bigr]
@@ -1097,20 +1562,26 @@ RLHF の強化学習の段階で最大化するのは、次の目的関数です
 \label{eq:rl-kl-objective}
 \end{equation}
 $\beta>0$ は罰則の強さです。
-$\beta$ が大きいほど方策は SFT モデルの近くにとどまり、報酬の穴まで遠出しにくくなります。
+$\beta$ が大きいほど方策は SFT モデルの近くにとどまり、報酬の穴の方向へ動きにくくなります。
 $\beta$ が小さすぎると報酬ハッキングが起き、大きすぎると何も学ばなくなります。
 InstructGPT では、これを PPO で最適化しました。
 報酬を「最後に $r_\phi(x,y)$、各トークンで $-\beta\log\frac{\pitheta(y_t\mid x,y_{<t})}{\pi_{\text{ref}}(y_t\mid x,y_{<t})}$」と分けて与えます。
-トークンを 1 つ書くたびに「参照モデルより確率を上げすぎた分」の小さな罰金を払い、書き終えたときに報酬モデルの点数を受け取る、という報酬の列です。
+各トークンの項は、1 つずつ見ると、参照モデルより確率を上げたトークンでは罰（負）、下げたトークンではほうび（正）になります。
+期待値をとると KL（0 以上）になるので、全体としては「参照モデルから離れた分の罰」です（\secref{sec:rl-grpo}で見た $-\log u$ と同じ性質です）。
+書き終えたときには、報酬モデルの点数を受け取ります。
 あとは前章の PPO と同じで、価値ネットを学習し、その出力からアドバンテージを計算します（GAE。\secref{sec:rl-grpo}の冒頭で思い出した方法です）。
-GRPO の式\eqref{eq:rl-grpo}では、KL を報酬に混ぜずに、損失に直接足していました。目的は同じです。
+GRPO の式\eqref{eq:rl-grpo}では、KL を報酬に混ぜずに、損失に直接足していました。
+どちらも参照モデルから離れすぎないための罰で、目的は同じです。
+違うのは、KL の項が計算のどこに入るかです。
+報酬に混ぜると、KL の項も価値ネットとアドバンテージの計算を通って、各トークンの重みに入ります。
+損失に直接足すと、アドバンテージとは別に、各位置で $\beta$ の強さのまま効きます。
 
 実際の開発では、KL 罰則に加えて、選好データを多様にし、報酬モデルを定期的に作り直し、規則による検証と組み合わせて、報酬モデルの穴をふさぎます。
 
 この節の要点です。
 RLHF は、SFT、報酬モデルの学習、KL 罰則付きの強化学習の 3 段階です。
 報酬モデルは Bradley--Terry モデルで選好から点数を学びますが、データにある違いしか学びません（誤答の「答えは57です。」が正答より高得点でした）。強化学習はその穴を突きます。
-KL 罰則は、方策を参照モデルの近くにつなぎとめる錨です。
+KL 罰則は、参照モデルから離れるほど大きな罰を課して、方策を参照モデルの近くにとどめます。
 
 %======================================================================
 \section{DPO：報酬モデルを使わずに選好から学ぶ}\label{sec:rl-dpo}
@@ -1118,7 +1589,7 @@ KL 罰則は、方策を参照モデルの近くにつなぎとめる錨です�
 RLHF は効果がありますが、手間がかかります（\tabref{tab:rl-rlhf-vs-dpo}の左の列）。
 この節の問いは、「KL 罰則付きの目的関数\eqref{eq:rl-kl-objective}を、強化学習を使わずに、選好データの上の普通の損失として直接最適化できないか」です。
 答えが\term{DPO}{Direct Preference Optimization}です\cite{rafailov2023direct}。
-導出は 4 段階で、\figref{fig:rl-dpo-derivation}がその地図です。左上から時計回りに、1 行ずつ追います。
+導出は 4 段階で、\figref{fig:rl-dpo-derivation}がその流れを 1 枚にまとめた図です。左上から時計回りに、1 行ずつ追います。
 
 \begin{table}[tbp]
 \centering
@@ -1129,10 +1600,11 @@ RLHF は効果がありますが、手間がかかります（\tabref{tab:rl-rlh
 \toprule
  & RLHF（PPO） & DPO \\
 \midrule
-報酬モデル & 別のネットワークとして学習する & 要らない（方策が兼ねる） \\
-学習中の生成 & 毎ステップ必要 & 要らない \\
-同時に動かすモデル & 方策・参照モデル・報酬モデル・価値ネット & 方策・参照モデル \\
-損失 & PPO の損失（強化学習） & 2 クラス分類と同じ形（式\eqref{eq:rl-dpo}） \\
+報酬モデル & 別のネットワークとして学習する & 要らない（方策が兼ねる） \\ \addlinespace
+学習中の生成 & 毎ステップ必要 & 要らない \\ \addlinespace
+同時に動かすモデル & 方策・参照モデル・報酬モデル・価値ネット & 方策・参照モデル \\ \addlinespace
+学習データを作るのは & 選好の組は前もって集める。応答は方策が毎ステップ生成する & 学習の前に集めた選好の組だけ（オフライン） \\ \addlinespace
+損失 & PPO の損失（強化学習） & 2 クラス分類と同じ形（式\eqref{eq:rl-dpo}） \\ \addlinespace
 気をつける点 & 重い。報酬ハッキング & 確率の比しか見ない（後の実験） \\
 \bottomrule
 \end{tabular}
@@ -1147,9 +1619,9 @@ RLHF は効果がありますが、手間がかかります（\tabref{tab:rl-rlh
   \node[greenbox,below=7mm of obj,minimum width=38mm] (dpo) {DPO の損失\\式\eqref{eq:rl-dpo}（$Z$ が消える）};
   \draw[arr] (obj) -- node[above,lbl]{段階 1} (opt);
   \draw[arr] (opt) -- node[right,lbl]{段階 2} (inv);
-  \draw[arr] (inv) -- node[above,lbl,align=center,font=\scriptsize]{段階 3, 4\\BT に代入} (dpo);
+  \draw[arr] (inv) -- node[above,lbl,align=center,font=\scriptsize]{段階 3, 4\\Bradley--Terry\\モデルに代入} (dpo);
 \end{tikzpicture}
-\caption{DPO の導出の地図。目的関数の最適解を閉形式で書き（段階 1）、それを報酬について解き（段階 2）、
+\caption{DPO の導出の流れ。目的関数の最適解を閉形式で書き（段階 1）、それを報酬について解き（段階 2）、
 Bradley--Terry モデルに代入すると分配関数 $Z$ が差で消えて（段階 3）、選好データだけで計算できる損失になる（段階 4）。}
 \label{fig:rl-dpo-derivation}
 \end{figure}
@@ -1236,6 +1708,11 @@ p(y_w\succ y_l\mid x)=\sigma\Bigl(\beta\log\frac{\pi^\ast(y_w\mid x)}{\pi_{\text
 報酬を $r=\beta\log\frac{\pi^\ast}{\pi_{\text{ref}}}+(\text{$x$ だけで決まる定数})$ と書いて Bradley--Terry モデルに入れると、定数は差で消え、確率の比だけが残りました。
 
 最後に、考え方を逆にします。
+先に骨組みを言っておきます。
+ここからは\textbf{設計上の選択}です。報酬モデルの形を $\beta\log(\pitheta/\pi_{\text{ref}})$ に限ることにします。
+すると、(i) この報酬のもとでの最適方策は $\pitheta$ 自身になり（これは導かれる結論です）、(ii) 報酬モデルの学習（式\eqref{eq:rl-rm-loss}）がそのまま方策の学習になります。
+「$\pitheta$ が最適方策だ」と仮定するのではありません。
+
 報酬モデル $r_\phi$ を別のネットワークとして学ぶ代わりに、
 $\hat r_{\vtheta}(x,y)=\beta\log\frac{\pitheta(y\mid x)}{\pi_{\text{ref}}(y\mid x)}$ という\textbf{形をした報酬モデル}を学ぶことにするのです。
 この報酬を段階 1 の式\eqref{eq:rl-optimal-policy}に代入すると、$\pi_{\text{ref}}\exp(\hat r_{\vtheta}/\beta)=\pi_{\text{ref}}\cdot\frac{\pitheta}{\pi_{\text{ref}}}=\pitheta$ なので、
@@ -1252,7 +1729,7 @@ $\hat r_{\vtheta}(x,y)=\beta\log\frac{\pitheta(y\mid x)}{\pi_{\text{ref}}(y\mid 
 $\hat r_{\vtheta}$ を\term{暗黙の報酬}{implicit reward}と呼びます。
 「言語モデル自身が、報酬モデルを兼ねている」と読めるので、DPO の論文の副題は「あなたの言語モデルは、実は報酬モデルだ」となっています。
 
-これで\figref{fig:rl-dpo-derivation}の地図を一周しました。
+これで\figref{fig:rl-dpo-derivation}の 4 段階を最後までたどりました。
 強化学習の問題が、選好データの上の 2 クラス分類の損失に変わり、報酬モデルも、学習中の生成も、価値ネットも要らなくなりました（\tabref{tab:rl-rlhf-vs-dpo}の右の列）。
 
 \begin{example}[DPO の損失を手で計算する]
@@ -1274,7 +1751,7 @@ $\log\frac{\pitheta(y_l)}{\pi_{\text{ref}}(y_l)}=-1$（好まれなかった応�
 \snippet{DPO の損失}{code:rl-dpo-loss}{ch22/dpo.py}{dpo-loss}
 
 \coderef{code:rl-dpo-loss}は式\eqref{eq:rl-dpo}をそのまま書いたものです。
-1 行目の \code{zip(*batch)} は、3 つ組 $(x,y_w,y_l)$ のリストを、プロンプトの組 \code{P}、好まれた応答の組 \code{W}、好まれなかった応答の組 \code{L} に分け直します。
+2 行目の \code{zip(*batch)} は、3 つ組 $(x,y_w,y_l)$ のリストを、プロンプトの組 \code{P}、好まれた応答の組 \code{W}、好まれなかった応答の組 \code{L} に分け直します。
 \code{lw} と \code{ll} は方策の対数確率 $\log\pitheta(y_w\mid x)$、$\log\pitheta(y_l\mid x)$ で、\code{rw} と \code{rl} は参照モデルの対数確率です。
 \code{h_w} と \code{h_l} が好まれた応答と好まれなかった応答の暗黙の報酬 $\hat r_{\vtheta}$ で、参照モデルの対数確率は勾配を流さずに計算します。
 \code{loss} の 1 行目が DPO の損失です。
@@ -1304,16 +1781,16 @@ $\log\frac{\pitheta(y_l)}{\pi_{\text{ref}}(y_l)}=-1$（好まれなかった応�
 （ステップ 0 の 0.000 は、学習前は $\pitheta=\pi_{\text{ref}}$ で暗黙の報酬の差がちょうど 0 になり、「より大きい」と数えられる組が一つもないためです）。
 好まれた応答の確率は参照モデルの $e^{26.5}$ 倍にもなりました。
 ところが、実際に答えさせると、「答えは」で始まる応答は 200 ステップを通して\textbf{一度も}出ません（\code{polite} がずっと 0）。
-それどころか、数が正しい割合は 0.870 から 0.005 まで落ち、最後の 3 行の応答は「望?ってってってはははは65です。」のように壊れています（「?」は文字に戻せなかったバイトです）。
+それどころか、数が正しい割合は 0.870 から 0.005 まで下がり、最後の 3 行の応答は「望?ってってってはははは65です。」のような意味をなさない文字列になっています（「?」は文字に戻せなかったバイトです）。
 
 何が起きたのでしょうか。
-鍵は、好まれなかった応答「47です。」が\textbf{正しい数を含んでいる}ことです。
+原因は、好まれなかった応答「47です。」が\textbf{正しい数を含んでいる}ことです。
 DPO は $\log\pitheta(y_l)$ を下げます（\code{rejected} は $-16.1$ まで下がりました）。
 $\log\pitheta(y_l)$ は「4」「7」「です。」「\code{<|end|>}」の対数確率の和なので、
 \code{<|assistant|>} の直後に正しい数字を書く確率そのものが下がるのです。
 一方、好まれた応答「答えは47です。」の確率は $e^{26.5}$ 倍になっても、もとが極端に小さかったため、ほかのトークンより大きくはなりません。
 DPO の損失が見ているのは 2 つの応答の確率の\textbf{比}だけで、「押し下げた確率がどこへ行くか」は制約していません。
-押し出された確率は、意味のないトークンに流れていきました（\figref{fig:rl-dpo-leak}）。
+押し下げられた分の確率は、意味のないトークンに移りました（\figref{fig:rl-dpo-leak}）。
 
 \begin{figure}[bp]
 \centering
@@ -1324,27 +1801,28 @@ DPO の損失が見ているのは 2 つの応答の確率の\textbf{比}だけ�
   \node[anchor=east,align=right] at (3.2,0) {$y_l$：「47です。」};
   \fill[figgreen] (3.4,-0.2) rectangle (5.4,0.2); \draw[bookgreen] (3.4,-0.2) rectangle (5.4,0.2);
   \fill[bookaccent] (6.0,-0.2) rectangle (6.05,0.2);
-  \node[lbl,anchor=west,align=left,text width=45mm] at (7.75,0) {損失が\textbf{下げる}（$\log$ の比 $-16.1$）。正しい数字を書く確率も一緒に下がる};
+  \node[lbl,anchor=west,align=left,text width=40mm] at (8.3,0) {損失が\textbf{下げる}（$\log$ の比 $-16.1$）。正しい数字の確率も下がる};
   % 行 2: y_w
   \node[anchor=east,align=right] at (3.2,-0.95) {$y_w$：「答えは47です。」};
   \fill[bookblue] (3.4,-1.15) rectangle (3.43,-0.75);
   \fill[figblue] (6.0,-1.15) rectangle (6.18,-0.75); \draw[bookblue] (6.0,-1.15) rectangle (6.18,-0.75);
-  \node[lbl,anchor=west,align=left,text width=45mm] at (7.75,-0.95) {損失が\textbf{上げる}（$e^{26.5}$ 倍）。もとが小さすぎて、まだ小さい};
+  \node[lbl,anchor=west,align=left,text width=40mm] at (8.3,-0.95) {損失が\textbf{上げる}（$e^{26.5}$ 倍）。もとが小さく、まだ小さい};
   % 行 3: その他
-  \node[anchor=east,align=right] at (3.2,-1.9) {それ以外（壊れた応答など）};
+  \node[anchor=east,align=right] at (3.2,-1.9) {それ以外（無意味な応答など）};
   \fill[figgray] (3.4,-2.1) rectangle (3.66,-1.7); \draw[bookgray] (3.4,-2.1) rectangle (3.66,-1.7);
-  \fill[figred] (6.0,-2.1) rectangle (7.5,-1.7); \draw[bookaccent] (6.0,-2.1) rectangle (7.5,-1.7);
-  \node[lbl,anchor=west,align=left,text width=45mm] at (7.75,-1.9) {損失は\textbf{何も言わない}。押し出された確率がここへ流れる};
+  \fill[figred] (6.0,-2.1) rectangle (8.06,-1.7); \draw[bookaccent] (6.0,-2.1) rectangle (8.06,-1.7);
+  \node[lbl,anchor=west,align=left,text width=40mm] at (8.3,-1.9) {損失は\textbf{何も言わない}。押し下げた分の確率がここへ移る};
   \draw[darr,bookaccent,rounded corners=3pt] (5.7,0) -- (5.7,-1.9) -- (5.95,-1.9);
   \draw[black!30] (0.2,-0.48) -- (12.35,-0.48);
   \draw[black!30] (0.2,-1.43) -- (12.35,-1.43);
 \end{tikzpicture}
-\caption{DPO だけで学習したときに起きたこと（模式図。棒の長さは確率の大きさの目安で、正確な値ではない）。
-DPO の損失が見るのは上の 2 行の比だけである。$y_l$ から押し出された確率の行き先は決めていないので、3 行目へ流れた。}
+\caption{DPO だけで学習したときに起きたこと（模式図。棒の長さは確率の大きさの目安で、正確な値ではない。確率の合計は 1 なので、学習前と後で 3 本の棒の長さの合計をそろえた）。
+DPO の損失が見るのは上の 2 行の比だけである。$y_l$ から押し下げた分の確率の行き先は決めていないので、3 行目へ移った。
+色は変化の良し悪しを表す：右の赤（1 行目）と薄い赤（3 行目）は DPO の後に問題になった部分、青は損失が上げる $y_w$（前後とも）、左の緑と灰は学習前の問題のない状態。}
 \label{fig:rl-dpo-leak}
 \end{figure}
 
-DPO で、好まれた応答まで含めて確率が意図しない応答へ流れ出す現象は、大きなモデルでも報告されています\cite{razin2024unintentional,pal2024smaug}。
+DPO で、好まれた応答まで含めて確率が意図しない応答へ移ってしまう現象は、大きなモデルでも報告されています\cite{razin2024unintentional,pal2024smaug}。
 
 \subsection{好まれた応答の尤度を支える}
 
@@ -1363,7 +1841,7 @@ Llama 3 は、これに加えて、書式用の特殊トークンを DPO の損�
 \centering
 \begin{tikzpicture}
 \begin{axis}[width=0.8\linewidth,height=0.32\linewidth,xmin=0,xmax=200,ymin=0,ymax=1.02,
-  xlabel={ステップ},ylabel={割合（評価用 200 問）},legend columns=2,legend style={font=\scriptsize,at={(0.5,-0.25)},anchor=north}]
+  xlabel={ステップ},ylabel={割合（評価用 200 問）},legend columns=2,legend style={font=\scriptsize,at={(0.5,-0.42)},anchor=north,/tikz/every even column/.append style={column sep=4mm}}]
 \addplot[bookblue,thick,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=correct]{code/ch22/out/dpo_beta0.1_alpha0.2.csv};
 \addlegendentry{数が正しい（DPO＋NLL）}
 \addplot[bookgreen,thick,mark=square*,mark size=1.2pt] table[col sep=comma,x=step,y=polite]{code/ch22/out/dpo_beta0.1_alpha0.2.csv};
@@ -1372,8 +1850,8 @@ Llama 3 は、これに加えて、書式用の特殊トークンを DPO の損�
 \addlegendentry{数が正しい（DPO のみ）}
 \end{axis}
 \end{tikzpicture}
-\caption{DPO の実験（$\beta=0.1$）。DPO だけ（赤の破線）では数が正しい割合が 0.005 まで崩れる（「答えは」で始まる割合はずっと 0 なので描いていない）。
-好まれた応答の NLL を重み 0.2 で足すと（青・緑）、125 ステップ目から文体が切り替わり、正しさも 0.775 まで戻る。}
+\caption{DPO の実験（$\beta=0.1$）。DPO だけ（赤の破線）では数が正しい割合が 0.005 まで下がる（「答えは」で始まる割合はずっと 0 なので描いていない）。
+好まれた応答の NLL を重み 0.2 で足すと（青・緑）、100 ステップ目から「答えは」で始まる応答が現れ、125 ステップ目に大きく増え、正しさも 0.775 まで戻る。}
 \label{fig:rl-dpo-curves}
 \end{figure}
 
@@ -1383,6 +1861,10 @@ DPO は、出発点のモデルがすでにある程度出せる応答どうし�
 本章の $y_w$ は、\file{sft.pt} がほぼ出さない応答でした。
 実際の開発では、選好の対を\textbf{出発点のモデル自身にサンプリングさせた応答}から作るのが一般的で\cite{dubey2024llama3}、
 こうした比較では $y_w$ と $y_l$ の確率がどちらも十分な大きさを持ちます。
+ここで、\tabref{tab:rl-settings}の DPO の列を思い出してください。
+DPO は RLHF と同じ目的関数から出発しますが、学習中に自分の応答を見ません。
+その意味では、DPO の学習は「固定したデータの上の損失を下げる」点で SFT に近く、\secref{sec:rl-why}の壁 2（露出バイアス）への手当てにはなりません。
+選好の対をモデル自身にサンプリングさせた応答から作ると、学ぶ応答がモデルの実際に出す応答に近づき、この弱点が小さくなります。
 
 この節の要点です。
 DPO は、KL 罰則付きの目的関数の閉形式の最適解から報酬を逆算し、Bradley--Terry モデルに代入して分配関数を消すことで、
@@ -1440,7 +1922,7 @@ nanochat の強化学習のスクリプト\cite{karpathy2025nanochat}は KL も�
 一つ目は\textbf{報酬ハッキング}です（\secref{sec:rl-rlhf}）。
 検証可能な報酬でも、「応答に正しい数が含まれていれば 1」とすると、数を全部並べる応答が満点になります。
 報酬は「何を満たせば満点か」を厳密に書き、学習中の応答を必ず目で見て確かめます。
-二つ目は\textbf{モード崩壊}（エントロピーの崩壊）です。
+二つ目は\textbf{エントロピーの崩壊}（方策の出力の多様性が失われること。モード崩壊とも呼ばれます）です。
 報酬の高い応答の確率を上げ続けると、確率が少数の応答に集中して多様な応答が出なくなります（\chapref{ch:policy-gradient}の「決めつけ」と同じです）。
 グループの $G$ 本が全部同じになるとアドバンテージは 0 で、学習も止まります。
 KL 罰則、クリップの上限を緩める（\tabref{tab:rl-variants}の DAPO という変種の工夫）、温度を保つなどで防ぎます。
@@ -1453,22 +1935,33 @@ KL 罰則、クリップの上限を緩める（\tabref{tab:rl-variants}の DAPO
 \tabref{tab:rl-scale}に、本章の実験と実際の大規模な強化学習の規模を並べました。
 骨格は同じで、数が何桁も違います。
 最後に、本章と\chapref{ch:posttraining}で扱った手法の使い分けを\tabref{tab:rl-choose}にまとめます。
-上の行ほど安く、下の行ほど「お手本なしで学べる」代わりに重くなります。
+上の 2 行は学習中に生成しないので安く、下の 2 行は毎ステップの生成が要るぶん重くなります。
+同時に動かすモデルの数では、RLHF（PPO）がいちばん多くなります。
+下の行ほど、お手本なしで学べる範囲が広がります。
 \secref{sec:rl-exp}の実験の結論（お手本が作れるなら SFT が速い）は、この表を上から順に検討せよ、という意味でもあります。
+
+ただし、この表は「どれがいちばん良いか」の順位ではありません。
+業界でも意見が分かれている点が二つあり、\tabref{tab:rl-debate}に、それぞれの立場と根拠を並べました。
+一つ目は、選好から学ぶとき、DPO のように前もって集めた対だけで学ぶ（オフライン）か、PPO のように学習中に自分で生成して学ぶ（オンポリシー）か、です。
+二つ目は、GRPO のように価値ネットをやめるか、PPO のように価値ネットを使うか、です。
+どちらも報告が分かれていて、決着していません。
+本章の小さな実験は、どちらの論点の答えにもなりません（DPO の実験の結果は、対の作り方が原因の一つでした）。
 
 \begin{table}[tbp]
 \centering
-\caption{本章の小さな実験と、実際の LLM の強化学習\cite{shao2024deepseekmath,guo2025deepseekr1}の規模の比較。}
+\caption{本章の小さな実験と、実際の LLM の強化学習\cite{shao2024deepseekmath,guo2025deepseekr1}の規模の比較。
+「1 ステップの応答数」は 1 回の更新に使う本数。本章（q32）と DeepSeekMath は 1 回の生成で 1 回更新する。
+DeepSeek-R1-Zero は 1 回の生成で 8,192 本を作り、512 本ずつ 16 回に分けて更新する。}
 \label{tab:rl-scale}
 \footnotesize
 \begin{tabular}{llll}
 \toprule
  & 本章 & DeepSeekMath-RL 7B & DeepSeek-R1-Zero \\
 \midrule
-方策の大きさ & 約 260 万 & 70 億 & 6,710 億（MoE） \\
+方策のパラメータ数 & 約 260 万 & 70 億 & 6,710 億（MoE） \\
 グループの大きさ $G$ & 8 & 64 & 16 \\
 1 ステップの応答数 & $32\times8=256$ & 1,024 & $32\times16=512$ \\
-応答の最大長 & 8 トークン & 1,024 & 32,768（のち 65,536） \\
+応答の最大長（トークン） & 8 & 1,024 & 32,768（のち 65,536） \\
 KL の係数 $\beta$ & 0.04 & 0.04 & 0.001 \\
 ステップ数 & 250 & — & 10,400 \\
 \bottomrule
@@ -1480,27 +1973,49 @@ KL の係数 $\beta$ & 0.04 & 0.04 & 0.001 \\
 \caption{事後学習の手法の使い分け。公開されている開発手順では、SFT のあと DPO 系で文体や拒否の仕方を整え、
 検証可能な報酬の強化学習で推論の能力を伸ばす組み合わせが多い\cite{dubey2024llama3,lambert2024tulu3,yang2025qwen3}。}
 \label{tab:rl-choose}
-\small
-\begin{tabular}{p{20mm}p{32mm}p{26mm}p{34mm}}
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{25mm}}
 \toprule
-手法 & 必要なデータ & 学習中の生成 & 向いている用途 \\
+手法 & 前もって用意するもの & 学習中に作るもの・同時に動かすモデル & 長所・短所 & 向いている用途 \\
 \midrule
-SFT & お手本の応答 & なし & 答え方の形を教える。最初に必ず行う。お手本が作れるなら最も速い \\
-DPO & 選好の対 $(x,y_w,y_l)$ & なし & 文体・口調・拒否の仕方。安く安定 \\
-RLHF（PPO） & 選好の対→報酬モデル & あり＋価値ネット & 正解のない総合的な好み。重いが柔軟 \\
-GRPO（RLVR） & 質問と採点プログラム & あり（$G$ 本ずつ） & 数学・プログラム・エージェント。お手本が作れない課題 \\
+SFT & お手本の応答 & 作らない。方策だけ & 正解のトークンを直接教えるので速い（本章でも最も速く伸びた）。お手本の質を超えにくい & 答え方の形を教える。ふつう最初に行う（大きな基盤モデルでは省いた例もある） \\ \addlinespace
+DPO & 選好の対 $(x,y_w,y_l)$ & 作らない。方策・参照モデル & 生成も報酬モデルも要らず安い。対がモデルの出す応答から遠いと、正答率まで下がることがある（\secref{sec:rl-dpo}） & 文体・口調・拒否の仕方 \\ \addlinespace
+RLHF（PPO） & 選好の対（そこから報酬モデルを学習） & 毎ステップ生成。方策・参照モデル・報酬モデル・価値ネット & 正解のない総合的な好みを報酬にできる。動かすモデルが多く重い。報酬ハッキングに注意 & 正解のない総合的な好み \\ \addlinespace
+強化学習（RLVR。GRPO・PPO など） & 質問と採点プログラム & 毎ステップ $G$ 本ずつ生成。GRPO なら方策・参照モデル & お手本なしで学べ、採点が正しければ報酬は間違わない。生成が重い。能力を新しく覚えさせるのは遅い（\secref{sec:rl-exp}） & 数学・プログラム・エージェント。お手本が作れない課題 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[tbp]
+\centering
+\caption{LLM の強化学習で意見が分かれている二つの論点。どちらも決着していない。事実は公開された報告に書かれている範囲に限った。}
+\label{tab:rl-debate}
+\footnotesize
+\begin{tabular}{>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{47mm}>{\raggedright\arraybackslash}p{47mm}}
+\toprule
+論点 & 一方の立場と根拠 & もう一方の立場と根拠 \\
+\midrule
+選好から学ぶとき、オフライン（DPO）か、オンポリシー（PPO など）か &
+\textbf{DPO を選ぶ}：Llama 3 は、大きなモデルでは計算が少なく性能も良かったとして、PPO ではなく DPO を選んだ\cite{dubey2024llama3}。ただし対はモデル自身の応答から作り直し、6 回くり返している &
+\textbf{学習中に生成する}：Llama 2 は PPO を使い\cite{touvron2023llama2}、Tülu 3 は DPO のあとに RLVR を PPO で行った\cite{lambert2024tulu3}。推論やエージェントの能力では、学習中に生成するオンポリシーの強化学習が主に使われている\cite{guo2025deepseekr1,yang2025qwen3} \\ \addlinespace
+価値ネットを使うか &
+\textbf{使わない}（GRPO 系）：同じ質問の $G$ 本の平均で代え、メモリと計算を減らす。DeepSeekMath・DeepSeek-R1 で使われ、その後の変種（\tabref{tab:rl-variants}）も価値ネットを使わない\cite{shao2024deepseekmath,guo2025deepseekr1} &
+\textbf{使う}（PPO 系）：画面を操作するエージェントの UI-TARS-2（2025 年）は、PPO が GRPO をはっきり上回ったと報告した（arXiv:2509.02544）。2026 年にも、グループの代わりに 1 本の応答と価値モデルを使う方法（SAO）が報告されている（arXiv:2607.07508） \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 この節の要点です。
-DeepSeek-R1 などの推論モデルは、考える過程も含めた応答全体を、最終的な答えの正誤を報酬にした GRPO 系の強化学習を中心に鍛えています。
+DeepSeek-R1 などの推論モデルは、考える過程も含めた応答全体を、最終的な答えの正誤を報酬にした GRPO 系の強化学習を中心に学習させています。
 GRPO には多くの変種があり、ライブラリの既定値は原論文と違います。
-報酬ハッキングとモード崩壊に注意し、生成が支配的なコストを見込んで、安い手法から順に検討します。
+報酬ハッキングとエントロピーの崩壊に注意し、生成が支配的なコストを見込んで、安い手法から順に検討します。
+選好から学ぶときにオフラインとオンポリシーのどちらを使うか、価値ネットを使うかは、報告が分かれていて決着していません。
 
 %======================================================================
 \begin{summary}
-\item 言語モデルの 1 回の応答は 1 つのエピソードです。方策は言語モデル、状態はここまでのトークン列、行動は次のトークン、報酬は最後に 1 回です。
+\item 1 つの質問に 1 回答えて最後に採点する場合（単発の RLVR）、言語モデルの 1 回の応答は 1 つのエピソードです。方策は言語モデル、状態はここまでのトークン列、行動は次のトークン、報酬は最後に 1 回です。
+学習は「$Q$ 問に $G$ 本ずつ生成し、採点し、1 回更新して、使った応答は捨てる」の 1 周のくり返しです。RLHF・DPO・道具を使う場合には、エピソード・遷移・報酬の読み方が変わります（\tabref{tab:rl-settings}）。
 損失は SFT と同じ形で、違いは「自分の応答で学ぶ」ことと「報酬で重み付けする（負もある）」ことです。
 \item 同じ質問への $G$ 本の報酬の平均をベースラインにすると、価値ネットなしでアドバンテージが作れ、勾配は学びどきの問題に集中します。GRPO は、これに PPO のクリップと参照モデルへの KL 罰則を組み合わせた手法です。
 \item RLHF は SFT・報酬モデル（Bradley--Terry）・KL 罰則付きの強化学習の 3 段階です。報酬モデルはデータにある違いしか学ばず、強化学習はその穴を突きます（報酬ハッキング）。
@@ -1532,5 +2047,5 @@ GRPO には多くの変種があり、ライブラリの既定値は原論文と
 \item （手計算）参照モデルの確率が 0.5 のトークンを、学習中のモデルが確率 0.1 で出したときの、KL の推定量 $u-\log u-1$ の値を計算してください。確率 0.9 のときと、どちらの罰が大きいですか。
 \item （コード改造）\file{rl_arith.py} の報酬を「応答の中に正しい数が含まれていれば 1」に変えて学習させ、応答がどう変わるかを観察してください（報酬ハッキング）。
 \item （コード改造）\coderef{code:rl-train-step}の \code{reward} を \file{reward_model.py} の報酬モデルの点数に差し替えて RLHF をし、$\beta=0,\ 0.04,\ 0.5$ で「答えは」で始まる割合と正答率を比べてください。
-\item （考察）DPO の実験で $y_l$ を「47だよ。」（語尾だけ違う）に変えると、崩れ方はどう変わるでしょうか。共通のトークンの勾配に注目して予想し、確かめてください。
+\item （考察）DPO の実験で $y_l$ を「47だよ。」（語尾だけ違う）に変えると、数が正しい割合の下がり方はどう変わるでしょうか。共通のトークンの勾配に注目して予想し、確かめてください。
 \end{exercises}

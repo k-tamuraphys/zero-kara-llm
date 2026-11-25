@@ -1,0 +1,4 @@
+{'new_ratio': 0.75, 'lam': 0.25, 'mul_acc': 0.28, 'addsub_acc': 0.53, 'soseki_loss': 5.1424} 326 秒
+{'new_ratio': 0.25, 'lam': 0.75, 'mul_acc': 0.17, 'addsub_acc': 0.83, 'soseki_loss': 4.9495} 317 秒
+{'new_ratio': 1.0, 'lam': 0.0, 'mul_acc': 0.26, 'addsub_acc': 0.0, 'soseki_loss': 9.0921} 297 秒
+{'new_ratio': 0.5, 'lam': 0.5, 'mul_acc': 0.2, 'addsub_acc': 0.79, 'soseki_loss': 5.0076} 284 秒

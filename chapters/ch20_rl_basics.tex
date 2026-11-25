@@ -3,7 +3,7 @@
 % ---- 格子世界の図を描くマクロ（数値は code/ch20/out/fig_*.tex をスクリプトが書き出す）
 \providecommand{\rlbfont}{\footnotesize}
 \providecommand{\rlbcell}[4]{\fill[#4] (#1,-#2) rectangle ++(1,-1);
-  \node[font=\rlbfont,inner sep=0pt] at (#1+0.5,-#2-0.5) {#3};}
+  \node[font=\rlbfont,inner sep=0pt] at (#1+0.5,-#2-0.5) {$#3$};}
 \providecommand{\rlbwall}[2]{\fill[black!50] (#1,-#2) rectangle ++(1,-1);}
 \providecommand{\rlbgoal}[2]{\fill[bookgreen!75] (#1,-#2) rectangle ++(1,-1);
   \node[font=\rlbfont\bfseries,text=white,inner sep=0pt] at (#1+0.5,-#2-0.5) {G};}
@@ -12,20 +12,37 @@
 \providecommand{\rlbarrow}[3]{\draw[->,very thick,bookblue]
   (#1+0.5,-#2-0.5) ++(#3:-0.3) -- ++(#3:0.6);}
 \providecommand{\rlbframe}{\draw[black!45,step=1] (0,-3) grid (4,0);}
+% 行動を選ぶ 9 状態の番号をマスの左上に小さく書く
+\providecommand{\rlbnums}{\foreach \rlbs/\rlbc/\rlbr in
+  {0/0/0,1/1/0,2/2/0,4/0/1,6/2/1,8/0/2,9/1/2,10/2/2,11/3/2}
+  \node[font=\tiny,text=black!55,anchor=north west,inner sep=1pt]
+    at (\rlbc,-\rlbr) {\rlbs};}
+% 状態の番号に白い下地を付けた版（赤い枠や対角線が番号に重なる図で使う）
+\providecommand{\rlbnumstag}{\foreach \rlbs/\rlbc/\rlbr in
+  {0/0/0,1/1/0,2/2/0,4/0/1,6/2/1,8/0/2,9/1/2,10/2/2,11/3/2}
+  \node[font=\tiny,text=black!60,fill=white,anchor=north west,inner sep=0.6pt]
+    at (\rlbc,-\rlbr) {\rlbs};}
+% その回に初めて値が入ったマスを囲む枠（価値反復のコマ送り）
+\providecommand{\rlbnew}[2]{\draw[bookaccent,very thick]
+  (#1+0.07,-#2-0.07) rectangle ++(0.86,-0.86);}
+% 同じ軌跡を 3 回経験したときの MC と TD の表（\rlbft{行}{列}{値}{色}{変化}）
+\providecommand{\rlbft}[5]{\fill[#4] (#2,-#1) rectangle ++(1,-1);
+  \ifnum#5=1 \draw[bookaccent,very thick] (#2+0.06,-#1-0.06) rectangle ++(0.88,-0.88);\fi
+  \node[font=\scriptsize,inner sep=0pt] at (#2+0.5,-#1-0.5) {#3};}
 \providecommand{\rlbq}[6]{\begin{scope}[shift={(#1+0.5,-#2-0.5)}]
   \ifcase#3 \fill[#5] (0,0)--(-0.5,0.5)--(0.5,0.5)--cycle;
     \node[font=\rlbfont,inner sep=0pt] at (0,0.34) {\ifnum#6=1\bfseries\fi #4};
   \or \fill[#5] (0,0)--(0.5,0.5)--(0.5,-0.5)--cycle;
-    \node[font=\rlbfont,inner sep=0pt] at (0.3,0) {\ifnum#6=1\bfseries\fi #4};
+    \node[font=\rlbfont,inner sep=0pt] at (0.25,0) {\ifnum#6=1\bfseries\fi #4};
   \or \fill[#5] (0,0)--(0.5,-0.5)--(-0.5,-0.5)--cycle;
     \node[font=\rlbfont,inner sep=0pt] at (0,-0.34) {\ifnum#6=1\bfseries\fi #4};
   \or \fill[#5] (0,0)--(-0.5,-0.5)--(-0.5,0.5)--cycle;
-    \node[font=\rlbfont,inner sep=0pt] at (-0.3,0) {\ifnum#6=1\bfseries\fi #4};
+    \node[font=\rlbfont,inner sep=0pt] at (-0.25,0) {\ifnum#6=1\bfseries\fi #4};
   \fi
   \draw[black!30,very thin] (-0.5,-0.5)--(0.5,0.5) (-0.5,0.5)--(0.5,-0.5);
   \end{scope}}
 \begin{chapterlead}
-\textbf{ここまで}: 第 V 部では、お手本をまねる学習（SFT）で、基盤モデルを計算アシスタントに仕立てました（\chapref{ch:posttraining}）。\\
+\textbf{ここまで}: 第 V 部では、お手本をまねる学習（SFT）で、基盤モデルを計算アシスタントに作り変えました（\chapref{ch:posttraining}）。\\
 \textbf{この章の問い}: 正解を教えてもらえず、結果の良し悪し（報酬）しか分からないとき、どう学習すればよいのでしょうか。
 その数学的な土台は何でしょうか。\\
 \textbf{この章を終えると}:
@@ -40,11 +57,11 @@
 
 \begin{readingguide}
 \item[\rgpre] 第 VI 部（強化学習）の入口です。強化学習の知識は要りません。\chapref{ch:math}の確率・条件付き確率・期待値（\secref{sec:math-prob}）と、\chapref{ch:posttraining}の計算アシスタント（SFT）を思い出せれば読めます。微分と勾配降下法（\chapref{ch:ml}）を使うのは、流し読みできる小節だけです。
-\item[\rgmust] \secref{sec:rlb-what}〜\secref{sec:rlb-value}：報酬、MDP、方策、収益、価値関数、ベルマン期待方程式。次章は、ここで決めた言葉と記号をそのまま使います（\secref{sec:rlb-mdp}の小節「コードで書く」だけは流し読み可）。
+\item[\rgmust] \secref{sec:rlb-what}〜\secref{sec:rlb-value}：報酬、MDP、方策、収益、2 つの確率モデル（何を学習するのか）、価値関数、ベルマン期待方程式。次章は、ここで決めた言葉と記号をそのまま使います（\secref{sec:rlb-mdp}の小節「コードで書く」だけは流し読み可）。
 \item[\rgmust] \secref{sec:rlb-dp}の小節「最適価値関数とベルマン最適方程式」と「価値反復」：平均を最大に変えると、最良の方策が求まります。Q 学習の土台です。
-\item[\rgskim] \secref{sec:rlb-dp}の小節「方策改善と方策反復」：「評価と改善を交互に繰り返すと、最適方策に着く」という結論だけで先へ進めます。
+\item[\rgskim] \secref{sec:rlb-dp}の小節「方策改善と方策反復」：「評価と改善を交互に繰り返すと、最適方策に着く」という結論だけで先へ進めます。小節「床の滑りやすさを変えると、最適方策はどう変わるか」も、図を眺めるだけで足ります。
 \item[\rglater] \secref{sec:rlb-dp}の小節「なぜ収束するのか」：縮小写像の紹介。あとの章では使いません。収束の理由が気になったときに戻れば足ります。
-\item[\rgmust] \secref{sec:rlb-mc-td}〜\secref{sec:rlb-fa}：モンテカルロ法、TD 誤差、Q 学習、探索と活用、方策ベースへの橋。次章が使います（小節「実装して比べる」と「表は、いちばん単純なネットワーク」は流し読み可）。
+\item[\rgmust] \secref{sec:rlb-mc-td}〜\secref{sec:rlb-fa}：モンテカルロ法、TD 誤差、Q 学習、探索と活用、方策ベースの方法へのつながり。次章が使います（小節「実装して比べる」と「表は、いちばん単純なネットワーク」は流し読み可）。
 \end{readingguide}
 
 \chapref{ch:posttraining}で作った計算アシスタント（\file{sft.pt}）は、足し算と引き算の質問に 200 問中 87.0\% の割合で正しく答えました\footnote{\chapref{ch:posttraining}の本文が主に使ったのは、同じ設定で作り直した \file{ch16_sft.pt}（89.0\%）でした。ここから先は、共有のスクリプトで作った \file{sft.pt} を使います。200 問の正答率には数 \% のぶれがあり、2 つの違いはその範囲です（\chapref{ch:posttraining}のコラム「共有スクリプトの値との違い」）。}。
@@ -61,16 +78,16 @@
 計算問題なら、答えの数を照らし合わせるだけです。
 この「結果の良し悪し」だけを手がかりに学ぶ方法が、\term{強化学習}{reinforcement learning, RL}です。
 
-ただし、強化学習は魔法ではありません。
+ただし、強化学習を使えば、どんな問題でも解けるわけではありません。
 計算アシスタントの正答率がどこまで伸び、どこで伸び悩むのかは、\chapref{ch:rl-llm}と\chapref{ch:agentic-rl}で実際に試して数字で確かめます。
 この章では、いったん LLM を離れます。
 12 マスしかない小さな迷路を題材にして、強化学習の言葉と考え方を、手で計算できる大きさで身につけます。
 
 この迷路には、ゴールと落とし穴があります。
 でたらめに歩くと、ゴールに着けるのは 3 回に 1 回ほどです。
-章の終わりには、迷路の仕組みを教えてもらえないエージェントが、2,000 回歩くだけで、穴を避ける道を自分で見つけます。
+章の終わりには、迷路の仕組みを教えてもらえないエージェントが、スタートからゴールか穴に着くまでの試行を 2,000 回くり返すだけで、穴を避ける進み方を自分で見つけます。
 教えるのは、「ゴールなら $+1$、穴なら $-1$」という結果の数だけです。
-なぜそれだけで道が見つかるのかを、順に解き明かします。
+なぜそれだけで良い進み方が見つかるのかを、順に説明します。
 
 章の前半（\secref{sec:rlb-dp}まで）は、迷路の仕組みがすべて分かっている場合を扱います。
 後半は、仕組みを知らずに、歩いた経験だけから学ぶ場合です。
@@ -78,7 +95,7 @@
 
 \section{強化学習とは何か}\label{sec:rlb-what}
 
-\chapref{ch:ml}の学習方法の一覧で、強化学習は「正解は与えられず、答えの良し悪しの点数だけが返る学習」として一度だけ顔を出しました。
+\chapref{ch:ml}の学習方法の一覧で、強化学習は「正解は与えられず、答えの良し悪しの点数だけが返る学習」として一度だけ登場しました。
 この節の問いは、「強化学習は教師あり学習と何が違い、なぜ LLM に必要なのか」です。
 
 \subsection*{自転車の練習と、計算アシスタント}
@@ -110,7 +127,7 @@ SFT では、「12+35は？」という質問に「47です。」という正解
 \textbf{(3) 自分の行動がデータを変える。}
 教師あり学習では、データセットは学習の前に決まっていて、学習の途中で変わりません。
 強化学習では、学習者の行動が、次に何を経験するかを決めます。
-右の道ばかり進めば、左の道の先に何があるのかは、いつまでも分かりません。
+迷路の分かれ目でいつも右へ進んでいれば、左へ進んだ先に何があるのかは、いつまでも分かりません。
 そのため、あえて試してみる\term{探索}{exploration}が必要になります（\secref{sec:rlb-q}）。
 
 \begin{table}[tbp]
@@ -133,7 +150,7 @@ SFT では、「12+35は？」という質問に「47です。」という正解
 
 \subsection*{エージェントと環境}
 
-強化学習では、登場人物を 2 つに分けます。
+強化学習では、問題に出てくるものを 2 つに分けます。
 学習し、行動を選ぶ側が\term{エージェント}{agent}です。
 エージェントの外側にあるすべてが\term{環境}{environment}です。
 両者は、\figref{fig:rlb-agent-env}のように情報をやり取りします。
@@ -150,9 +167,9 @@ SFT では、「12+35は？」という質問に「47です。」という正解
     ([yshift=-2.5mm]ag.east);
 \end{tikzpicture}
 \caption{エージェントと環境のやり取り。時刻 $t$ に、エージェントは状態 $s_t$ を見て行動 $a_t$ を選ぶ。
-環境は、報酬 $r_t$ と次の状態 $s_{t+1}$ を返す。これを繰り返す。
+環境は、報酬 $r_t$ と次の状態 $s_{t+1}$ を返す。返された $s_{t+1}$ が、次の時刻にエージェントが見る状態になる。これを繰り返す。
 格子世界では、迷路を歩く人がエージェントで、迷路が環境。
-計算アシスタントでは、LLM がエージェントで、出題と採点をするプログラムが環境。}
+計算アシスタントでは、LLM がエージェントで、環境は「質問を出し、LLM が書いたトークンを列の末尾に付け、書き終えたら採点する」仕組み（\secref{sec:rlb-fa}の\tabref{tab:rlb-maze-llm}）。}
 \label{fig:rlb-agent-env}
 \end{figure}
 
@@ -161,7 +178,7 @@ SFT では、「12+35は？」という質問に「47です。」という正解
 環境は、その結果として、報酬 $r_t$ と次の状態 $s_{t+1}$ を返します。
 この 1 回のやり取りを、1 ステップと数えます。
 迷路では 1 ステップが 1 歩に当たるので、この章では「1 歩」と書きます。
-エージェントの目的は、受け取る報酬の合計をできるだけ大きくすることです。
+エージェントの目的は、受け取る報酬の合計をできるだけ大きくすることです（正確には「割引した合計の期待値」です。\secref{sec:rlb-return}で式にします）。
 
 なお、\chapref{ch:agent}の「AI エージェント」は、道具を使って仕事を進める LLM です。
 LLM をエージェント、道具や利用者を環境と見れば、これも\figref{fig:rlb-agent-env}の形に当てはまります。
@@ -194,7 +211,7 @@ LLM に強化学習を使う理由は、3 つあります。
 \item マスには、左上から順に 0 から 11 の番号を付けます。エージェントは、マス 8 から出発します。
 \item マス 5 は壁で、入れません。
 \item 行動は「上・右・下・左」の 4 つです。
-\item 床が滑ります。確率 0.8 で選んだ向きに進みますが、確率 0.1 ずつで、その左右にそれます。
+\item 床が滑ります。確率 0.8 で選んだ向きに進みますが、確率 0.1 ずつで、その左右にそれます。左右は、選んだ向きから見た左手と右手です（「上」を選べば画面の左か右へ、「右」を選べば画面の上か下へそれます）。
 \item 壁や外枠にぶつかったときは、その場にとどまります。
 \item マス 3（ゴール）に入ると報酬 $+1$、マス 7（穴）に入ると報酬 $-1$ を受け取り、そこで終わります。それ以外の報酬は 0 です。
 \end{itemize}
@@ -211,23 +228,33 @@ LLM に強化学習を使う理由は、3 つあります。
     \node[font=\scriptsize,text=bookgray,anchor=north west,inner sep=2pt] at (\c,-\r) {\s};
   \foreach \s/\c/\r in {3/3/0,5/1/1,7/3/1}
     \node[font=\scriptsize,text=white,anchor=north west,inner sep=2pt] at (\c,-\r) {\s};
-  \node[font=\small,text=white,align=center] at (3.5,-0.56) {ゴール\\$+1$};
-  \node[font=\small,text=white,align=center] at (3.5,-1.56) {穴\\$-1$};
+  \node[font=\footnotesize,text=white,align=center] at (3.55,-0.64) {ゴール\\$+1$};
+  \node[font=\footnotesize,text=white,align=center] at (3.55,-1.64) {穴\\$-1$};
   \node[font=\small,text=white] at (1.5,-1.56) {壁};
-  \node[font=\footnotesize] at (0.5,-2.56) {スタート};
-  \begin{scope}[shift={(5.7,-1.7)}]
+  \node[font=\scriptsize] at (0.5,-2.6) {スタート};
+  \begin{scope}[shift={(5.6,-1.9)}]
     \fill[bookblue] (0,0) circle (2pt);
     \draw[->,very thick,bookblue] (0,0) -- (0,1.0);
     \node[font=\footnotesize,align=center] at (0,1.35) {選んだ向き\\確率 0.8};
-    \draw[->,thick,bookaccent] (0,0) -- (-0.8,0);
-    \draw[->,thick,bookaccent] (0,0) -- (0.8,0);
-    \node[font=\footnotesize,align=center] at (-1.25,0) {左へ\\0.1};
-    \node[font=\footnotesize,align=center] at (1.25,0) {右へ\\0.1};
-    \node[lbl] at (0,-0.45) {「上」を選んだとき};
+    \draw[->,thick,bookaccent] (0,0) -- (-0.7,0);
+    \draw[->,thick,bookaccent] (0,0) -- (0.7,0);
+    \node[font=\footnotesize,align=center] at (-1.15,0) {左手へ\\0.1};
+    \node[font=\footnotesize,align=center] at (1.15,0) {右手へ\\0.1};
+    \node[lbl] at (0,-0.5) {「上」を選んだとき};
+  \end{scope}
+  \begin{scope}[shift={(8.6,-1.5)}]
+    \fill[bookblue] (0,0) circle (2pt);
+    \draw[->,very thick,bookblue] (0,0) -- (1.0,0);
+    \node[font=\footnotesize,align=center,anchor=west] at (1.05,0) {選んだ向き\\確率 0.8};
+    \draw[->,thick,bookaccent] (0,0) -- (0,0.7);
+    \draw[->,thick,bookaccent] (0,0) -- (0,-0.7);
+    \node[font=\footnotesize] at (0,0.92) {左手へ 0.1};
+    \node[font=\footnotesize] at (0,-0.92) {右手へ 0.1};
+    \node[lbl] at (0.6,-1.4) {「右」を選んだとき};
   \end{scope}
 \end{tikzpicture}
-\caption{この章で使う格子世界。左上の小さな数字が状態の番号。
-床が滑るので、選んだ向きに進めるのは確率 0.8 で、確率 0.1 ずつで左右にそれる（右の図）。}
+\caption{この章で使う格子世界。左上の小さな数字が状態の番号（3 がゴール、5 が壁、7 が穴、8 がスタート）。
+床が滑るので、選んだ向きに進めるのは確率 0.8 で、確率 0.1 ずつで、選んだ向きから見た左手と右手にそれる（右の 2 つの図）。}
 \label{fig:rlb-gridworld}
 \end{figure}
 
@@ -251,6 +278,63 @@ P(9\mid 8,\text{右})=0.8,\qquad P(4\mid 8,\text{右})=0.1,\qquad P(8\mid 8,\tex
 \]
 と書きます。
 縦棒の右側が条件（いまの状態と選んだ行動）で、左側が次の状態です。
+この $P$ が、すぐあとの定義に出てくる遷移確率です。
+
+この関係を絵にしたものが、\figref{fig:rlb-mdp-graph}の\jterm{状態遷移図}です。
+丸が状態、黒い点が「状態と行動の組」です。
+状態 8 の丸から出る青い矢印が、エージェントが「右」を選ぶことを表します。
+黒い点から出る橙の 3 本の矢印が、そのあと環境が決める行き先で、矢印に添えた数（0.8、0.1、0.1）が確率です。
+3 本の確率を足すと 1 になります。
+状態 6 で「上」を選んだ場合も描きました。
+こちらは、確率 0.1 で穴に入り、報酬 $-1$ を受け取ります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1.0cm,y=1.0cm,
+  st/.style={circle,draw=black!55,fill=white,minimum size=7mm,inner sep=0pt,font=\small},
+  ac/.style={circle,fill=black!80,minimum size=2.4mm,inner sep=0pt},
+  pol/.style={->,very thick,bookblue},
+  env/.style={->,thick,bookorange},
+  pr/.style={font=\footnotesize,fill=white,inner sep=1pt}]
+  \foreach \n/\x/\y in {0/0/0,1/2.7/0,2/5.4/0,4/0/-2.1,6/5.4/-2.1,8/0/-4.2,9/2.7/-4.2,10/5.4/-4.2,11/8.1/-4.2}
+    \node[st] (n\n) at (\x,\y) {\n};
+  \node[st,fill=bookgreen!75,text=white,font=\small\bfseries] (n3) at (8.1,0) {3};
+  \node[font=\scriptsize,anchor=west] at (8.5,0) {ゴール};
+  \node[st,fill=bookaccent!75,text=white,font=\small\bfseries] (n7) at (8.1,-2.1) {7};
+  \node[font=\scriptsize,anchor=west] at (8.5,-2.1) {穴};
+  \fill[black!45] (2.4,-2.4) rectangle (3.0,-1.8);
+  \node[font=\scriptsize,text=white] at (2.7,-2.1) {壁};
+  \node[font=\scriptsize,anchor=north] at (0,-4.6) {スタート};
+  % 状態 8 で「右」
+  \node[ac] (a8) at (1.25,-3.15) {};
+  \draw[pol] (n8) -- node[pos=0.45,above left=-1pt,font=\footnotesize,text=bookblue]{右} (a8);
+  \draw[env] (a8) -- node[pos=0.5,above right=-1pt,font=\footnotesize,text=bookorange]{0.8} (n9);
+  \draw[env] (a8) -- node[pos=0.5,above right=-1pt,font=\footnotesize,text=bookorange]{0.1} (n4);
+  \draw[env] (a8) to[bend left=60,looseness=1.3] node[pos=0.5,below right=-1pt,font=\footnotesize,text=bookorange]{0.1} (n8);
+  % 状態 6 で「上」
+  \node[ac] (a6) at (6.9,-0.85) {};
+  \draw[pol] (n6) -- node[pos=0.5,above left=-1pt,font=\footnotesize,text=bookblue]{上} (a6);
+  \draw[env] (a6) -- node[pos=0.5,above right=-1pt,font=\footnotesize,text=bookorange]{0.8} (n2);
+  \draw[env] (a6) -- node[pos=0.45,right=2pt,font=\footnotesize,text=bookorange]{0.1、$r=-1$} (n7);
+  \draw[env] (a6) to[bend left=60,looseness=1.3] node[pos=0.5,below right=-1pt,font=\footnotesize,text=bookorange]{0.1} (n6);
+  % 凡例
+  \draw[pol] (2.0,-5.3) -- (2.6,-5.3);
+  \node[font=\footnotesize,anchor=west] at (2.7,-5.3) {エージェントが選ぶ（方策 $\pi$）};
+  \draw[env] (7.0,-5.3) -- (7.6,-5.3);
+  \node[font=\footnotesize,anchor=west] at (7.7,-5.3) {環境が決める（遷移確率 $P$）};
+\end{tikzpicture}
+\caption{格子世界の状態遷移図（一部）。丸が状態、黒い点が「状態と行動の組」。
+青い矢印はエージェントが行動を選ぶところ、橙の矢印は環境が次の状態を決めるところで、矢印に添えた数は遷移確率 $P(s'\mid s,a)$。
+報酬は 0 でないものだけを書いた。
+描いたのは、状態 8 で「右」と、状態 6 で「上」の 2 組だけ（9 状態 $\times$ 4 行動の 36 組を全部描くと、黒い点が 36 個になる）。
+自分に戻る矢印は、壁や外枠にぶつかってとどまる場合。}
+\label{fig:rlb-mdp-graph}
+\end{figure}
+
+図の青と橙は、役割の違いを表しています。
+エージェントが決められるのは、青い矢印（どの向きを選ぶか）だけです。
+選んだあとにどの橙の矢印が起きるかは、環境が確率で決めます。
+エージェントは、行き先のマスを直接は選べません。
 この書き方で環境全体を表したものが、マルコフ決定過程です。
 
 \begin{definition}[マルコフ決定過程]\label{def:rlb-mdp}
@@ -263,8 +347,10 @@ P(9\mid 8,\text{右})=0.8,\qquad P(4\mid 8,\text{右})=0.1,\qquad P(8\mid 8,\tex
 $s'$ は「次の状態」を表す記号で、「エス・プライム」と読みます。
 報酬が次の状態によらない問題では、報酬関数を $r(s,a)$ と短く書きます。
 次章では、簡単のために、この短い形を使います。
-最初の状態 $s_0$ を決める確率分布 $p(s_0)$ も、問題の一部です。
+5 つの組に加えて、最初の状態 $s_0$ を決める確率分布 $p(s_0)$ も、問題の一部です。
 格子世界では、$s_0$ はいつも 8 です。
+MDP に入っているのは、環境の側の決まりだけです。
+エージェントの振る舞い（方策）は MDP の外にあり、次節で別に決めます。
 \tabref{tab:rlb-mdp}に、格子世界との対応をまとめます。
 
 \begin{table}[tbp]
@@ -276,9 +362,9 @@ $s'$ は「次の状態」を表す記号で、「エス・プライム」と読
 \toprule
 記号 & 名前 & 格子世界では \\
 \midrule
-$\calS$ & 状態集合 & マスの番号（壁を除く 11 個。うち 2 個は終端状態） \\
+$\calS$ & 状態集合 & マスの番号（壁を除く 11 個。終端 2 個を除く 9 個で行動を選ぶ） \\
 $\calA$ & 行動集合 & 上・右・下・左の 4 個 \\
-$P(s'\mid s,a)$ & 遷移確率 & 確率 0.8 で選んだ向き、0.1 ずつで左右 \\
+$P(s'\mid s,a)$ & 遷移確率 & 確率 0.8 で選んだ向き、0.1 ずつでその左手と右手 \\
 $r(s,a,s')$ & 報酬関数 & $s'$ がゴールなら $+1$、穴なら $-1$、ほかは 0 \\
 $\gamma$ & 割引率 & 0.9（この章を通して固定） \\
 \bottomrule
@@ -295,11 +381,12 @@ MDP の「マルコフ」は、次の性質を指しています。
 \[
 P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 \]
+報酬は $r(s_t,a_t,s_{t+1})$ で決まるので、式には次の状態だけを書いた。
 \end{definition}
 
 格子世界は、この性質を満たします。
 次にどのマスへ進むかは、いまいるマスと選んだ向きだけで決まります。
-どの道を通ってそのマスに来たかは、関係ありません。
+どの経路でそのマスに来たかは、関係ありません。
 
 \begin{intuition}{状態は「これまでの要約」}
 将棋では、いまの盤面と持ち駒さえ分かれば、次の一手を考えられます。
@@ -313,7 +400,7 @@ P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 これが、\secref{sec:rlb-value}の価値関数です。
 
 \subsection*{コードで書く}
-\skimread{押さえる結論は 3 つです。表 \code{P[s][a]} には、「（確率, 次の状態, 報酬）」の組のリストが入ります。\code{STATES} は、行動を選ぶ 9 個の状態の番号です。エージェントが使える環境の窓口は、\code{reset} と \code{step} だけです。}
+\skimread{押さえる結論は 3 つです。表 \code{P[s][a]} には、「（確率, 次の状態, 報酬）」の組のリストが入ります。\code{STATES} は、行動を選ぶ 9 個の状態の番号です。エージェントが環境に対して呼べる関数は、\code{reset} と \code{step} だけです。}
 
 格子世界をコードにします。
 \coderef{code:rlb-grid-def}は、定数の定義です。
@@ -324,7 +411,7 @@ P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 マスは 12 個、壁を除いた状態は 11 個で、そのうちエージェントが行動を選ぶのは、終端状態を除く 9 個（\code{STATES}）です。
 この先のコードでは、マスの番号をそのまま配列の添字に使うので、長さ 12 の配列を用意し、壁と終端状態の欄は 0 のまま使いません。
 行動は時計回りに 0 から 3 の番号を付けました。
-こうしておくと、「左にそれる」は番号を 1 減らすこと、「右にそれる」は 1 増やすことに対応します。
+こうしておくと、「左にそれる」（進む向きから見た左手へそれる）は番号を 1 減らすこと、「右にそれる」は 1 増やすことに対応します。
 
 \coderef{code:rlb-grid-model}は、遷移確率と報酬の表を作ります。
 
@@ -336,8 +423,9 @@ P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 11 行目の \code{move(s, d)} は、状態 \code{s} から向き \code{d} に 1 マス進んだ先を返す関数です。
 壁か外枠にぶつかるときは、\code{s} をそのまま返します。
 12 行目では、同じ状態に行き着く場合の確率を足し合わせています。
-たとえば、状態 8 で「下」を選ぶと、下へ進む場合（0.8）も、左へそれる場合（0.1）も外枠にぶつかります。
+たとえば、状態 8 で「下」を選ぶと、下へ進む場合（0.8）も、進む向きの右手、つまり画面の左へそれる場合（0.1）も、外枠にぶつかります。
 この 2 つが足されて、「確率 0.9 で状態 8 にとどまる」になります。
+残りの 0.1（左手、つまり画面の右へそれる場合）だけが、状態 9 に進みます。
 13 行目の \code{reward(s2)} は、入った先がゴールなら $+1$、穴なら $-1$、ほかは 0 を返します。
 結果は、\code{P[s][a]} に「（確率, 次の状態, 報酬）」の組のリストとして入ります。
 中身を 2 つ見てみます。
@@ -345,11 +433,11 @@ P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 \outputfile{ch20/out/grid_model.txt}
 
 状態 8 で「右」の結果は、先ほど手で書いた $P(\cdot\mid 8,\text{右})$ と同じです。
-状態 6 で「上」を選ぶと、確率 0.1 で右にそれて穴に落ちます。
+状態 6 で「上」を選ぶと、確率 0.1 で右手にそれて穴に落ちます（\figref{fig:rlb-mdp-graph}の右上）。
 
 現実の問題では、エージェントはこの表を見ることができません。
-見えるのは、行動を渡すと次の状態と報酬が返ってくる、という窓口だけです。
-\coderef{code:rlb-grid-env}がその窓口です。
+使えるのは、行動を渡すと次の状態と報酬を返す関数だけです。
+\coderef{code:rlb-grid-env}が、その関数を持つクラスです。
 
 \snippet{環境のクラス。エージェントは \protect\code{reset} と \protect\code{step} だけを使う}{code:rlb-grid-env}{ch20/gridworld.py}{grid-env}
 
@@ -363,7 +451,7 @@ P(s_{t+1}\mid s_t,a_t,\,s_{t-1},a_{t-1},\dots,s_0,a_0)=P(s_{t+1}\mid s_t,a_t)
 環境は、状態・行動・遷移確率・報酬関数・割引率の 5 つで書けます。
 マルコフ性により、先のことは、いまの状態だけから考えられます。
 
-\section{方策・軌跡・収益：良さを測るものさし}\label{sec:rlb-return}
+\section{方策・軌跡・収益：良さを測る基準}\label{sec:rlb-return}
 
 環境を書けたので、次はエージェントの側です。
 この節の問いは、「エージェントの振る舞いをどう書き、その良し悪しを何で測るか」です。
@@ -400,6 +488,17 @@ r_t&=r(s_t,a_t,s_{t+1}) && \text{報酬が決まる}
 \end{align*}
 本書では、行動 $a_t$ の直後に受け取る報酬を $r_t$ と書きます\footnote{同じ報酬を $r_{t+1}$ と書く教科書もあります\cite{sutton2018rl}。添字のずれに注意してください。}。
 
+4 行のうち、2 行目と 3 行目に確率が出てきます。
+2 行目の $\pi$ はエージェントの選び方で、3 行目の $P$ は環境の規則です。
+確率の連鎖律（\chapref{ch:math}）で各時刻の確率を順に掛けると、1 本の軌跡 $\tau$ が起きる確率になります。
+各時刻の確率がいまの状態と行動だけで決まる（マルコフ性）ので、掛ける因子は短く書けます。
+\begin{equation}
+p_\pi(\tau)=p(s_0)\prod_{t=0}^{T-1}\underbrace{\pi(a_t\mid s_t)}_{\text{方策}}\;\underbrace{P(s_{t+1}\mid s_t,a_t)}_{\text{環境の遷移確率}}
+\label{eq:rlb-traj-prob}
+\end{equation}
+$p_\pi$ の添字 $\pi$ は、「方策 $\pi$ で動いたときの」軌跡の確率であることを示します。
+報酬は $s_t,a_t,s_{t+1}$ から決まるので、確率の式には現れません。
+
 \coderef{code:rlb-rollout}は、1 エピソード分の軌跡を作る関数です。
 
 \snippet{方策に従って 1 エピソード動かし、収益を計算する}{code:rlb-rollout}{ch20/gridworld.py}{grid-rollout}
@@ -420,12 +519,15 @@ r_t&=r(s_t,a_t,s_{t+1}) && \text{報酬が決まる}
   \rlbframe
   \foreach \s/\c/\r in {0/0/0,1/1/0,2/2/0,4/0/1,6/2/1,8/0/2,9/1/2,10/2/2,11/3/2}
     \node[font=\scriptsize,text=bookgray,anchor=north west,inner sep=2pt] at (\c,-\r) {\s};
-  \node[font=\footnotesize\bfseries,text=white] at (3.5,-0.3) {ゴール};
+  \foreach \s/\c/\r in {3/3/0,5/1/1,7/3/1}
+    \node[font=\scriptsize,text=white,anchor=north west,inner sep=2pt] at (\c,-\r) {\s};
+  \node[font=\footnotesize\bfseries,text=white] at (3.55,-0.8) {ゴール};
   \node[font=\footnotesize\bfseries,text=white] at (3.5,-1.5) {穴};
+  \node[font=\footnotesize,text=white] at (1.5,-1.5) {壁};
   \tikzset{rlbt/.style={midway,circle,draw,fill=white,inner sep=0.7pt,font=\scriptsize}}
   \draw[->,very thick,bookblue] (0.5,-2.5) -- node[rlbt]{0} (1.4,-2.5);
   \draw[->,very thick,bookblue] (1.5,-2.5) -- node[rlbt]{1} (2.4,-2.5);
-  \draw[->,very thick,bookaccent] (2.5,-2.5) -- node[rlbt]{2} (2.5,-1.6);
+  \draw[->,very thick,bookaccent] (2.5,-2.5) -- node[rlbt,pos=0.7]{2} (2.5,-1.6);
   \draw[->,very thick,bookblue] (2.5,-1.5) -- node[rlbt]{3} (2.5,-0.6);
   \draw[->,very thick,bookblue] (2.5,-0.5) -- node[rlbt]{4} (3.4,-0.5);
   \node[lbl,anchor=north west,align=left] at (0,-3.05) {矢印の数字は時刻 $t$。赤い矢印（$t=2$）では、\\「右」を選んだが、滑って上に進んだ};
@@ -542,10 +644,112 @@ $G_2$、$G_1$、$G_0$ を、式\eqref{eq:rlb-return-recursive}で後ろから順
 収益 $G_0$ はエピソードごとに正にも負にもなり、平均は $-0.066$ でした。
 方策の良さは、1 回の収益ではなく、\textbf{収益の期待値}（\chapref{ch:math}）で測るのが自然です。
 強化学習の目的は、収益の期待値がいちばん大きくなる方策を見つけることです。
+式で書くと、スタートからの収益 $G_0$ の期待値を、方策の良さとします。
+\begin{equation}
+J(\pi)\defeq\E_{\tau\sim p_\pi}[\,G_0\,]
+\label{eq:rlb-objective}
+\end{equation}
+$J$ を\term{期待収益}{expected return}と呼びます。
+期待値は、式\eqref{eq:rlb-traj-prob}の確率 $p_\pi(\tau)$ を重みにした、軌跡についての平均です。
+ランダム方策では、1 万エピソードの平均から $J\approx-0.066$ です。
+$J$ がいちばん大きい方策を探すことが、強化学習の問題です。
+
+\subsection*{確率モデルは 2 つ：何を学習するのか}
+
+ここまでで、この章に出てくる確率モデルが出そろいました。
+2 つあります（\tabref{tab:rlb-two-models}）。
+\begin{itemize}
+\item \textbf{環境の遷移確率 $P(s'\mid s,a)$}。迷路の規則（床の滑り方）です。問題として与えられたもので、学習では変わりません。エージェントには変えられません。
+\item \textbf{方策 $\pi(a\mid s)$}。各マスで、どの向きをどの確率で選ぶかです。これを学習で良くします。
+\end{itemize}
+軌跡の確率（式\eqref{eq:rlb-traj-prob}）には、この 2 つの因子が交互に並んでいます。
+学習で動かせるのは、$\pi$ の因子だけです。
+
+\begin{table}[tbp]
+\centering
+\caption{この章に出てくる 2 つの確率モデル。学習で良くするのは方策だけで、遷移確率は与えられたまま変わらない。}
+\label{tab:rlb-two-models}
+\small
+\begin{tabular}{lll}
+\toprule
+ & 環境の遷移確率 $P(s'\mid s,a)$ & 方策 $\pi(a\mid s)$ \\
+\midrule
+何の確率か & 行動のあと、次にどの状態になるか & 状態 $s$ で、どの行動を選ぶか \\
+誰のものか & 環境（MDP の一部） & エージェント \\
+学習で変わるか & 変わらない（与えられたもの） & 変わる（これを良くする） \\
+格子世界では & 床の滑り（0.8、0.1、0.1） & 各マスでの向きの選び方 \\
+LLM では & トークンを末尾に付ける（決定的） & 言語モデルそのもの（\chapref{ch:rl-llm}） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+では、「スタートから、どの確率でどのマスへ進めばよいか、というマスの列の確率を学習する」という理解は正しいでしょうか。
+これは、半分正しい理解です。
+正しいのは、学習の結果として、マスの列（軌跡）の確率が変わることです。
+方策を決めると、式\eqref{eq:rlb-traj-prob}によって、どの軌跡がどの確率で起きるかが決まります。
+たとえば\figref{fig:rlb-trajectory}の軌跡は、ランダム方策では $(1/4)^5\times0.8^4\times0.1\approx4\times10^{-5}$ の確率で起きます（5 回の行動がそれぞれ $1/4$、遷移は 0.8 が 4 回と、滑った 0.1 が 1 回）。
+最適方策（\secref{sec:rlb-dp}）は状態 8 で「右」を選ばないので、同じ軌跡の確率は 0 です。
+
+正しくないのは、「どのマスに行くか」を直接学ぶと考える点です。
+学習で決めるのは、各マスでの向きの選び方 $\pi(a\mid s)$ です。
+行き先のマスは、そのあと環境の $P$ が確率で決めます。
+また、マスの列そのものの確率を、表として覚えるわけでもありません。
+列の確率は、学んだ $\pi$ と、与えられた $P$ の積として、あとから決まります。
+
+方策を 1 つに決めると、行動の選び方の確率と遷移確率を合わせて、「マスからマスへ移る確率」
+\[
+P_\pi(s'\mid s)=\sum_a\pi(a\mid s)\,P(s'\mid s,a)
+\]
+だけが残ります。
+行動を挟まずに、状態だけが確率で移っていく過程になるわけです。
+これを\term{マルコフ連鎖}{Markov chain}と呼びます。
+\figref{fig:rlb-chain}は、ランダム方策と最適方策のそれぞれで、この確率を矢印の太さで描いたものです（\file{ch20/fig_dp_extra.py} で計算）。
+左のランダム方策では、どの矢印も細く（確率 0.25）、穴へ向かう矢印も残っています。
+右の最適方策では、ゴールへ向かう太い矢印（確率 0.8）の列ができ、穴へ入る矢印は状態 6 と 11 からの 0.1 だけです。
+方策を変えると、マスからマスへの確率が変わり、その結果として、マスの列の確率が変わります。
+これが、「半分正しい」の意味です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1.15cm,y=1.05cm,
+  cs/.style={circle,draw=black!55,fill=white,minimum size=5.5mm,inner sep=0pt,font=\scriptsize}]
+  \foreach \k/\fn/\ttl in {0/random/{ランダム方策（どの行動も $1/4$）},1/star/{最適方策 $\pi^\ast$（\secref{sec:rlb-dp}）}} {
+  \begin{scope}[shift={(5.6*\k,0)}]
+    \node[font=\small] at (1.5,0.75) {\ttl};
+    \foreach \n/\c/\r in {0/0/0,1/1/0,2/2/0,4/0/1,6/2/1,8/0/2,9/1/2,10/2/2,11/3/2}
+      \node[cs] (c\n) at (\c,-\r) {\n};
+    \node[cs,fill=bookgreen!75,text=white] (c3) at (3,0) {G};
+    \node[cs,fill=bookaccent!75,text=white] (c7) at (3,-1) {穴};
+    \fill[black!45] (0.75,-1.25) rectangle (1.25,-0.75);
+    \input{code/ch20/out/fig_chain_\fn.tex}
+  \end{scope}}
+\end{tikzpicture}
+\caption{方策を決めると、マスからマスへ移る確率 $P_\pi(s'\mid s)=\sum_a\pi(a\mid s)P(s'\mid s,a)$ が決まる。矢印の太さが確率（最も太いものが 0.8、最も細いものが 0.1）。
+その場にとどまる確率は描いていない。G はゴール（状態 3）、穴は状態 7、灰色の四角は壁。
+左のランダム方策では、どの矢印も確率 0.25。右の最適方策では、ゴールへ向かう確率 0.8 の矢印がつながる。}
+\label{fig:rlb-chain}
+\end{figure}
+
+この章の方法と、学習するものとの関係も、ここで先に述べておきます。
+この章の後半のコードが実際に書き換えるのは、方策 $\pi$ ではなく、「状態や行動がどれだけ良いか」を表す数の表です（\secref{sec:rlb-value}の価値関数 $V$ と $Q$）。
+方策は、その表から「いちばん良い行動を選ぶ」ことで作ります。
+こうして作った最適方策は、各マスで 1 つの向きを確率 1 で選ぶ決定的方策です（\figref{fig:rlb-chain}の右）。
+その場合、軌跡に残る偶然は、環境の $P$ だけになります。
+方策を確率のまま、パラメータを持つ関数で表して直接学ぶ方法は、次章（\chapref{ch:policy-gradient}）で扱います。
+LLM の強化学習は、こちらの方法を使います。
+
+最後に、もう一方の確率モデル $P$ について補足します。
+この章では、$P$ を学習しません。
+しかし、実際に動いた経験から $P$（と報酬）を推定し、推定した $P$ を使って方策を考える方法もあります。
+これを\term{モデルベース強化学習}{model-based reinforcement learning}と呼びます（「モデル」は環境の $P$ と $r$ のこと。\secref{sec:rlb-mc-td}）。
+本書では扱いません。
 
 この節で分かったことをまとめます。
 エージェントの振る舞いは方策 $\pi(a\mid s)$ で、1 回分の経験は軌跡 $\tau$ で表します。
-良さのものさしは、割引した報酬の合計である収益 $G_t$ で、$G_t=r_t+\gamma G_{t+1}$ という再帰式が成り立ちます。
+良さの基準は、割引した報酬の合計である収益 $G_t$ で、$G_t=r_t+\gamma G_{t+1}$ という再帰式が成り立ちます。
+目的は、期待収益 $J(\pi)=\E[G_0]$ を最大にすることです。
+確率モデルは 2 つあり、環境の遷移確率 $P$ は与えられたまま変わらず、学習で良くするのは方策 $\pi$ です。
 
 \section{価値関数とベルマン方程式}\label{sec:rlb-value}
 
@@ -578,6 +782,7 @@ $Q^\pi(s,a)$ は、「状態 $s$ で、最初の 1 回だけは行動 $a$ を選
 
 前節の実験では、ランダム方策でスタート（状態 8）から 1 万回動かした収益の平均が $-0.066$ でした。
 これは、ランダム方策の $V^\pi(8)$ を、実験で見積もった値です。
+スタートは 8 と決まっているので、$V^\pi(8)$ は前節の期待収益 $J(\pi)$ そのものです。
 
 2 つの価値関数は、次の式で結ばれています。
 \begin{equation}
@@ -602,12 +807,13 @@ V^\pi(s)=\sum_{a}\pi(a\mid s)\,Q^\pi(s,a)
   st/.style={draw=bookblue,fill=figblue,circle,minimum size=7mm,inner sep=0pt,font=\small},
   ac/.style={fill=black!70,circle,minimum size=2.4mm,inner sep=0pt}]
   \node[st] (s) at (0,0) {$s$};
-  \node[ac] (a1) at (-2.0,-1.3) {};
-  \node[ac] (a2) at (2.0,-1.3) {};
-  \node[st] (s1) at (-3.0,-2.8) {$s'$};
-  \node[st] (s2) at (-1.0,-2.8) {$s'$};
-  \node[st] (s3) at (1.0,-2.8) {$s'$};
-  \node[st] (s4) at (3.0,-2.8) {$s'$};
+  \node[ac,label={[lbl]left:$a_1$}] (a1) at (-2.0,-1.3) {};
+  \node[ac,label={[lbl]right:$a_2$}] (a2) at (2.0,-1.3) {};
+  \node[st] (s1) at (-3.0,-2.8) {$s'_1$};
+  \node[st] (s2) at (-1.0,-2.8) {$s'_2$};
+  \node[st] (s3) at (1.0,-2.8) {$s'_3$};
+  \node[st] (s4) at (3.0,-2.8) {$s'_4$};
+  \foreach \i in {1,2,3,4} \node[lbl] at ($(s\i)+(0,-0.6)$) {$V^\pi(s'_\i)$};
   \draw[thick,black!70] (s) -- node[above left,lbl]{$\pi(a\mid s)$} (a1);
   \draw[thick,black!70] (s) -- (a2);
   \draw[thick,black!70] (a1) -- node[left=2.5mm,lbl,align=right]{確率 $P(s'\mid s,a)$\\報酬 $r$} (s1);
@@ -616,10 +822,12 @@ V^\pi(s)=\sum_{a}\pi(a\mid s)\,Q^\pi(s,a)
   \draw[thick,black!70] (a2) -- (s4);
   \node[lbl,anchor=west] at (3.5,0) {状態 $s$ の価値 $V^\pi(s)$ を知りたい};
   \node[lbl,anchor=west] at (3.5,-1.3) {方策が行動 $a$ を選ぶ};
-  \node[lbl,anchor=west,align=left] at (3.5,-2.8) {環境が次の状態 $s'$ と報酬 $r$ を返す\\ここから先は $V^\pi(s')$ にまとめる};
+  \node[lbl,anchor=west,align=left] at (3.5,-2.8) {環境が次の状態 $s'$ と報酬 $r$ を返す\\ここから先は $\gamma V^\pi(s')$ にまとめる};
 \end{tikzpicture}
-\caption{ベルマン期待方程式の考え方。大きな丸が状態、黒い点が行動。どの枝にも確率と報酬が付く。
-1 歩先の場合分けをすべて書き、それぞれの「報酬 $+$ $\gamma\times$次の状態の価値」を確率で平均する。}
+\caption{ベルマン期待方程式の考え方（模式図）。丸が状態、黒い点が行動。
+行動を 2 つ（$a_1,a_2$）、それぞれの次の状態を 2 つだけ描いた（格子世界では行動は 4 つ、次の状態は最大 3 つ）。
+確率と報酬のラベルは左端の枝にだけ書いたが、どの枝にも付く。
+1 歩先の場合分けをすべて並べ、それぞれの「報酬 $+$ $\gamma\times$次の状態の価値」を、確率 $\pi(a\mid s)P(s'\mid s,a)$ で平均する。}
 \label{fig:rlb-backup}
 \end{figure}
 
@@ -687,7 +895,10 @@ Q^\pi(2,\text{右})
 
 ベルマン期待方程式は、9 個の状態の価値 $V^\pi(s)$ を未知数とする、9 本の連立方程式です。
 これを解いて $V^\pi$ を求めることを、\term{方策評価}{policy evaluation}と呼びます。
-解き方は単純です。
+9 本なら、連立一次方程式として直接解くこともできます。
+ただ、状態が多いと直接解く計算は重くなります。
+また、次節の価値反復は「平均」が「最大」に変わるので、連立一次方程式ではなくなります。
+そこで、どちらにも使える繰り返しの解き方を使います。
 価値の表 $V$ を、すべて 0 で始めます。
 式\eqref{eq:rlb-bellman-v}の右辺にいまの表 $V$ を入れて計算し、その結果を新しい表にします。
 これを、表がほとんど変わらなくなるまで繰り返します。
@@ -711,7 +922,7 @@ Q^\pi(2,\text{右})
 穴の隣の状態 6 と 11 は、同じ計算で $-0.25$ です。
 残りの状態は、1 回目では 0 のままです。
 2 回目には、状態 2 の $0.25$ が左隣の状態 1 に伝わり、$0.056$ が入ります。
-こうして、書き換えのたびに、値が 1 マスずつ遠くへ伝わっていきます。
+こうして、書き換えのたびに、値が 1 マスずつ遠くへ伝わっていきます（ここでの「伝わる」は、そのマスの値が 0 から動くことです）。
 
 ランダム方策を評価すると、98 回の書き換えで収束しました。
 結果が\figref{fig:rlb-v-random}です。
@@ -721,6 +932,7 @@ Q^\pi(2,\text{右})
 \begin{tikzpicture}[x=1.3cm,y=0.86cm]
   \input{code/ch20/out/fig_v_random.tex}
   \rlbframe
+  \rlbnums
 \end{tikzpicture}
 \caption{ランダム方策の状態価値 $V^\pi$（$\gamma=0.9$）。緑が正、赤が負で、色が濃いほど絶対値が大きい。
 G はゴール、灰色は壁。ゴールに近い状態は価値が高く、穴に近い状態は低い。}
@@ -754,8 +966,17 @@ V^\ast(s)\defeq\max_\pi V^\pi(s),\qquad Q^\ast(s,a)\defeq\max_\pi Q^\pi(s,a)
 \label{eq:rlb-optimal}
 \end{equation}
 すべての状態で $V^\pi(s)=V^\ast(s)$ となる方策を、\term{最適方策}{optimal policy}と呼び、$\pi^\ast$ と書きます。
-状態と行動が有限個の MDP には、最適方策が必ずあり、決定的方策の中に見つかることが知られています\cite{sutton2018rl}。
+状態と行動が有限個の MDP には（割引率 $\gamma<1$ のとき。この章の設定です）、最適方策が必ずあり、決定的方策の中に見つかることが知られています\cite{sutton2018rl}。
+最適方策は、すべての状態で同時に価値を最大にするので、とくにスタートでの価値、つまり期待収益 $J$（式\eqref{eq:rlb-objective}）も最大にします。
+\secref{sec:rlb-return}で決めた目的と、同じものを指しているわけです。
 
+ここからの議論の骨組みを、先に示します。
+(1) 最適方策があることは、上に書いた、知られている事実です（証明は省きます）。
+(2) 最適方策は、各状態で、いちばん価値の高い行動を選びます。
+(3) そのため、期待方程式の「方策の確率で平均する」が「最大を取る」に変わります。
+(4) こうしてできる式が、ベルマン最適方程式です。
+
+(2) の理由を述べます。
 最適方策は、各状態で、いちばん価値の高い行動を選びます。
 価値の低い行動に確率を割いても、得をしないからです。
 そこで、式\eqref{eq:rlb-v-from-q}の「方策の確率で平均する」を「最大のものを選ぶ」に置き換えると、次の 1 つ目の式になります。
@@ -821,13 +1042,15 @@ $Q^\ast$ が分かれば、最適方策はすぐに作れます。
   \draw[arr] (pi.north east) to[bend left=14] node[above,font=\small]{方策評価：$\pi$ の価値を計算する} (v.north west);
   \draw[arr] (v.south west) to[bend left=14] node[below,font=\small]{方策改善：価値が最大の行動を選ぶ方策に取り替える} (pi.south east);
 \end{tikzpicture}
-\caption{方策反復。評価と改善を交互に行うと、方策は良くなり続け、最適方策で止まる。}
+\caption{方策反復。評価と改善を交互に行うと、方策は悪くならずに良くなっていき、最適方策で止まる。}
 \label{fig:rlb-gpi}
 \end{figure}
 
 \outputfile{ch20/out/policy_iteration.txt}
 
 各行は、方策 $\pi_k$ の価値と、それを改善して $\pi_{k+1}$ にするときに行動が変わる状態の数です。
+ランダム方策 $\pi_0$ は、どの状態でも 4 つの行動を $1/4$ ずつ選ぶので、選ぶ行動が 1 つに決まっていません。
+改善すると、9 状態のすべてが「1 つの行動を確率 1 で選ぶ」に変わるので、9 個と数えています。
 スタートの価値 $V(8)$ は、1 回の改善で $-0.066$ から $+0.545$ に上がりました。
 2 回目の改善では状態 10 の行動だけが「左」から「上」に変わり、3 回目には何も変わりません。
 たった 2 回の改善で、最適方策に着きました。
@@ -849,11 +1072,13 @@ $Q^\ast$ が分かれば、最適方策はすぐに作れます。
 \begin{tikzpicture}[x=1.05cm,y=0.72cm]
   \input{code/ch20/out/fig_pi_1.tex}
   \rlbframe
+  \rlbnums
   \draw[bookaccent,very thick] (2,-2) rectangle ++(1,-1);
   \node[font=\small] at (2,0.4) {方策 $\pi_1$（改善 1 回）};
   \begin{scope}[shift={(5.2,0)}]
     \input{code/ch20/out/fig_pi_star.tex}
     \rlbframe
+    \rlbnums
     \draw[bookaccent,very thick] (2,-2) rectangle ++(1,-1);
     \node[font=\small] at (2,0.4) {方策 $\pi_2$（改善 2 回。最適方策）};
   \end{scope}
@@ -877,6 +1102,10 @@ $\pi_1$ は、穴の隣の状態 6 を避けて左へ向かう。$\pi_1$ の価�
 収束した $V$ から式\eqref{eq:rlb-q-from-v}で各行動の価値を計算し、最大の行動を選べば、最適方策になります（同じファイルの \code{greedy_policy}）。
 
 実行すると、29 回の書き換えで収束しました。
+方策反復では、3 回の方策評価に、それぞれ 98 回、31 回、29 回、合わせて 158 回の書き換えを使いました（\file{ch20/fig_dp_extra.py} で数えました）。
+1 回の書き換えでする計算は、どちらも「各状態で 4 つの行動の価値を求める」で、ほぼ同じです。
+価値反復は、方策反復のおよそ 5 分の 1 の手間で、同じ最適方策に着いたことになります。
+
 \figref{fig:rlb-vi-sweeps}は、途中の表です。
 1 回目では、ゴールの隣の状態 2 にだけ価値が入ります。
 「右」を選ぶと確率 0.8 でゴールに入るので、値は $0.8\times1=0.80$ です。
@@ -885,21 +1114,31 @@ $\pi_1$ は、穴の隣の状態 6 を避けて左へ向かう。$\pi_1$ の価�
 平均を取る方策評価では、状態 6 は 1 回目に $-0.25$ になりました（収束した値は\figref{fig:rlb-v-random}）。
 平均と最大の違いが、ここに現れています。
 2 回目には、左隣の状態 1 に $0.8\times0.9\times0.80=0.576$ が入ります（図では $0.58$）。
-書き換えのたびに、価値がゴールから 1 マスずつ遠くへ伝わり、5 回目にスタートまで届きます。
-遅れて届く報酬を手前の状態へ配っていくこの仕組みが、\secref{sec:rlb-what}の信用割当の問題への、1 つの答えです。
+状態 6 にも、「上」を選んで状態 2 に進む分の値 $0.48$ が入ります。
+図の赤い枠をコマごとに追ってください。
+初めて値が入るマスは、1 回目が状態 2、2 回目が 1 と 6、3 回目が 0 と 10、4 回目が 4 と 9 と 11、5 回目が 8 です。
+書き換えのたびに、値の入ったマスが 1 マスずつゴールから離れ、5 回目にスタートまで届きます。
+ゴールで受け取る報酬の効果を、手前の状態の価値へ 1 マスずつ反映させていくこの仕組みが、\secref{sec:rlb-what}の信用割当の問題への、1 つの答えです。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=0.98cm,y=0.68cm]
   \renewcommand{\rlbfont}{\scriptsize}
-  \foreach \k/\x in {1/0,2/4.4,5/8.8} {
-    \begin{scope}[shift={(\x,0)}]
-      \input{code/ch20/out/fig_vi_sweep\k.tex}
+  \foreach \k/\x/\y in {1/0/0,2/4.4/0,3/8.8/0,4/0/-4.0,5/4.4/-4.0} {
+    \begin{scope}[shift={(\x,\y)}]
+      \input{code/ch20/out/fig_vi_frame\k.tex}
       \rlbframe
+      \rlbnumstag
       \node[font=\footnotesize] at (2,0.42) {\k 回目};
     \end{scope}}
+  \begin{scope}[shift={(8.8,-4.0)}]
+    \draw[bookaccent,very thick] (0.1,-0.9) rectangle ++(0.7,-0.7);
+    \node[font=\footnotesize,anchor=west,align=left] at (1.0,-1.25) {その回に初めて\\値が入ったマス};
+  \end{scope}
 \end{tikzpicture}
-\caption{価値反復の途中経過。価値は、1 回の書き換えで 1 マスずつ、ゴールから遠くへ伝わる。5 回目に、スタート（左下）まで届く。}
+\caption{価値反復の途中経過（1〜5 回目。\file{ch20/fig_dp_extra.py} で、\coderef{code:rlb-value-iteration}の途中の表を書き出した）。
+赤い枠は、その回に初めて 0 でない値が入ったマス。
+価値は、1 回の書き換えで 1 マスずつ、ゴールから遠くへ伝わる。5 回目に、スタート（状態 8）まで届く。}
 \label{fig:rlb-vi-sweeps}
 \end{figure}
 
@@ -911,10 +1150,12 @@ $\pi_1$ は、穴の隣の状態 6 を避けて左へ向かう。$\pi_1$ の価�
 \begin{tikzpicture}[x=1.25cm,y=0.85cm]
   \input{code/ch20/out/fig_v_star.tex}
   \rlbframe
+  \rlbnums
   \node[font=\small] at (2,0.35) {最適価値関数 $V^\ast$};
   \begin{scope}[shift={(4.6,0)}]
     \input{code/ch20/out/fig_pi_star.tex}
     \rlbframe
+    \rlbnums
     \node[font=\small] at (2,0.35) {最適方策 $\pi^\ast$};
   \end{scope}
 \end{tikzpicture}
@@ -927,7 +1168,7 @@ $\pi_1$ は、穴の隣の状態 6 を避けて左へ向かう。$\pi_1$ の価�
 スタートからゴールへは、上の道（$8\to4\to0\to1\to2$）と下の道（$8\to9\to10\to6\to2$）があり、どちらも最短で 5 歩です。
 しかし、最適方策は上の道を選びます（$Q^\ast(8,\text{上})=0.545$、$Q^\ast(8,\text{右})=0.450$。大きいほうが $V^\ast(8)$ です）。
 下の道は穴の隣を通るので、滑って落ちる危険があるからです。
-「床が滑る」という環境の性質を、価値がきちんと織り込んでいます。
+「床が滑る」という環境の性質が、価値の数にきちんと反映されています。
 
 この 2 つの数を、ベルマン最適方程式で確かめます。
 \figref{fig:rlb-v-star}の左の表から、状態 4、8、9 の値を使います。
@@ -940,6 +1181,55 @@ Q^\ast(8,\text{右})&=0.8\times0.9\times0.4787+0.1\times0.9\times0.6292+0.1\time
 \end{align*}
 残りの 2 つは、「下」が $0.4847$、「左」が $0.4982$ です。
 4 つの中の最大は「上」の $0.5452$ で、$V^\ast(8)$ と一致します（式\eqref{eq:rlb-bellman-opt-v}のとおりです）。
+
+\subsection*{床の滑りやすさを変えると、最適方策はどう変わるか}
+\skimread{押さえる結論は、「滑りやすいほど、最適方策は遠回りでも穴に落ちない行動を選び、スタートの価値 $V^\ast(8)$ は下がる」です。}
+
+上の道が選ばれた理由は、床が滑ることでした。
+では、滑りやすさを変えると、最適方策はどう変わるでしょうか。
+\file{ch20/sweep_slip.py} で、左右にそれる確率（\code{SLIP}。これまでは 0.1）を 0、0.1、0.2、0.3 の 4 通りに変え、そのたびに遷移確率の表を作り直して価値反復を走らせました（$\gamma=0.9$ は固定）。
+結果が\figref{fig:rlb-slip}です。
+上の段の 4 枚の矢印を左から順に見比べ、下のグラフで $V^\ast(8)$ の下がり方を見てください。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=0.72cm,y=0.62cm]
+  \foreach \k/\slp in {0/0,1/0.1,2/0.2,3/0.3} {
+    \begin{scope}[shift={(4.45*\k,0)}]
+      \input{code/ch20/out/fig_slip\k_pi.tex}
+      \rlbframe
+      \rlbnums
+      \node[font=\footnotesize] at (2,0.45) {SLIP $=\slp$};
+    \end{scope}}
+\end{tikzpicture}
+
+\medskip
+\begin{tikzpicture}
+\begin{axis}[height=0.3\linewidth,width=0.62\linewidth,xlabel={左右にそれる確率 SLIP},ylabel={スタートの価値},
+  xmin=-0.02,xmax=0.32,ymin=0,ymax=0.75,xtick={0,0.1,0.2,0.3},
+  legend pos=outer north east,legend cell align=left]
+\addplot[bookblue,mark=*] table[col sep=comma,x=slip,y=q8up]{code/ch20/out/sweep_slip.csv};
+\addplot[bookaccent,mark=square*,dashed] table[col sep=comma,x=slip,y=q8right]{code/ch20/out/sweep_slip.csv};
+\legend{{$Q^\ast(8,\text{上})$（上の道）},{$Q^\ast(8,\text{右})$（下の道）}}
+\end{axis}
+\end{tikzpicture}
+\caption{床の滑りやすさ SLIP を 4 通りに変えたときの最適方策（上の段）と、スタートで「上」と「右」を選んだときの価値（下。大きいほうが $V^\ast(8)$）。$\gamma=0.9$ は固定（\file{ch20/sweep_slip.py}）。
+SLIP $=0$ では 2 つの価値が等しく、上の段の状態 8 の矢印は、同点のうち先に数えた「上」を描いた。}
+\label{fig:rlb-slip}
+\end{figure}
+
+滑らない床（SLIP $=0$）では、上の道も下の道も 5 歩で確実にゴールに着くので、2 つの価値は $0.9^4=0.6561$ で等しくなります。
+滑りやすくなるほど、最適方策は、遠回りになっても穴に落ちない行動を選ぶようになります。
+SLIP $=0.2$ では、状態 6 で、壁に向かう「左」を選びます。
+壁にぶつかればその場にとどまり、それる先は上（状態 2）か下（状態 10）なので、穴には落ちません。
+状態 11 でも、外枠に向かう「下」を選んで、穴を避けます。
+SLIP $=0.3$ では、ゴールの隣の状態 2 でさえ、外枠に向かう「上」を選びます。
+右手にそれればゴールに入り、左手にそれても状態 1 に戻るだけで、穴の隣の状態 6 へは進みません。
+実行結果（\file{ch20/out/sweep_slip.txt}）によると、最適方策で動いたときにゴールに着く確率は、SLIP $=0.1$ では 0.986、0.2 と 0.3 では 1.000 です。
+安全な行動はゴールまでの歩数が増えるので、その分、割引で価値が下がります。
+$V^\ast(8)$ は、0.656、0.545、0.388、0.228 と下がっていきます。
+最適方策は、環境の遷移確率 $P$ によって変わります。
+$P$ が変われば、同じ迷路でも「良い進み方」が変わるのです。
 
 \subsection*{なぜ収束するのか}
 \laterread{縮小写像という性質の紹介です。あとの章では使いません。収束の理由が気になったときに戻れば足ります。飛ばすときは、すぐあとのコラム「ここまでの道のり」へ進んでください。}
@@ -969,7 +1259,7 @@ $\gamma=0.9$ なら、$k$ 回の書き換えで差は $0.9^k$ 倍以下になり
 本書では証明を省きます（強化学習の理論の専門書にあります）。
 
 \begin{column}{ここまでの道のり}
-\textbf{\secref{sec:rlb-what}〜\secref{sec:rlb-return}}：強化学習の問題を MDP として書いた。良さのものさしは収益 $G_t=r_t+\gamma G_{t+1}$。\\
+\textbf{\secref{sec:rlb-what}〜\secref{sec:rlb-return}}：強化学習の問題を MDP として書いた。良さの基準は収益 $G_t=r_t+\gamma G_{t+1}$。\\
 \textbf{\secref{sec:rlb-value}}：収益の期待値が価値関数。ベルマン期待方程式で、隣の状態の価値と結びつく。\\
 \textbf{\secref{sec:rlb-dp}}：平均を最大に変えるとベルマン最適方程式。繰り返し当てはめると、最適方策が求まる。\\
 \textbf{この先}：ここまでは、遷移確率 $P$ の表を使った。
@@ -986,9 +1276,14 @@ $\gamma=0.9$ なら、$k$ 回の書き換えで差は $0.9^k$ 倍以下になり
 動的計画法は、遷移確率 $P$ と報酬関数 $r$ の表を使いました。
 この 2 つを合わせて、\jterm{環境のモデル}と呼びます。
 これまでの章の「モデル」（学習するネットワーク）とは別の意味なので、この章では必ず「環境のモデル」と書きます。
-自転車の練習でも、LLM の強化学習でも、環境のモデルは手に入りません。
-この節の問いは、「環境のモデルを知らずに、実際に動いて得た経験だけから価値を求めるにはどうするか」です。
+自転車の練習では、環境のモデルは手に入りません。
+LLM の強化学習では、遷移（トークンを列の末尾に付ける）は分かっています。
+しかし、状態の数が多すぎて、動的計画法のように全部の状態の表を作ることができません（\secref{sec:rlb-fa}）。
+どちらの場合も、実際に動いた経験から学ぶ方法が要ります。
+この節の問いは、「環境のモデルを使わずに、実際に動いて得た経験だけから価値を求めるにはどうするか」です。
 環境のモデルを使わない方法を、\term{モデルフリー}{model-free}の方法と呼びます。
+これに対して、環境のモデルを使う方法を、モデルベースの方法と呼びます。
+モデルが与えられている場合（前節の動的計画法）のほかに、経験から $P$ と $r$ を推定して使う場合（\secref{sec:rlb-return}の最後で触れたモデルベース強化学習）があります。
 
 \subsection*{モンテカルロ法：実際の収益を平均する}
 
@@ -997,6 +1292,75 @@ $V^\pi(s)$ は、収益の期待値でした。
 方策 $\pi$ で何度もエピソードを動かし、状態 $s$ を通るたびに、そこから先の収益 $G_t$ を記録して平均します。
 この方法を\term{モンテカルロ法}{Monte Carlo method}と呼びます。
 \secref{sec:rlb-return}で、1 万エピソードの平均から $-0.066$ を得たのが、まさにこの方法です。
+
+「何度も動かして、通るたびに集めて平均する」を絵にしたのが、\figref{fig:rlb-mc-spacetime}の時空図です。
+横軸が時刻 $t$、縦軸がマスで、1 本の折れ線が 1 回のエピソード（試行）です。
+上の図では、ランダム方策の試行を 4 本重ねました（\file{ch20/fig_mc_spacetime.py}）。
+見てほしいのは、状態 9 の横の帯です。
+どの試行も、状態 9 を通った時刻に白い丸があります。
+丸ごとに、その時刻から終わりまでの収益 $G_t$ を計算し、右の一覧に集めます。
+試行 3 は、時刻 3、4、5 と続けて状態 9 にいた（2 回、壁や外枠にぶつかってとどまった）ので、3 個の値を出します。
+コードの \code{mc_update} と同じく、同じエピソードの中で同じ状態を何度通っても、通るたびに 1 個のデータとして数えます。
+集めた値を平均したものが、$V^\pi(9)$ の見積もりです。
+
+4 本だけでは、平均は $+0.21$ で、正しい値 $-0.155$ から大きく外れています。
+4 本のうち 2 本がたまたまゴールに着いたからです。
+下の図は、試行を 2,000 本まで増やしたときの見積もりの動きです。
+集めた値を全部同じ重み（$1/n$）で平均すると（青）、データが増えるにつれて揺れが小さくなり、2,000 本で $-0.157$ と正しい値に近づきます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=0.52cm,y=0.5cm]
+  \fill[bookorange!15] (-0.3,-8.45) rectangle (12.4,-7.55);
+  \foreach \s/\r in {0/0,1/1,2/2,4/4,6/5,8/7,9/8,10/9,11/10}
+    \node[font=\scriptsize,anchor=east] at (-0.35,-\r) {\s};
+  \node[font=\scriptsize,anchor=east,text=bookgreen] at (-0.35,-3) {3 ゴール};
+  \node[font=\scriptsize,anchor=east,text=bookaccent] at (-0.35,-6) {7 穴};
+  \foreach \r in {0,...,10} \draw[black!12] (-0.3,-\r) -- (12.4,-\r);
+  \draw[->,black!60] (-0.3,-10.8) -- (12.6,-10.8) node[right,font=\scriptsize]{時刻 $t$};
+  \foreach \t in {0,2,...,12} \node[font=\scriptsize,anchor=north] at (\t,-10.8) {\t};
+  \node[font=\scriptsize,rotate=90] at (-3.6,-5) {マス（状態）};
+  \input{code/ch20/out/fig_mc_spacetime.tex}
+  % 終わりの印に試行の番号を添える（時刻 0〜3 で試行 1 と 2 の線が重なるため）
+  \node[font=\scriptsize,text=bookblue,anchor=west] at (4.15,-6.18) {試行 1};
+  \node[font=\scriptsize,text=bookorange,anchor=west] at (10.15,-6.06) {試行 2};
+  \node[font=\scriptsize,text=bookgreen,anchor=north] at (10,-3.1) {試行 3};
+  \node[font=\scriptsize,text=bookpurple,anchor=north] at (12,-3.0) {試行 4};
+  % 白い丸の試行の番号（時刻 1 と 3 では丸が重なるため、下に書き出す）
+  \node[font=\scriptsize,anchor=north east] at (-0.35,-11.75) {白い丸の試行};
+  \def\rlbA{\textcolor{bookblue}{1}}\def\rlbB{\textcolor{bookorange}{2}}%
+  \def\rlbC{\textcolor{bookgreen}{3}}\def\rlbD{\textcolor{bookpurple}{4}}%
+  \foreach \t/\k in {1/{\rlbA\\\rlbB\\\rlbD},2/{\rlbD},3/{\rlbC\\\rlbD},4/{\rlbC},5/{\rlbC}}
+    \node[font=\scriptsize,anchor=north,align=center,inner sep=1pt] at (\t,-11.75) {\k};
+  \node[font=\scriptsize,anchor=north west] at (5.6,-11.75) {（計 8 個）};
+  \node[font=\scriptsize,anchor=north west,align=left,draw=black!30,fill=white,inner sep=3pt]
+    at (12.9,0.2) {\textbf{状態 9 で集めた $G_t$}\\\input{code/ch20/out/fig_mc_spacetime_list.tex}};
+  \node[font=\scriptsize,anchor=north west,align=left] at (12.9,-6.6) {○ 状態 9 を通った時刻\\■ 終わり（ゴールか穴）};
+\end{tikzpicture}
+
+\medskip
+\begin{tikzpicture}
+\begin{axis}[height=0.3\linewidth,width=0.74\linewidth,xlabel={試行（エピソード）の数（対数目盛）},ylabel={$V^\pi(9)$ の見積もり},
+  xmode=log,xmin=2,xmax=2000,ymin=-0.55,ymax=0.15,legend pos=outer north east,legend cell align=left]
+\addplot[bookaccent!70,thin] table[col sep=comma,x=episode,y=alpha005]{code/ch20/out/fig_mc_spacetime.csv};
+\addplot[bookblue,very thick] table[col sep=comma,x=episode,y=mean]{code/ch20/out/fig_mc_spacetime.csv};
+\addplot[black,dashed,domain=2:2000,samples=2] {-0.155};
+\legend{定数 $\alpha=0.05$,$1/n$ で平均,正しい値}
+\end{axis}
+\end{tikzpicture}
+\caption{モンテカルロ法の時空図。上: 横軸が時刻、縦軸がマス。1 本の折れ線が 1 回の試行（ランダム方策）。
+縦軸は状態の番号を順に並べただけで、縦の距離は迷路での距離ではない。
+斜めの線は 1 歩の移動で、途中の行の状態は通っていない
+（たとえば試行 1 の時刻 3→4 は、状態 11 から上の穴 7 への 1 歩で、状態 9 の帯を横切るが、状態 9 は通っていない）。
+線が重ならないよう、試行ごとに少し上下にずらしたが、時刻 0〜3 の試行 1 と 2 は同じマスを通るので、線がほぼ重なる。
+時刻 1 と 3 では白い丸も重なるので、丸のある試行の番号を、試行の色で時刻の目盛りの下に書いた（白い丸は全部で 8 個）。
+図を見やすくするため、12 歩以内で終わり、状態 9 を通った試行を、先頭から順に 4 本選んで描いた。
+状態 9 を通るたびに（白い丸）、そこから先の収益 $G_t$ を集め、平均して $V^\pi(9)$ の見積もりにする。
+下: 試行を増やしたときの見積もり（上とは別の 2,000 本。選ばずに全部使った）。$1/n$ の平均は正しい値に近づき、定数 $\alpha$ の更新は上下し続ける。
+横軸は対数目盛なので、右ほど 1 目盛りに多くの試行が詰まり、赤い線の上下が密に見える。数十本より先では、上下の幅はほぼ変わらない。
+最初の 4 本では、定数 $\alpha$ の見積もりがたまたま $-0.153$ で、正しい値の破線とほぼ重なる。}
+\label{fig:rlb-mc-spacetime}
+\end{figure}
 
 平均は、データが届くたびに少しずつ更新できます。
 $n$ 個のデータ $x_1,\dots,x_n$ の平均を $\bar x_n$ と書きます。
@@ -1013,8 +1377,10 @@ $n$ 個のデータ $x_1,\dots,x_n$ の平均を $\bar x_n$ と書きます。
 そこへ 9 が届くと、新しい平均は $3+\frac13\,(9-3)=5$ で、計算し直した $(2+4+9)/3=5$ と同じです。
 
 $1/n$ を小さな定数 $\alpha$ に置き換えると、モンテカルロ法の更新式になります。
-定数にすると、古いデータの影響が少しずつ薄れるので、学習の途中で目標が変わっていく場合（この先で出てきます）にも追いかけられます。
-その代わり、見積もりは最後まで少し揺れ続けます。
+定数にすると、古いデータの影響が少しずつ薄れるので、学習の途中で目標が変わっていく場合（このあとの TD 学習と Q 学習がそうです）にも追いかけられます。
+その代わり、見積もりは最後まで少し上下し続けます。
+\figref{fig:rlb-mc-spacetime}の下の図の赤い線が、$\alpha=0.05$ の場合です。
+2,000 本の試行のあとでも、正しい値のまわりを上下しています。
 \begin{equation}
 V(s_t)\leftarrow V(s_t)+\alpha\,\bigl(G_t-V(s_t)\bigr)
 \label{eq:rlb-mc}
@@ -1035,6 +1401,9 @@ $\alpha$ は、勾配降下法の学習率（\chapref{ch:ml}）と同じ役割�
 $G_{t+1}$ はエピソードの最後まで分かりません。
 そこで、その代わりに、\textbf{いま持っている見積もり} $V(s_{t+1})$ を使います。
 すると、目標は $r_t+\gamma V(s_{t+1})$ となり、1 歩進むだけで計算できます。
+この目標には、学習中の見積もり $V$ が入っています。
+そのため、学習が進んで $V$ が変わると、目標も変わります。
+モンテカルロ法の小節で、$1/n$ の代わりに定数 $\alpha$ を使う理由として挙げた「目標が変わっていく場合」が、これです。
 
 \begin{definition}[TD 誤差と TD 学習]\label{def:rlb-td}
 次の $\delta_t$（デルタ）を\term{TD 誤差}{TD error}と呼びます。
@@ -1110,8 +1479,9 @@ TD 学習は、途中の予想を使って、1 歩ごとに直します。
     \node[lbl,align=center] at (0,-3.55) {実際の 1 歩だけ進み、\\先は見積もりで代用する};
   \end{scope}
 \end{tikzpicture}
-\caption{価値の更新に使う情報の違い。大きな丸が状態、黒い点が行動。
-動的計画法は環境のモデルを使ってすべての場合を調べる。モンテカルロ法と TD 学習は、実際に経験した 1 本の道だけを使う。}
+\caption{価値の更新に使う情報の違い（模式図）。青い丸が状態、黒い点が行動、灰色の四角が終端状態。
+動的計画法は、環境のモデルを使って 1 歩先のすべての場合を調べる（図では行動 2 つ、次の状態 2 つずつだけを描いた）。
+モンテカルロ法と TD 学習は、実際に経験した 1 本の軌跡だけを使う。}
 \label{fig:rlb-dp-mc-td}
 \end{figure}
 
@@ -1123,7 +1493,8 @@ TD 学習は、途中の予想を使って、1 歩ごとに直します。
 \begin{table}[tbp]
 \centering
 \caption{同じ 1 本の軌跡（\figref{fig:rlb-trajectory}）で、0 から始めた表 $V$ を更新した結果（$\alpha=0.05$、$\gamma=0.9$）。
-モンテカルロ法は通った状態のすべてを、TD 学習はゴールの手前の状態 2 だけを動かす。}
+モンテカルロ法は通った状態のすべてを、TD 学習はゴールの手前の状態 2 だけを動かす。
+更新後の値は、\figref{fig:rlb-mc-td-frames}と同じく小数第 4 位まで書いた（状態 8 は $0.05\times0.6561=0.032805$）。}
 \label{tab:rlb-mc-td-hand}
 \small
 \begin{tabular}{ccllll}
@@ -1132,26 +1503,51 @@ TD 学習は、途中の予想を使って、1 歩ごとに直します。
 \cmidrule(lr){3-4}\cmidrule(lr){5-6}
 時刻 $t$ & 状態 $s_t$ & 目標 $G_t$ & 更新後の $V(s_t)$ & 目標 $r_t+\gamma V(s_{t+1})$ & 更新後の $V(s_t)$ \\
 \midrule
-0 & 8 & 0.6561 & 0.032805 & 0 & 0 \\
-1 & 9 & 0.7290 & 0.03645 & 0 & 0 \\
-2 & 10 & 0.8100 & 0.0405 & 0 & 0 \\
-3 & 6 & 0.9000 & 0.045 & 0 & 0 \\
-4 & 2 & 1.0000 & 0.05 & 1 & 0.05 \\
+0 & 8 & 0.6561 & 0.0328 & 0 & 0.0000 \\
+1 & 9 & 0.7290 & 0.0365 & 0 & 0.0000 \\
+2 & 10 & 0.8100 & 0.0405 & 0 & 0.0000 \\
+3 & 6 & 0.9000 & 0.0450 & 0 & 0.0000 \\
+4 & 2 & 1.0000 & 0.0500 & 1 & 0.0500 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 モンテカルロ法の目標は、エピソードが終わってから計算した収益 $G_t$ です。
 たとえば状態 8 は、$0.05\times0.6561\approx0.033$ になります。
-通った 5 つの状態のすべてに、ゴールの知らせが届きます。
+通った 5 つの状態のすべてで、ゴールの報酬の影響を受けて、値が 0 から動きます。
 TD 学習では、はじめの 4 歩は、報酬も次の状態の見積もりも 0 なので、TD 誤差が 0 で、表は変わりません。
 最後の 1 歩だけ、TD 誤差が $1+0.9\times0-0=1$ になり、状態 2 が $0.05$ に変わります。
-同じ道をもう一度歩くと、状態 6 の TD 誤差が $0.9\times0.05=0.045$ になり、値は $0.05\times0.045=0.00225$ に変わります。
-ゴールの知らせは、1 エピソードに 1 マスずつしか手前へ伝わりません。
+同じ軌跡をもう一度経験すると、状態 6 の TD 誤差が $0.9\times0.05=0.045$ になり、値は $0.05\times0.045=0.00225$ に変わります。
+TD 学習では、ゴールの報酬の影響は、1 エピソードに 1 マスずつしか手前へ伝わりません（「伝わる」は、そのマスの値が 0 から動くことです）。
+
+\figref{fig:rlb-mc-td-frames}は、同じ軌跡を 3 回くり返し経験したときの表を、1 回ごとに並べたコマ送りの図です（\file{ch20/fig_dp_extra.py}）。
+赤い枠が、その回に値が変わったマスです。
+左のモンテカルロ法では、1 回目から 5 マスすべてに枠があり、回を重ねるごとに全部のマスが同じように増えます。
+右の TD 学習では、枠のあるマスが、1 回目は状態 2、2 回目は状態 6 と 2、3 回目は状態 10 と 6 と 2 と、1 回に 1 マスずつ左へ広がります。
+状態 8 と 9 は、3 回目でもまだ 0 です。
 どちらが速く正しい値に近づくのかは、次の小節で実際に測ります。
 
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1.05cm,y=0.62cm]
+  \foreach \j/\s in {0/8,1/9,2/10,3/6,4/2,6/8,7/9,8/10,9/6,10/2}
+    \node[font=\scriptsize] at (\j+0.5,0.35) {状態 \s};
+  \node[font=\small\bfseries] at (2.5,1.05) {モンテカルロ法};
+  \node[font=\small\bfseries] at (8.5,1.05) {TD 学習};
+  \foreach \k in {1,2,3}
+    \node[font=\scriptsize,anchor=east] at (-0.1,-\k+0.5) {\k 回目};
+  \input{code/ch20/out/fig_mc_td_frames.tex}
+  \draw[black!45,step=1] (0,-3) grid (5,0);
+  \draw[black!45,step=1] (6,-3) grid (11,0);
+\end{tikzpicture}
+\caption{同じ軌跡（$8\to9\to10\to6\to2\to$ゴール）を 3 回くり返し経験したときの表 $V$（$\alpha=0.05$、$\gamma=0.9$）。1 行が 1 回分のコマ。
+赤い枠は、その回に値が変わったマス。緑が濃いほど値が大きい。
+モンテカルロ法は毎回すべてのマスを動かし、TD 学習は 1 回に 1 マスずつゴールから遠くへ広げる。1 回目の行は\tabref{tab:rlb-mc-td-hand}と同じ値。}
+\label{fig:rlb-mc-td-frames}
+\end{figure}
+
 \subsection*{実装して比べる}
-\skimread{押さえる結論は 2 つです。この迷路では、はじめはモンテカルロ法が速く、最後は TD 学習のほうが小さい誤差まで下がります。モンテカルロ法の目標はばらつきが大きく、TD 学習の目標は、ばらつきが小さい代わりに偏りがあります。}
+\skimread{押さえる結論は 2 つです。この迷路では、学習率が小さめのときは、はじめはモンテカルロ法が速く、最後は TD 学習のほうが小さい誤差まで下がります。モンテカルロ法の目標はばらつきが大きく、TD 学習の目標は、ばらつきが小さい代わりに偏りがあります。}
 
 \snippet{モンテカルロ法と TD 学習の更新。違いは「何に寄せるか」だけ}{code:rlb-mc-td}{ch20/mc_td.py}{mc-td}
 
@@ -1169,28 +1565,50 @@ TD 学習では、はじめの 4 歩は、報酬も次の状態の見積もり�
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[height=0.36\linewidth,xlabel={エピソード数},ylabel={正しい $V^\pi$ との誤差},
-  xmin=0,xmax=300,ymin=0,ymax=0.3,legend pos=north east,legend columns=2]
-\addplot[bookaccent] table[col sep=comma,x=episode,y=mc005]{code/ch20/out/mc_td.csv};
-\addplot[bookblue] table[col sep=comma,x=episode,y=td005]{code/ch20/out/mc_td.csv};
-\addplot[bookaccent,dashed] table[col sep=comma,x=episode,y=mc002]{code/ch20/out/mc_td.csv};
-\addplot[bookblue,dashed] table[col sep=comma,x=episode,y=td002]{code/ch20/out/mc_td.csv};
-\legend{モンテカルロ法 $\alpha=0.05$,TD 学習 $\alpha=0.05$,モンテカルロ法 $\alpha=0.02$,TD 学習 $\alpha=0.02$}
+\begin{axis}[at={(0\linewidth,0)},height=0.3\linewidth,width=0.355\linewidth,
+  xlabel={エピソード数},ylabel={正しい $V^\pi$ との誤差},
+  title={\small $\alpha=0.02$},xmin=0,xmax=300,ymin=0,ymax=0.3,xtick={0,100,200,300},legend style={font=\scriptsize,at={(1.45,1.22)},anchor=south,draw=none,/tikz/every even column/.append style={column sep=5mm}},legend columns=2,legend cell align=left]
+\addplot[bookaccent,thick] table[col sep=comma,x=episode,y=mc002]{code/ch20/out/mc_td.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=episode,y=td002]{code/ch20/out/mc_td.csv};
+\legend{モンテカルロ法,TD 学習}
 \end{axis}
+\begin{axis}[at={(0.32\linewidth,0)},height=0.3\linewidth,width=0.355\linewidth,
+  xlabel={エピソード数},
+  title={\small $\alpha=0.05$},xmin=0,xmax=300,ymin=0,ymax=0.3,xtick={0,100,200,300},yticklabels={}]
+\addplot[bookaccent,thick] table[col sep=comma,x=episode,y=mc005]{code/ch20/out/mc_td.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=episode,y=td005]{code/ch20/out/mc_td.csv};
+\end{axis}
+\begin{axis}[at={(0.64\linewidth,0)},height=0.3\linewidth,width=0.355\linewidth,
+  xlabel={エピソード数},
+  title={\small $\alpha=0.1$},xmin=0,xmax=300,ymin=0,ymax=0.3,xtick={0,100,200,300},yticklabels={}]
+\addplot[bookaccent,thick] table[col sep=comma,x=episode,y=mc01]{code/ch20/out/mc_td.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=episode,y=td01]{code/ch20/out/mc_td.csv};
+\end{axis}
+
 \end{tikzpicture}
-\caption{モンテカルロ法と TD 学習の誤差（9 状態の誤差を 2 乗して平均し、平方根を取った値）。
-はじめはモンテカルロ法が速いが、途中で下げ止まる。TD 学習は、より小さい誤差まで下がる。}
+\caption{モンテカルロ法（赤の実線）と TD 学習（青の破線）の誤差（9 状態の誤差を 2 乗して平均し、平方根を取った値。100 回の実行の平均）。
+学習率 $\alpha$ だけを 3 通りに変え、それ以外（ランダム方策、$\gamma=0.9$、エピソード）は同じ。
+$\alpha$ を大きくすると、どちらも速く下がるが、下げ止まる高さが上がる。
+$\alpha=0.02$ と $0.05$ では、はじめはモンテカルロ法が速く、TD 学習があとで追い越す。$\alpha=0.1$ では、10 エピソードより前から TD 学習のほうが小さい。}
 \label{fig:rlb-mc-td}
 \end{figure}
 
-学習率 $\alpha=0.05$ の結果（実線）を見ます。
+学習率 $\alpha=0.05$ の結果（\figref{fig:rlb-mc-td}の中央）を見ます。
 はじめの 10 エピソードでは、モンテカルロ法の誤差（0.169）のほうが、TD 学習（0.208）より小さくなりました。
-モンテカルロ法は、1 エピソードで、通ったすべての状態に最後の結果を届けるからです。
+モンテカルロ法は、1 エピソードで、通ったすべての状態の値に最後の結果を反映させるからです（\figref{fig:rlb-mc-td-frames}）。
 TD 学習では、ゴールの報酬は 1 回に 1 マスずつしか伝わりません（\tabref{tab:rlb-mc-td-hand}で見たとおりです）。
 しかし、モンテカルロ法の誤差は 0.13 付近で下げ止まります。
-収益のばらつきが大きく、表が揺れ続けるためです。
+収益のばらつきが大きいうえに、$\alpha$ を定数にしているので、新しいエピソードのたびに表の値が上下し続けるためです（\figref{fig:rlb-mc-spacetime}の下の図の赤い線）。
+$1/n$ で平均すれば、この上下は小さくなっていきます（同じ図の青い線）。
 TD 学習は、300 エピソードで 0.052 まで下がりました。
-$\alpha$ を 0.02 に下げても、順位は同じでした（0.077 と 0.032）。
+
+学習率を変えると、結果はどう変わるでしょうか。
+\figref{fig:rlb-mc-td}の 3 枚を、左から順に比べてください（実行結果 \file{ch20/out/mc_td.txt}）。
+$\alpha$ を大きくすると、どちらの方法も速く下がりますが、下げ止まる高さが上がります。
+300 エピソード目の誤差は、モンテカルロ法が 0.077、0.128、0.187、TD 学習が 0.032、0.052、0.076 です。
+1 回の更新で大きく動かすほど、1 本のエピソードの偶然の影響を強く受けるからです。
+TD 学習がモンテカルロ法を追い越すのは、$\alpha=0.02$ では 138 エピソード目、$0.05$ では 33 エピソード目、$0.1$ では 8 エピソード目です。
+どの $\alpha$ でも、最後は TD 学習のほうが誤差が小さくなりました。
 ただし、これはこの問題での結果です。いつでも TD 学習が勝つわけではありません。
 
 2 つの方法の違いは、目標の性質にあります。
@@ -1210,7 +1628,7 @@ TD 学習の目標は、偶然が 1 歩分しか入らないので、ばらつ�
 \midrule
 環境のモデル & 必要 & 不要 & 不要 \\
 更新の目標 & 全部の場合の平均 & 実際の収益 $G_t$ & $r_t+\gamma V(s_{t+1})$ \\
-いつ更新できるか & 経験がなくても & エピソードのあと & 1 歩ごと \\
+いつ更新できるか & 経験なしで（表 $P$ だけで） & エピソードのあと & 1 歩ごと \\
 目標のばらつき & なし & 大きい & 小さい \\
 目標の偏り & 見積もりの分だけ & なし & 見積もりの分だけ \\
 \bottomrule
@@ -1241,7 +1659,7 @@ Q(s_t,a_t)\leftarrow Q(s_t,a_t)+\alpha\,\bigl[\,r_t+\gamma\max_{a'}Q(s_{t+1},a')
 \label{eq:rlb-q-learning}
 \end{equation}
 この方法が\term{Q 学習}{Q-learning}です\cite{watkins1992q}。
-状態と行動の組ごとに「得点の表」を持ち、1 歩ごとに 1 か所を書き換えます。
+状態と行動の組ごとに行動価値の数を並べた表を持ち、1 歩ごとに 1 か所を書き換えます。
 
 数で追ってみます。表はすべて 0 で、$\alpha=0.1$ とします。
 エージェントが、状態 2 で「右」を選んで、初めてゴールに入ったとします。
@@ -1285,9 +1703,9 @@ $Q(1,\text{右})$ は、$0.1\times0.09=0.009$ になります。
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[height=0.33\linewidth,xlabel={引いた回数},ylabel={最良の台を選んだ割合},
-  xmin=0,xmax=500,ymin=0,ymax=1,legend pos=south east]
-\addplot[bookgray] table[col sep=comma,x=step,y=b0]{code/ch20/out/bandit.csv};
+\begin{axis}[height=0.33\linewidth,width=0.62\linewidth,xlabel={引いた回数},ylabel={最良の台を選んだ割合},
+  xmin=0,xmax=500,ymin=0,ymax=1,legend pos=outer north east,legend cell align=left]
+\addplot[bookgray,dashed,thick] table[col sep=comma,x=step,y=b0]{code/ch20/out/bandit.csv};
 \addplot[bookblue] table[col sep=comma,x=step,y=b01]{code/ch20/out/bandit.csv};
 \addplot[bookaccent] table[col sep=comma,x=step,y=b05]{code/ch20/out/bandit.csv};
 \legend{$\varepsilon=0$（活用だけ）,$\varepsilon=0.1$,$\varepsilon=0.5$}
@@ -1301,7 +1719,10 @@ $Q(1,\text{右})$ は、$0.1\times0.09=0.009$ になります。
 \figref{fig:rlb-bandit}が結果です。
 $\varepsilon=0$ では、最良の台（当たる確率 0.8）を選ぶ割合が 31\% で止まります。
 最初に当たりが出た台の見積もりだけが正になり、あとはその台を引き続けるからです。
-当たりが出るまでは 5 台を同じ確率で引くので、それが最良の台である確率は $0.8/(0.2+0.8+0.5+0.3+0.6)=1/3$ です。
+外れた台の見積もりは 0 のままで、ほかの台と同点です。
+そのため、最初の当たりが出るまでは、毎回 5 台から等しい確率で選びます。
+すると、最初の当たりがどの台で出るかは、各台の当たる確率に比例します。
+それが最良の台である確率は $0.8/(0.2+0.8+0.5+0.3+0.6)=1/3$ です。
 実測の 31\% は、これに近い値です。
 $\varepsilon=0.1$ では、500 回目に 88\% まで上がります。
 $\varepsilon=0.5$ では、早く見つけますが、半分はでたらめに引くので、60\% で頭打ちです（でたらめに引いた半分のうち、5 回に 1 回は最良の台に当たります）。
@@ -1327,10 +1748,12 @@ $\alpha=0.1$、$\varepsilon=0.1$ で 2,000 エピソード学習した結果が�
   \renewcommand{\rlbfont}{\tiny}
   \input{code/ch20/out/fig_q_learned.tex}
   \rlbframe
+  \rlbnumstag
   \node[font=\small] at (2,0.2) {Q 学習で学んだ $Q$};
   \begin{scope}[shift={(4.25,0)}]
     \input{code/ch20/out/fig_q_star.tex}
     \rlbframe
+    \rlbnumstag
     \node[font=\small] at (2,0.2) {正しい $Q^\ast$（価値反復）};
   \end{scope}
 \end{tikzpicture}
@@ -1341,11 +1764,11 @@ $\alpha=0.1$、$\varepsilon=0.1$ で 2,000 エピソード学習した結果が�
 
 学習した $Q$ から作った貪欲方策は、9 状態のうち 8 状態で最適方策と同じ行動を選びます（違うのは、右下の状態 11 だけです）。
 スタートから貪欲方策で動いたときの価値は $0.545$ で、最適方策と同じです。
-エージェントは、遷移確率を一度も見ずに、最適な道を見つけました。
+エージェントは、遷移確率を一度も見ずに、最適方策と同じ進み方を見つけました。
 
 一方で、$Q$ の値は、場所によって正確さが大きく違います。
 上の道（状態 8、4、0、1、2）では、$Q^\ast$ に近い値です。
-状態 10 や 11 では、値がほとんど 0 のままで、$Q^\ast$ から大きく外れています（差は最大で 0.675）。
+状態 11 では、値がほとんど 0 のままです。状態 10 でも、最大の「上」が 0.27 で、正解（0.53）の半分ほどです。どちらも $Q^\ast$ から大きく外れています（差は最大で 0.675）。
 エージェントが上の道ばかり通り、右下にはめったに行かないからです。
 \secref{sec:rlb-what}で述べた「自分の行動がデータを変える」が、ここに現れています。
 
@@ -1360,7 +1783,7 @@ $\varepsilon=0.1$ と $0.3$ では、最適な価値 0.545 に近づきます。
 \begin{tikzpicture}
 \begin{axis}[height=0.33\linewidth,xlabel={エピソード数},ylabel={貪欲方策の価値 $V(8)$},
   xmin=0,xmax=2000,ymin=0.15,ymax=0.6,legend style={at={(0.98,0.5)},anchor=east},legend columns=2]
-\addplot[bookgray] table[col sep=comma,x=episode,y=eps0]{code/ch20/out/q_learning.csv};
+\addplot[bookgray,dashed,thick] table[col sep=comma,x=episode,y=eps0]{code/ch20/out/q_learning.csv};
 \addplot[bookblue] table[col sep=comma,x=episode,y=eps01]{code/ch20/out/q_learning.csv};
 \addplot[bookaccent] table[col sep=comma,x=episode,y=eps03]{code/ch20/out/q_learning.csv};
 \addplot[black,dashed,domain=0:2000,samples=2] {0.5452};
@@ -1383,15 +1806,15 @@ $Q$ の表が 0 から始まることと、報酬が 0 以上の道を一度見�
 なお、Q 学習のエージェントは、歩くときにはときどきでたらめに動きます（$\varepsilon$-貪欲）。
 しかし、表に書き込む目標は、$\max$ を使った「このあと最善の行動を取り続けたら」という値です。
 このように、データを集める方策と学習の対象の方策が違う方法を、\term{オフポリシー}{off-policy}の方法と呼びます。
-次章では、これとは逆に、データを集めた方策そのものを良くしていく方法が主役になります。
+次章では、これとは逆に、データを集めた方策そのものを良くしていく方法が中心になります。このような方法を、オンポリシー（on-policy）の方法と呼びます（\chapref{ch:policy-gradient}）。
 
 ここまでに出てきた方法を、\tabref{tab:rlb-methods}に整理します。
-縦は、環境のモデルを使うかどうか、横は、何を求めるかの違いです。
+行（横の並び）は環境のモデルを使うかどうか、列は何を求めるかの違いです。
 右下の Q 学習が、この章の到達点です。
 
 \begin{table}[tbp]
 \centering
-\caption{この章の方法の整理。上の行は遷移確率の表を使い、下の行は経験だけを使う。
+\caption{この章の方法の整理。上の行は遷移確率の表を使い（本章では、モデルが与えられた場合の動的計画法）、下の行は経験だけを使う。
 右の列の方法は、どれも「価値が最大の行動を選ぶ」操作を含む。}
 \label{tab:rlb-methods}
 \small
@@ -1399,7 +1822,7 @@ $Q$ の表が 0 から始まることと、報酬が 0 以上の道を一度見�
 \toprule
  & 決めた方策の価値を測る & 最適な方策を求める \\
 \midrule
-環境のモデルを使う（動的計画法） & 反復方策評価 & 方策反復、価値反復 \\
+環境のモデルを使う（モデルベース） & 反復方策評価 & 方策反復、価値反復 \\
 経験だけから学ぶ（モデルフリー） & モンテカルロ法、TD 学習 & Q 学習 \\
 \bottomrule
 \end{tabular}
@@ -1421,7 +1844,7 @@ Q 学習は、行動価値の表を 1 歩ごとに書き換えて、環境のモ
 囲碁の局面は約 $10^{170}$ 通りあります。
 ミニGPT の語彙は 4,096 種類です。
 状態を「ここまでのトークン列」とすると、長さ 10 の列だけで $4096^{10}\approx10^{36}$ 通りになります。
-表を置く場所がありません。
+これだけの数を並べた表は、計算機のメモリに置けません。
 2 つ目は、\textbf{経験していない状態については何も分からない}ことです。
 \figref{fig:rlb-q-table}の右下がそうでした。
 表の各マスは独立なので、隣のマスで学んだことが役に立ちません。
@@ -1437,37 +1860,56 @@ Q 学習は、行動価値の表を 1 歩ごとに書き換えて、環境のモ
 状態 $s$ を、$s$ 番目だけが 1 の one-hot ベクトルで表します（\chapref{ch:ml}の one-hot 表現と同じです）。
 これを、バイアスなしの線形層に入れます。
 線形層は、\chapref{ch:nn}の全結合層（\code{nn.Linear}）のことです。
-入力は $s$ 番目だけが 1 なので、重み行列を掛けると、$s$ 列目だけが残ります。
-出力は、重み行列の $s$ 列目、つまり「表の $s$ 行目」そのものです。
+線形層の重み行列を $\mW$ と書きます。形は 4 行 $\times$ 12 列（行動の数 $\times$ 状態の数）です。
+入力は $s$ 番目だけが 1 なので、$\mW$ を掛けると、$s$ 列目だけが残ります。
+出力は、$\mW$ の $s$ 列目、つまり「表の $s$ 行目」そのものです。
+$\mW$ は、表を転置したもの（行と列を入れ替えたもの）になっています。
+\figref{fig:rlb-table-to-net}では、$s=8$ の場合を、左右の橙のマスで示しました。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-  \node[lbl] at (1.5,0.85) {表：行を 1 つ取り出す};
+  % 左: Q の表（12 行 × 4 列。壁と終端状態の行は使わない）
+  \node[lbl] at (0.8,0.75) {表 $Q$（12 行 $\times$ 4 列）};
   \foreach \c/\lab in {0/上,1/右,2/下,3/左}
-    \node[font=\scriptsize] at (0.6+0.6*\c,0.42) {\lab};
-  \foreach \r/\lab in {0/0,1/4,2/8,3/11} {
-    \node[font=\scriptsize,anchor=east] at (0.25,-0.5*\r) {状態 \lab};
-    \foreach \c in {0,1,2,3}
-      \node[cell,minimum width=6mm,minimum height=5mm,fill=white] at (0.6+0.6*\c,-0.5*\r) {};}
-  \foreach \c in {0,1,2,3}
-    \node[cell,minimum width=6mm,minimum height=5mm,fill=figorange] at (0.6+0.6*\c,-1.0) {};
-  \node[font=\Large] at (3.6,-0.75) {$=$};
-  \begin{scope}[xshift=4.8cm]
-    \node[lbl] at (3.0,0.85) {ネットワーク：one-hot ベクトルを線形層に入れる};
-    \foreach \i in {0,...,11}
-      \node[cell,minimum width=3mm,minimum height=1.6mm,fill=white] at (0,0.13-0.16*\i) {};
-    \node[cell,minimum width=3mm,minimum height=1.6mm,fill=bookblue] at (0,0.13-0.16*8) {};
-    \node[font=\scriptsize,align=center] at (0,-2.2) {状態 8 の\\one-hot};
-    \node[purplebox,minimum height=12mm] (w) at (2.3,-0.75) {線形層\\{\footnotesize 重み $4\times12$ 個}};
-    \draw[arr] (0.3,-0.75) -- (w.west);
-    \foreach \c in {0,1,2,3}
-      \node[cell,minimum width=6mm,minimum height=5mm,fill=figorange] (o\c) at (4.6+0.6*\c,-0.75) {};
-    \draw[arr] (w.east) -- (o0.west);
-    \node[font=\scriptsize] at (5.5,-1.3) {$Q(8,\text{上}),\dots,Q(8,\text{左})$};
+    \node[font=\tiny] at (0.2+0.4*\c,0.22) {\lab};
+  \foreach \r in {0,...,11} {
+    \node[font=\tiny,anchor=east] at (-0.03,-0.25*\r-0.125) {\r};
+    \foreach \c in {0,...,3}
+      \draw[black!45,fill=white] (0.4*\c,-0.25*\r) rectangle ++(0.4,-0.25);}
+  \foreach \r in {3,5,7} \foreach \c in {0,...,3}
+    \draw[black!45,fill=black!12] (0.4*\c,-0.25*\r) rectangle ++(0.4,-0.25);
+  \foreach \c in {0,...,3}
+    \draw[black!60,fill=figorange] (0.4*\c,-2.0) rectangle ++(0.4,-0.25);
+  \node[font=\tiny,anchor=west] at (1.65,-2.125) {← 状態 8 の行};
+  % 右: 重み行列 W（4 行 × 12 列）と one-hot ベクトル x
+  \begin{scope}[xshift=3.3cm]
+    \node[lbl] at (1.8,0.75) {線形層: $\mW\vx$};
+    \foreach \cc in {0,...,11} {
+      \node[font=\tiny] at (0.3*\cc+0.15,-0.7) {\cc};
+      \foreach \rr in {0,...,3}
+        \draw[black!45,fill=white] (0.3*\cc,-0.9-0.3*\rr) rectangle ++(0.3,-0.3);}
+    \foreach \rr in {0,...,3}
+      \draw[black!60,fill=figorange] (2.4,-0.9-0.3*\rr) rectangle ++(0.3,-0.3);
+    \foreach \rr/\lab in {0/上,1/右,2/下,3/左}
+      \node[font=\tiny,anchor=east] at (-0.03,-1.05-0.3*\rr) {\lab};
+    \node[font=\scriptsize,align=center] at (1.8,-0.2) {重み行列 $\mW$（4 行 $\times$ 12 列）};
+    % one-hot
+    \foreach \r in {0,...,11} {
+      \draw[black!45,fill=white] (3.9,-0.25*\r) rectangle ++(0.3,-0.25);
+      \node[font=\tiny,anchor=west] at (4.22,-0.25*\r-0.125) {\r};}
+    \draw[black!60,fill=bookblue] (3.9,-2.0) rectangle ++(0.3,-0.25);
+    \node[font=\scriptsize,align=center] at (4.05,-3.4) {状態 8 の\\one-hot $\vx$};
+    \node[font=\large] at (4.95,-1.5) {$=$};
+    \foreach \rr in {0,...,3}
+      \draw[black!60,fill=figorange] (5.35,-0.9-0.3*\rr) rectangle ++(0.4,-0.3);
+    \node[font=\scriptsize,align=left,anchor=west] at (5.85,-1.5) {$Q(8,\text{上})$\\$\ \ \vdots$\\$Q(8,\text{左})$};
   \end{scope}
+  \draw[->,dashed,thick,bookorange] (1.65,-2.35) to[out=-30,in=-90] node[below,font=\scriptsize,pos=0.4,text=black]{同じ 4 つの数（$\mW$ は表の転置）} (5.85,-2.1);
 \end{tikzpicture}
-\caption{表は、one-hot ベクトルを入れる線形層と同じもの。線形層を深いネットワークに取り替えれば、表に収まらない問題も扱える。}
+\caption{表は、one-hot ベクトルを入れる線形層と同じもの。表 $Q$ の状態 8 の行（左の橙）と、重み行列 $\mW$ の 8 列目（右の橙。列の番号は 0 から）は、同じ 4 つの数。
+one-hot ベクトル $\vx$ は 8 番目だけが 1 なので、$\mW\vx$ は $\mW$ の 8 列目を取り出す。灰色の行は、壁と終端状態の欄で使わない。
+線形層を深いネットワークに取り替えれば、表に収まらない問題も扱える。}
 \label{fig:rlb-table-to-net}
 \end{figure}
 
@@ -1497,38 +1939,58 @@ PyTorch で確かめます。
 線形層を深いネットワークに取り替え、Q 学習をゲームの画面に使えるようにしたのが、\term{DQN}{deep Q-network}です\cite{mnih2015human}。
 49 種類のテレビゲームの多くで、人間の熟練者に並ぶ得点を出しました。
 ネットワークで Q 学習をすると学習が不安定になりやすいので、過去の経験をためておいて何度も学習に使う\jterm{経験再生}などの工夫を加えています。
-本書では、DQN の実装には進みません。LLM に向いているのは、別の道だからです。
+本書では、DQN の実装には進みません。LLM に向いているのは、次に述べる別の方法（方策ベース）だからです。
 
 \subsection*{価値ベースと方策ベース}
 
 この章の方法は、どれも「まず価値を学び、価値が最大の行動を選ぶ」という順で方策を作りました。
-この流儀を\term{価値ベース}{value-based}の方法と呼びます。
-これに対して、方策そのものをパラメータを持つ関数で表し、直接良くしていく流儀を、\term{方策ベース}{policy-based}の方法と呼びます（\figref{fig:rlb-map}）。
+この考え方の方法を\term{価値ベース}{value-based}の方法と呼びます。
+これに対して、方策そのものをパラメータを持つ関数で表し、直接良くしていく方法を、\term{方策ベース}{policy-based}の方法と呼びます（\figref{fig:rlb-map}、\tabref{tab:rlb-vb-pb}）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-  \node[lbl,anchor=west] at (0,0.75) {\textbf{価値ベース}（この章）};
+  \node[lbl,anchor=west] at (0,0.95) {\textbf{価値ベース}（この章）};
   \node[box,minimum width=21mm,minimum height=10mm] (dp) at (1.05,0) {動的計画法};
   \node[box,minimum width=27mm,minimum height=10mm] (td) at (5.15,0) {モンテカルロ法\\TD 学習};
   \node[box,minimum width=16mm,minimum height=10mm] (ql) at (8.9,0) {Q 学習};
   \node[box,minimum width=14mm,minimum height=10mm] (dqn) at (11.8,0) {DQN};
-  \draw[arr] (dp) -- node[above,font=\scriptsize]{経験だけで} (td);
+  \draw[arr] (dp) -- node[above,font=\scriptsize,align=center]{環境のモデル\\を使わず} (td);
   \draw[arr] (td) -- node[above,font=\scriptsize]{最適方策を} (ql);
   \draw[arr] (ql) -- node[above,font=\scriptsize]{表を関数に} (dqn);
   \node[lbl,anchor=west] at (0,-1.45) {\textbf{方策ベース}（次章）};
   \node[purplebox,minimum width=25mm,minimum height=10mm] (pg) at (1.25,-2.2) {方策勾配法\\{\footnotesize REINFORCE}};
   \node[purplebox,minimum width=31mm,minimum height=10mm] (ac) at (5.15,-2.2) {アクター・クリティック\\PPO};
   \node[greenbox,minimum width=40mm,minimum height=10mm] (llm) at (10.5,-2.2) {LLM の強化学習\\{\footnotesize \chapref{ch:rl-llm}、\chapref{ch:agentic-rl}}};
-  \draw[arr] (pg) -- (ac); \draw[arr] (ac) -- (llm);
+  \draw[arr] (pg) -- node[below,font=\scriptsize,align=center]{価値も\\補助に学ぶ} (ac);
+  \draw[arr] (ac) -- node[below,font=\scriptsize,align=center]{LLM に\\当てはめる} (llm);
   \draw[darr] (td.south) -- node[right,lbl,pos=0.45]{価値関数と TD 誤差を、方策の学習の助けに使う} (ac.north);
 \end{tikzpicture}
-\caption{強化学習の方法の地図。上の段は、価値を学んでから方策を作る方法で、この章で歩いた。
-下の段は、方策を直接良くする方法で、次章から進む（下の段の名前は次章で説明する）。価値関数と TD 誤差は、下の段でも脇役として使われる。}
+\caption{強化学習の方法の関係図。上の段は、価値を学んでから方策を作る方法で、この章で扱った。矢印に添えた語は、左の方法から右の方法へ進むときに、何を変えるか（加えるか）を示す。
+下の段は、方策を直接良くする方法で、次章から扱う（下の段の名前は次章で説明する）。
+下の段の右の矢印は、方法を変えるのではなく、アクター・クリティックや PPO を LLM の学習に使うことを示す。価値関数と TD 誤差は、下の段でも補助として使われる（破線）。}
 \label{fig:rlb-map}
 \end{figure}
 
-LLM には、方策ベースが向いています。
+\begin{table}[tbp]
+\centering
+\caption{価値ベースと方策ベースの比較。方策ベースの方法も、価値関数を補助に使うことが多い（\figref{fig:rlb-map}の破線）。}
+\label{tab:rlb-vb-pb}
+\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+ & 価値ベース（この章） & 方策ベース（次章から） \\
+\midrule
+学習するもの & 価値 $Q(s,a)$ の表や関数 & 方策 $\pitheta(a\mid s)$ のパラメータ $\vtheta$ \\
+行動の選び方 & 価値が最大の行動（$\argmax$） & 方策の確率に従ってサンプリング \\
+できる方策 & 決定的（学習中は $\varepsilon$-貪欲） & 確率的なまま表せる \\
+LLM に使うと & 出力の意味を「収益の見積もり」に変えて学び直す & 次のトークンの確率を、そのまま方策に使える \\
+例 & Q 学習、DQN & REINFORCE、PPO（価値も補助に学ぶ） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+LLM には、方策ベースが向いています（価値関数を補助に使う方法も含みます。\figref{fig:rlb-map}の破線）。
 いちばんの理由は、\textbf{LLM が、はじめから方策の形をしている}ことです。
 トークン列（状態）を受け取り、次のトークン（行動）の確率を出します。
 しかも、事前学習と SFT を終えた、すでにかなり良い方策です。
@@ -1550,25 +2012,64 @@ LLM には、方策ベースが向いています。
  & 本章の格子世界 & DQN（ゲーム） & AlphaGo（囲碁） & LLM の強化学習 \\
 \midrule
 状態 & マスの番号（11 個） & 画面 4 枚分の画素 & 盤面（約 $10^{170}$ 通り） & トークン列 \\
-行動 & 4 個 & 最大 18 個 & 最大 361 個 & 数千〜数十万個 \\
-価値や方策 & 36 個の数の表 & 畳み込みネットワーク & 深いネットワークと先読み & Transformer \\
+行動 & 4 個 & 最大 18 個 & 最大 361 個 & 語彙の数（数千〜数十万個） \\
+価値や方策 & 36 個（9 状態 $\times$ 4 行動）の数の表 & 畳み込みネットワーク & 深いネットワークと先読み & Transformer \\
 学習の量 & 2,000 エピソード（数秒） & 1 ゲームあたり 5,000 万画面 & 棋譜 3,000 万局面のあと自己対戦 & \chapref{ch:rl-llm}で扱う \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
+\subsection*{迷路と LLM の対応}
+
+規模だけでなく、問題の中身も比べておきます。
+\tabref{tab:rlb-maze-llm}は、この章の格子世界と、\chapref{ch:rl-llm}で強化学習にかける計算アシスタントを、項目ごとに対応させたものです。
+計算アシスタントでは、利用者が「12+35は？」と尋ね、LLM が「47です。」と 1 トークンずつ答えます。
+この 1 回の応答が、1 エピソードに当たります。
+詳しくは\secref{sec:rl-map}で、1 回の応答をトークン単位の MDP として書き下します。
+
+\begin{table}[tbp]
+\centering
+\caption{格子世界と、計算アシスタントの強化学習（\chapref{ch:rl-llm}）の対応。計算アシスタントの欄は\secref{sec:rl-map}と\secref{sec:rl-exp}の設定。}
+\label{tab:rlb-maze-llm}
+\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+ & 格子世界（この章） & 計算アシスタント（\chapref{ch:rl-llm}） \\
+\midrule
+目的 & 穴を避けてゴールに早く着く（期待収益 $J=V^\pi(8)$ を最大に） & 質問に正しく答える（報酬の期待値、つまり正答の確率を最大に） \\ \addlinespace
+状態 & いまのマス（11 個） & 質問と、ここまでに書いたトークンの列 \\ \addlinespace
+行動 & 上・右・下・左の 4 つ & 次に書くトークン 1 つ（語彙の 4,096 通り） \\ \addlinespace
+遷移 & 確率的（床が滑る） & 決定的（選んだトークンを列の末尾に付ける） \\ \addlinespace
+報酬 & ゴールに入れば $+1$、穴なら $-1$ & 応答を書き終えたあとに 1 回だけ（正解なら 1、不正解なら 0） \\ \addlinespace
+エピソード & スタートから、ゴールか穴に着くまで & 1 つの質問への 1 回の応答（終わりの記号 \code{<|end|>} を書くまで） \\ \addlinespace
+集めるデータ & 歩いた軌跡（状態・行動・報酬の列） & 1 つの質問に何本も生成させた応答と、その採点 \\ \addlinespace
+学習するもの & $Q$ の表（そこから貪欲方策を作る） & 方策そのもの（LLM のパラメータ $\vtheta$。方策勾配法で更新） \\ \addlinespace
+評価 & スタートの価値 $V(8)$ & 学習に使っていない問題での正答率 \\ \addlinespace
+状態の再訪 & 同じマスに何度も来る & 1 つのエピソードの中では、同じ状態に二度と来ない（列が 1 歩ごとに長くなる） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+表から、迷路との大きな違いが 2 つ読み取れます。
+1 つ目は、遷移が決定的で、分かっていることです。
+それでも動的計画法が使えないのは、状態の数が天文学的で、表を作れないからです（この節の初め）。
+2 つ目は、報酬が応答の最後に 1 回だけ届くことです。
+どのトークンが正解に役立ったのかを割り振る信用割当の問題（\secref{sec:rlb-what}）が、迷路よりずっと大きくなります。
+
 この節で分かったことをまとめます。
 表は one-hot ベクトルを入れる線形層と同じもので、ネットワークに取り替えれば大きな問題に進めます。
-LLM ははじめから方策の形をしているので、方策を直接良くする方法が本命になります。
+LLM ははじめから方策の形をしているので、方策を直接良くする方法を主に使います。
+迷路と LLM の強化学習は、遷移が決定的なことと、状態の数が天文学的なことで、大きく違います。
 
 \begin{summary}
 \item 強化学習は、正解の代わりに報酬だけを手がかりに学びます。報酬が遅れて届くことと、自分の行動がデータを変えることが、教師あり学習との違いです。
 \item 問題は、マルコフ決定過程 $(\calS,\calA,P,r,\gamma)$ として書きます。マルコフ性とは、先のことが「いまの状態と行動」だけで決まることです。
+\item 確率モデルは 2 つあります。環境の遷移確率 $P(s'\mid s,a)$ は与えられたまま変わらず、学習で良くするのは方策 $\pi(a\mid s)$ です。方策が決まると、軌跡（マスの列）の確率 $p_\pi(\tau)$ が決まります。目的は、期待収益 $J(\pi)=\E[G_0]$ の最大化です。
 \item 方策 $\pi(a\mid s)$ の良さは、収益 $G_t=r_t+\gamma G_{t+1}$ の期待値である価値関数 $V^\pi$、$Q^\pi$ で測ります。
 \item ベルマン方程式は、いまの状態の価値を「報酬 $+$ $\gamma\times$次の状態の価値」の平均（期待方程式）や最大（最適方程式）で表します。
 \item 遷移確率が分かっていれば、方策反復や価値反復で最適方策が求まります。分からなくても、モンテカルロ法や TD 学習（TD 誤差 $\delta_t=r_t+\gamma V(s_{t+1})-V(s_t)$ で 1 歩ごとに直す）で、経験から価値を学べます。
 \item Q 学習は、$\varepsilon$-貪欲法で探索しながら行動価値の表を学び、環境のモデルなしで最適方策を見つけます。
-\item 表は大きな問題には使えません。LLM ははじめから方策の形をしているので、次章の方策ベースの方法が本命です。
+\item 表は大きな問題には使えません。LLM ははじめから方策の形をしているので、次章の方策ベースの方法を主に使います。
 \end{summary}
 
 \section*{次の章へ}
@@ -1579,7 +2080,7 @@ LLM ははじめから方策の形をしているので、方策を直接良く�
 ところが、報酬は「サンプリングした行動の結果」として届くので、そのままでは微分できません。
 計算アシスタントが「57です。」と答えて返ってくるのは、「不正解」という判定 1 つです。
 この判定は、パラメータの式になっていないので、誤差逆伝播で勾配を求められません。
-次の\chapref{ch:policy-gradient}では、この壁を越える方策勾配法を導き、REINFORCE から PPO までを実装します。
+次の\chapref{ch:policy-gradient}では、この問題を解決する方策勾配法を導き、REINFORCE から PPO までを実装します。
 
 \section*{さらに学ぶために}
 

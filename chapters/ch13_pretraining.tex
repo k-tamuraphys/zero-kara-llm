@@ -2,13 +2,13 @@
 \bookmap{4}
 
 \begin{chapterlead}
-\textbf{ここまで}: ミニGPT の設計図を完成させ（\chapref{ch:transformer}、\chapref{ch:modern-arch}）、
+\textbf{ここまで}: ミニGPT の構造を決め（\chapref{ch:transformer}、\chapref{ch:modern-arch}）、
 1 枚の計算装置で学習をどう速くするかを考えました（\chapref{ch:gpu}）。\\[1mm]
 \textbf{この章の問い}: 実際に基盤モデルを一つ作るには、データの用意から学習の監視まで、何をどの順にやればよいのでしょうか。
 「続きを当てる」だけで、本当に計算までできるようになるのでしょうか。\\[1mm]
 \textbf{この章を終えると}:
 \begin{itemize}
-\item 事前学習の全工程（収集・整形・フィルタ・重複除去・トークン化・学習・監視・保存・評価）を一枚の図で説明できます。
+\item 事前学習の全工程（収集・整形・品質フィルタと重複除去・混合・トークン化、窓の切り出し・学習・監視・保存・評価）を一枚の図で説明できます。
 \item 本書の基盤モデル \file{base.pt} を作ったスクリプトを、1 行ずつ読んで自分で再現できます。
 \item 学習曲線と勾配ノルムを読み、学習率の良し悪しや異常を見分けられます。
 \item チェックポイントから「止めなかったのと同じ」学習を再開できます。
@@ -29,10 +29,10 @@
 どれも小さな例で動くことを確かめました。
 しかし、部品がそろっただけでは、まだ「基盤モデル」は手元にありません。
 
-料理にたとえると、包丁の使い方と火加減を覚えた段階です。
-一皿を作るには、材料を仕入れて洗い、順番に火を通し、焦げないよう見張る必要があります。
-LLM の\term{事前学習}{pre-training}も同じで、文章を集めて整え、トークン列に直し、何千ステップも学習を回しながら見張ります
-（ただし料理と違い、「味見」にあたる評価そのものが難しい問題です）。
+一つのモデルを作り上げるには、部品のほかに、部品を使う手順が要ります。
+LLM の\term{事前学習}{pre-training}では、文章を集めて整え、トークン列に直し、何千ステップも学習を回しながら、途中で異常がないかを見張ります。
+最後に、できたモデルの出来ばえを評価します
+（何をもって「良いモデル」とするかを決める評価そのものも、難しい問題です）。
 
 この章では、本書の基盤モデル \file{base.pt} を作った実際の手順を、データ収集から評価まで一段ずつたどります。
 \file{base.pt} は\chapref{ch:intro}で「どうも仕方が」の続きを当てたモデルで、漱石の小説と計算ドリルを「続きを当てる」問題として学んだだけでした。
@@ -41,12 +41,15 @@ LLM の\term{事前学習}{pre-training}も同じで、文章を集めて整え�
 
 \section{事前学習の全体像}\label{sec:pt-overview}
 
-細部に入る前に、全体の地図を広げましょう。
+細部に入る前に、工程の全体を 1 枚の図で見ておきましょう。
 この節の問いは、「事前学習とは、どんな工程がどの順に並んだものか」です。
 
 \figref{fig:pt-pipeline}が、事前学習の流れです。
-左上の「収集」から始まり、右下の「評価」で終わります。
+左上の「収集」から始まり、上の段を右へ進みます。
+右端で下の段に移り、下の段は右から左へ進んで、左下の「評価」で終わります。
 上の段が一度作れば何度も使える\textbf{データを作る工程}、下の段が設定を変えるたびに回し直す\textbf{学習の工程}です。
+「監視」と「保存」は、学習ループの下に置きました。
+学習が終わってからするのではなく、学習の途中で数百ステップごとにくり返す作業だからです。
 
 \begin{figure}[tbp]
 \centering
@@ -56,21 +59,27 @@ LLM の\term{事前学習}{pre-training}も同じで、文章を集めて整え�
 \node[font=\footnotesize\bfseries,anchor=west] at (-12,14) {データを作る（一度だけ）};
 \node[s] (c) at (0,0) {収集\\{\scriptsize 青空文庫}};
 \node[s] (f) at (25,0) {整形\\{\scriptsize ルビ除去}};
-\node[s] (q) at (50,0) {フィルタ\\{\scriptsize 重複除去}};
+\node[s] (q) at (50,0) {品質フィルタ\\重複除去\\{\scriptsize（本書は実演のみ）}};
 \node[s] (m) at (75,0) {混合\\{\scriptsize 小説＋ドリル}};
 \node[s] (k) at (100,0) {トークン化\\{\scriptsize uint16 で保存}};
-\node[font=\footnotesize\bfseries,anchor=west] at (-12,-14) {学習させる（何度も回す）};
+\node[font=\footnotesize\bfseries,anchor=west] at (-12,-15) {学習させる（何度も回す）};
 \node[t] (b) at (100,-28) {窓を切り出す\\{\scriptsize \code{get_batch}}};
-\node[t] (l) at (75,-28) {学習ループ\\{\scriptsize \code{train_lm}}};
-\node[t] (w) at (50,-28) {監視\\{\scriptsize 損失・勾配}};
-\node[t] (p) at (25,-28) {保存\\{\scriptsize チェックポイント}};
+\node[t,minimum width=46mm] (l) at (62.5,-28) {学習ループ\\{\scriptsize \code{train_lm}（4,000 ステップ）}};
 \node[t] (e) at (0,-28) {評価\\{\scriptsize 生成・正答率}};
-\foreach \a/\b in {c/f,f/q,q/m,m/k,b/l,l/w,w/p,p/e} \draw[arr] (\a) -- (\b);
+\node[t] (w) at (45,-48) {監視\\{\scriptsize 損失・勾配}};
+\node[t] (p) at (80,-48) {保存\\{\scriptsize チェックポイント}};
+\foreach \a/\b in {c/f,f/q,q/m,m/k,b/l,l/e} \draw[arr] (\a) -- (\b);
 \draw[arr] (k) -- (b);
-\draw[darr] (w.north) to[out=110,in=70,looseness=1.6] node[lbl,above]{異常なら設定を直す} (l.north);
+\draw[arr] (42,-32.5) -- (42,-43.5);
+\draw[darr] (48,-43.5) -- node[lbl,right]{異常なら設定を直す} (48,-32.5);
+\draw[arr] (80,-32.5) -- (80,-43.5);
+\node[lbl,anchor=east] at (41,-38) {数百ステップごと};
+\node[lbl,anchor=west] at (81,-38) {数百ステップごと};
 \end{tikzpicture}
 \caption{事前学習の全体像。上の段（青）でデータを一度だけ作り、下の段（緑）で学習を何度も回す。
-破線は、監視で異常を見つけたら設定を直して学習をやり直すことを表す。}
+下の段は右から左へ進む。監視と保存は、学習ループの途中で数百ステップごとに行う（下に吊り下げた 2 つの箱）。
+破線は、監視で異常を見つけたら設定を直して学習をやり直すことを表す。
+実際の LLM では、学習の結果を見てデータの混合やフィルタを作り直すこともある。}
 \label{fig:pt-pipeline}
 \end{figure}
 
@@ -80,7 +89,7 @@ LLM の\term{事前学習}{pre-training}も同じで、文章を集めて整え�
 
 \begin{table}[tbp]
 \centering
-\caption{本書の基盤モデルと、公開された事前学習の規模の比較。トークン数は学習中に読んだ延べの数。
+\caption{本書の基盤モデルと、公開された事前学習の規模の比較。トークン数は学習中に読んだ延べの数で、同じ文章を何度も読めばその回数だけ数える（用意したデータの大きさで比べた表は、\chapref{ch:intro}の\tabref{tab:intro-scale}。本書のデータは約 250 万トークン）。
 本書の値は \file{code/README.md}、他は\cite{dubey2024llama3,liu2024deepseekv3,karpathy2022nanogpt}による。}
 \label{tab:pt-data-scale}
 \footnotesize
@@ -99,7 +108,7 @@ DeepSeek-V3 & 6,710 億（MoE） & 14.8 兆 & H800 2,048 枚 & 2 か月弱 \\
 
 表の A100、H100、H800 は NVIDIA の GPU の製品名（\chapref{ch:infra}）、MoE は\chapref{ch:modern-arch}の混合エキスパートです。
 どちらも、ここでは名前として読み流してかまいません。
-学習トークン数で比べると、Llama 3 は本書の約 100 万倍です（$15.6\text{ 兆}\div 1{,}640\text{ 万}\approx 95$ 万）。
+学習トークン数で比べると、Llama 3.1 405B は本書の約 100 万倍です（$15.6\text{ 兆}\div 1{,}640\text{ 万}\approx 95$ 万）。
 それでも、工程の一つひとつは本書のコードと同じ考え方で動いています。
 以下では図の左上から順に進み、\secref{sec:pt-base}で実際に \file{base.pt} ができる様子を見ます。
 
@@ -133,23 +142,23 @@ DeepSeek-V3 & 6,710 億（MoE） & 14.8 兆 & H800 2,048 枚 & 2 か月弱 \\
 \node[graybox,font=\scriptsize,align=left,inner sep=1.5mm,text width=113mm] (raw) at (0,0) {%
 \textcolor{bookaccent}{こころ}\\
 \textcolor{bookaccent}{夏目漱石}\\
-\textcolor{bookaccent}{-------------------------------------------}\\
+\textcolor{bookaccent}{\foreach \i in {1,...,43}{-\kern0.12em}}\\
 \textcolor{bookaccent}{【テキスト中に現れる記号について】}\\
 \textcolor{bookaccent}{《》：ルビ}\\
-\textcolor{bookaccent}{-------------------------------------------}\\
+\textcolor{bookaccent}{\foreach \i in {1,...,43}{-\kern0.12em}}\\
 \textcolor{bookaccent}{□}私\textcolor{bookaccent}{《わたくし》}はその人を常に先生と呼んでいた。\textcolor{bookaccent}{［＃「先生」に傍点］}\\
-\textcolor{bookaccent}{（空行が 3 つ）}\\
+\textcolor{bookgray}{\itshape （ここに空行が 3 つある。この括弧書きは説明のための注記）}\\
 \textcolor{bookaccent}{底本：「こころ」角川文庫}};
 \node[greenbox,font=\scriptsize,align=left,inner sep=1.5mm,text width=113mm] (out) at (0,-24) {私はその人を常に先生と呼んでいた。};
 \draw[arr] (raw) -- node[lbl,right]{\code{clean_aozora}} (out);
 \end{tikzpicture}
-\caption{青空文庫のファイルの整形（\file{ch13/data_pipeline.py} の見本）。上が整形の前で、赤い字が捨てる部分（□は字下げの全角空白）。下が整形の後で、本文の 1 文だけが残る。}
+\caption{青空文庫のファイルの整形（\file{ch13/data_pipeline.py} の見本）。上が整形の前で、赤い字が捨てる部分（□は字下げの全角空白）。灰色の斜体は図の注記で、ファイルの中身ではない。下が整形の後で、本文の 1 文だけが残る。}
 \label{fig:pt-clean}
 \end{figure}
 
 そこで \code{clean_aozora} が、正規表現（文字列のパターンを表す小さな言語）による置き換えで本文だけを取り出します。
-2 本目の点線より前（題名と記号の説明）と「底本：」以降（書誌情報）を捨て、
-\code{［＃...］} の注記、\code{《...》} のルビ、ルビの始まりを示す縦棒 \code{｜} を消し、3 行以上の空行を 1 つにまとめます。
+2 本目の区切り線（ハイフン \code{-} を並べた行）より前（題名と記号の説明）と「底本：」以降（書誌情報）を捨て、
+\code{［＃...］} の注記、\code{《...》} のルビ、ルビの始まりを示す縦棒 \code{｜} を消し、2 行以上続く空行を 1 行にまとめます。
 \file{ch13/data_pipeline.py} では、題名・記号の説明・ルビと注記の付いた本文 1 文・底本の情報をつないだ小さな見本を整形しています。
 その結果（図の下の箱。この節の最後に示す実行結果の 2 行目）では、ルビも傍点の注記も消え、本文の 1 文だけが残ります。
 行頭の全角空白（字下げ）は、最後の \code{strip()} で文書の先頭からだけ取り除かれます。
@@ -199,6 +208,7 @@ URL の行は、37 字の中に日本語の文字が 1 つもないので、3 �
 有害・個人情報 & （不要） & 分類器・単語一覧で除去、連絡先などを伏せ字に \\
 重複除去 & ドリルの重複はわざと残す & 完全一致＋ MinHash によるほぼ重複の除去 \\
 混合 & 小説 55\%、ドリル 45\%（トークン数） & 種類ごとの割合を小さなモデルで試して決める \\
+区切り & 小説全体の後とドリル全体の後に 1 個ずつ & 文書（ウェブのページ 1 枚、本 1 冊など）ごとに 1 個 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -215,9 +225,9 @@ URL の行は、37 字の中に日本語の文字が 1 つもないので、3 �
 
 \snippet{完全一致の重複を除く}{code:pt-exact-dedup}{ch13/data_pipeline.py}{exact-dedup}
 
-\code{dict.fromkeys(lines)} は各行を辞書のキーにします。
+2 行目の \code{dict.fromkeys(lines)} は、各行を辞書のキーにします。
 キーは重複できないので 2 回目以降の同じ行は消え、残りは最初に出てきた順に並びます。
-\code{Counter(lines).most_common(3)} は、出現回数の多い行を上位 3 つ数えます。
+出現回数の多い行を上位 3 つ数えるのが、5 行目の \code{Counter(lines).most_common(3)} です。
 
 結果（節末の実行結果の 9〜10 行目）を見ると、12 万行のうち重複を除いて残るのは 60,162 行、つまり半分ほどです。
 最も多い \code{6-2=4} は 204 回も出てきます。
@@ -229,11 +239,45 @@ URL の行は、37 字の中に日本語の文字が 1 つもないので、3 �
 二つの数がともに 1 桁になる確率は $0.37\times0.37\approx0.14$ なので、12 万行のうち約 1 万 6 千行が 1 桁どうしの問題になります。
 ところが 1 桁どうしの問題は、足し算が $10\times10=100$ 通り、引き算が（大きいほうから引くので）$10+9+\dots+1=55$ 通りの、計 155 通りしかありません。
 約 1 万 6 千行を 155 通りで分け合うので、同じ問題が平均で約 100 回ずつ出るのです。
+最も多い 3 行がどれも引き算なのは、引き算では $(a,b)=(6,2)$ と $(2,6)$ のどちらが出ても大きいほうから引いて「\code{6-2}」になり、1 問あたりの出やすさが足し算の 2 倍になるからです。
+
+ただし、1 桁どうしの重複は約 1 万 6 千行で、消えた約 6 万行の 4 分の 1 ほどにすぎません。
+残りはどこから来るのでしょうか。
+\tabref{tab:pt-dedup-digits}は、二つの数の桁数の組ごとに、行数と異なる行の数を数えたものです（\file{ch13/sweep_dedup.py}）。
+
+\begin{table}[tbp]
+\centering
+\caption{計算ドリル 12 万行の重複の内訳（\file{ch13/sweep_dedup.py}）。桁数の組は、二つの数の桁数を小さい順に並べたもの。
+片方が 1 桁の組は問題の種類が少ないので、重複が多い。}
+\label{tab:pt-dedup-digits}
+\footnotesize
+\begin{tabular}{lrrrr}
+\toprule
+桁数の組 & 行数 & 異なる行 & 重複で消える行 & 問題の種類（足し算＋引き算） \\
+\midrule
+1 桁と 1 桁 & 16,494 & 155 & 16,339 & $100+55=155$ \\
+1 桁と 2 桁 & 29,194 & 2,699 & \textbf{26,495} & 約 $1{,}800+900=2{,}700$ \\
+1 桁と 3 桁 & 26,907 & 16,501 & 10,406 & 約 $18{,}000+9{,}000=27{,}000$ \\
+2 桁と 2 桁 & 13,022 & 7,711 & 5,311 & 約 $8{,}100+4{,}100=12{,}200$ \\
+2 桁と 3 桁 & 23,663 & 22,437 & 1,226 & 約 $24$ 万 \\
+3 桁と 3 桁 & 10,720 & 10,659 & 61 & 約 $120$ 万 \\
+\midrule
+合計 & 120,000 & 60,162 & 59,838 & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+いちばん多く消えるのは、1 桁と 2 桁の組（約 2 万 6 千行）です。
+この組の足し算は、1 桁の数 10 通り × 2 桁の数 90 通り × どちらが前か 2 通りで、約 1,800 通りしかありません。
+引き算は大きいほうから引くので、その半分の約 900 通りです。
+そこに約 2 万 9 千行が入るので、同じ問題が平均 10 回ほど出ます。
+逆に、3 桁どうしは問題の種類が約 120 万通りもあるので、1 万行あまりではほとんど重なりません。
+\textbf{片方の数が小さい組ほど問題の種類が少なく、重なりやすい}ので、全体で半分ほどが重複になるのです。
 
 本書では、この重複を\textbf{わざと残しています}。
 ドリルは「手順」を学ばせる教材で、簡単な問題の繰り返しはドリル本来の使い方だからです。
 ただし、検証用のドリル（乱数の種が違う 5,000 行）にも訓練用と同じ問題が含まれるので、
-ドリルの検証損失は「初めて見る問題」での実力より少し甘く出ている可能性があります。
+ドリルの検証損失は、「初めて見る問題」での実力より少し低く（良く）出ている可能性があります。
 重複除去をするかどうかは、目的によって決めるものです。
 
 ウェブのデータでは、完全一致だけでは足りません。
@@ -276,27 +320,117 @@ J(A, B) = \frac{\abs{A\cap B}}{\abs{A\cup B}}
 \end{figure}
 
 困るのは、文書が何億もあるときです。
-すべての組の Jaccard 係数を計算すると、組の数は文書数の 2 乗に比例し、とても終わりません。
-そこで\term{MinHash}{MinHash}という近似~\cite{broder1997resemblance}を使います。
-集合の要素を、でたらめに見えるハッシュ関数（文字列を整数に変える関数）で数に変え、その最小値を取ります。
-二つの集合の最小値が一致する確率は、ちょうど Jaccard 係数に等しくなります。
-理由は次のとおりです。
-ハッシュ関数は要素をでたらめに並べ替えるように働くので、和集合 $A\cup B$ のどの要素も、同じ確率でハッシュ値が最小になります。
-その要素が共通部分 $A\cap B$ に入っていれば、$A$ の最小値と $B$ の最小値は同じ要素から来るので一致します。
-入っていなければ、どちらか一方にしかない要素が最小なので一致しません。
-したがって一致の確率は $\abs{A\cap B}/\abs{A\cup B} = J(A,B)$ です。
-ハッシュ関数を 128 個用意して一致した割合を数えれば、$J$ の推定値になります。
+そのとき、困ることが二つあります。
+(1) 1 組を比べるだけでも、長い文書のかたまりの集合（何千個もの要素）どうしを突き合わせるので重い。
+(2) 比べる組の数が文書数の 2 乗に比例し、何億もの文書ではとても終わらない。
+(1) を\term{MinHash}{MinHash}という近似~\cite{broder1997resemblance}で、(2) をその後で述べる LSH で解きます。
+MinHash だけでは、組の数は減りません。
+
+MinHash では、集合の要素を\textbf{ハッシュ関数}（文字列を、でたらめに見える整数に変える関数）で数に変え、その最小値を取ります。
+\figref{fig:pt-minhash}が、\figref{fig:pt-shingle}の A と B での例です。
+表の各列が 1 つのハッシュ関数で、5 個のかたまりそれぞれに数を割り当てます。
+列ごとに、A に含まれるかたまりの中での最小値と、B に含まれるかたまりの中での最小値を比べます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  hd/.style={font=\scriptsize\bfseries},
+  v/.style={font=\scriptsize,minimum width=8mm,minimum height=4.6mm,inner sep=0pt},
+  mk/.style={font=\scriptsize}]
+\node[hd] at (0,6) {かたまり};
+\node[hd] at (15,6) {A};
+\node[hd] at (22,6) {B};
+\node[hd] at (36,6) {$h_1$};
+\node[hd] at (49,6) {$h_2$};
+\node[hd] at (62,6) {$h_3$};
+\draw[bookgray] (-10,3) -- (68,3);
+\fill[figgreen] (-9,2.2) rectangle (26,-2.2);
+\foreach \r/\t/\a/\b/\x/\y/\z in {
+  0/先生と/○/○/52/08/77,
+  1/生と書/○//17/64/26,
+  2/と書く/○//83/45/94,
+  3/生と呼//○/91/72/11,
+  4/と呼ぶ//○/30/39/58} {
+  \node[font=\scriptsize] at (0,-\r*5.5) {\t};
+  \node[mk,bookblue] at (15,-\r*5.5) {\a};
+  \node[mk,bookaccent] at (22,-\r*5.5) {\b};
+  \node[v] at (36,-\r*5.5) {\x};
+  \node[v] at (49,-\r*5.5) {\y};
+  \node[v] at (62,-\r*5.5) {\z};
+}
+% 列ごとの和集合での最小値に丸
+\draw[thick,bookorange] (36,-5.5) circle (2.6);
+\draw[thick,bookorange] (49,0) circle (2.6);
+\draw[thick,bookorange] (62,-16.5) circle (2.6);
+\draw[bookgray] (-10,-25) -- (68,-25);
+\node[font=\scriptsize,anchor=east] at (27,-29) {A の中の最小};
+\node[font=\scriptsize,anchor=east] at (27,-34) {B の中の最小};
+\node[font=\scriptsize,anchor=east] at (27,-39.5) {一致したか};
+\foreach \x/\a/\b/\m in {36/17/30/×,49/08/08/○,62/26/11/×} {
+  \node[font=\scriptsize,bookblue] at (\x,-29) {\a};
+  \node[font=\scriptsize,bookaccent] at (\x,-34) {\b};
+  \node[font=\small] at (\x,-39.5) {\m};
+}
+\node[font=\footnotesize,align=left,anchor=west] at (72,-8) {3 本中 1 本で一致\\→ 推定 $1/3\approx0.33$\\（正しい値は $J=0.2$。\\3 本では粗い）};
+\node[font=\scriptsize,align=left,anchor=west,text=bookorange] at (72,-26) {丸: その列で\\和集合の中の最小};
+\end{tikzpicture}
+\caption{MinHash の手順を、\figref{fig:pt-shingle}の 5 個のかたまりで示した模式図（ハッシュ値は説明用の 2 桁の数。実際は 32 ビットの整数）。
+各列が 1 つのハッシュ関数 $h_1,h_2,h_3$。丸は、その列で和集合 $A\cup B$ の中の最小値。
+丸が共通のかたまり（緑の行）に付いた列 $h_2$ だけで、A の最小と B の最小が一致する。}
+\label{fig:pt-minhash}
+\end{figure}
+
+図の丸は、その列で和集合 $A\cup B$ の 5 個の中の最小値です。
+$h_1$ では、丸は A だけにある「生と書」に付きます。
+A の最小は 17、B の最小は 30 で、一致しません。
+$h_2$ では、丸は共通の「先生と」に付きます。
+この 08 は A にも B にも含まれるので、A の最小も B の最小も 08 になり、一致します。
+つまり、\textbf{一致するのは、和集合の中での最小が共通部分 $A\cap B$ の要素のときだけ}です。
+
+この観察から、一致の確率が求められます。
+ここで、ハッシュ関数が要素をでたらめに並べ替えるように振る舞う、と仮定します。
+「並べ替える」とは、ハッシュ値の小さい順に要素を並べると、その順番がでたらめな順番になる、という意味です。
+この仮定のもとでは、和集合 $A\cup B$ のどの要素も、同じ確率で最小（並びの先頭）になります。
+最小が共通部分に入る確率は $\abs{A\cap B}/\abs{A\cup B}$ なので、
+\textbf{二つの最小値が一致する確率は、ちょうど Jaccard 係数 $J(A,B)$ に等しく}なります。
+これは仮定から導いた結論で、実際のハッシュ関数ではおおよそ成り立ちます。
+ハッシュ関数を 128 個用意して、一致した割合を数えれば、$J$ の推定値になります。
+1 組の比較は、何千個の要素の突き合わせから、128 個の数の比較に変わります。これが (1) の解決です。
 
 \snippet{文字 5-gram、Jaccard 係数、MinHash}{code:pt-minhash}{ch13/data_pipeline.py}{minhash}
 
 \code{shingles} は、長さ $n$ の部分文字列をすべて集めた集合を返します。
 \code{jaccard} は式\eqref{eq:pt-jaccard}をそのまま書いたものです。
-\code{minhash} は、塩（salt）と呼ぶ乱数を変えた 128 通りのハッシュ関数ごとに、集合の最小値を記録します。
-ここではハッシュ関数として、\code{zlib.crc32} に「塩:要素」という文字列を渡しています。
-\code{minhash_sim} は、二つの記録の一致した割合を返します。
+\code{minhash} には、ハッシュ関数が 128 個要ります。
+そこで、1 つのハッシュ関数 \code{zlib.crc32} に、要素の前に乱数を付けた「乱数:要素」という文字列を渡します。
+前に付ける乱数を変えると、同じ要素でもまったく違う値になるので、乱数 1 つが 1 つのハッシュ関数の代わりになります。
+この前に付ける乱数を\textbf{塩}（salt）と呼びます（パスワードを保存する分野で使われる呼び名です）。
+\code{minhash} は、128 個の塩ごとに集合の最小値を記録し、\code{minhash_sim} は二つの記録の一致した割合を返します。
 
-実際の重複除去では、この 128 個の値を少数の束に分けて索引にし、同じ束を持つ文書の組だけを比べます
-（局所性鋭敏型ハッシュ、LSH と呼ばれる工夫。本書では実装しません）。
+(2) の組の数を減らすのが、\term{局所性鋭敏型ハッシュ}{locality-sensitive hashing}（LSH）という工夫です（本書では実装しません）。
+各文書の 128 個の値を、たとえば 4 個ずつ 32 の束に分けます。
+束の 4 個の値をそのまま辞書のキーにして、文書を登録していきます。
+同じキーに登録された文書の組だけを、ほぼ重複の候補として比べます。
+似ていない文書どうしが 4 個そろって一致することはまれなので、比べる組は全部の組よりずっと少なくなります。
+\tabref{tab:pt-dedup-methods}に、ここまでの方法をまとめました。
+
+\begin{table}[tbp]
+\centering
+\caption{重複除去の方法の比較。文書数を $M$ とする。MinHash は 1 組の比較を安くし、LSH は比べる組の数を減らす。}
+\label{tab:pt-dedup-methods}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{14mm}}
+\toprule
+方法 & 見つけられるもの & 1 組の比較 & 比べる組の数 & 短所 & 本書 \\
+\midrule
+完全一致 & まったく同じ文書 & 組を作らない & なし（1 回ずつ登録） & 1 文字違いも別の文書 & 実演 \\
+Jaccard を全組で & ほぼ重複 & 集合どうし（重い） & $M^2$ に比例 & 大きなデータでは終わらない & 3 文書で実演 \\
+MinHash & ほぼ重複（推定） & 128 個の数 & $M^2$ に比例 & 推定にぶれがある & 実演 \\
+MinHash と LSH & ほぼ重複（推定） & 128 個の数 & 同じ束の組だけ（大きく減る） & 候補から漏れる組が少しある & 実装しない \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{データの混合と文書の区切り}
 
@@ -306,6 +440,10 @@ J(A, B) = \frac{\abs{A\cap B}}{\abs{A\cup B}}
 文書と文書の間には、特殊トークン \code{<|endoftext|>} を区切りとして入れます。
 特殊トークンは、文章の中には現れない、目印専用のトークンでした（\secref{sec:tok-special}）。
 区切りがなければ、モデルは小説の最後の文から計算ドリルへ、意味があるかのように続けて学んでしまいます。
+ただし本書では、14 作品をつないだ小説全体を 1 つの文書、ドリル 12 万行全体を 1 つの文書として扱いました。
+区切りは、小説全体の後とドリル全体の後の 2 か所にしかなく、作品と作品の間は改行 1 つでつながっています。
+そのため、ある作品の終わりから次の作品の始まりへは、区切りなしで続けて学んでいます。
+実際の LLM では、ウェブのページ 1 枚、本 1 冊といった文書ごとに区切りを入れます。
 
 ここまでの実演の出力をまとめて示します。
 1 番目が整形、2 番目が品質フィルタ、3・4 番目が重複除去の小節の結果です。
@@ -317,10 +455,48 @@ J(A, B) = \frac{\abs{A\cap B}}{\abs{A\cup B}}
 元の文章 A は 44 字で、5 文字のかたまりが 40 個できます。「ただ」を消した転載 B は 42 字で、38 個です。
 共通するかたまりは 34 個なので、和集合は $40+38-34=44$ 個、Jaccard 係数は $34/44\approx0.773$ です。
 MinHash では、128 個のハッシュ関数のうち 102 個で最小値が一致し、推定は $102/128\approx0.797$ になりました。
-128 個でも、おおよそ正しい値が出ています
-（推定のずれは、ハッシュ関数を増やすほど小さくなります）。
+128 個でも、おおよそ正しい値が出ています。
 まったく別の文章 C とは、共通するかたまりが一つもなく、どちらも 0 です。
 実際には、推定値があらかじめ決めた閾値を超える組を「ほぼ重複」とみなし、片方を捨てます。
+
+では、ハッシュ関数の数を変えると、推定はどう変わるでしょうか。
+ハッシュ関数の数 $k$ を 8 から 512 まで 7 通りに変え、それぞれ塩の選び方（乱数の種）を 50 通り変えて、A と B の推定値を求めました（\file{ch13/sweep_minhash.py}）。
+比べるために、ハッシュ関数を \code{crc32} から、よりでたらめに近い \code{blake2b}（暗号にも使われるハッシュ関数）に替えた場合も測りました。
+\figref{fig:pt-minhash-k}がその結果です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.85\linewidth,height=50mm,xmode=log,log basis x=2,
+  xmin=6,xmax=680,ymin=0.35,ymax=1.02,
+  xtick={8,16,32,64,128,256,512},xticklabels={8,16,32,64,128,256,512},
+  xlabel={ハッシュ関数の数 $k$（対数目盛り）},ylabel={Jaccard 係数の推定値},
+  legend style={font=\footnotesize,at={(0.98,0.03)},anchor=south east},legend cell align=left]
+\addplot[bookblue,thick,mark=*,mark size=1.4pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=k,y=mean,y error expr=\thisrow{sd},
+  restrict expr to domain={\coordindex}{0:6}]{code/ch13/out/sweep_minhash.csv};
+\addplot[bookgreen,thick,mark=square*,mark size=1.4pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x expr=\thisrow{k}*1.12,y=mean,y error expr=\thisrow{sd},
+  restrict expr to domain={\coordindex}{7:13}]{code/ch13/out/sweep_minhash.csv};
+\addplot[bookaccent,dashed,domain=6:680,samples=2] {0.773};
+\legend{\code{crc32}（本文のコード）,\code{blake2b},正しい値 $J=0.773$}
+\end{axis}
+\end{tikzpicture}
+\caption{MinHash のハッシュ関数の数 $k$ を変えたときの推定値（\file{ch13/sweep_minhash.py}。文章 A と B、塩の選び方 50 通りの平均と、上下に標準偏差 1 つ分の幅）。
+$k$ を 4 倍にすると、幅はおよそ半分になる。\code{crc32} の平均は正しい値より 0.03 ほど高い所に落ち着く。
+見やすくするため、\code{blake2b} の点は少し右にずらした。}
+\label{fig:pt-minhash-k}
+\end{figure}
+
+見る所は二つです。
+一つ目は\textbf{縦の幅}です。
+$k=8$ では推定が $0.80\pm0.17$ ほどもぶれますが、$k=128$ では $\pm0.03$、$k=512$ では $\pm0.02$ ほどになります。
+$k$ を 4 倍にするごとに、幅はおよそ半分になります。
+一致するかどうかを $k$ 回数えて割合をとる推定なので、幅の目安は $\sqrt{J(1-J)/k}$ です（\secref{sec:pt-base}の正答率の標準誤差と同じ形の式です）。
+$k=128$ では $\sqrt{0.773\times0.227/128}\approx0.037$ で、本文の推定 0.797 と正しい値 0.773 の差 0.024 は、この幅に収まっています。
+二つ目は\textbf{平均の位置}です。
+\code{blake2b} の平均は $k$ を増やすと 0.776〜0.778 に近づきますが、\code{crc32} の平均は 0.80 前後にとどまります。
+\code{crc32} は「でたらめな並べ替え」の仮定を完全には満たさないので、$k$ を増やしても消えない、わずかな偏りが残ると考えられます。
 
 データは、集めて終わりではありません。
 \textbf{整形 → 品質フィルタ → 重複除去 → 混合 → 区切り}という加工を経て、初めて学習に使える材料になります。
@@ -350,18 +526,20 @@ $k$ 番目（0 始まり）のトークンは、$2k$ バイト目から始まり
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm]
-\foreach \i/\t/\c in {0/私/figblue,1/は/figblue,2/その/figblue,3/{\dots}/white,4/関係/figblue,5/{\tiny <|endoftext|>}/figorange,6/6/figgreen,7/5/figgreen,8/-/figgreen,9/{\dots}/white} {
+\foreach \i/\t/\c in {0/636/figblue,1/604/figblue,2/2850/figblue,3/{\dots}/white,4/2161/figblue,5/4088/figorange,6/54/figgreen,7/53/figgreen,8/45/figgreen,9/{\dots}/white} {
   \node[cell,minimum width=11mm,minimum height=6mm,fill=\c,font=\scriptsize] at (\i*11.5,0) {\t};
 }
-\foreach \i in {0,1,2,4,5,6,7,8} {
-  \node[font=\tiny,bookgray] at (\i*11.5,-5.5) {2 バイト};
+\foreach \i/\s in {0/私は,1/その,2/人を,4/関係,5/EOT,6/6,7/5,8/-} {
+  \node[font=\tiny,bookgray] at (\i*11.5,-5.3) {「\s」};
+  \node[font=\tiny,bookgray] at (\i*11.5,5.3) {2 バイト};
 }
-\node[font=\footnotesize,anchor=west] at (-6,8) {\file{train.bin}：トークン ID を \code{uint16} で隙間なく並べる};
+\node[font=\footnotesize,anchor=west] at (-6,11) {\file{train.bin}：トークン ID を \code{uint16} で隙間なく並べる};
 \draw[decorate,decoration={brace,mirror,amplitude=2mm}] (-5.5,-8.5) -- (51.5,-8.5) node[midway,below=2.5mm,font=\footnotesize] {小説 1,363,282 トークン};
 \draw[decorate,decoration={brace,mirror,amplitude=2mm}] (63.5,-8.5) -- (109,-8.5) node[midway,below=2.5mm,font=\footnotesize] {ドリル 1,115,829 トークン};
 \end{tikzpicture}
-\caption{\file{train.bin} の中身。トークン ID を 2 バイトずつ並べただけのファイルで、
-文書の間に \code{<|endoftext|>}（ID 4088）が入る。$k$ 番目のトークンは $2k$ バイト目から読める。}
+\caption{\file{train.bin} の中身の模式図（トークンの切れ目と中身は説明用で、実際のファイルの先頭とは違う）。トークン ID を 2 バイトずつ並べただけのファイルで、
+マスの数がトークン ID（\file{data/bpe4096.json} の語彙での実際の ID）。マスの下の灰色の「」は、その ID が表す文字列で、ファイルには入っていない。
+小説全体の後とドリル全体の後に区切り \code{<|endoftext|>}（ID 4088、図では EOT）が 1 個ずつ入る。$k$ 番目のトークンは $2k$ バイト目から読める。}
 \label{fig:pt-binfile}
 \end{figure}
 
@@ -371,7 +549,7 @@ $k$ 番目（0 始まり）のトークンは、$2k$ バイト目から始まり
 ファイルを開き、番号の付いたコメントに沿って読みましょう。
 「1.」では、\code{load_corpus} で整形済みの漱石コーパス（2,407,914 字）を読み、\code{train_val_split} で末尾の 5\% を検証用に分けます。
 末尾で切るのは、検証用の文章が訓練用の文章と混ざらないようにするためです。
-ランダムに行を選んで分けると、同じ段落の前後が訓練と検証に分かれ、検証損失が甘くなります。
+ランダムに行を選んで分けると、同じ段落の前後が訓練と検証に分かれ、検証損失が実力より低く（良く）出ます。
 「2.」では、小説の\textbf{訓練部分だけ}で BPE を学習します。
 検証用の文章をトークナイザの学習にも使わないためです。
 学習済みのファイルがあれば、それを読み込むだけです。
@@ -411,7 +589,7 @@ arr.tofile(DATA_DIR / f"{name}.bin")
 \label{fig:pt-mix}
 \end{figure}
 
-文字数では、小説が約 229 万字、ドリルが約 110 万字です。
+文字数では、小説が約 229 万字、ドリルが約 112 万字です。
 ところがトークン数では、ドリルが全体の 45\% を占めます。
 BPE は漱石の文章で学習したので、小説では 1 トークンが平均約 1.68 字になります（約 229 万字 ÷ 約 136 万トークン）。
 一方、数字や \code{+}, \code{=} のマージは学習されておらず、ドリルは 1 文字が 1 トークンです。
@@ -428,8 +606,12 @@ BPE は漱石の文章で学習したので、小説では 1 トークンが平�
 \code{data.nbytes} はバイト数です。
 \code{np.flatnonzero(data == eot)} は、\code{<|endoftext|>} の位置の一覧を返します。
 その最初の位置 \code{cut} が、小説とドリルの境目です。
+ドリルのトークン数を \code{len(data) - cut - 2} で求めているのは、区切りが小説の後とドリルの後に 1 個ずつ、計 2 個あるからです。
 最後の行では境目の前後 9 トークンずつを文字列に戻しています。
 
+% コードの見出しだけがページ末に残らないよう、残りが少なければ改ページする
+\providecommand{\ptneedspace}[1]{\par\penalty0\relax\ifdim\pagetotal<\pagegoal\ifdim\dimexpr\pagegoal-\pagetotal\relax<#1\relax\newpage\fi\fi}
+\ptneedspace{12\baselineskip}
 \snippet{memmap で訓練データを開く}{code:pt-memmap}{ch13/data_pipeline.py}{memmap}
 
 \secref{sec:pt-data}の実行結果の最後の 4 行がこの出力です。
@@ -437,8 +619,8 @@ BPE は漱石の文章で学習したので、小説では 1 トークンが平�
 境目の前後を戻すと、「第二の恋愛事件に関係」で小説が終わり、区切りの後に \code{65-5=60} とドリルが始まっています。
 小説が文の途中で終わっているのは、\code{train_val_split} が文字数で機械的に切ったためです（続きは検証データの先頭にあります）。
 
-実際の LLM では、トークン列を数百 MB〜数 GB ごとの\term{シャード}{shard}（かけら）に分けて保存します。
-複数の計算機が別々のシャードを同時に読め、壊れたシャードだけを作り直せるからです（\chapref{ch:distributed}）。
+実際の LLM では、トークン列を数百 MB〜数 GB ごとのファイルに分けて保存し、分けた一つひとつを\term{シャード}{shard}と呼びます。
+複数の計算機が別々のシャードを同時に読め、破損したシャードだけを作り直せるからです（\chapref{ch:distributed}）。
 
 トークン列は、\textbf{固定長の整数を隙間なく並べたバイナリ}として保存します。
 小さく、読み込みが速く、どこからでも直接読めるからです。
@@ -470,23 +652,47 @@ BPE は漱石の文章で学習したので、小説では 1 トークンが平�
 \node[font=\footnotesize,bookblue] at (11*6.5,8) {$s_2$};
 \node[font=\footnotesize,anchor=west] at (0,-12) {\textcolor{bookblue}{実線}: 入力 \code{x}（長さ $T$）};
 \node[font=\footnotesize,anchor=west] at (50,-12) {\textcolor{bookaccent}{破線}: 正解 \code{y}（1 つ右へずらす）};
+% 下段: 窓を B 個重ねた (B, T) のテンソル
+\begin{scope}[yshift=-26mm]
+\node[font=\footnotesize,anchor=east] at (6,0) {\code{x}};
+\node[font=\footnotesize,anchor=east] at (66,0) {\code{y}};
+\foreach \j/\t/\c in {0/吾/figblue,1/輩/figblue,2/は/figblue,3/猫/white} {
+  \node[cell,minimum width=6mm,minimum height=5mm,font=\scriptsize,fill=\c] at (10+\j*6.5,0) {\t};}
+\foreach \j/\t in {0/1,1/2,2/+,3/3} {
+  \node[cell,minimum width=6mm,minimum height=5mm,font=\scriptsize] at (10+\j*6.5,-5.5) {\t};}
+\foreach \r/\a/\b/\c/\d in {0/輩/は/猫/で,1/2/+/3/5} {
+  \foreach \j/\t in {0/\a,1/\b,2/\c,3/\d} {
+    \node[cell,minimum width=6mm,minimum height=5mm,font=\scriptsize] at (70+\j*6.5,-\r*5.5) {\t};}}
+\draw[very thick,bookaccent] (70+2*6.5-3,2.5) rectangle (70+2*6.5+3,-2.5);
+\draw[decorate,decoration={brace,mirror,amplitude=1.5mm}] (6.5,-9) -- (33.5,-9) node[midway,below=2mm,font=\scriptsize] {長さ $T=4$};
+\draw[decorate,decoration={brace,amplitude=1.5mm}] (35,2.5) -- (35,-8) node[midway,right=2mm,font=\scriptsize] {$B=2$ 本};
+\node[font=\scriptsize,align=left,anchor=west] at (98,-2.5) {位置 3 の問題:\\入力「吾輩は」\\→ 正解「猫」};
+\end{scope}
 \end{tikzpicture}
-\caption{\code{get_batch} による窓の切り出し（$T=4$ の例。実際は $T=128$）。開始位置 $s_1, s_2, \dots$ をランダムに選び、
-実線の窓を入力 \code{x}、1 つ右にずらした破線の窓を正解 \code{y} にする。窓を $B$ 個重ねると形 $(B, T)$ のミニバッチになる。}
+\caption{\code{get_batch} による窓の切り出し（$T=4$ の例。実際は $T=128$。1 マスを 1 文字で描いた模式図で、実際のマスは BPE のトークン）。上: 開始位置 $s_1, s_2, \dots$ をランダムに選び、
+実線の窓を入力 \code{x}、1 つ右にずらした破線の窓を正解 \code{y} にする。下: 窓を $B$ 個重ねると形 $(B, T)$ のミニバッチになる。
+\code{y} の位置 $t$ の正解は、\code{x} の位置 1〜$t$ のすべて（青）を入力とする問題の答えで、1 行に $T$ 個の問題が入っている。}
 \label{fig:pt-getbatch}
 \end{figure}
 
+% コードを途中で割らない（図がコードの間に入らないように）
+\ptneedspace{12\baselineskip}
 \snippet{ミニバッチを作る \code{get_batch}}{code:pt-getbatch}{llmbook/train.py}{get-batch}
 
 \code{torch.randint(len(data) - block_size - 1, (batch_size,))} は、0 以上 \code{len(data) - block_size - 1} 未満の整数を \code{batch_size} 個選びます。
 正解 \code{y} には開始位置から \code{block_size + 1} 個先までのトークンが要るので、上限からその分を引いて末尾をはみ出さないようにしています。
 \code{data[s:s + block_size]} が開始位置 \code{s} からの $T$ トークン、\code{data[s + 1:s + block_size + 1]} がそれを 1 つずらしたものです。
-\code{torch.stack} で $B$ 本を縦に積むと、形 $(B, T)$ のテンソルになります。
+\code{torch.stack} で $B$ 本を縦に積むと、形 $(B, T)$ のテンソルになります（図の下段）。
+下段の \code{y} の各マスは、それぞれ 1 つの問題の正解です。
+たとえば 1 行目の位置 3 の正解「猫」は、「は」1 文字ではなく、\code{x} の 1 行目の先頭から位置 3 までの「吾輩は」全部を入力とする問題の答えです（\chapref{ch:lm}）。
+1 本の窓に $T$ 個、ミニバッチ全体では $B\times T$ 個の問題が入っていて、損失はその平均です。
 最後の \code{.to(device)} で、GPU があれば GPU に送ります。
 
 このやり方には、知っておくべき性質が二つあります。
 一つ目は、\textbf{窓が文書の区切りをまたぐことがある}点です。
-モデルは区切りトークンを見て「ここで話が変わる」と学ぶので、大きな問題にはなりません。
+本書のデータでは区切りが 2 か所しかないので、ほとんど起きませんが、文書が短いウェブのデータではよく起きます。
+区切りの後では前の文書を当てにしないよう、モデルが区切りトークンから学ぶことが期待されます。
+それでも注意機構は区切りの前のトークンも見られるので、文書ごとに注意を区切るマスクを使う方法もあります。
 実際の LLM でも、文書を区切りトークンでつないで固定長に詰め込む方法（パッキング）が標準です。
 二つ目は、開始位置を毎回独立に選ぶので\textbf{同じ場所を何度も読む}ことがあり、「全データをちょうど 1 回ずつ読む」というエポックの区切りがない点です
 （全データを一巡することを 1 エポックと呼びました。\chapref{ch:ml}）。
@@ -500,6 +706,9 @@ BPE は漱石の文章で学習したので、小説では 1 トークンが平�
 \file{base.pt} の学習で読んだ延べトークン数は $4{,}000 \times 32 \times 128 \approx 1{,}640$ 万で、
 訓練データ 248 万トークンの約 6.6 倍です。
 そこで「約 6.6 エポック分」と言い表します。
+ただし、開始位置はランダムなので、どのトークンもちょうど 6〜7 回ずつ読まれるわけではありません。
+平均は 6.6 回ですが、トークンによって多く読まれたり少なく読まれたりし、1 回も読まれないトークンも概算で 0.1\% ほどあります
+（1 回ごとの確率が小さい出来事が平均 6.6 回起きるとき、1 回も起きない確率はおよそ $e^{-6.6}\approx0.0014$ です）。
 実際の LLM はデータが膨大なので、多くのデータを 1 回か数回しか読みません。
 
 \code{get_batch} は、長い 1 本のトークン列から\textbf{ランダムな位置の窓}を切り出し、1 つずらした窓を正解にします。
@@ -525,11 +734,11 @@ BPE は漱石の文章で学習したので、小説では 1 トークンが平�
 \toprule
 部品 & 何をするか & なぜ要るか & 詳細 \\
 \midrule
-AdamW & 勾配をならし、パラメータごとに歩幅をそろえて更新する & 勾配の大きい重みも小さい重みも、同じ調子で学習させるため & \secref{sec:training-optim} \\
+AdamW & 勾配をならし、パラメータごとに歩幅（1 回の更新で動く大きさ）をそろえて更新する & 勾配の大きい重みも小さい重みも、同じ調子で学習させるため & \secref{sec:training-optim} \\
 重み減衰 & 毎ステップ、重みを少しだけ 0 のほうへ縮める & 重みが大きくなりすぎるのを防ぎ、丸暗記を抑えるため & \secref{sec:training-regularization} \\
 ウォームアップ & 学習率を 0 の近くから最大値まで、まっすぐ上げる & 学習の始めは勾配が大きく、向きも定まらないため & \secref{sec:training-schedule} \\
-コサイン減衰 & 学習率を最大値から、なめらかに下げる & 終盤に歩幅が大きいままだと、良い場所の周りを跳ね回るため & \secref{sec:training-schedule} \\
-勾配クリッピング & 勾配の長さ（ノルム）が上限を超えたら、上限まで縮める & 突然の大きな勾配で、重みが遠くへ飛ばされるのを防ぐため & \secref{sec:training-schedule} \\
+コサイン減衰 & 学習率を最大値から、なめらかに下げる & 終盤に歩幅が大きいままだと、損失の低い点の近くで行き過ぎと戻りをくり返すため & \secref{sec:training-schedule} \\
+勾配クリッピング（本文では勾配クリップ） & 勾配の長さ（ノルム）が上限を超えたら、上限まで縮める & 突然の大きな勾配で、重みが一度に大きく動くのを防ぐため & \secref{sec:training-schedule} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -538,15 +747,45 @@ AdamW & 勾配をならし、パラメータごとに歩幅をそろえて更新
 
 AdamW（\secref{sec:training-optim}）は、勾配の移動平均 $\vm$ と、勾配の 2 乗の移動平均 $\vv$ を使って各パラメータの歩幅を調整する最適化手法です。
 $\vm$ は進む向きをならし、$\vv$ は歩幅をそろえるのに使われます。
-重み減衰は、毎ステップ重みを少し縮める操作で、これを勾配とは別に掛けるのが「W」の意味です。
+重み減衰は、毎ステップ重みを少し縮める操作です。
+Adam で損失に L2 正則化の項を足すと、その項の勾配まで $\sqrt{\vv}$ で割られ、重みごとに縮め方が変わってしまいます。
+そこで、縮める操作を勾配から切り離し、更新のときに直接重みに掛けます。これが「W」（weight decay）の意味です（\secref{sec:training-optim}）。
 \file{llmbook/train.py} の \code{make_optimizer}（\coderef{code:pt-optimizer}）が、その設定を作ります。
 4 行目で学習させるパラメータ（\code{requires_grad=True} のもの）を集め、
 5〜6 行目でそれを 2 次元以上（行列）と 1 次元（レイヤー正規化の倍率など）に分けます。
 重み減衰は行列にだけ 0.1 を掛け、1 次元のパラメータには掛けません。
-レイヤー正規化の倍率 $\bm{\gamma}$ を 0 に引き寄せると、正規化した出力が小さく押しつぶされてしまうからです。
+レイヤー正規化の倍率 $\bm{\gamma}$ を 0 に引き寄せると、正規化した出力の大きさまで 0 に近づいてしまうからです。
+\file{base.pt} のミニGPT で、どのパラメータがどちらに入るかを\tabref{tab:pt-decay-groups}に示します。
+埋め込みの表も 2 次元なので、重み減衰がかかります。
+
+\begin{table}[tbp]
+\centering
+\caption{\file{base.pt}（4 層・192 次元）のパラメータと、重み減衰をかけるかどうか。\code{make_optimizer} は次元の数だけで分ける。
+出力層の重みは埋め込みの表と共有しているので、別の行はない。}
+\label{tab:pt-decay-groups}
+\footnotesize
+\begin{tabular}{p{33mm}p{35mm}p{19mm}rc}
+\toprule
+パラメータ（コードの名前） & 何か & 形 & 個数（合計） & 減衰 \\
+\midrule
+\code{tok_emb.weight} & トークンの埋め込み（出力層と共有） & $(4096, 192)$ & 786,432 & ○ \\
+\code{pos_emb.weight} & 位置埋め込み & $(128, 192)$ & 24,576 & ○ \\
+\code{attn.qkv.weight} & 注意の $\mQ,\mK,\mV$ をまとめて作る重み & $(576, 192)$ & 442,368 & ○ \\
+\code{attn.proj.weight} & 注意の出力の重み & $(192, 192)$ & 147,456 & ○ \\
+\code{mlp.fc.weight}, \code{mlp.proj.weight} & MLP の 2 つの層の重み & $(768,192)$, $(192,768)$ & 1,179,648 & ○ \\
+\code{ln1}, \code{ln2}, \code{ln_f} の \code{weight}, \code{bias} & レイヤー正規化の倍率 $\bm{\gamma}$ とずらす量 & $(192)$ & 3,456 & × \\
+\midrule
+合計 & & & 2,583,936 & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+数で見ると、重み減衰がかかるのは 2,580,480 個、かからないのは 3,456 個（全体の 0.13\%）です。
 \code{betas=(0.9, 0.95)} は、$\vm$ と $\vv$ の移動平均の係数です。
 PyTorch の既定値は $(0.9, 0.999)$ ですが、LLM の事前学習では 2 つ目を 0.95 にするのが定番です（\secref{sec:pt-hparams}の表）。
-0.95 にすると $\vv$ が直近の勾配に早く追いつくので、勾配の大きさが急に変わったときにも歩幅が暴れにくくなります。
+移動平均は、おおよそ直近 $1/(1-\beta)$ ステップ分の平均です（\secref{sec:training-optim}の等比数列の和）。
+$\beta_2=0.999$ なら約 1,000 ステップ分、$0.95$ なら約 20 ステップ分の勾配の 2 乗を覚えています。
+0.95 にすると $\vv$ が直近の勾配に早く追いつくので、勾配の大きさが急に変わったときにも、更新の大きさが急に変わりにくくなります。
 
 \snippet{AdamW を作る \code{make_optimizer}}{code:pt-optimizer}{llmbook/train.py}{make-optimizer}
 
@@ -610,8 +849,43 @@ $t=0$ では $10^{-3}\times 1/200 = 5\times10^{-6}$、$t=199$ で $10^{-3}$ に�
 ミニバッチを取り、順伝播で損失を求め、勾配を 0 に戻してから逆伝播し、勾配クリップを掛けてから更新します。
 \code{model(x, y)} はロジットと損失の組を返すので、ここでは使わないロジットを \code{_} で受けています。
 \code{clip_grad_norm_} は、全パラメータの勾配を 1 本のベクトルとみなした長さ（勾配ノルム）が \code{grad_clip} を超えたとき、長さが \code{grad_clip} になるよう縮めます。
-突然の大きな勾配で、パラメータが遠くへ飛ばされるのを防ぐためです（\secref{sec:training-schedule}）。
+突然の大きな勾配で、パラメータが一度に大きく動くのを防ぐためです（\secref{sec:training-schedule}）。
 最後に（37〜41 行目）、記録を CSV ファイルに書き出します。
+
+\figref{fig:pt-step-flow}は、学習の 1 ステップ（27〜36 行目）で、どんな形の数がどこを流れるかを描いたものです。
+上の段を左から右へ進むのが順伝播、下の段を右から左へ戻るのが逆伝播と更新です。
+矢印に付けた $(32, 128)$ などが、そこを流れるテンソルの形です。
+形が変わるのは 2 か所です。ミニGPT が $(B,T)$ のトークン ID を $(B,T,V)$ のロジットに広げ、交差エントロピーが全部の位置をまとめて 1 個の数にします。
+学習率は、下の段の AdamW の更新にだけ入ります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  b/.style={box,font=\footnotesize,minimum width=25mm,minimum height=10mm,align=center},
+  g/.style={greenbox,font=\footnotesize,minimum width=25mm,minimum height=10mm,align=center},
+  o/.style={orangebox,font=\footnotesize,minimum width=25mm,minimum height=10mm,align=center},
+  sh/.style={font=\scriptsize,align=center}]
+\node[b] (gb) at (0,0) {\code{get_batch}\\{\scriptsize 30〜31 行目}};
+\node[b] (md) at (50,0) {ミニGPT（順伝播）\\{\scriptsize 32 行目}};
+\node[b] (ce) at (100,0) {交差エントロピー\\{\scriptsize 32 行目（モデルの中）}};
+\node[g] (bw) at (100,-28) {逆伝播\\{\scriptsize 34 行目}};
+\node[g] (cl) at (55,-28) {勾配クリップ\\{\scriptsize 35 行目}};
+\node[g] (ad) at (10,-28) {AdamW の更新\\{\scriptsize 36 行目。$\vm,\vv$ も更新}};
+\node[o] (lr) at (10,-50) {\code{lr_at}\\{\scriptsize 27〜29 行目}};
+\draw[arr] (gb) -- node[sh,above]{入力 \code{x}\\$(32,128)$} (md);
+\draw[arr] (md) -- node[sh,above]{ロジット\\$(32,128,4096)$} (ce);
+\draw[arr] (gb.north) -- ++(0,7) -| node[sh,above,pos=0.25]{正解 \code{y}：$(32,128)$} (ce.north);
+\draw[arr] (ce) -- node[sh,right]{損失 $\calL$\\（1 個の数）} (bw);
+\draw[arr] (bw) -- node[sh,above]{勾配 $\vg$\\（計 258 万個）} (cl);
+\draw[arr] (cl) -- node[sh,below]{$\norm{\vg}>1$ なら\\$\vg/\norm{\vg}$} (ad);
+\draw[arr] (lr) -- node[sh,right]{学習率 $\eta_t$} (ad);
+\draw[darr] (ad.north) -- ++(0,7) -| node[sh,above,pos=0.3]{新しい重み $\vtheta$（次のステップで使う）} (md.south);
+\end{tikzpicture}
+\caption{学習の 1 ステップのデータの流れ（\file{base.pt} の設定。$B=32$、$T=128$、$V=4096$）。行番号は\coderef{code:pt-trainlm}のもの。
+上の段（青）が順伝播、下の段（緑）が逆伝播と更新。矢印の括弧は流れるテンソルの形。
+勾配 $\vg$ は全パラメータ（2,583,936 個）の 1 つずつに 1 個あり、$\norm{\vg}$ はそれを 1 本のベクトルとみなした長さ。}
+\label{fig:pt-step-flow}
+\end{figure}
 
 \snippet{事前学習のループ \code{train_lm}}{code:pt-trainlm}{llmbook/train.py}{train-lm}
 
@@ -621,10 +895,10 @@ $t=0$ では $10^{-3}\times 1/200 = 5\times10^{-6}$、$t=199$ で $10^{-3}$ に�
 \secref{sec:pt-base}で学習曲線を読むときは、このぶれを頭に置いてください。
 
 \code{train_lm} は、\textbf{測る → 学習率を決める → 1 ステップ学習する}の繰り返しです。
-AdamW、ウォームアップ、コサイン減衰、勾配クリップという\chapref{ch:training}の部品が、すべてこの 30 行ほどに収まっています。
+AdamW、ウォームアップ、コサイン減衰、勾配クリップという\chapref{ch:training}の部品が、すべてこの 40 行ほどに収まっています。
 
 \section{ハイパーパラメータの決め方}\label{sec:pt-hparams}
-\skimread{押さえる結論：公開モデルの設定は、$\beta=(0.9, 0.95)$、重み減衰 0.1、勾配クリップ 1.0、ウォームアップの後に減衰、という骨格が共通です。学習率は、小さなモデルの短い学習で試して決めます。\file{base.pt} は安全側の $10^{-3}$ にしました。}
+\skimread{押さえる結論：公開モデルの設定は、$\beta=(0.9, 0.95)$、重み減衰 0.1、勾配クリップ 1.0、ウォームアップの後に減衰、という基本の組み合わせが共通です。学習率は、小さなモデルの短い学習で試して決めます。\file{base.pt} は安全側の $10^{-3}$ にしました。}
 
 ループは書けました。
 しかし、学習率 $10^{-3}$、バッチ 32、4,000 ステップといった数値は、どう決めたのでしょうか。
@@ -638,7 +912,8 @@ AdamW、ウォームアップ、コサイン減衰、勾配クリップという
 \begin{table}[tbp]
 \centering
 \caption{事前学習の設定の比較（出典は\cite{karpathy2022nanogpt,touvron2023llama,dubey2024llama3,liu2024deepseekv3}。バッチはトークン数で書く）。
-AdamW の $\beta=(0.9,0.95)$、重み減衰 0.1、勾配クリップ 1.0、ウォームアップの後に減衰、という骨格は共通している。}
+AdamW の $\beta=(0.9,0.95)$、重み減衰 0.1、勾配クリップ 1.0、ウォームアップの後に減衰、という基本の組み合わせは共通している。
+LLaMA 7B は Llama 3.1 405B と同じ系列の第 1 版で、第 1 版だけ LLaMA と書く。}
 \label{tab:pt-hparams}
 \footnotesize
 \setlength{\tabcolsep}{3pt}
@@ -646,6 +921,8 @@ AdamW の $\beta=(0.9,0.95)$、重み減衰 0.1、勾配クリップ 1.0、ウ�
 \toprule
  & 本書 \file{base.pt} & nanoGPT（GPT-2） & LLaMA 7B & DeepSeek-V3 \\
 \midrule
+パラメータ数 & 260 万 & 1.24 億 & 70 億 & 6,710 億（MoE）\\
+ & & & & {\scriptsize 1 トークンに使うのは 370 億} \\
 最大学習率 & $1\times10^{-3}$ & $6\times10^{-4}$ & $3\times10^{-4}$ & $2.2\times10^{-4}$ \\
 ウォームアップ & 200 ステップ & 2,000 & 2,000 & 2,000 \\
 減衰 & コサイン → 10\% & コサイン → 10\% & コサイン → 10\% & 一定→コサイン→一定 \\
@@ -661,18 +938,89 @@ AdamW の $\beta$ & (0.9, 0.95) & (0.9, 0.95) & (0.9, 0.95) & (0.9, 0.95) \\
 一つ目は、\textbf{大きなモデルほど最大学習率が小さい}ことです
 （GPT-2 で $6\times10^{-4}$、LLaMA 7B で $3\times10^{-4}$、Llama 3.1 405B では $8\times10^{-5}$\cite{dubey2024llama3}）。
 大きなモデルほど、同じ学習率でも 1 回の更新による出力の変化が大きくなり、学習が不安定になりやすいためです（経験的な傾向）。
+ただし、例外もあります。
+DeepSeek-V3 は 6,710 億パラメータと最も大きいのに、学習率は Llama 3.1 405B より大きい $2.2\times10^{-4}$ です。
+DeepSeek-V3 は MoE で 1 トークンに使うのは 370 億だけで、バッチもさらに大きいので、大きさだけでは比べられません。
+バッチの大きさなど、ほかの設定も同時に変わっているので、学習率の違いをモデルの大きさだけのせいとは言えないのです。
+
 二つ目は、\textbf{バッチが非常に大きい}ことです。
 本書のバッチは、32 本 × 128 トークン = 4,096 トークンです。
 LLaMA は 1 ステップで約 400 万トークンを読み、本書の約 1,000 倍です（$400\text{ 万}\div4{,}096\approx980$）。
 DeepSeek-V3 の「1,260 万 → 6,290 万」は、学習の途中でバッチを大きくしたことを表します。
+なぜ、これほど大きいのでしょうか。
+一つは、多くの文章で平均した勾配ほど、ばらつきが小さく、向きが安定するからです。
+もう一つは、たくさんの GPU に別々のデータを読ませて勾配を平均する\textbf{データ並列}（\chapref{ch:distributed}）では、GPU を増やすほど 1 ステップで読むデータが増えるからです。
+400 万トークンは 1 枚の GPU には載らないので、データ並列と勾配累積（\secref{sec:gpu-speedup}）を組み合わせて作ります。
+全体のバッチは「GPU の数 × 1 枚が一度に読むバッチ（マイクロバッチ） × 累積の回数」です。
+たとえば nanoGPT の GPT-2 の再現では、GPU 8 枚 × 1 枚が一度に読む 12 本 × 1,024 トークン × 累積 5 回 $=491{,}520$ トークン（約 49 万）です\cite{karpathy2022nanogpt}。
+
+三つ目は、\textbf{基本の組み合わせがほとんど同じ}ことです。
+本書の設定は、この組み合わせを小さなモデルに合わせて縮めたものです。
+
 「一定→コサイン→一定」は、最大値を保った後にコサインで下げ、最後は小さな値で保つことを表します。
-三つ目は、\textbf{骨格がほとんど同じ}ことです。
-本書の設定は、この骨格を小さなモデルに合わせて縮めたものです。
+\figref{fig:pt-schedules}に、本書のコサイン減衰と、DeepSeek-V3 の報告にある形、教育用の実装 nanochat の既定の形を並べました（\file{ch13/fig_schedules.py}）。
+横軸は学習の進み具合、縦軸は最大値を 1 とした学習率です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=sch,width=0.85\linewidth,height=48mm,xmin=0,xmax=1,ymin=0,ymax=1.3,ytick={0,0.5,1},
+  xlabel={学習の進み具合（0 が始め、1 が終わり）},ylabel={学習率（最大値 = 1）},
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,draw=none},legend cell align=left]
+\addplot[thick,bookblue] table[col sep=comma,x=x,y=cosine]{code/ch13/out/schedules.csv};
+\addplot[thick,bookaccent,dashed] table[col sep=comma,x=x,y=deepseek]{code/ch13/out/schedules.csv};
+\addplot[thick,bookgreen,dotted] table[col sep=comma,x=x,y=nanochat]{code/ch13/out/schedules.csv};
+\legend{本書 \file{base.pt}（ウォームアップ→コサイン）,DeepSeek-V3（一定→コサイン→一定）,nanochat の既定（一定→直線で下げる）}
+\draw[bookgray] (axis cs:0.95,0) rectangle (axis cs:1,0.15);
+\end{axis}
+% 右上の小窓: 終わりの 5% を拡大
+\begin{axis}[at={(sch.north east)},anchor=north east,xshift=-2mm,yshift=-5mm,scale only axis,width=30mm,height=18mm,
+  xmin=0.95,xmax=1,ymin=0,ymax=0.15,xtick={0.95,1},ytick={0.05,0.1,0.15},
+  tick label style={font=\tiny,/pgf/number format/fixed,fill=white,inner sep=0.5pt},scaled ticks=false,
+  title={終わり（0.95〜1）の拡大},title style={font=\tiny,yshift=-1.5mm},axis background/.style={fill=white}]
+\addplot[thick,bookblue] table[col sep=comma,x=x,y=cosine]{code/ch13/out/schedules.csv};
+\addplot[thick,bookaccent,dashed] table[col sep=comma,x=x,y=deepseek]{code/ch13/out/schedules.csv};
+\addplot[thick,bookgreen,dotted] table[col sep=comma,x=x,y=nanochat]{code/ch13/out/schedules.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{学習率スケジュールの 3 つの形（\file{ch13/fig_schedules.py}。最大値を 1、学習の長さを 1 にそろえた）。
+DeepSeek-V3 は 14.8 兆トークンのうち 10 兆まで最大値を保ち、コサインで 10\% まで下げ、最後に 2 段の小さな値（10\% と約 3\%）で保つ。
+2 段は終わりの約 3\% の区間にあり、全体の縮尺では本書の線と重なるので、右上の小窓（左下の灰色の四角の部分）に拡大した。
+nanochat は最後の 65\% で 5\% まで直線で下げる。DeepSeek-V3 と nanochat のウォームアップはごく短く、この縮尺では見えない。}
+\label{fig:pt-schedules}
+\end{figure}
+
+三つの形の違いは、\textbf{最大値をどれだけ長く保つか}です。
+本書のコサイン減衰は、ウォームアップが終わるとすぐに下がり始めます。
+DeepSeek-V3 は学習の約 7 割、nanochat は約 35\% の間、最大値を保ってから下げます。
+下げる区間の形も、コサインと直線で違います。
+どの形が良いかは、本書では比べていません。
+Kimi K2 も、一定の区間を持つ同じ系統のスケジュール（warmup-stable-decay、WSD と呼ばれる）を使っています\cite{bai2025kimik2}。
 
 ただし、2025 年以降は新しい流れもあります。
 行列のパラメータには Muon という別の最適化手法（勾配の行列を直交化して更新に使う）を、埋め込みなどには AdamW を使う組み合わせが、
 公開モデル Kimi K2 や教育用の実装 nanochat などで採用されています\cite{jordan2024muon,bai2025kimik2,karpathy2025nanochat}。
-本書は、最も広く使われてきた AdamW だけを扱います。
+本書は、最も広く使われてきた AdamW だけを扱います（\secref{sec:training-optim}でも同じことを断りました）。
+\tabref{tab:pt-optimizers}に、二つの使い方を並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{事前学習の最適化手法の 2 つの使い方（\cite{jordan2024muon,bai2025kimik2,karpathy2025nanochat}と公開された報告による）。
+どちらが良いかは、本書では比べていない。}
+\label{tab:pt-optimizers}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{20mm}p{46mm}p{54mm}}
+\toprule
+ & AdamW だけ & Muon（行列）＋ AdamW（その他） \\
+\midrule
+更新の作り方 & 勾配の平均 $\vm$ を、2 乗の平均 $\vv$ の平方根で割る（パラメータ 1 個ずつ） & 行列の勾配（の移動平均）を直交化して、更新の向きにする（行列 1 枚ずつ） \\
+使うパラメータ & すべて & Muon は 2 次元の重み行列だけ。埋め込み・出力層・正規化の倍率は AdamW \\
+採用例 & nanoGPT、LLaMA、Llama 3、DeepSeek-V3 & Kimi K2、DeepSeek-V4、GLM-5、nanochat \\
+本書での扱い & \file{base.pt} を含め、全章で使う & 名前の紹介だけ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{学習率を変えて試す}
 
@@ -684,6 +1032,7 @@ DeepSeek-V3 の「1,260 万 → 6,290 万」は、学習の途中でバッチを
 4 つ合わせて CPU で 1 分半ほどです。
 ループは \code{train_lm} とほぼ同じですが、毎ステップの損失と勾配ノルムを記録するために自分で書きました。
 
+\ptneedspace{17\baselineskip}
 \snippet{損失と勾配ノルムを毎ステップ記録する}{code:pt-monitor}{ch13/lr_sweep.py}{monitor}
 
 \code{train_lm} との違いは、\code{clip_grad_norm_} が返すクリップ\textbf{前の}勾配ノルムを \code{grad_norm} として受け取り、損失と一緒に記録する点です。
@@ -700,25 +1049,65 @@ CSV には損失の指数移動平均（直前の値を 0.9、新しい値を 0.
 \begin{tikzpicture}
 \begin{axis}[width=0.85\linewidth,height=46mm,xmin=0,xmax=300,ymin=4.6,ymax=8.6,
   xlabel={ステップ},ylabel={訓練損失（移動平均）},
-  legend style={font=\footnotesize,at={(0.98,0.98)},anchor=north east},legend cell align=left]
-\addplot[thick,bookgray] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/lr_0.0001.csv};
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,draw=none,legend columns=5,
+    /tikz/every even column/.append style={column sep=3mm}},legend cell align=left]
+\addlegendimage{empty legend}
+\addplot[very thick,bookgray!70,densely dotted] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/lr_0.0001.csv};
 \addplot[thick,bookblue] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/lr_0.001.csv};
 \addplot[thick,bookgreen] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/lr_0.01.csv};
 \addplot[thick,bookaccent,dashed] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/lr_0.1.csv};
-\legend{$10^{-4}$,$10^{-3}$,$10^{-2}$,$10^{-1}$}
+\legend{最大学習率:,$10^{-4}$,$10^{-3}$,$10^{-2}$,$10^{-1}$}
 \end{axis}
 \end{tikzpicture}
 \caption{最大学習率を変えたときの訓練損失（2 層・64 次元の小モデル、300 ステップ、\file{ch13/lr_sweep.py}）。
-$10^{-4}$（灰）は遅すぎて下がりきらない。$10^{-3}$ から $10^{-1}$ は最後にはほぼ同じ所に来るが、下がり方が違う。}
+$10^{-4}$（灰の点線）は遅すぎて下がりきらない。$10^{-3}$ から $10^{-1}$ は最後にはほぼ同じ所に来るが、下がり方が違う。}
 \label{fig:pt-lr-sweep}
 \end{figure}
 
 灰色の $10^{-4}$ は、300 ステップたっても損失が 7.3 にとどまります。
-歩幅が小さすぎて、坂を下りきらないのです。
+1 回の更新でパラメータが動く量が小さすぎて、300 ステップでは損失が十分に下がらないのです。
 $10^{-3}$、$10^{-2}$、$10^{-1}$ は、最後の訓練損失がそれぞれ 5.19、5.10、5.21 です。
 この小さな実験では $10^{-2}$ が最もよく、$10^{-1}$ でも発散はしませんでした
 （各 1 回の実験なので、この程度の差は、乱数の種を変えれば入れ替わりえます）。
-発散しなかったのは、勾配クリップとウォームアップが歩幅を抑えているからだと考えられます。
+
+$10^{-1}$ は $10^{-3}$ の 100 倍です。発散しなかったのは、勾配クリップのおかげでしょうか。
+確かめるために、\file{ch13/sweep_clip.py} で、同じ学習をクリップなしでも走らせました（最大学習率 3 通り × クリップの有無 2 通り。ほかの設定と乱数の種は同じ）。
+
+\outputfile{ch13/out/sweep_clip.txt}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{clipax/.style={scale only axis,width=32mm,height=30mm,xmin=0,xmax=300,ymin=4.6,ymax=8.6,
+  xlabel={ステップ},xtick={0,100,200,300},title style={font=\footnotesize},tick label style={font=\scriptsize}}}
+\begin{axis}[clipax,name=c1,title={最大学習率 $10^{-3}$},ylabel={訓練損失（移動平均）}]
+\addplot[thick,bookblue] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.001_on.csv};
+\addplot[thick,bookorange,dashed] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.001_off.csv};
+\end{axis}
+\begin{axis}[clipax,name=c2,at={(c1.east)},anchor=west,xshift=11mm,title={最大学習率 $10^{-2}$},yticklabels={}]
+\addplot[thick,bookblue] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.01_on.csv};
+\addplot[thick,bookorange,dashed] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.01_off.csv};
+\end{axis}
+\begin{axis}[clipax,name=c3,at={(c2.east)},anchor=west,xshift=11mm,title={最大学習率 $10^{-1}$},yticklabels={},
+  legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east},legend cell align=left]
+\addplot[thick,bookblue] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.1_on.csv};
+\addplot[thick,bookorange,dashed] table[col sep=comma,x=step,y=loss_ema]{code/ch13/out/clip_0.1_off.csv};
+\legend{クリップあり,クリップなし}
+\end{axis}
+\end{tikzpicture}
+\caption{勾配クリップの有無を変えた訓練損失（\file{ch13/sweep_clip.py}。2 層・64 次元、300 ステップ、乱数の種は同じ）。
+3 つの学習率のどれでも、クリップあり（青）となし（橙の破線）はほとんど重なる。この短い学習では、クリップは結果をほとんど変えない。}
+\label{fig:pt-clip-sweep}
+\end{figure}
+
+\figref{fig:pt-clip-sweep}のとおり、どの学習率でも、クリップの有無で損失はほとんど変わりません。
+クリップなしでも $10^{-1}$ は発散せず、最後の訓練損失は 5.24（クリップありは 5.21）です。
+つまり、\textbf{この実験で $10^{-1}$ が発散しなかったのは、クリップのおかげではありません}。
+理由の一つは、AdamW が勾配を $\sqrt{\vv}$（ふだんの勾配の大きさ）で割ってから動くことです。
+勾配全体が同じ倍率で縮められても、割る数も同じように小さくなっていくので、1 回に動く量はあまり変わりません（\tabref{tab:pt-loop-parts}の「歩幅をそろえる」）。
+クリップが効くのは、勾配が 1 ステップだけ突然大きくなったときです。そのときは $\vv$ がまだ追いついていないので、縮めた分だけ動く量も小さくなります。
+ウォームアップが発散を防いでいるかどうかは、この実験では確かめていません。
+勾配ノルムの最大が、$10^{-2}$ で 23.9、$10^{-1}$ で 6.1 と学習率の順に並ばないのも、1 回ずつの実験で、どこで跳ね上がりが起きるかに偶然が入るからと考えられます。
 
 ただし、これは 300 ステップの短い学習での結果で、長く学習すると大きな学習率の不安定さが後から出ることがあります。
 また、小さなモデルで最適だった学習率が大きなモデルでも最適とは限りません（\tabref{tab:pt-hparams}）。
@@ -730,12 +1119,12 @@ $10^{-3}$、$10^{-2}$、$10^{-1}$ は、最後の訓練損失がそれぞれ 5.1
 \section{学習を監視する}\label{sec:pt-monitor}
 
 設定を決めて学習を始めたら、終わるまで放っておいてよいでしょうか。
-実際の事前学習は何週間も続き、途中で何かが壊れることは珍しくありません。
+実際の事前学習は何週間も続き、途中で GPU の故障で計算が止まったり、損失が急に跳ね上がったりすることは珍しくありません。
 この節の問いは、「学習の途中で、何を見ていれば異常に早く気づけるか」です。
 
 見るべきものは主に四つです。
 \textbf{訓練損失}（学習が進んでいるか）、\textbf{検証損失}（初めて見る文章でも良くなっているか）、
-\textbf{勾配ノルム}（更新の大きさが暴れていないか）、\textbf{生成サンプル}（どんな文章を書くようになったか）です。
+\textbf{勾配ノルム}（勾配の長さが急に大きくなっていないか）、\textbf{生成サンプル}（どんな文章を書くようになったか）です。
 ほかに学習率、スループット（1 秒あたりのトークン数）、メモリ使用量もログに残します。
 
 \figref{fig:pt-gradnorm}は、\secref{sec:pt-hparams}の実験で記録した勾配ノルムです。
@@ -746,17 +1135,30 @@ $10^{-3}$、$10^{-2}$、$10^{-1}$ は、最後の訓練損失がそれぞれ 5.1
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.85\linewidth,height=42mm,xmin=0,xmax=300,ymin=0,ymax=25,
-  xlabel={ステップ},ylabel={勾配ノルム（クリップ前）},
-  legend style={font=\footnotesize,at={(0.98,0.98)},anchor=north east},legend cell align=left]
+\begin{axis}[name=gn,width=0.85\linewidth,height=46mm,xmin=0,xmax=300,ymode=log,ymin=0.08,ymax=40,
+  xlabel={ステップ},ylabel={勾配ノルム},title={(a) 勾配ノルム（クリップ前。縦軸は対数目盛り）},title style={font=\footnotesize},
+  ytick={0.1,1,10},yticklabels={0.1,1,10},
+  legend style={font=\footnotesize,at={(0.45,0.97)},anchor=north},legend cell align=left]
 \addplot[bookblue] table[col sep=comma,x=step,y=grad_norm]{code/ch13/out/lr_0.001.csv};
 \addplot[bookgreen] table[col sep=comma,x=step,y=grad_norm]{code/ch13/out/lr_0.01.csv};
-\addplot[bookaccent,dashed,domain=0:300] {1};
+\addplot[bookaccent,dashed,domain=0:300,samples=2] {1};
 \legend{最大学習率 $10^{-3}$,最大学習率 $10^{-2}$,クリップの閾値 1.0}
 \end{axis}
+\begin{axis}[at={(gn.below south west)},anchor=north west,yshift=-9mm,width=0.85\linewidth,height=40mm,
+  xmin=14.5,xmax=34.5,ymin=4,ymax=11.6,xtick={15,20,23,25,30},ytick={4,6,8,10},
+  xlabel={ステップ},ylabel={訓練損失},title={(b) 15〜34 ステップの損失（そのステップのバッチの値。移動平均でない）},title style={font=\footnotesize},
+  legend style={font=\footnotesize,at={(0.98,0.97)},anchor=north east,legend columns=4,
+    /tikz/every even column/.append style={column sep=3mm}},legend cell align=left]
+\addlegendimage{empty legend}
+\addplot[bookblue,mark=*,mark size=1.2pt,restrict x to domain=15:34] table[col sep=comma,x=step,y=loss]{code/ch13/out/lr_0.001.csv};
+\addplot[bookgreen,thick,mark=square*,mark size=1.4pt,restrict x to domain=15:34] table[col sep=comma,x=step,y=loss]{code/ch13/out/lr_0.01.csv};
+\addplot[bookaccent,dashed,mark=triangle,mark size=2.6pt,mark options={solid,thick},restrict x to domain=15:34] table[col sep=comma,x=step,y=loss]{code/ch13/out/lr_0.1.csv};
+\legend{最大学習率:,$10^{-3}$,$10^{-2}$,$10^{-1}$}
+\end{axis}
 \end{tikzpicture}
-\caption{勾配ノルムの推移（\file{ch13/lr_sweep.py}）。学習率 $10^{-2}$（緑）ではウォームアップ中の 23 ステップ目に 23.9 まで跳ね上がる。
-破線より上の部分は、勾配クリップで長さ 1.0 に縮められている。}
+\caption{勾配ノルムと損失の推移（\file{ch13/lr_sweep.py}）。(a) 縦軸は対数目盛り。学習率 $10^{-2}$（緑）ではウォームアップ中の 23 ステップ目に 23.9 まで跳ね上がる。
+破線（1.0）より上にあるステップの勾配は、勾配クリップで長さ 1.0 に縮められてから更新に使われた。
+(b) 同じステップの損失。赤（$10^{-1}$）は中抜きの三角で、26 ステップ目以降は緑とほぼ重なる。3 つの学習率は同じ順に同じバッチを読むが、23 ステップ目に跳ね上がるのは $10^{-2}$ だけである。}
 \label{fig:pt-gradnorm}
 \end{figure}
 
@@ -764,13 +1166,21 @@ $10^{-3}$、$10^{-2}$、$10^{-1}$ は、最後の訓練損失がそれぞれ 5.1
 緑の $10^{-2}$ では、学習率を上げている途中の 23 ステップ目に 23.9 まで跳ね上がります。
 どちらも 70 ステップを過ぎると、ほとんどの時間で勾配ノルムは 1 を下回ります
 （残りの 230 ステップのうち、1 を超えたのは青で 1 回、緑では 0 回です）。
+縦軸を対数目盛りにしたので、破線の 1 より上か下かが、図の (a) で読み取れます。
 
-23 ステップ目の跳ね上がりは、大きすぎる一歩でパラメータが損失の急な斜面に飛び込んだ合図です。
-記録（\file{ch13/out/lr_0.01.csv}）を見ると、損失も 22 ステップ目の 5.09 から 8.56 へ跳ねています。
+23 ステップ目の跳ね上がりでは、損失も 22 ステップ目の 5.09 から 8.56 へ跳ねています（図の (b) の緑）。
 学習前の値（約 8.3）より悪い値です。
+これは、その 1 バッチがたまたま難しかったからでしょうか。
+4 つの学習率の実験は同じ乱数の種から始めるので、各ステップで読むバッチは同じです。
+同じ 23 ステップ目のバッチでも、$10^{-3}$（青）と $10^{-1}$（赤）の損失は前のステップより下がっています。
+したがって、バッチの難しさのせいではありません。
+直前までの大きな更新で、$10^{-2}$ のパラメータが、損失の高い所（勾配も急な所）へ移っていたと考えられます。
 このとき勾配クリップは、長さ 23.9 の勾配を 1.0 に縮めてから更新に渡しました。
 次の 24 ステップ目には損失は 4.91 に戻り、学習はそのまま続いています。
-今回は 1 ステップで収まりましたが、跳ね上がりが何度も続くなら、学習率を下げる合図と考えます。
+勾配ノルムは、24 ステップ目でも 6.7、25 ステップ目で 2.0 と高めで、26 ステップ目に 1 を下回りました。
+今回は数ステップで収まりましたが、跳ね上がりが何度も続くなら、学習率を下げる合図と考えます。
+同じバッチを同じ順に読んでいるので、\figref{fig:pt-lr-sweep}で 3 本の線のぎざぎざが同じ形になるのも、バッチごとのやさしさ・難しさが同じだからです。
+同じ種のおかげで、学習率の違いだけを比べられているのです。
 
 大規模な学習でも、損失が突然跳ね上がる\term{損失スパイク}{loss spike}はよく知られた問題です。
 直前のチェックポイント（学習の途中の状態を保存したファイル。\secref{sec:pt-ckpt}）に戻って問題のデータを飛ばす、学習率を下げる、といった対処が取られます。
@@ -803,6 +1213,8 @@ $V=4096$ なら $\log 4096 \approx 8.318$ です。
 
 学習は、\textbf{損失・検証損失・勾配ノルム・生成サンプル}の四つを見張りながら進めます。
 勾配ノルムは毎ステップ記録できるので、数百ステップおきにしか測らない検証損失より早く、異常に気づけます。
+なお、\file{base.pt} を作った \code{train_lm} は、短く書くために勾配ノルムを記録していません（\coderef{code:pt-trainlm}の 35 行目は戻り値を捨てています）。
+記録するには、\coderef{code:pt-monitor}のように \code{clip_grad_norm_} の戻り値を受け取ります。
 
 \section{チェックポイントと再開}\label{sec:pt-ckpt}
 \skimread{押さえる結論：モデルを配るだけなら、設定と重みを保存すれば足ります。止めなかったのと同じ学習を再開するには、オプティマイザの状態・ステップ数・乱数の状態も保存します。}
@@ -824,45 +1236,100 @@ AdamW は、各パラメータについて勾配の移動平均 $\vm$ と 2 乗�
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=1mm,y=1mm,b/.style={box,font=\footnotesize,minimum width=24mm,minimum height=7mm,align=center},
-  g/.style={orangebox,font=\footnotesize,minimum width=24mm,minimum height=7mm,align=center}]
+\begin{tikzpicture}[x=1mm,y=1mm,b/.style={box,font=\footnotesize,minimum width=24mm,minimum height=13mm,align=center},
+  g/.style={orangebox,font=\footnotesize,minimum width=24mm,minimum height=13mm,align=center}]
 \node[b] at (0,0) {重み\\{\scriptsize \code{state_dict}}};
 \node[b] at (27,0) {設定\\{\scriptsize \code{config}}};
-\node[g] at (54,0) {オプティマイザ\\{\scriptsize $\vm,\vv$}};
+\node[g] at (54,0) {オプティマイザ\\{\scriptsize 勾配の平均 $\vm$}\\[-0.5mm]{\scriptsize 2 乗の平均 $\vv$}};
 \node[g] at (81,0) {ステップ数\\{\scriptsize 学習率の位置}};
 \node[g] at (108,0) {乱数の状態\\{\scriptsize データの順番}};
-\draw[decorate,decoration={brace,amplitude=2mm}] (-12,6) -- (39,6) node[midway,above=2.5mm,font=\footnotesize]{配る・推論するのに必要};
-\draw[decorate,decoration={brace,mirror,amplitude=2mm}] (-12,-6) -- (120,-6) node[midway,below=2.5mm,font=\footnotesize]{止めなかったのと同じ学習を再開するのに必要};
+\draw[decorate,decoration={brace,amplitude=2mm}] (-12,7.5) -- (39,7.5) node[midway,above=2.5mm,font=\footnotesize]{配る・推論するのに必要};
+\draw[decorate,decoration={brace,mirror,amplitude=2mm}] (-12,-7.5) -- (120,-7.5) node[midway,below=2.5mm,font=\footnotesize]{止めなかったのと同じ学習を再開するのに必要};
 \end{tikzpicture}
-\caption{チェックポイントに入れるもの。青の 2 つだけでモデルは使えるが、学習を正確に再開するには橙の 3 つも要る。}
+\caption{チェックポイントに入れるもの。青の 2 つだけでモデルは使えるが、学習を正確に再開するには橙の 3 つも要る。
+実務の「乱数の状態」には、PyTorch のほか Python・NumPy・GPU の乱数と、データをどこまで読んだかの位置も含める。}
 \label{fig:pt-ckpt}
 \end{figure}
 
 本当に同じになるかを確かめましょう。
 1 層・32 次元の小さなモデルを、(a) 止めずに 40 ステップ学習する場合と、(b) 20 ステップで保存して別のモデルに読み込み、残り 20 ステップを学習する場合を比べます。
 
+3 つとも、関数 \code{run(model, opt, start, stop)} で学習します。
+\code{run} は、ステップ \code{start} から \code{stop} の手前まで \code{get_batch} と更新をくり返し、各ステップの損失のリストを返す関数です（\file{ch13/resume_demo.py} の先頭）。
+(a) は \code{run(model, opt, 0, 40)} を 1 回呼ぶだけです。
+
 \snippet{学習の状態を丸ごと保存する}{code:pt-save-state}{ch13/resume_demo.py}{save-state}
 \snippet{保存した状態から再開する}{code:pt-load-state}{ch13/resume_demo.py}{load-state}
 
 保存する辞書には、モデルの重み、\code{opt.state_dict()}（$\vm$ と $\vv$ と更新回数）、ステップ数、
 \code{torch.get_rng_state()}（PyTorch の乱数生成器の内部状態）を入れます。
+\figref{fig:pt-ckpt}の「設定」は、この辞書に入れていません。
+この例では、同じスクリプトの中の \code{config} でモデルを作り直すからです。
+本当に別のプロセスで再開するなら、\code{save_checkpoint} と同じように設定も入れます。
 再開側では、新しく作ったモデルとオプティマイザにそれぞれを読み込み、\code{torch.set_rng_state} で乱数を保存時点に戻します。
 すると \code{get_batch} は、止めなかった場合と同じ開始位置を選びます。
 比較のため、(c) 重みと乱数の状態は戻すが、オプティマイザは新しく作り直して再開する場合も試しました。
+戻さないのはオプティマイザの状態 $\vm,\vv$ なので、図では「(c) $\vm,\vv$ を捨てて再開」と呼びます（実行結果では「重みだけ再開」と表示しています）。
 
 \outputfile{ch13/out/resume_demo.txt}
 
 (a) と (b) の損失は、小数点以下 4 桁まで一致し、差の最大は 0 です。
-同じ計算を同じ順でしているので、結果がぴったり一致するのです。
+同じ計算を同じ順でしているので、結果がぴったり一致するのです
+（CPU の場合です。GPU では、実行のたびに足し算の順が変わる計算があり、ごくわずかに違うことがあります）。
 一方、(c) は 20 ステップ目（同じ重み・同じバッチ）までは一致しますが、21 ステップ目からずれます（7.5729 に対して 7.5652）。
 その後の更新で $\vm, \vv$ が空の状態から始まるためです。
 この例では (c) の損失がやや低くなりましたが、それは偶然で、重要なのは\textbf{(c) は止めなかった学習を再現できない}ことです。
-大きなモデルでは、オプティマイザの状態を失うと歩幅が乱れ、損失スパイクの原因になります。
+
+実行結果は 4 つのステップだけなので、40 ステップ全部の損失を記録し直しました（\file{ch13/sweep_resume.py}。同じ設定で、4 つのステップの値は上の結果と同じです）。
+\figref{fig:pt-resume}の上が 3 つの学習で何を戻したか、下がその損失です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+% 上: 時間の帯
+\foreach \r/\name in {0/(a) 止めない,1/(b) 完全に再開,2/{(c) $\vm,\vv$ を捨てて再開}} {
+  \node[font=\scriptsize,anchor=east] at (14,-\r*6) {\name};}
+\fill[figblue] (16,-1.8) rectangle (116,1.8);
+\fill[figblue] (16,-7.8) rectangle (66,-4.2);
+\fill[figblue] (66,-7.8) rectangle (116,-4.2);
+\fill[figblue] (16,-13.8) rectangle (66,-10.2);
+\fill[figorange] (66,-13.8) rectangle (116,-10.2);
+\draw[thick,bookaccent] (66,3.5) -- (66,-15.5);
+\node[font=\scriptsize,bookaccent] at (66,5.5) {20 ステップ目で保存・再開};
+\node[font=\scriptsize,anchor=west] at (67,-6) {重み・$\vm,\vv$・ステップ・乱数を戻す};
+\node[font=\scriptsize,anchor=west] at (67,-12) {重み・乱数だけ戻す（$\vm,\vv$ は空から）};
+\foreach \x/\t in {16/0,66/20,116/40} {\node[font=\tiny] at (\x,-17.5) {\t};}
+% 下: 損失の差。横の縮尺を上の帯（0〜40 ステップを 100mm）にそろえる
+\coordinate (resax) at (16,-24);
+\begin{axis}[at={(resax)},anchor=north west,scale only axis,width=100mm,height=28mm,xmin=0,xmax=40,ymin=-0.08,ymax=0.02,
+  xlabel={ステップ},ylabel={(a) の損失との差},xtick={0,10,20,30,40},
+  scaled y ticks=false,ytick={-0.08,-0.06,-0.04,-0.02,0,0.02},yticklabel style={/pgf/number format/fixed,/pgf/number format/precision=2},
+  extra x ticks={20},extra x tick labels={},extra x tick style={grid=major,major grid style={bookaccent,thick}},
+  legend style={font=\footnotesize,at={(0.02,0.03)},anchor=south west},legend cell align=left]
+\addplot[only marks,bookgreen,mark=o,mark size=1.6pt] table[col sep=comma,x=step,y expr=\thisrow{resumed}-\thisrow{straight}]{code/ch13/out/sweep_resume.csv};
+\addplot[thick,bookorange,dashed,mark=*,mark size=0.9pt] table[col sep=comma,x=step,y expr=\thisrow{fresh}-\thisrow{straight}]{code/ch13/out/sweep_resume.csv};
+\legend{(b) 完全に再開 $-$ (a),{(c) $\vm,\vv$ を捨てて再開 $-$ (a)}}
+\end{axis}
+\end{tikzpicture}
+\caption{再開の 3 通りの比較（\file{ch13/sweep_resume.py}。1 層・32 次元の小モデル）。上: 20 ステップ目（赤の縦線）で何を戻したか。橙は、オプティマイザの状態 $\vm,\vv$ を失った区間。
+下: 各ステップの損失から (a) の損失を引いた差（損失そのものは 8.33 から 7.37 へ下がる）。(b) の丸はすべて 0 の上に乗り、(c) の破線だけが 21 ステップ目から 0 を離れる。}
+\label{fig:pt-resume}
+\end{figure}
+
+図の下で、(b) の丸はすべて差 0 の線の上にあります。
+(c) の破線は 21 ステップ目から 0 を離れ、差は 39 ステップ目には $-0.05$ ほどになっていて、0 には戻りません。
+小さな差に見えますが、この後の重みと損失は、すべて (a) とは違う値になります。
+
+なぜ $\vm,\vv$ を失うと困るのでしょうか。
+作り直したオプティマイザでは、$\vm,\vv$ が 0 から始まり、バイアス補正（\secref{sec:training-optim}）が効くので、最初の数ステップは、各パラメータが勾配の符号の向きに、およそ学習率の大きさずつ動きます。
+それまでの $\vv$ には「このパラメータの勾配はふだんどれくらいの大きさか」が記録されていて、それで動く量が調整されていました。
+その記録が消えるので、再開の直後だけ、1 回の更新の大きさがそれまでと急に変わります。
+大きなモデルでは、これが損失スパイクの原因になることがあります。
 
 実際の事前学習では、数千枚の GPU のどれかが故障することが日常的に起きるので、定期的にチェックポイントを書きます。
 AdamW を使うとその大きさは重みの約 3 倍（重み・$\vm$・$\vv$）になります。見積もりと置き場所は\chapref{ch:infra}で扱います。
 
-再開に必要なのは、\textbf{重み・オプティマイザの状態・ステップ数・乱数の状態}です。
+再開に必要なのは、\textbf{重み・オプティマイザの状態・ステップ数・乱数の状態}と、モデルを作り直すための設定です。
 これらをそろえて保存すれば、止めなかったのと同じ学習を続けられます。
 
 \section*{ここまでの道のり}
@@ -904,20 +1371,21 @@ AdamW を使うとその大きさは重みの約 3 倍（重み・$\vm$・$\vv$�
 \figref{fig:pt-base-curve}が、\file{base.pt} の学習曲線です（\file{checkpoints/base_log.csv}）。
 (a) が全体、(b) が 500 ステップ以降を縦に拡大したものです。
 
-\begin{figure}[tbp]
+% 問いより前（ページの上）に出ないよう、t を外す
+\begin{figure}[hbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[name=whole,width=0.52\linewidth,height=45mm,xmin=0,xmax=4000,ymin=2.8,ymax=8.8,
   xlabel={ステップ},ylabel={損失},title={(a) 全体},title style={font=\footnotesize},
   xtick={0,1000,2000,3000,4000},
-  legend style={font=\scriptsize,at={(0.97,0.95)},anchor=north east},legend cell align=left]
+  legend style={font=\scriptsize,at={(0.97,0.55)},anchor=east},legend cell align=left]
 \addplot[thick,bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=step,y=train_loss]{code/checkpoints/base_log.csv};
 \addplot[thick,bookaccent,mark=square*,mark size=1.3pt] table[col sep=comma,x=step,y=val_loss]{code/checkpoints/base_log.csv};
 \addplot[bookgray,dashed,domain=0:4000] {8.318};
 \legend{訓練損失,検証損失,$\log 4096 = 8.318$}
 \end{axis}
 \begin{axis}[at={(whole.outer east)},anchor=outer west,width=0.52\linewidth,height=45mm,xmin=400,xmax=4100,restrict x to domain=450:4100,ymin=3.0,ymax=4.6,
-  xlabel={ステップ},title={(b) 500 ステップ以降の拡大},title style={font=\footnotesize},
+  xlabel={ステップ},ylabel={損失},title={(b) 500 ステップ以降の拡大},title style={font=\footnotesize},
   xtick={1000,2000,3000,4000}]
 \addplot[thick,bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=step,y=train_loss]{code/checkpoints/base_log.csv};
 \addplot[thick,bookaccent,mark=square*,mark size=1.3pt] table[col sep=comma,x=step,y=val_loss]{code/checkpoints/base_log.csv};
@@ -935,7 +1403,11 @@ AdamW を使うとその大きさは重みの約 3 倍（重み・$\vm$・$\vv$�
 二つ目は\textbf{下がり方}で、最初の 500 ステップで 4.4 まで急に下がり、その後はゆっくり下がります。
 覚えやすいこと（よく出るトークン、ドリルの書式）を先に覚え、難しいこと（文脈に応じた予測）は少しずつ覚えるからです。
 三つ目は\textbf{訓練と検証の差}です。
-検証データは小説の末尾 5\%（最後の作品『明暗』の終わりと『夢十夜』）なので、訓練に出てこない作品の文章を含み、早い段階から検証損失のほうが高めです。
+まず、検証データ \file{val.bin} の中身を確かめておきます。
+小説の末尾 5\%（最後の作品『明暗』の終わりと『夢十夜』）と、別の乱数の種で作ったドリル 5,000 行をつないだもので、トークン数ではおよそ 6:4 です（\secref{sec:pt-binary}の「3.」「4.」）。
+したがって、図の検証損失は小説とドリルを合わせた平均です。
+小説の部分には訓練に出てこない作品の文章が含まれるので、1,000 ステップ以降は検証損失のほうが高くなります
+（500 ステップでは訓練 4.41、検証 4.35 とほぼ同じです）。
 1,000 ステップでは 3.76 と 4.12 で、差は 0.36 です。
 途中の差は 0.16（2,000 ステップ）から 0.27（3,500 ステップ）の間で、一方的に広がってはいません（図の (b)）。
 4,000 ステップでは 3.11 と 3.48 で、差は 0.37 と 1,000 ステップのときとほぼ同じですが、検証損失は 3,500 ステップの 3.39 から少し上がっています。
@@ -944,6 +1416,15 @@ AdamW を使うとその大きさは重みの約 3 倍（重み・$\vm$・$\vv$�
 
 最後の検証損失 3.48 は、パープレキシティにすると $e^{3.48}\approx 32$ です。
 「4,096 択」から「平均して 32 択くらいで迷う」ところまで絞れた、ということです（\chapref{ch:lm}）。
+ただし、これも小説とドリルを合わせた平均です。
+\file{ch13/sweep_val_split.py} で、\file{base.pt} の検証損失を二つの部分に分けて測り直すと、次のようになりました（重ならない窓をすべて使ったので、図の値とは少し違います）。
+
+\outputfile{ch13/out/sweep_val_split.txt}
+
+小説の部分だけの損失は 4.86（パープレキシティ約 129）、ドリルの部分は 1.31（約 3.7）で、全体はその間の 3.43 です。
+ドリルは数字と記号だけの規則的な文字列で、答えの数字はかなり当てられるので、平均して 4 択ほどまで絞れています（問題の数字は乱数で選ばれているので当てようがなく、損失は 0 にはなりません）。
+したがって、「32 択くらいで迷う」は平均の話で、漱石の文章だけなら 100 択を超える所で迷っています。
+訓練と検証の差や、最後の検証損失の上昇を読むときも、この混ざり方を頭に置く必要があります。
 
 \subsection{何ができるようになったか}
 
@@ -954,10 +1435,21 @@ AdamW を使うとその大きさは重みの約 3 倍（重み・$\vm$・$\vv$�
 
 計算ドリルはどうでしょうか。
 \code{drill_accuracy}（\file{llmbook/arith.py}）で、1〜3 桁の足し算・引き算 200 問を貪欲に解かせると、正答率は \textbf{86.5\%} でした。
-計算の規則を誰も教えていないのに、「続きを当てる」練習だけで 9 割近く正しく答えるようになったのです。
+計算の規則を誰も教えていないのに、「続きを当てる」練習だけで、8 割台の半ばの問題に正しく答えるようになったのです。
+
+ただし、この 200 問には、訓練用のドリル 12 万行に同じ行がそのまま入っている問題が 131 問（65.5\%）あります。
+\secref{sec:pt-data}で見たとおり、小さな数の問題は何度も出るからです。
+\file{ch13/sweep_seen.py} で、訓練に出てきた問題（既出）と出てこなかった問題（初出）に分けて正答率を測りました。
+
+\outputfile{ch13/out/sweep_seen.txt}
+
+先頭の 3 行が 200 問の結果です。
+既出の 131 問では 90.8\%、初出の 69 問では 78.3\% でした。
+\textbf{86.5\% は、覚えた問題と、初めての問題に手順を当てはめた結果が混ざった値}です。
+初めて見る問題だけでも 8 割近く正しく答えるので、丸暗記だけではないことも分かります。
 
 では、残りの 1 割強はどこで間違えるのでしょうか。
-\file{ch13/arith_analysis.py} では、まず冒頭で触れた \code{"\n12+35="} を与え、最後の位置のロジットを \code{softmax} で確率にして上位 3 個を表示します。
+\file{ch13/arith_analysis.py} では、まず冒頭で触れた \texttt{"\textbackslash n12+35="} を与え、最後の位置のロジットを \code{softmax} で確率にして上位 3 個を表示します。
 結果（下の実行結果の先頭 3 行）は、\code{5} が 0.559、正解の \code{4} が 0.428 です。
 貪欲法は確率が最大のものを選ぶので、十の位に \code{5} を書き、\code{57} と誤答します。
 正解との差はわずかで、モデルは「4 か 5 か」で迷っているのです。
@@ -979,10 +1471,12 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[ybar,width=0.9\linewidth,height=44mm,ymin=50,ymax=105,bar width=3.6mm,
+\begin{axis}[ybar,width=0.9\linewidth,height=44mm,ymin=0,ymax=122,bar width=3.6mm,ytick={0,20,...,100},area legend,
   symbolic x coords={+1桁,+2桁,+3桁,-1桁,-2桁,-3桁},xtick=data,
-  ylabel={正答率（\%）},legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,legend columns=2,draw=none},
-  nodes near coords,nodes near coords style={font=\tiny},enlarge x limits=0.1]
+  xticklabels={$+$1桁,$+$2桁,$+$3桁,$-$1桁,$-$2桁,$-$3桁},
+  ylabel={正答率（\%）},legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,legend columns=2,draw=none,
+    /tikz/every even column/.append style={column sep=4mm}},
+  nodes near coords,nodes near coords style={font=\tiny,rotate=90,anchor=west},enlarge x limits=0.1]
 \addplot[fill=figblue,draw=bookblue] coordinates {(+1桁,100) (+2桁,92.2) (+3桁,83.1) (-1桁,100) (-2桁,97.0) (-3桁,96.2)};
 \addplot[fill=figorange,draw=bookorange] coordinates {(+1桁,100) (+2桁,93.8) (+3桁,70.6) (-2桁,77.0) (-3桁,68.3)};
 \legend{繰り上がり・繰り下がりなし,あり}
@@ -990,7 +1484,8 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \end{tikzpicture}
 \caption{基盤モデルの計算ドリルの種類別正答率（1,000 問、\file{ch13/arith_analysis.py}）。
 1 桁は全問正解だが、3 桁で繰り上がり・繰り下がりのある問題は 7 割前後に落ちる。
-1 桁の引き算は答えが負にならないよう大きい数から引くので、繰り下がりが起きず、橙の棒はない。}
+1 桁の引き算は答えが負にならないよう大きい数から引くので、繰り下がりが起きず、橙の棒はない。
+横軸の桁数は、二つの数のうち大きいほうの桁数（「$+$2桁」は大きいほうが 2 桁の足し算、「$-$2桁」は引き算）。各棒は 36〜167 問。}
 \label{fig:pt-arith}
 \end{figure}
 
@@ -1001,6 +1496,33 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 桁数が増えると正答率が下がり、繰り上がり・繰り下がりのある 3 桁の問題は 7 割前後です。
 一方、2 桁の足し算では「あり」93.8\% と「なし」92.2\% がほぼ同じです（各 80〜90 問なので、数ポイントの差は偶然でも生じます）。
 繰り上がりだけでは、誤りは説明しきれないのです。
+
+もう一つ、既出か初出かで分けた見方もできます。
+\figref{fig:pt-arith-seen}は、同じ 1,000 問を、種類ごとに既出と初出に分けたものです（\file{ch13/sweep_seen.py}。数値は先の実行結果の 4 行目以降）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar,width=0.9\linewidth,height=44mm,ymin=0,ymax=122,bar width=3.6mm,ytick={0,20,...,100},area legend,
+  symbolic x coords={+1桁,+2桁,+3桁,-1桁,-2桁,-3桁},xtick=data,
+  xticklabels={$+$1桁,$+$2桁,$+$3桁,$-$1桁,$-$2桁,$-$3桁},unbounded coords=discard,
+  ylabel={正答率（\%）},legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,legend columns=2,draw=none,
+    /tikz/every even column/.append style={column sep=4mm}},
+  nodes near coords,nodes near coords style={font=\tiny,rotate=90,anchor=west},enlarge x limits=0.1]
+\addplot[fill=figgreen,draw=bookgreen] table[col sep=comma,x=kind,y=seen_acc]{code/ch13/out/sweep_seen.csv};
+\addplot[fill=figpurple,draw=bookpurple] table[col sep=comma,x=kind,y=new_acc]{code/ch13/out/sweep_seen.csv};
+\legend{既出（訓練データに同じ行がある）,初出}
+\end{axis}
+\end{tikzpicture}
+\caption{種類別の正答率を、既出の問題と初出の問題に分けたもの（1,000 問）。作ったのは \file{ch13/sweep_seen.py}。
+1 桁の問題は 155 通りしかなく全部が既出なので、初出の棒はない。$-$2桁の初出は 9 問だけで、ぶれが大きい。
+どの種類でも初出のほうが低く、3 桁の初出は 7 割程度。}
+\label{fig:pt-arith-seen}
+\end{figure}
+
+どの種類でも、初出の問題のほうが正答率が低くなっています。
+3 桁の問題は、大部分が初出です（足し算で 242 問中 171 問）。
+3 桁で正答率が下がるのは、問題が難しいことに加えて、覚えて答えられる問題が少ないことも理由の一つと考えられます。
 
 誤答の例を見ると、\code{792+7=709}（正解 799）、\code{4+326=320}（正解 330）、\code{26+703=739}（正解 729）、\code{49+345=404}（正解 394）と、
 \textbf{十の位を間違える}ものが目立ちます。
@@ -1014,14 +1536,21 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 筆算なら位が縦にそろいますが、ドリルの問題は横 1 行に書かれているので、位はそろって見えません。
 桁数が違うと、どの位とどの位を足すかの対応を、モデルが自分で見つけなければなりません。
 
+ただし、「桁数が違うと間違えやすい」は、6 つの誤答の例から立てた見立てにすぎません。
+1,000 問全体で数えると（\file{ch13/sweep_seen.py} の実行結果の最後の 5 行）、二つの数の桁数が同じ問題の正答率は 81.5\%、違う問題は 86.8\% で、むしろ違う問題のほうが高くなります。
+大きいほうが 3 桁の問題に絞っても、1 桁と 3 桁で 90.2\%、2 桁と 3 桁で 72.0\%、3 桁どうしで 54.8\% です。
+1 桁と 3 桁の組は、問題の種類が少なく既出の問題が多い（\tabref{tab:pt-dedup-digits}）ことも影響していて、桁数の違いだけを取り出した比較にはなっていません。
+\textbf{桁数の違いが誤りの主な原因だとは、この結果からは言えない}のです。
+十の位の誤りには、次の要因も考えられます。
+
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,
   d/.style={font=\small,minimum width=6mm,minimum height=6mm,inner sep=0pt},
   h/.style={font=\scriptsize,text=bookgray}]
-% 左: 792+7
-\node[font=\footnotesize] at (4,11.5) {\code{792+7=}};
-\foreach \x/\t in {0/百,7/十,14/一} {\node[h] at (\x,6) {\t};}
+% 左: 792+7（見出しの高さは右の図とそろえる）
+\node[font=\footnotesize] at (4,20) {\code{792+7=}};
+\foreach \x/\t in {0/百,7/十,14/一} {\node[h] at (\x,15) {\t};}
 \foreach \x/\t in {0/7,7/9,14/2} {\node[d] at (\x,0) {\t};}
 \node[d] at (-8,-6) {+};
 \node[d] at (14,-6) {7};
@@ -1032,14 +1561,16 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \node[d] at (0,-20) {7};
 \node[d,draw=bookorange,fill=figorange,thick,minimum height=5.4mm] at (7,-20) {0};
 \node[d] at (14,-20) {9};
+\draw[arr] (-3,-25) -- node[below,lbl]{モデルが書く順} (17,-25);
 % 右: 4+326
 \begin{scope}[xshift=68mm]
-\node[font=\footnotesize] at (4,11.5) {\code{4+326=}};
-\foreach \x/\t in {0/百,7/十,14/一} {\node[h] at (\x,6) {\t};}
+\node[font=\footnotesize] at (4,20) {\code{4+326=}};
+\foreach \x/\t in {0/百,7/十,14/一} {\node[h] at (\x,15) {\t};}
 \node[d] at (14,0) {4};
-\node[font=\scriptsize,bookaccent] (carry) at (7,0) {1};
-\node[font=\tiny,bookaccent,anchor=east] at (5,0) {繰り上がり};
-\draw[->,bookaccent] (11.5,0) -- (8.8,0);
+% 一の位の列の真上に 4+6=10、そこから十の位の列の上の繰り上がりの 1 へ
+\node[font=\scriptsize,bookaccent] (carry) at (7,5) {1};
+\node[font=\tiny,bookaccent,align=center,inner sep=0.5pt] (sum) at (15.5,10) {$4+6=10$\\繰り上がり 1};
+\draw[->,bookaccent] (sum.west) -| (carry.north);
 \node[d] at (-8,-6) {+};
 \foreach \x/\t in {0/3,7/2,14/6} {\node[d] at (\x,-6) {\t};}
 \draw[thick] (-12,-9.5) -- (18,-9.5);
@@ -1054,11 +1585,12 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \end{tikzpicture}
 \caption{誤答を筆算の形に並べたもの。橙が、正解と違う位。
 左は、十の位の 9 をそのまま写す所が 0 になっている。
-右は、一の位の $4+6=10$ からの繰り上がり（赤）が、答えに入っていない。}
+右は、一の位の $4+6=10$ からの繰り上がり（赤の小さな 1。十の位の列の上に書いた）が、答えに入っていない。
+左右の図とも、モデルは答えを左の位（百の位）から右へ順に書く。}
 \label{fig:pt-digits}
 \end{figure}
 
-もう一つの要因は、答えを\textbf{上の位から}書くことです。
+その要因は、答えを\textbf{上の位から}書くことです。
 十の位を書く時点では、1 の位からの繰り上がりがあるかどうかを、まだ書いていない 1 の位の計算から先読みしなければなりません。
 図の右の \code{4+326} では、一の位の $4+6=10$ から十の位へ 1 が繰り上がるので、十の位は $2+1=3$ です。
 モデルの答え 320 は、この繰り上がりを入れない $2$ のままになっています。
@@ -1066,12 +1598,12 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 （これは確率から読み取れる解釈で、モデルの内部を直接確かめたわけではありません）。
 人間でも、暗算で答えを上の位から言おうとすると難しくなります。
 
-この分析は、後の章への伏線になります。
+この分析は、後の章の課題につながります。
 \chapref{ch:posttraining}では、この基盤モデルに「質問に答える」形式を教えます（SFT）。
 \chapref{ch:rl-llm}では、正解かどうかを報酬にした強化学習で、正答率をさらに上げることを目指します。
 \chapref{ch:agent}では、計算を電卓に任せるという、まったく別の解き方をモデルに教えます。
 
-\file{base.pt} は、\textbf{続きを当てるだけで漱石らしい文体と 9 割近い計算力}を身につけました。
+\file{base.pt} は、\textbf{続きを当てるだけで漱石らしい文体と、9 割近い正答率}を身につけました（初めて見る問題に限ると 7〜8 割）。
 ただし、桁数が多く繰り上がりのある問題では、十の位を中心に誤ります。
 
 \section{大きくすると何が起きるか：スケーリング則}\label{sec:pt-scaling}
@@ -1090,7 +1622,10 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 
 \code{SIZES} の各組が層数と次元です。
 \code{n_emb} は埋め込みと位置埋め込みのパラメータ数です。
-埋め込みは表引きで計算量にほとんど寄与しないので、スケーリング則では「埋め込み以外」のパラメータ数で数えるのが慣例です\cite{kaplan2020scaling}。
+入力側の埋め込みは表を引くだけなので、計算はほとんど要りません。
+そこで Kaplan らのスケーリング則では、「埋め込み以外」のパラメータ数で数えました\cite{kaplan2020scaling}。
+ただし、ミニGPT のように出力層が埋め込みの表を共有するモデルでは、出力側でこの表との行列積（1 トークンあたり約 $2Vd$ 回の演算）がかかるので、計算量の面では無視できません。
+数え方は論文によって違うので、比べるときはどちらで数えたかを確かめます（後の\tabref{tab:pt-ratio}は、埋め込みを含めた数です）。
 最後の評価は、3 つとも同じ 100 バッチ（乱数の種 123）で行い、比較のぶれを小さくしました。
 実行結果（3 回の実行の最終行を集めたもの）は次のとおりで、\figref{fig:pt-scaling}が学習曲線です。
 
@@ -1099,18 +1634,24 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.82\linewidth,height=44mm,xmin=0,xmax=1000,ymin=4.4,ymax=8.5,
-  xlabel={ステップ},ylabel={検証損失},
+\begin{axis}[width=0.82\linewidth,height=44mm,xmin=0,xmax=1080,ymin=4.4,ymax=8.5,
+  xlabel={ステップ},ylabel={検証損失},xtick={0,200,400,600,800,1000},
   legend style={font=\footnotesize,at={(0.98,0.98)},anchor=north east},legend cell align=left]
-\addplot[thick,bookgray,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_small.csv};
-\addplot[thick,bookgreen,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_medium.csv};
-\addplot[thick,bookblue,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_large.csv};
-\legend{small（1 層・32 次元）,medium（2 層・64 次元）,large（4 層・128 次元）}
+\addplot[thick,bookgray,dashed,mark=*,mark size=1.4pt,mark options={solid}] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_small.csv};
+\addplot[thick,bookgreen,mark=square*,mark size=1.4pt] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_medium.csv};
+\addplot[thick,bookblue,mark=triangle*,mark size=2pt] table[col sep=comma,x=step,y=val_loss]{code/ch13/out/scaling_large.csv};
+% 同じ 100 バッチで測り直した値（scaling_points.csv）を、1,000 ステップの少し右に中抜きの印で置く
+\addplot[forget plot,only marks,thick,scatter,scatter src=explicit symbolic,
+  scatter/classes={small={mark=o,mark size=2.2pt,bookgray},medium={mark=square,mark size=2.2pt,bookgreen},large={mark=triangle,mark size=3pt,bookblue}}]
+  table[col sep=comma,x expr=1030,y=val_loss,meta=name]{code/ch13/out/scaling_points.csv};
+\addlegendimage{only marks,mark=o,mark size=2.2pt,black}
+\legend{small（1 層・32 次元）,medium（2 層・64 次元）,large（4 層・128 次元）,中抜きの印：同じ 100 バッチで測り直した値}
 \end{axis}
 \end{tikzpicture}
 \caption{モデルの大きさを変えたときの検証損失（\file{ch13/scaling_experiment.py}、各 1 回）。
 750 ステップまでは、大きいモデルほど損失が低い。点は 250 ステップごとの 20 バッチの平均なので、ぶれがある。
-最後の点で medium と large が入れ替わって見えるのは、そのためである（同じ 100 バッチで測り直した値は本文）。}
+最後の点で medium と large が入れ替わって見えるのは、そのためである。
+右端の中抜きの印は、学習後に 3 つとも同じ 100 バッチで測り直した値（small 5.193、medium 4.788、large 4.615）で、大きいモデルほど低い。}
 \label{fig:pt-scaling}
 \end{figure}
 
@@ -1123,6 +1664,7 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 下がり幅は 0.41、0.17 と小さくなっていきます。
 パラメータを同じ倍率で増やしても、得られる改善はだんだん小さくなるのです。
 ただし、各 1 回の短い実験で、large はまだ学習の途中なので、これだけで法則は言えません。
+次の小節で見るべき乗則でも、下がる量（差）は少しずつ小さくなりますが、この実験の縮み方には、large が学習しきれていないことの影響も混ざっています。
 
 \subsection{Kaplan のスケーリング則}
 
@@ -1134,10 +1676,42 @@ $p=0.86$、$n=200$ なら $\sqrt{0.86\times0.14/200}=\sqrt{0.000602}\approx0.025
 \calL(N) \approx \left(\frac{N_c}{N}\right)^{\alpha_N},\qquad \alpha_N \approx 0.076
 \label{eq:pt-kaplan}
 \end{equation}
-です（$N_c$ は定数）。
+です（$N_c$ は損失の大きさの目盛りを決める定数で、$\alpha_N$ とともに実験の結果に当てはめて決めます）。
 両辺の対数を取ると $\log\calL \approx \alpha_N(\log N_c - \log N)$ なので、両対数グラフ（縦軸も横軸も対数の目盛りにしたグラフ）では、傾き $-\alpha_N$ の直線になります。
 $N$ を 10 倍にすると、損失は $10^{-0.076}\approx 0.84$ 倍、つまり「10 倍の投資で 16\% 良くなる」という、ゆっくりだが確実な改善です。
 100 倍にしても、$0.84\times0.84\approx0.70$ 倍です。
+べき乗則では、$N$ を同じ倍率で増やすと、損失は\textbf{同じ比率}で下がります。
+損失そのものが小さくなっていくので、下がる量（差）は少しずつ小さくなります。
+
+本書の 3 つのモデルを、両対数グラフに置いてみましょう（\figref{fig:pt-scaling-loglog}）。
+
+% 見出しより前に出ないことを画像で確かめた（ここで入らなければ次のページの上へ）
+\begin{figure}[htp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=50mm,xmode=log,ymode=log,
+  xmin=6000,xmax=1.6e6,ymin=4.2,ymax=5.8,
+  ytick={4.4,4.6,4.8,5.0,5.2,5.4,5.6},yticklabels={4.4,4.6,4.8,5.0,5.2,5.4,5.6},
+  xlabel={埋め込み以外のパラメータ数 $N$（対数目盛り）},ylabel={最終の検証損失（対数目盛り）},
+  legend style={font=\footnotesize,at={(0.98,0.98)},anchor=north east},legend cell align=left]
+\addplot[only marks,bookblue,mark=*,mark size=2pt,nodes near coords,point meta=explicit symbolic,
+  nodes near coords style={font=\scriptsize,anchor=south west}]
+  table[col sep=comma,x=n_nonemb,y=val_loss,meta=name]{code/ch13/out/scaling_points.csv};
+\addplot[bookblue] table[col sep=comma,x=n_nonemb,y=val_loss]{code/ch13/out/scaling_points.csv};
+\addplot[bookgray,dashed,domain=8000:1.4e6,samples=2] {4.788*(x/98944)^(-0.076)};
+\legend{本書の 3 つのモデル,,傾き $-0.076$ の直線（式\eqref{eq:pt-kaplan}）}
+\end{axis}
+\end{tikzpicture}
+\caption{本書の 3 つのモデルを両対数グラフに置いたもの（\file{ch13/scaling_experiment.py} の最終の検証損失。同じ 100 バッチで測った値）。
+破線は、式\eqref{eq:pt-kaplan}の傾きを medium の点に合わせて引いた比較用の直線。本書の点は破線より傾きがゆるく、しだいに寝ていく。}
+\label{fig:pt-scaling-loglog}
+\end{figure}
+
+small から medium の傾きは約 $-0.039$、medium から large は約 $-0.018$ で、式\eqref{eq:pt-kaplan}の $-0.076$ よりゆるく、しかも途中で寝ています。
+本書の実験は 1,000 ステップの短い学習で、大きいモデルほど学習しきれていません。
+データも 250 万トークンしかないので、「データが十分にあるとき」という式の前提を満たしていません。
+\textbf{前提を満たさない小さな実験では、べき乗則の直線は見えない}のです。
+Kaplan らは、モデルを十分に学習させ、何桁にもわたる大きさで測って、初めて直線を見つけました。
 
 \subsection{Chinchilla：パラメータとデータの釣り合い}
 
@@ -1146,21 +1720,79 @@ $N$ を 10 倍にすると、損失は $10^{-0.076}\approx 0.84$ 倍、つまり
 重み 1 個につき、1 トークンあたり順伝播で約 2 回、逆伝播で約 4 回の演算が要るからです（\secref{sec:gpu-flops}）。
 $C$ が一定なら、$N$ を 2 倍にすると $D$ は半分にしなければなりません。
 
+\figref{fig:pt-isoflop}は、$C$ を決めたときに $N$ を変えると損失がどうなるかの模式図です。
+$N$ が小さすぎると、データは多くてもモデルが覚えきれません。
+$N$ が大きすぎると、同じ $C$ で読めるデータが減り、モデルが学習しきれません。
+その間に、損失が最も低くなる釣り合いの点があります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=48mm,xmin=0,xmax=10,ymin=0,ymax=14,
+  xtick=\empty,ytick=\empty,
+  xlabel={パラメータ数 $N$（対数目盛り。右ほど大きく、読むデータ $D=C/6N$ は少ない）},ylabel={学習後の損失},
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,draw=none,
+    /tikz/every even column/.append style={column sep=4mm}},legend cell align=left,legend columns=2]
+\addplot[thick,bookblue,domain=0.5:9.5,samples=60] {6.5+0.18*(x-3.6)^2};
+\addplot[thick,bookgreen,domain=0.5:9.5,samples=60] {3+0.18*(x-5.6)^2};
+\addplot[only marks,bookaccent,mark=*,mark size=2pt] coordinates {(3.6,6.5) (5.6,3)};
+\legend{計算量 $C$,計算量 $100C$}
+\node[font=\scriptsize,anchor=west,bookaccent] at (axis cs:5.0,5.3) {赤い点：各曲線の釣り合いの点};
+\node[font=\scriptsize,align=center] at (axis cs:1.3,1.6) {モデルが\\小さすぎる};
+\node[font=\scriptsize,align=center] at (axis cs:8.9,1.6) {データが\\足りない};
+\draw[->,bookaccent] (axis cs:3.9,6.2) -- (axis cs:5.3,3.4);
+\end{axis}
+\end{tikzpicture}
+\caption{計算量 $C$ を決めて $N$ を変えたときの損失の模式図（数値は描いていない）。
+各曲線の底（赤い点）が、その計算量で損失が最も低くなる $N$。計算量を増やすと底は右下へ動く。
+Chinchilla の結論は、底が $N$ と $D$ を同じ割合で増やす向きに動く、というもの。}
+\label{fig:pt-isoflop}
+\end{figure}
+
 Hoffmann らは 400 以上のモデルを学習させ、計算量あたりの損失が最も低くなるのは $N$ と $D$ を\textbf{同じ割合で}増やすときだと結論しました\cite{hoffmann2022training}。
-その目安は、\textbf{トークン数 $D \approx 20 \times$ パラメータ数 $N$} です。
+「同じ割合」とは、比 $D/N$ を保つことです。
+$C\approx6ND$ なので、計算量を 100 倍にするなら、$N$ も $D$ もそれぞれ $\sqrt{100}=10$ 倍にします。
+その比の目安は、\textbf{トークン数 $D \approx 20 \times$ パラメータ数 $N$} です。
 彼らは、この配分で 700 億パラメータのモデル Chinchilla を 1.4 兆トークンで学習させ、
 4 倍大きいがトークン数の少ない Gopher（2,800 億パラメータ、3,000 億トークン）を上回りました。
+
+この結論は、Kaplan らの配分とは違います。
+Kaplan らは、計算量が増えたら、データよりモデルの大きさを速く増やすのがよい（$C$ を 100 倍にするなら $N$ を約 29 倍、$D$ を約 3.5 倍）と見積もっていました\cite{kaplan2020scaling}。
+Chinchilla の結論は、当時の大きなモデルは、データに対して大きすぎた、というものです。
+二つの見積もりがなぜ違ったのかは、その後も議論が続き、パラメータの数え方（埋め込みを含めるか）や、学習率スケジュールの決め方の違いが挙げられています。
+さらに最近は、学習後の推論の費用まで考えて、目安よりも小さなモデルを多くのデータで学習させる配分が広がっています（後で述べます）。
+\tabref{tab:pt-scaling-compare}に、三つの考え方を並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{モデルの大きさとデータ量の配分の考え方の比較。$D/N$ の値は\tabref{tab:pt-ratio}と本文から。
+配分の指数は\cite{kaplan2020scaling,hoffmann2022training}による。
+$D/N$ の $N$ は埋め込みを含む全パラメータ数（Kaplan らの $N$ は埋め込みを含まない数なので、そのまま比べられない）。}
+\label{tab:pt-scaling-compare}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{22mm}p{26mm}p{28mm}>{\raggedright\arraybackslash}p{24mm}p{20mm}}
+\toprule
+考え方 & 何を最小にするか & $C$ を 100 倍にしたとき & 実際のモデルの $D/N$ & 本書での扱い \\
+\midrule
+Kaplan ら（2020） & 学習の計算量あたりの損失 & $N$ 約 29 倍、$D$ 約 3.5 倍（モデルを優先） & 決まった値はない（$C$ とともに小さくなる）。参考：当時の大きなモデル GPT-3 1.7、\mbox{Gopher} 約 1 & 紹介のみ \\
+Chinchilla（2022） & 学習の計算量あたりの損失 & $N$、$D$ とも 10 倍（$D\approx20N$ を保つ） & Chinchilla 20 & 目安として使う（\chapref{ch:distributed}、\chapref{ch:infra}） \\
+推論の費用まで考える & 学習と推論を合わせた費用 & 目安より $D$ を多く、$N$ を小さく & LLaMA 7B 143、Llama 3.1 405B 39 & 紹介のみ \\
+\bottomrule
+\end{tabular}
+\end{table}
 \tabref{tab:pt-ratio}に、いくつかのモデルの「パラメータあたりのトークン数」を並べます。
 
 \begin{table}[tbp]
 \centering
-\caption{パラメータ 1 個あたりの学習トークン数 $D/N$。Chinchilla の目安は約 20。
-最近のモデルは推論の費用を下げるため、目安より小さなモデルを多くのデータで学習させる傾向がある。}
+\caption{パラメータ 1 個あたりの学習トークン数 $D/N$。Chinchilla の目安は約 20。ここでの $N$ は埋め込みを含む全パラメータ数。
+最近のモデルは推論の費用を下げるため、目安より小さなモデルを多くのデータで学習させる傾向がある。
+本書だけは、延べのトークン数と、異なるトークン数の 2 行に分けた。}
 \label{tab:pt-ratio}
 \footnotesize
 \begin{tabular}{lrrr}
 \toprule
-モデル & $N$ & $D$ & $D/N$ \\
+モデル & パラメータ数 $N$ & 学習トークン数 $D$ & $D/N$ \\
 \midrule
 GPT-3\cite{brown2020language} & 1,750 億 & 3,000 億 & 1.7 \\
 Chinchilla\cite{hoffmann2022training} & 700 億 & 1.4 兆 & 20 \\
@@ -1174,8 +1806,10 @@ Llama 3.1 405B\cite{dubey2024llama3} & 4,050 億 & 15.6 兆 & 39 \\
 
 本書の \file{base.pt} は、延べで数えても $D/N\approx 6$（1,640 万 ÷ 260 万）で目安の 20 に届かず、異なるトークンでは $D/N\approx 1$（248 万 ÷ 260 万）です。
 \textbf{本書のモデルは、データに対して大きすぎる}のです。
-検証損失の上昇（\figref{fig:pt-base-curve}）は、その表れと考えられます。
-漱石の全作品を使っても 250 万トークンしかないので、これは小さな世界の限界です。
+検証損失の上昇（\figref{fig:pt-base-curve}）は、その表れかもしれません（ただし、\secref{sec:pt-base}で見たとおり、測り方のぶれの範囲とも区別できません）。
+Chinchilla の目安は、大量のデータを用意できるときの配分です。
+同じデータを何度も読む場合、延べのトークン数ほどの効果はないと考えられるので、本書の値は、延べ（6.3）と異なり（1.0）の両方を見ておくのが安全です。
+漱石の全作品を使っても 250 万トークンしかないので、これは本書のデータの量の限界です。
 
 一方、LLaMA 7B は目安の 7 倍のデータで学習しています。
 Chinchilla の目安は学習の計算量だけを考えた配分です。
@@ -1191,7 +1825,12 @@ Chinchilla の目安は学習の計算量だけを考えた配分です。
 実務では Hugging Face の \file{transformers} と \file{datasets} を使うことが多くあります\cite{wolf2020transformers}。
 この節の問いは、「自作の部品は、実務のライブラリのどれに対応するか」です。
 
-\begin{table}[tbp]
+\tabref{tab:pt-hf}が対応表です。
+試しに、\file{base.pt} と同じ形の GPT-2 を \file{transformers} で作り、本書のデータで損失を求めてみます。
+重みはランダムに初期化するので、ダウンロードは要りません。
+
+% 節の見出しより前に出ないよう、参照の段落の後ろに置く
+\begin{table}[htp]
 \centering
 \caption{本書の部品と Hugging Face のライブラリの対応。}
 \label{tab:pt-hf}
@@ -1205,18 +1844,14 @@ Chinchilla の目安は学習の計算量だけを考えた配分です。
 \file{prepare_data.py} と \file{train.bin} & \code{load_dataset} と \code{Dataset.map}（\file{datasets}） \\
 \code{get_batch} & 固定長に詰める前処理と \code{DataCollatorForLanguageModeling} \\
 \code{train_lm}, \code{lr_at}, \code{make_optimizer} & \code{Trainer} と \code{TrainingArguments} \\
-\code{save_checkpoint} & \code{save_pretrained}, \code{from_pretrained} \\
+\code{save_checkpoint}, \code{load_checkpoint} & \code{save_pretrained}, \code{from_pretrained} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\tabref{tab:pt-hf}が対応表です。
-試しに、\file{base.pt} と同じ形の GPT-2 を \file{transformers} で作り、本書のデータで損失を求めてみます。
-重みはランダムに初期化するので、ダウンロードは要りません。
-
 \snippet{\file{transformers} で同じ形のモデルを作る}{code:pt-hf}{ch13/hf_minimal.py}{hf}
 
-\code{GPT2Config} は引数名が少し違うだけで（文脈長は \code{n_positions}）、中身は \code{GPTConfig} と同じです。
+\code{GPT2Config} は引数名が少し違うだけで（文脈長は \code{n_positions}）、作られるモデルは、線形層のバイアスを除けば \code{GPTConfig} と同じ形です。
 \code{labels=x} と、正解に入力と同じ列を渡す点に注意してください。
 内部で 1 つずらすので、\code{get_batch} の \code{y} を渡すと 2 つずれてしまいます。
 
@@ -1233,11 +1868,11 @@ GPT-2 の線形層にはバイアスがあるからです。
 
 \begin{summary}
 \item 事前学習は、データを作る工程（収集・整形・品質フィルタ・重複除去・混合・トークン化）と、学習を回して見張る工程（窓の切り出し・学習・監視・保存・評価）からなる。
-\item 重複除去には完全一致と、Jaccard 係数を MinHash で近似するほぼ重複の検出がある。トークン列は \code{uint16} のバイナリで保存し、\code{get_batch} がランダムな窓を切り出す。
-\item \code{train_lm} は、AdamW（$\beta_2=0.95$、行列だけに重み減衰）、ウォームアップ＋コサイン減衰、勾配クリップを組み合わせた、公開モデルと同じ骨格のループである。
+\item 重複除去には完全一致と、Jaccard 係数を MinHash で近似するほぼ重複の検出がある。MinHash は 1 組の比較を安くし、LSH は比べる組の数を減らす。トークン列は \code{uint16} のバイナリで保存し、\code{get_batch} がランダムな窓を切り出す。
+\item \code{train_lm} は、AdamW（$\beta_2=0.95$、行列だけに重み減衰）、ウォームアップ＋コサイン減衰、勾配クリップを組み合わせた、公開モデルと同じ基本の組み合わせのループである。
 \item 学習中は損失・検証損失・勾配ノルム・生成サンプルを見張る。正確な再開には、重みに加えてオプティマイザの状態・ステップ数・乱数の状態を保存する。
-\item \file{base.pt} は約 36 分の学習で検証損失 3.48 に達し、計算ドリルを 86.5\% 解く。誤りは繰り上がりのある 3 桁の問題、特に十の位に集中する。
-\item 損失はパラメータ数・データ量・計算量のべき乗則で下がる。計算量が一定なら $D\approx 20N$ が目安で、本書のモデルはデータが足りない側にある。
+\item \file{base.pt} は約 36 分の学習で検証損失 3.48（小説とドリルの平均）に達し、計算ドリルを 86.5\% 解く（訓練に出てこなかった問題では 78\%）。誤りは繰り上がりのある 3 桁の問題、特に十の位に集中する。
+\item 損失はパラメータ数・データ量・計算量のべき乗則で下がる。計算量が一定なら $D\approx 20N$ が目安（Chinchilla。Kaplan らの配分を改めた）で、本書のモデルはデータが足りない側にある。
 \end{summary}
 
 \section*{次の章へ}
@@ -1245,12 +1880,13 @@ GPT-2 の線形層にはバイアスがあるからです。
 \file{base.pt} は、CPU で 30〜40 分かけて 1,640 万トークンを読みました。
 Chinchilla の目安（学習トークン数を、パラメータ数の約 20 倍にする。\secref{sec:pt-scaling}）で 70 億パラメータのモデルを作るには、$70\text{ 億}\times20=1{,}400$ 億トークンが要ります。
 計算量 $6ND$（$N$ はパラメータ数、$D$ はトークン数）は $6\times(7\times10^{9})\times(1.4\times10^{11})\approx 5.9\times10^{21}$ で、本書の $6\times(2.6\times10^{6})\times(1.64\times10^{7})\approx 2.5\times10^{14}$ の約 2,300 万倍です。
-1 台の計算機では、GPU を使っても何年もかかってしまいます。
+\tabref{tab:pt-data-scale}の nanoGPT の速さ（$6\times1.24\times10^{8}\times3\times10^{11}\approx2.2\times10^{20}$ 回を A100 8 枚で約 4 日）から比例で見積もると、
+GPU 8 枚を積んだ 1 台でも約 110 日、GPU 1 枚なら 2 年以上かかります。
 では、学習を何百、何千もの GPU に分けて、同時に進めるにはどうすればよいのでしょうか。
 GPU どうしは何をやりとりし、モデルが 1 枚の GPU に載らないときはどうするのでしょうか。
 \chapref{ch:distributed}で、その方法を学びます。
 
-1 周目の人は、\chapref{ch:posttraining}へ進み、\file{base.pt} をアシスタントに育てましょう。
+1 周目の人は、\chapref{ch:posttraining}へ進み、\file{base.pt} から、質問に答えるアシスタントを作りましょう。
 
 \section*{さらに学ぶために}
 

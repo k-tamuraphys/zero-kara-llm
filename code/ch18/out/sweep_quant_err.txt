@@ -1,0 +1,14 @@
+int8-row   2.64 MB  mean|err| 0.000232  max|err| 0.0022  KL 0.00006  acc 0.824
+int7-row   2.32 MB  mean|err| 0.000466  max|err| 0.0043  KL 0.00040  acc -
+int6-row   1.99 MB  mean|err| 0.000940  max|err| 0.0087  KL 0.00289  acc -
+int5-row   1.67 MB  mean|err| 0.001910  max|err| 0.0175  KL 0.00371  acc -
+int4-row   1.35 MB  mean|err| 0.003943  max|err| 0.0366  KL 0.02779  acc 0.76
+int3-row   1.03 MB  mean|err| 0.008430  max|err| 0.0784  KL 0.23287  acc 0.69
+int2-row   0.70 MB  mean|err| 0.019431  max|err| 0.1808  KL 3.32103  acc -
+int8-g32   2.92 MB  mean|err| 0.000169  max|err| 0.0021  KL 0.00005  acc -
+int7-g32   2.59 MB  mean|err| 0.000339  max|err| 0.0043  KL 0.00024  acc -
+int6-g32   2.27 MB  mean|err| 0.000683  max|err| 0.0082  KL 0.00056  acc -
+int5-g32   1.95 MB  mean|err| 0.001387  max|err| 0.0173  KL 0.00797  acc -
+int4-g32   1.63 MB  mean|err| 0.002866  max|err| 0.0348  KL 0.01164  acc 0.823
+int3-g32   1.30 MB  mean|err| 0.006130  max|err| 0.0770  KL 0.09828  acc 0.75
+int2-g32   0.98 MB  mean|err| 0.014418  max|err| 0.1808  KL 1.13655  acc 0.403

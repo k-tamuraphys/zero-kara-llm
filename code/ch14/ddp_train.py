@@ -32,9 +32,9 @@ else:
 B_LOCAL, ACCUM = 4, 2                     # 全体のバッチ = 4×2×world
 STEPS = int(os.environ.get("STEPS", 30))     # 最後のステップ番号
 CKPT = "checkpoints/ch14_ddp.pt"
-torch.manual_seed(1234 + rank)               # データの引き方はランクごと
 data = load_bin("train")
 model = DDP(tiny_gpt(seed=0).to(device))     # 重みはランク 0 から配られる
+torch.manual_seed(1234 + rank)               # データの引き方はランクごと
 opt = make_optimizer(model, lr=1e-3)
 start = 0
 if os.path.exists(CKPT):                     # 途中から再開できるようにする

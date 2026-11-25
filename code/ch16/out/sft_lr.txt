@@ -1,0 +1,6 @@
+{'lr': 3e-05, 'chat_acc': 0.725, 'soseki_loss': 4.9579813241958615, 'drill_acc': 0.645} 120 秒
+{'lr': 0.0001, 'chat_acc': 0.885, 'soseki_loss': 5.1539534568786625, 'drill_acc': 0.0} 240 秒
+{'lr': 0.0003, 'chat_acc': 0.86, 'soseki_loss': 6.276865243911743, 'drill_acc': 0.0} 394 秒
+{'lr': 0.001, 'chat_acc': 0.645, 'soseki_loss': 7.961567115783692, 'drill_acc': 0.0} 549 秒
+{'lr': 0.003, 'chat_acc': 0.045, 'soseki_loss': 20.684488105773926, 'drill_acc': 0.0} 715 秒
+所要時間 715 秒

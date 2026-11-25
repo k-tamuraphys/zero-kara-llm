@@ -1,0 +1,8 @@
+questions 200, samples per question 32  (31s)
+mean reward (temperature 1) 0.784
+G= 2  signal 0.272  all1 0.648  all0 0.081  episodes/step 32
+G= 4  signal 0.493  all1 0.481  all0 0.026  episodes/step 64
+G= 8  signal 0.694  all1 0.295  all0 0.011  episodes/step 128
+G=16  signal 0.845  all1 0.147  all0 0.007  episodes/step 256
+G=32  signal 0.940  all1 0.055  all0 0.005  episodes/step 512
+step example: correct 97/128, signal groups 14/16

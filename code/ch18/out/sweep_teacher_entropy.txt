@@ -1,0 +1,3 @@
+drill_digit  positions   1237  share 0.553  mean entropy 0.331 nats  top-1 > 0.99: 0.057
+drill_other  positions   1000  share 0.447  mean entropy 0.005 nats  top-1 > 0.99: 0.993
+soseki       positions  20480  share 1.000  mean entropy 4.909 nats  top-1 > 0.99: 0.000

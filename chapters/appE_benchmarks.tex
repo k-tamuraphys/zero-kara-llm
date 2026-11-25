@@ -52,20 +52,48 @@
 \end{tabular}
 \end{table}
 
-表の右端の「いまの状況」の欄は、数字よりも\textbf{状態}を読んでください。
+\secref{sec:bm-fields}の分野別の表（\tabref{tab:bm-knowledge}〜\tabref{tab:bm-ja}）の右端の「いまの状況と注意」の欄は、数字よりも\textbf{状態}を読んでください。
 欄の先頭に、次の言葉のどれかを太字で書きます。
 \begin{itemize}[nosep]
-  \item \textbf{飽和}：上位が 9 割を超えて並び、上位どうしの差は読めない。
+  \item \textbf{飽和}：9 割を超えるモデルが上位に 2 つ以上並び、上位どうしの差は読めない。
+  \item \textbf{飽和に近い}：最高は 9 割を超えたが、9 割を超えるのは 1 位だけで、上位に差が残る。
   \item \textbf{まだ差がつく}：最高でも 9 割に届かず、モデルの間に開きがある。
   \item \textbf{更新停止}：公式の順位表に、新しいモデルが載らなくなった。
   \item \textbf{運用終了}：運営者や主な利用者が、使うのをやめた。
+  \item \textbf{運用終了に近い}：主な利用者が報告をやめたが、順位表はまだ見られ、論文では使われている。
 \end{itemize}
 このほか、更新が続くものを「稼働中」、公式の順位表が見つからないものを「順位表なし」、今回確かめられなかったものを「未確認」と書きます。
+\chapref{ch:eval-serving}では、飽和を「点数が満点近くに達し、モデルの差が見えなくなること」と定義しました。
+この付録では、その「満点近く」を「9 割を超える」と決めて、表の状態を付けています。
+上の三つ（飽和、飽和に近い、まだ差がつく）は、点数だけで決まります。
+その決め方を\figref{fig:bm-status}に描きました。
+9 割という線は、本書が読みやすさのために決めたもので、広く決まった基準ではありません。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=4mm and 8mm, every node/.append style={font=\footnotesize}]
+  \node[box,text width=40mm] (q1) {順位表の最高は\\9 割を超えたか};
+  \node[greenbox,right=12mm of q1,text width=30mm] (still) {\textbf{まだ差がつく}};
+  \node[box,below=7mm of q1,text width=40mm] (q2) {9 割を超えるモデルが\\上位に 2 つ以上並ぶか};
+  \node[redbox,right=12mm of q2,text width=30mm] (near) {\textbf{飽和に近い}\\上位に差が残る};
+  \node[redbox,below=7mm of q2,text width=40mm] (sat) {\textbf{飽和}\\上位どうしの差は読めない};
+  \draw[arr] (q1) -- node[lbl,above] {いいえ} (still);
+  \draw[arr] (q1) -- node[lbl,right] {はい} (q2);
+  \draw[arr] (q2) -- node[lbl,above] {いいえ} (near);
+  \draw[arr] (q2) -- node[lbl,right] {はい} (sat);
+\end{tikzpicture}
+\caption{点数から決める三つの状態。上から問いに答えて進む。
+例: GPQA Diamond は上位 5 つが 96\% 台で\textbf{飽和}、MCP-Atlas は 1 位だけが 90.70\%（2 位は 88.10\%）で\textbf{飽和に近い}、Terminal-Bench は最高 71.2\% で\textbf{まだ差がつく}。
+更新停止・運用終了などは、点数ではなく、順位表と利用者の動きで決める。}
+\label{fig:bm-status}
+\end{figure}
 
 状態が分かったら、次のように使い分けます。
 飽和したものは、上位のモデルどうしの比較には使いません。
 まだ差がつくものは、順位表の差を、問題数から決まる誤差（\secref{sec:bm-fields}の冒頭）と見比べて読みます。
 更新停止と運用終了は、順位表に新しいモデルが載っていないしるしです。新しいモデルを比べるなら、同じ分野の、まだ差がつくものを探します。
+飽和に近いものは、上位のごく一部を除けば、まだ差を読めます。ただし、1 位と 2 位の比較には使いません。
+運用終了に近いものは、昔の論文の値を読むためには使えますが、新しいモデルの比較には向きません。
 未確認のものは、公式の順位表を自分で確かめてください。
 飽和したものや止まったものも、自分で学習した小さなモデルを測るときには、いまも役に立ちます。
 
@@ -87,7 +115,7 @@
 
 \begin{table}[htbp]
 \centering\small\setlength{\tabcolsep}{4pt}
-\caption{同じ名前のベンチマークでも、条件によって値が変わる例（2026 年 11 月時点の公式の表と運営の発表による）。上の 2 行は表ごとの最高点と課題の数、下の 3 行は同じモデルを二つの条件で測った値。}
+\caption{同じ名前のベンチマークでも、条件によって値が変わる例（2026 年 11 月時点の公式の表と運営の発表による）。上の 2 行は表ごとの最高点と課題の数、下の 3 行は、それぞれ同じ一つのモデルを二つの条件で測った値で、表の最高点とは限らない（たとえば HLE-Diamond の道具なしの最高は 74.3\%、ARC-AGI-3 の標準の足場では上位のモデルで 65〜81\% ほど。\secref{sec:bm-fields}の表）。}
 \label{tab:bm-samename}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.32\linewidth}>{\raggedright\arraybackslash}p{0.34\linewidth}@{}}
 \toprule
@@ -95,8 +123,8 @@
 \midrule
 SWE-bench Verified（不具合の修正） & 足場は自由：最高 79.2\% & 足場を固定（bash-only。(5) で説明）：最高 76.8\% \\
 Terminal-Bench（端末での作業） & 2.0 版：課題は 89 件 & 4.1 版：課題は 66 件（点数は版をまたいで比べられない） \\
-\addlinespace[0.2em]
-OSWorld 2.x（パソコンの操作） & 合否だけで数える：44.33\% & 部分点も数える：77.67 \\
+\midrule
+OSWorld 2.x（パソコンの操作） & 合否だけで数える：44.33\% & 部分点も数える：77.67（公式の表の部分点の列） \\
 ARC-AGI-3（ゲーム形式のパズル） & 標準の足場：70.3\% & 考えた内容を先へ持ち越せる足場：100.0\% \\
 HLE-Diamond（難しい学術問題） & 道具なし：59.9\% & 検索とコード実行あり：82.9\% \\
 \bottomrule
@@ -104,11 +132,13 @@ HLE-Diamond（難しい学術問題） & 道具なし：59.9\% & 検索とコー
 \end{table}
 
 OSWorld 2.x では、ある開発元が、自社のモデルを 72.6\% と発表しています。
-ネット接続の要らない課題だけを部分点で数えた値で、公式の表の 44\% 台とは比べられません。
+表の 44.33\% と 77.67 は、公式の表で、同じ一つのモデルを全 108 件で測った値です（合否の列と部分点の列）。
+72.6\% は、それとは別のモデルについての開発元の発表で、ネット接続の要らない課題だけを部分点で数えた値です。
+課題の集合が違うので、公式の表の 44\% 台とも、部分点の 77.67 とも比べられません。
 点数を引用するときは、\textbf{版・設定・日付・出どころ}の四つを添えましょう。
 出どころとは、公式の順位表の値か、開発元の自己申告か、の区別です。
 
-\paragraph{(2) ベンチマークには寿命がある}
+\paragraph{(2) ベンチマークは、いずれ差を測れなくなる}
 発表されたときは難しくても、ベンチマークは数年、早ければ数週間で飽和します。
 文の分類などを束ねた GLUE \cite{wang2018glue} の点数は、1 年余りで専門家でない人の成績を超えました \cite{wang2019superglue}。
 SWE-bench \cite{jimenez2024swebench} は、公開されているソフトウェアの、実際の不具合報告を直させるベンチマークです。
@@ -126,15 +156,16 @@ SWE-bench \cite{jimenez2024swebench} は、公開されているソフトウェ�
 \begin{tikzpicture}[node distance=5mm and 5mm, every node/.append style={font=\footnotesize}]
   \node[box,text width=36mm] (swe) {\textbf{SWE-bench}\\実際の不具合報告を直す\\発表時の最良 1.96\%};
   \node[redbox,right=of swe,text width=36mm] (ver) {\textbf{Verified}\\人が見直した 500 件\\上位が 8 割近くに達する};
-  \node[box,right=of ver,text width=36mm] (pro) {\textbf{SWE-Bench Pro}\\別の運営が作った後継\\発表時の最高 23.3\%};
+  \node[box,right=of ver,text width=36mm] (pro) {\textbf{SWE-Bench Pro}\\最初の版。別の運営の後継\\発表時の最高 23.3\%};
   \node[redbox,below=of pro,text width=36mm] (v2) {\textbf{Pro V2（公開版）}\\無効な課題を除いた改訂版\\15 日後に $99.4\pm0.4$\%};
-  \node[greenbox,below=of swe,text width=36mm] (reb) {\textbf{SWE-rebench}\\新しい報告を集め続ける\\同じ世代で 64\% 前後};
+  \node[greenbox,below=of swe,text width=36mm] (reb) {\textbf{SWE-rebench}\\新しい報告を集め続ける\\最高 64.5\%};
   \draw[arr] (swe) -- (ver);
   \draw[arr] (ver) -- (pro);
   \draw[arr] (pro) -- (v2);
   \draw[darr] (swe) -- (reb);
 \end{tikzpicture}
-\caption{SWE-bench の一族。実線の矢印は後継、破線は同じ形式の別の問題集（(3) で説明する）。赤は飽和したか運用終了に近いもの、緑はまだ差がつくもの。}
+\caption{SWE-bench と、その改訂版・後継・同じ形式の問題集。実線の矢印は後継、破線は同じ形式の別の問題集（(3) で説明する）。赤は飽和したか運用終了に近いもの、緑はまだ差がつくもの。
+青は、改訂版や後継が出る前の元の版で、青い箱の数字は発表時の値（いまの状態は\tabref{tab:bm-code}）。}
 \label{fig:bm-swe-family}
 \end{figure}
 
@@ -148,7 +179,7 @@ GSM1k \cite{zhang2024gsm1k} は、算数の文章題 GSM8K に似せた問題を
 対策は、問題を新しくし続けることです。
 プログラミングの問題集 LiveCodeBench は、問題に出題日を付け、モデルの学習より後の問題だけで採点できるようにしました。
 MathArena と、SWE-bench の形式で新しい不具合報告を集め続ける SWE-rebench も、新しく出た問題で測ります。
-同じ世代のモデルが、SWE-Bench Pro V2 の公開版では 99\% に達し、SWE-rebench では 64\% 前後にとどまります。
+2026 年 11 月の時点で、それぞれの表の最高は、SWE-Bench Pro V2 の公開版では 99\% に達し、SWE-rebench では 64\% 前後にとどまります（最高を出したのは、同じ時期の別々のモデルです）。
 問題の中身も違うので、差のすべてが汚染のせいとは言えませんが、公開された問題での満点近い値は、そのまま実力とは読めません。
 
 \paragraph{(4) 言い回しと書式で点数が動く}
@@ -167,7 +198,7 @@ Anthropic は、端末での作業を解かせる Terminal-Bench 2.0 で、実�
 SWE-bench の bash-only は、端末のコマンドだけを使う最小限の足場に、すべてのモデルを載せて測ります。
 モデルを選ぶなら足場を固定した表を、エージェントの製品を選ぶなら足場こみの表を見ます。
 どちらでも、費用も確かめます。
-点数だけを追うと、必要以上に複雑で高価なエージェントが上位に来るからです \cite{kapoor2024agents}。
+点数だけを高くしようとすると、必要以上に複雑で高価なエージェントが上位に来るからです \cite{kapoor2024agents}。
 
 \paragraph{(6) 問題と採点器の誤りには、向きが二つある}
 一つは、\textbf{正しい解を落とす}誤りです。
@@ -188,7 +219,7 @@ SWE-Bench Pro の V2 は、どの提出も、エージェントが触ってい�
 「人を超えた」という言い方にも、注意が要ります。
 だれがどう解いた値かが、ベンチマークごとに違うからです。
 調べものをして答える質問集 GAIA の「人の成績」92\% は、問題を確かめる役の作業者の成績です。
-パソコンを操作させる OSWorld の 72.36\% は、そのソフトを初めて使う情報系の大学生の成績です。
+パソコンを操作させる初代の OSWorld（369 件。(1) の OSWorld 2.x とは別）の 72.36\% は、そのソフトを初めて使う情報系の大学生の成績です。
 大学院水準の四択 GPQA では、数え方や測った人の違いで、「専門家の成績」が 65\%、74\%、81.3\%、69.7\% の四つあります。
 しかも、多くは発表時に一度測っただけです。
 
@@ -214,11 +245,45 @@ SWE-Bench Pro の V2 は、どの提出も、エージェントが触ってい�
 この節の問いは、「この名前は何を測っていて、いま当てになるのか」です。
 分野ごとの表は、どれも同じ 4 列です。名前の右の 3 列を、次の順に読みます。
 \begin{enumerate}[leftmargin=2em,nosep]
-  \item \textbf{何を測るか・規模}：自分の知りたい力に近いかを見ます。問題数も見ます。問題数が少ないほど、点数の誤差は大きくなります。正答率が 90\% 付近のとき、標準誤差（\eqref{eq:es-se}式）は、30 問で約 5.5 ポイント、200 問で約 2.1 ポイント、1,000 問で約 0.9 ポイントです。上位どうしの差がこれと同じくらいなら、順位は、問題の選び方だけで入れ替わりえます。
+  \item \textbf{何を測るか・規模}：自分の知りたい力に近いかを見ます。問題数も見ます。問題数が少ないほど、点数の誤差は大きくなります。正答率が 90\% 付近のとき、標準誤差（\eqref{eq:es-se}式）は、30 問で約 5.5 ポイント、200 問で約 2.1 ポイント、1,000 問で約 0.9 ポイントです。上位どうしの差がこれと同じくらいなら、順位は、問題の選び方だけで入れ替わりえます。問題数と正答率を変えたときの標準誤差を、\figref{fig:bm-se}に描きました。
   \item \textbf{採点}：点数がどのくらい確かかを見ます。言葉は\tabref{tab:es-scoring}のもの（完全一致、選択式、LLM 審査員、人の対比較など）で、出力を実際に動かして確かめる採点を「実行」と書きます。
     完全一致、選択式、実行は、機械的に決まります。LLM 審査員と人の対比較は、審査する側によって動きます（\secref{sec:es-judge}）。
   \item \textbf{いまの状況と注意}：先頭の太字で状態を見て、\secref{sec:bm-howto}のとおりに使い分けます。
 \end{enumerate}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=52mm,xmode=log,
+  xmin=20,xmax=2000,ymin=0,ymax=10,
+  xlabel={問題数 $n$（対数の目盛り）},ylabel={標準誤差（ポイント）},
+  xtick={30,100,200,500,1000},xticklabels={30,100,200,500,1000},
+  ytick={0,2,4,6,8,10},
+  legend pos=north east,legend cell align=left,
+  tick label style={font=\footnotesize},label style={font=\footnotesize},legend style={font=\footnotesize}]
+\addplot[bookblue,thick,domain=20:2000,samples=80] {100*sqrt(0.25/x)};
+\addplot[bookaccent,thick,dashed,domain=20:2000,samples=80] {100*sqrt(0.09/x)};
+\legend{正答率 50\%,正答率 90\%}
+\addplot[only marks,mark=*,mark size=1.6pt,bookaccent] coordinates {(30,5.48) (198,2.13) (1000,0.95)};
+\addplot[only marks,mark=*,mark size=1.6pt,bookblue] coordinates {(164,3.90)};
+\node[font=\footnotesize,anchor=north west,align=left,inner sep=1pt] (aime) at (axis cs:20.5,4.0) {AIME 1 年度\\（30 問）5.5};
+\draw[bookgray] (aime.north-|{axis cs:30,0}) -- (axis cs:30,5.48);
+\node[font=\footnotesize,anchor=south west] at (axis cs:164,3.90) {HumanEval（164 問）3.9};
+\node[font=\footnotesize,anchor=north east] at (axis cs:198,2.13) {GPQA Diamond（198 問）2.1};
+\node[font=\footnotesize,anchor=south east] (k1) at (axis cs:1900,2.7) {1,000 問 0.9};
+\draw[bookgray] (k1.south) -- (axis cs:1000,0.95);
+\end{axis}
+\end{tikzpicture}
+\caption{問題数 $n$ と正答率 $p$ を変えたときの標準誤差 $\sqrt{p(1-p)/n}$（\eqref{eq:es-se}式。単位はポイント）。
+実線は $p=0.5$、破線は $p=0.9$。点は、本文で計算した例（AIME、HumanEval、GPQA Diamond、1,000 問）。
+問題数を 4 倍にしても、誤差は半分にしかならない。}
+\label{fig:bm-se}
+\end{figure}
+
+図の読み方は、横軸で自分が見ている表の問題数を探し、その真上の線の高さを読むことです。
+それが、点数に付く誤差の目安です。
+二つの線を比べると、同じ問題数なら、正答率が 50\% 付近のほうが誤差が大きいことが分かります。
+線は右へ行くほどゆっくり下がります。問題数を 4 倍にしても、誤差は半分にしかなりません（$\sqrt{4}=2$ だからです）。
+
 「いまの状況」は 2026 年 11 月時点で、数字は公式の順位表か運営の発表の値です。
 「$\pm$」は各順位表が示す幅で、定義は表ごとに違います（Terminal-Bench は 95\% 信頼区間。確かめられなかった表もあります）。
 
@@ -237,13 +302,13 @@ SWE-Bench Pro の V2 は、どの提出も、エージェントが触ってい�
 \midrule
 MMLU \cite{hendrycks2021measuring} & 数学、歴史、法律など 57 科目の四択。試験用 14,042 問 & 選択式 & \textbf{飽和}（上位は 9 割超）。調べ直した問題の約 6.5\% に誤り \cite{gema2024mmluredux} \\
 \addlinespace[0.2em]
-GPQA Diamond \cite{rein2023gpqa} & 生物・物理・化学の、大学院水準の四択。448 問から選んだ 198 問 & 選択式 & \textbf{飽和に近い}。第三者の測定では、上位が 9 割台後半に並ぶ \\
+GPQA Diamond \cite{rein2023gpqa} & 生物・物理・化学の、大学院水準の四択。448 問から選んだ 198 問 & 選択式 & \textbf{飽和}。第三者の測定では、上位 5 つが 96\% 台に並ぶ \\
 \addlinespace[0.2em]
 HLE（Humanity's Last Exam）\cite{phan2026hle} & 専門家が作った、検索では答えが出にくい学術問題。公開 2,500 問 & LLM 審査員 & \textbf{まだ差がつく}。精選版 HLE-Diamond（1,000 問）は、運営の表の最高が、道具なしで 74.3\% \\
 \addlinespace[0.2em]
 SimpleQA \cite{wei2024simpleqa} & 答えが一つに決まる、短い事実の質問 4,326 問。答えを控えられるかも見る & LLM 審査員 & \textbf{更新停止}（公式の表は 2025 年 7 月まで）。検索を使えば解ける \\
 \addlinespace[0.2em]
-ARC-AGI \cite{chollet2019measure} & 色つきの格子の例から規則を見つけ、新しい入力に当てはめる。版は 1〜3 & 出力の照合（答えは 2 回まで） & \textbf{飽和}（版 1 と 2。98.5\% と 95.8\%）。版 3 はゲームを操作する形式で、\textbf{まだ差がつく} \\
+ARC-AGI \cite{chollet2019measure} & 色つきの格子の例から規則を見つけ、新しい入力に当てはめる。版は 1〜3 & 出力の照合（答えは 2 回まで） & \textbf{飽和}（版 1 と 2。98.5\% と 95.8\%）。版 3 はゲームを操作する形式で、標準の足場では\textbf{まだ差がつく}（上位のモデルで 65〜81\% ほど。足場を替えると 100\% の記録もある。\tabref{tab:bm-samename}） \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -280,7 +345,7 @@ MATH \cite{hendrycks2021math} & 高校までの競技数学 12,500 問（試験�
 \addlinespace[0.2em]
 AIME（MathArena \cite{balunovic2025matharena}） & 数学大会 AIME の問題。1 年度 30 問。MathArena は、新しい大会の問題で測る順位表 & 完全一致（4 回の平均） & \textbf{飽和}（2025 年と 2026 年の問題で、満点のモデルがある）。古い大会は表から外される \\
 \addlinespace[0.2em]
-FrontierMath \cite{glazer2024frontiermath} & 数学者が新しく作った、研究水準の問題 338 問。大半は非公開 & 実行（出力を照合） & \textbf{飽和に近い}（運営の表で 95.1\%）。2026 年 6 月に、問題の 42\% で誤りを修正 \\
+FrontierMath \cite{glazer2024frontiermath} & 数学者が新しく作った、研究水準の問題 338 問。大半は非公開 & 実行（出力を照合） & \textbf{飽和}（運営の表で、上位 4 つが 92.6〜95.1\%）。2026 年 6 月に、問題の 42\% で誤りを修正 \\
 \addlinespace[0.2em]
 miniF2F \cite{zheng2021minif2f}、\mbox{PutnamBench} & 数学の主張を、証明検査器が通す形で証明する。488 問と 672 問 & 実行（検査器） & \textbf{飽和}（PutnamBench。全問を解いたという自己申告が複数ある）。miniF2F は\textbf{未確認} \\
 \bottomrule
@@ -322,7 +387,7 @@ EvalPlus \cite{liu2023evalplus} & 上の二つのテストを大幅に増やし�
 \addlinespace[0.2em]
 LiveCodeBench \cite{jain2024livecodebench} & 新しい出題を集め続ける。1,055 問（2023 年 5 月〜2025 年 4 月の出題） & 実行（pass@1） & \textbf{更新停止}（表は 2025 年 5 月まで）。出題日で問題を絞れる \\
 \addlinespace[0.2em]
-SWE-bench Verified \cite{openai2024sweverified} & 実在の Python のソフトウェアの不具合報告を直す。人が見直した 500 件 & 実行 & \textbf{運用終了に近い}（表の最後の登録は 2026 年 2 月）。最高は\tabref{tab:bm-samename} \\
+SWE-bench Verified \cite{openai2024sweverified} & 実在の Python のソフトウェアの不具合報告を直す。人が見直した 500 件 & 実行 & \textbf{運用終了に近い}（OpenAI が 2026 年 2 月に報告をやめた。表の最後の登録も 2026 年 2 月）。最高は\tabref{tab:bm-samename} \\
 \addlinespace[0.2em]
 SWE-Bench Pro \cite{deng2025swebenchpro} & 同じ形式で、別の運営が作った 1,865 問。公開・非公開・商用（企業のコード）の 3 集合 & 実行 & \textbf{飽和}（公開版。V2 で最高 $99.4 \pm 0.4$\%）。非公開と商用の集合は\textbf{未確認} \\
 \addlinespace[0.2em]
@@ -335,7 +400,7 @@ Terminal-Bench \cite{merrill2026terminalbench} & 端末での作業を、隔離�
 
 SWE-bench の採点は、二種類のテストで決まります。
 \code{FAIL_TO_PASS} は、直す前は落ち、正しく直すと通るテストで、不具合が直ったことを確かめます。
-\code{PASS_TO_PASS} は、もとから通り、直した後も通るべきテストで、ほかを壊していないことを確かめます。
+\code{PASS_TO_PASS} は、もとから通り、直した後も通るべきテストで、ほかの部分の動作を変えていないこと（前から通っていたテストが、まだ通ること）を確かめます。
 両方がすべて通った課題を「解決」と数え、その割合が点数です。
 この仕組みの弱点が、\secref{sec:bm-read}の (6) で見た二つの向きの誤りです。
 テストが細かすぎれば正しい修正を落とし、弱ければ誤った修正を通します。
@@ -350,7 +415,7 @@ $p(1-p)$ は $p=0.5$ で最大になるので、誤差がいちばん大きい�
 
 \begin{table}[htbp]
 \centering\small\setlength{\tabcolsep}{4pt}
-\caption{エージェントとツール利用のベンチマーク。}
+\caption{エージェントとツール利用のベンチマーク。端末で作業する Terminal-Bench は、コードの表（\tabref{tab:bm-code}）に置いた。}
 \label{tab:bm-agent}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.15\linewidth}>{\raggedright\arraybackslash}p{0.31\linewidth}>{\raggedright\arraybackslash}p{0.13\linewidth}>{\raggedright\arraybackslash}p{0.34\linewidth}@{}}
 \toprule
@@ -358,13 +423,13 @@ $p(1-p)$ は $p=0.5$ で最大になるので、誤差がいちばん大きい�
 \midrule
 GAIA \cite{mialon2024gaia} & ウェブ閲覧やファイルの読み取りを要する質問 466 問。難しさは 3 段階 & 完全一致に近い照合 & \textbf{飽和}（最高 94.35\%）。公開分の答えが出回っている \\
 \addlinespace[0.2em]
-WebArena \cite{zhou2024webarena} & 自前で立てた 4 種のウェブサイトでの作業 812 件 & 実行（一部は LLM 審査員） & \textbf{稼働中}。公式の表は自己申告で、最高 86.1\%。誤りを直した WebArena-Verified がある \\
+WebArena \cite{zhou2024webarena} & 自前で立てた 4 種のウェブサイトでの作業 812 件 & 実行（一部は LLM 審査員） & \textbf{稼働中}（最後の登録は 2026 年 9 月）。ただし公式の表は自己申告で、最高 86.1\% は人の成績 78.24\% を超える申告。誤りを直した WebArena-Verified がある \\
 \addlinespace[0.2em]
 OSWorld \cite{xie2024osworld} & 本物の OS とアプリを、画面を見て操作する 369 件 & 実行 & \textbf{飽和に近い}（修正版 OSWorld-Verified \cite{xlang2025osworldverified} で最高 90.19\%）。更新は 2026 年 8 月が最後 \\
 \addlinespace[0.2em]
 OSWorld 2.x \cite{yuan2026osworld2} & 人が約 1.6 時間（中央値）かける長い作業 108 件 & 実行（部分点も） & \textbf{まだ差がつく}（合否で最高 44\% 台） \\
 \addlinespace[0.2em]
-$\tau$-bench \cite{yao2025taubench} & 規則を守って客に応対する。小売 115 件、航空 50 件。客は LLM が演じる & 実行 & \textbf{まだ差がつく}（後継 $\tau^3$ の銀行業務で最高 55.2\%）。$\tau^2$ \cite{barres2025tau2bench}、$\tau^3$ と進み、版をまたいで比べられない \\
+$\tau$-bench \cite{yao2025taubench} & 規則を守って客に応対する。小売 115 件、航空 50 件。客は LLM が演じる & 実行 & 原版は\textbf{更新停止}（課題を直した後継の $\tau^2$ \cite{barres2025tau2bench}、$\tau^3$ へ移った）。後継は版ごとに\textbf{まだ差がつく}（$\tau^2$ の最高 87.9\%、$\tau^3$ の銀行業務の最高 55.2\%）。版をまたいで比べられない \\
 \addlinespace[0.2em]
 BrowseComp \cite{wei2025browsecomp} & ウェブを何ページも調べないと答えが出ない質問 1,266 問 & LLM 審査員 & \textbf{順位表なし}。開発元の自己申告では、9 割前後の報告がある \\
 \addlinespace[0.2em]
@@ -387,7 +452,7 @@ pass@$k$ とは逆に、$k$ を増やすと下がります。
 AI が動き続けられる時間ではありません。
 「2 時間の地平」は、2 時間の課題ならどれでも 5 割で解ける、という意味でもありません。
 区間も広く、ある推定は約 12.0 時間で、95\% 信頼区間は 5.3〜60.6 時間でした。
-METR 自身、個々の値より、伸びの傾き（およそ 7 か月で 2 倍）のほうが確かだとしています（公式ページの更新は 2026 年 9 月まで）。
+METR 自身、個々の値より、伸びの傾き（2019〜2025 年で、およそ 7 か月で 2 倍。2023 年以降はもっと速い）のほうが確かだとしています（公式ページの更新は 2026 年 9 月まで）。
 
 \subsection{人の好みと対話}\label{sec:bm-pref}
 
@@ -445,7 +510,7 @@ Zheng ら \cite{zheng2023judging} は、GPT-4 の判定と人の判定の一致�
 \midrule
 MTEB \cite{muennighoff2022mteb} & 埋め込みモデルを、検索・分類などで測る。当初は 58 データセット。多言語版 MMTEB \cite{enevoldsen2025mmteb} は 500 超の課題 & 課題ごとの指標 & \textbf{稼働中}。いまは版つきのベンチマークの集まり。英語は v2 が推奨で、v1 の点数とは比べられない \\
 \addlinespace[0.2em]
-BEIR \cite{thakur2021beir} & 学習していない分野での検索の強さ。18 データセット & 検索結果の順位の良さ & \textbf{未確認}。mteb から動かせる。古典的な単語一致の検索（BM25）が、手強い比較相手だと示した \\
+BEIR \cite{thakur2021beir} & 学習していない分野での検索の強さ。18 データセット & 検索結果の順位の良さ & \textbf{未確認}。mteb から動かせる。古典的な単語一致の検索（BM25）が、強い比較相手だと示した \\
 \addlinespace[0.2em]
 LongBench v2 \cite{bai2024longbenchv2} & 8 千〜200 万語の長い文脈を読んで答える四択 503 問 & 選択式 & \textbf{未確認}（表の最高は 63.3\% で、2025 年のモデル）。論文での人の専門家は 53.7\% \\
 \addlinespace[0.2em]
@@ -464,7 +529,7 @@ NoLiMa の論文では、GPT-4o の正答率が、短い文脈の 99.3\% から�
 
 日本語での力を測ります。
 英語のベンチマークを訳したものと、日本語で一から作ったものがあります（\tabref{tab:bm-ja}）。
-表の上の 3 行は個々の問題集、次の行はそれらを束ねて動かす道具、その次は道具を部品にした順位表です。
+表は横線で二つに分かれます。上の 4 行は個々の問題集です。下の 2 行は、それらを束ねて動かす道具（llm-jp-eval）と、道具を部品にした順位表（Nejumi）です。
 
 \begin{table}[htbp]
 \centering\small\setlength{\tabcolsep}{4pt}
@@ -480,11 +545,11 @@ JMMLU \cite{yin2024respect} & MMLU の一部の日本語訳に、日本独自の
 \addlinespace[0.2em]
 JMTEB & 日本語の埋め込みモデルを測る。28 データセット、5 種の課題 & 課題ごとの指標 & \textbf{稼働中}（順位表は MTEB の日本語の区分に移った）。軽量版 JMTEB-lite がある \\
 \addlinespace[0.2em]
+日本語 MT-Bench & MT-Bench の日本語版 & LLM 審査員 & \textbf{順位表なし}。配布物が二つあり（60 問・6 分類と、80 問・8 分類）、審査員のモデルも違う \\
+\midrule
 llm-jp-eval（jaster） & 既存の評価データを共通の形式にまとめたデータ集（jaster）と、それを動かす評価ツール & 完全一致など & \textbf{稼働中}（道具）。jaster で学習したモデルは点数が非常に高くなる、と配布元が注意している \\
 \addlinespace[0.2em]
 Nejumi Leaderboard 4 & Weights \& Biases Japan の順位表。言語の能力と安全性などの総合点。部品は jaster、日本語 MT-Bench など & 部品ごと & \textbf{未確認}。2025 年 8 月に版を上げた（理由の一つは、上位モデルの差が小さくなったこと） \\
-\addlinespace[0.2em]
-日本語 MT-Bench & MT-Bench の日本語版 & LLM 審査員 & \textbf{順位表なし}。配布物が二つあり（60 問・6 分類と、80 問・8 分類）、審査員のモデルも違う \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -510,7 +575,7 @@ Nejumi Leaderboard 4 の部品には、元のベンチマークから一部を�
  & ChartQA、DocVQA、ScreenSpot & グラフの読み取り、文書の画像への質問、画面上の要素の位置当て \\
 \addlinespace[0.2em]
 安全性・頑健性 & HarmBench \cite{mazeika2024harmbench}、StrongREJECT、AgentHarm & 有害な依頼を断れるか、攻撃に耐えるか（AgentHarm は、エージェントへの多段の依頼） \\
- & AgentDojo \cite{debenedetti2024agentdojo} & ツールの返り値に仕込まれた指示に、乗っ取られないか \\
+ & AgentDojo \cite{debenedetti2024agentdojo} & ツールの返り値に仕込まれた指示に、従ってしまわないか \\
  & WMDP \cite{li2024wmdp} & 生物・サイバー・化学の危険な知識を持つか \\
  & MASK & 圧力をかけられたとき、信じていることと違うことを言うか \\
 \bottomrule
@@ -567,10 +632,10 @@ DeepEval、promptfoo & 自分のアプリの出力を、テストとして自動
 モデルが書いたコードを安全に動かす、隔離した実行環境（\secref{sec:agent-eval}のサンドボックス）も持ちます。
 1 問ごとのやり取りも記録に残るので、採点器を直したときに、採点だけをやり直せます。
 
-道具にも寿命があります。
+道具も、いずれ更新が止まります。
 OpenAI の simple-evals は、2025 年 7 月に更新を止めました。
 HELM \cite{liang2022helm} は 2026 年 6 月に保守だけの状態に入り、HAL harness は保管用に凍結されています。
-道具の選び方と寿命の見分け方は、\appref{app:toolmap}にまとめます。
+道具の選び方と、更新が止まったかどうかの見分け方は、\appref{app:toolmap}にまとめます。
 
 \section{目的別の選び方}\label{sec:bm-choose}
 
@@ -583,7 +648,7 @@ HELM \cite{liang2022helm} は 2026 年 6 月に保守だけの状態に入り、
 
 \begin{table}[htbp]
 \centering\small\setlength{\tabcolsep}{4pt}
-\caption{目的別の選び方。中段の行は、個々の出典の指摘を本書がまとめた見立て。}
+\caption{目的別の選び方。2 行目（自分で学習・ファインチューニングしたモデルを測る）は、個々の出典の指摘を本書がまとめた見立て。}
 \label{tab:bm-choose}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.19\linewidth}>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.24\linewidth}>{\raggedright\arraybackslash}p{0.24\linewidth}@{}}
 \toprule
@@ -593,12 +658,12 @@ HELM \cite{liang2022helm} は 2026 年 6 月に保守だけの状態に入り、
 \addlinespace[0.2em]
 自分で学習・ファインチューニングしたモデルを測る & 比べたい相手が報告しているベンチマークと、その設定 & 同じベンチマークを同じ設定で。差は対応のある比較で確かめる & 学習の狙いに合う試験セット。学習データとの重なりも調べる \\
 \addlinespace[0.2em]
-自分のアプリやエージェントを測る & 公開の点数は、土台のモデルの候補選びまで & 幅広い作業をするコーディングエージェントなら、Terminal-Bench など & 実際の失敗から作った評価セット。変更のたびに走らせ、壊れていないかを確かめる \\
+自分のアプリやエージェントを測る & 公開の点数は、土台のモデルの候補選びまで & 幅広い作業をするコーディングエージェントなら、Terminal-Bench など & 実際の失敗から作った評価セット。変更のたびに走らせ、以前できたことができなくなっていないかを確かめる \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-表の理由と最初の一手を補います（挙げる名前は、本書の見立てです）。
+表の理由と、最初にすることを補います（挙げる名前は、本書の見立てです）。
 名前の中身は、\secref{sec:bm-fields}の表と\tabref{tab:bm-tools}で引けます。
 
 \textbf{モデルを選ぶ}とき、公開の点数の役目は、候補を 2、3 個に絞ることです。
@@ -624,7 +689,7 @@ HELM \cite{liang2022helm} は 2026 年 6 月に保守だけの状態に入り、
 \begin{enumerate}[leftmargin=*,nosep]
   \item \textbf{実際の失敗から始める}。Anthropic は、実際の失敗から取った課題を 20〜50 件集めて始めるよう勧めています \cite{anthropic2026evals}。利用者がまだいなければ、想定する使われ方をまねて書きます（これは本書の見立てです）。良い課題は、二人の専門家が別々に見て、同じ合否になる課題です。
   \item \textbf{採点は確実なものから}。まずコードで判定できないかを考えます（完全一致、実行）。無理なら LLM 審査員、それも無理なら人です。
-  \item \textbf{LLM 審査員は、人の判定と突き合わせてから使う}。失敗が 5\% しかなければ、いつも「合格」と言う審査員でも 95\% 一致します（100 件のうち、合格の 95 件で人と一致するからです。失敗の 5 件は、1 件も見つけていません）。一致率だけでなく、失敗を見つける率と、合格を通す率を分けて測ります \cite{husain2026evalsfaq}。
+  \item \textbf{LLM 審査員は、人の判定と突き合わせてから使う}。失敗が 5\% しかなければ、いつも「合格」と言う審査員でも 95\% 一致します（100 件のうち、合格の 95 件で人と一致するからです。失敗の 5 件は、1 件も見つけていません）。一致率だけでなく、二つの率を分けて測ります \cite{husain2026evalsfaq}。本当の失敗のうち、審査員が失敗と判定した割合と、本当の合格のうち、審査員が合格と判定した割合です（どちらも高いほど良い）。
   \item \textbf{見直し続ける}。出力を読むうちに、採点の基準そのものが変わっていきます \cite{shankar2024validators}。評価セットも、公開のベンチマークと同じく古くなります。
 \end{enumerate}
 
@@ -644,5 +709,5 @@ Anthropic は、20〜50 件で始めるよう勧めます。
 
 点数は、\textbf{版・設定・日付・出どころ}を添えて読みます。
 同じ名前でも、条件が違えば別の値です。
-ベンチマークには寿命があるので、表の「いまの状況」で状態を確かめ、数字が古くなったら公式の順位表で確かめ直します。
+ベンチマークは、いずれ飽和したり更新が止まったりするので、表の「いまの状況」で状態を確かめ、数字が古くなったら公式の順位表で確かめ直します。
 公開のベンチマークは候補を絞るためのもので、自分のアプリの品質は、自前の評価で測ります。

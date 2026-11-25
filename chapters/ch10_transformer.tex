@@ -19,6 +19,7 @@
 \item[\rgpre] \chapref{ch:attention}の注意の式と、\chapref{ch:lm}の交差エントロピーと温度。\chapref{ch:training}の残差接続とレイヤー正規化は、\secref{sec:tf-residual}で説明し直します。
 \item[\rgmust] \secref{sec:tf-overview}〜\secref{sec:tf-gpt}：全体図と三つの部品、それらを組んだ \code{GPT} クラス。本書の後半は、このクラスを使い続けます。
 \item[\rgmust] \secref{sec:tf-train}と\secref{sec:tf-generate}：学習させ、文章を書かせます。本書の最初の到達点です。ぜひ手元で動かしてください。
+\item[\rgmust] \secref{sec:tf-walkthrough}：「吾輩は」から次の 1 トークンが選ばれるまでの全部の段を、実際の基盤モデルの数値で 1 コマずつ追います。章の部品が、どの順に、どんな形の数を受け渡すかを、ここでまとめて確かめます。
 \item[\rgskim] \secref{sec:tf-params}（パラメータを数える）と、正弦波・GELU・\secref{sec:tf-residual}の実験・\code{generate} の読解の各小節：見出しの下に、押さえる結論を書きました。
 \item[\rglater] \secref{sec:tf-family}：エンコーダや BERT との違い。その言葉に出会ったときに戻れば足ります。
 \end{readingguide}
@@ -30,8 +31,8 @@
 
 一つ目に、注意の計算そのものは語順を知りません（\secref{sec:attn-properties}）。
 「猫が犬を追う」と「犬が猫を追う」を区別できないのでは、言語モデルになりません。
-二つ目に、注意がするのは、文脈から情報を\textbf{集める}ことだけです。
-集めた情報を組み合わせて「考える」部品が、別に要ります。
+二つ目に、注意がするのは、文脈から情報を\textbf{集める}ことが中心です。
+集めた情報を組み合わせて、新しい情報を作る部品が、別に要ります。
 三つ目に、部品を何十層も重ねると、学習が不安定になります。
 勾配が消えたり、値が大きくなりすぎたりするからです（\chapref{ch:training}）。
 
@@ -68,25 +69,31 @@
 \section{全体図：ミニGPT を上から眺める}\label{sec:tf-overview}
 
 部品の説明に入る前に、完成品の姿を見ておきましょう。
-地図を持たずに部品を一つずつ見ていくと、いま何のためにそれを作っているのかが分からなくなるからです。
+全体図を見ないまま部品を一つずつ見ていくと、いま何のためにそれを作っているのかが分からなくなるからです。
 この節の問いは、「トークン列を入れてから次のトークンの確率が出てくるまでに、データはどんな部品を、どんな形で通るのか」です。
 
 \subsection*{入力から出力まで}
 
-本書のミニGPT は、\term{デコーダのみ}{decoder-only}の Transformer です。
-「デコーダ」は、もとは翻訳のモデルの「訳文を書く側」の名前でした。
-ここでは「過去のトークンだけを見て、次のトークンを書く部品」という意味だと思っておけば十分です（由来は\secref{sec:tf-family}で説明します）。
+本書のミニGPT は、\chapref{ch:attention}（\secref{sec:attn-qkv}）で名前を出した\textbf{デコーダのみ}（decoder-only）の Transformer です。
+思い出しておきます。Transformer は最初、翻訳のモデルとして作られ、二つの部分からできていました。
+原文の全体を読む側の\textbf{エンコーダ}（各トークンが、文の前後をすべて見る）と、訳文を 1 トークンずつ書く側の\textbf{デコーダ}（因果マスクで、過去のトークンだけを見る）です。
+本書のモデルは、エンコーダを持たず、書く側と同じ形のブロックだけを重ねるので、「デコーダのみ」と呼びます。
+ここでは「過去のトークンだけを見て、次のトークンを書く部品を重ねたもの」と思っておけば十分です（詳しくは\secref{sec:tf-family}）。
 \figref{fig:tf-overview}が全体図です。
 前の章で足し算を学習させたモデル（\figref{fig:attn-exp-model}）は、この図のブロックが 1 個だけで、LayerNorm のないものでした。
 下から上へ、次の順にデータが流れます。
 
 \begin{enumerate}
-\item \textbf{入力}: トークン ID の列 $x_1,\dots,x_T$。たとえば「\texttt{\textbackslash n12+35=}」を BPE でトークン化したものです。
+\item \textbf{入力}: トークン ID の列 $x_1,\dots,x_T$。たとえば、\secref{sec:tf-walkthrough}で基盤モデルに入れる「\texttt{\textbackslash n}　吾輩は」は、BPE でトークン化すると 2 個の ID（319 と 2819）になります。
 \item \textbf{埋め込み}: 各トークン ID を $d$ 次元のベクトルに変えます（\chapref{ch:embedding}）。そこに「何番目か」を表す\textbf{位置のベクトル}を足します。
 \item \textbf{Transformer ブロック × $L$}: 同じ形のブロックを $L$ 個重ねます。各ブロックの中には、注意（\chapref{ch:attention}）と MLP があり、どちらも残差接続でつながっています。
 \item \textbf{最後の正規化}: ベクトルの大きさをそろえます。
-\item \textbf{出力ヘッド}: 各位置の $d$ 次元のベクトルを、語彙の数 $V$ 個のロジットに変えます。softmax をとれば、次のトークンの確率分布になります。
+\item \textbf{出力ヘッド}: 各位置の $d$ 次元のベクトルを、語彙の数 $V$ 個のロジットに変えます。softmax をとれば、次のトークンの確率分布になります（「ヘッド」は、モデルの最後に付ける出力用の層の呼び名です。注意の「ヘッド」とは別のものです）。
 \end{enumerate}
+
+5 で出てくる位置 $t$ のロジット $\vz_t$ は、$x_1,\dots,x_t$ の\textbf{全部}を見て、次のトークン $x_{t+1}$ を当てるための点数です。
+因果マスク（\chapref{ch:attention}）があるので、$x_{t+1}$ より後ろは見ていません。
+$T$ 個の位置のそれぞれが、自分の次のトークンの予測を出すのです。
 
 3 の\textbf{残差接続}は、部品の出力を入力に足し込むつなぎ方です。
 4 の正規化は\textbf{レイヤー正規化}で、ベクトルの成分の平均と大きさをそろえ直します（図とコードでは LayerNorm と書きます）。
@@ -104,7 +111,7 @@
   \node[num] at (-34.6,70.9) {3};
   \node[lbl,anchor=north west,align=left] at (-32.8,73.4) {Transformer\\ブロック $\times L$};
   \node[io] (in) at (-20,0) {トークン ID $x_1,\dots,x_T$\ \ $(B,T)$};
-  \node[io,fill=figgray] (ps) at (21,0) {位置の番号 $0,\dots,T{-}1$};
+  \node[io,fill=figgray] (ps) at (21,0) {位置の番号 $1,\dots,T$\ \ $(T)$};
   \node[box,w] (te) at (-20,8.5) {トークン埋め込み};
   \node[orangebox,w] (pe) at (21,8.5) {位置埋め込み};
   \node[op] (p0) at (0,16) {$+$};
@@ -117,6 +124,7 @@
   \node[graybox,wide] (lnf) at (0,82.5) {最後の LayerNorm};
   \node[purplebox,wide] (head) at (0,90.5) {出力ヘッド（$d\to V$）};
   \node[io,minimum width=50mm] (out) at (0,99) {ロジット $\vz_1,\dots,\vz_T$\quad $(B,T,V)$};
+  \node[lbl,anchor=west,align=left] at (26.5,99) {$\vz_t$ は $x_{t+1}$\\の予測};
   \draw[arr] (in) -- (te); \draw[arr] (ps) -- (pe);
   \draw[arr] (te.east) -- (p0); \draw[arr] (pe.west) -- (p0);
   \draw[arr] (p0) -- (ln1); \draw[arr] (ln1) -- (att); \draw[arr] (att) -- (p1);
@@ -127,29 +135,34 @@
   \fill[bookblue] (0,24.8) circle (0.6mm); \fill[bookblue] (0,50) circle (0.6mm);
   \node[lbl,anchor=west] at (20,36) {残差接続};
   \node[lbl,anchor=west] at (20,61) {残差接続};
-  \node[lbl,anchor=east,align=right] at (-14,34) {通信\\（位置の間）};
-  \node[lbl,anchor=east,align=right] at (-14,58.8) {計算\\（各位置で）};
+  \node[lbl,anchor=east,align=right] at (-14,34) {通信（位置の間）\\\secref{sec:tf-mlp}};
+  \node[lbl,anchor=east,align=right] at (-14,58.8) {計算（各位置で）\\\secref{sec:tf-mlp}};
   \node[lbl,anchor=west] at (2,19.7) {$(B,T,d)$};
   \node[lbl,anchor=west] at (2,76.8) {$(B,T,d)$};
   \node[num] at ($(in.west)+(-3,0)$) {1};
   \node[num] at ($(te.west)+(-3,0)$) {2};
+  \node[num] at ($(p0.west)+(-3,0)$) {2};
   \node[num] at ($(lnf.west)+(-3,0)$) {4};
   \node[num] at ($(head.west)+(-3,0)$) {5};
 \end{tikzpicture}
-\caption{デコーダのみの Transformer（ミニGPT）の全体図。下から上へデータが流れ、丸の数字は本文の手順 1〜5 に対応する。ブロックの中の右側の線が残差接続で、注意と MLP の出力は「元のベクトルに足し込まれる」。
-本書の基盤モデルでは $L=4$、$d=192$、$V=4096$、$T\le 128$。}
+\caption{デコーダのみの Transformer（ミニGPT）の全体図。下から上へデータが流れ、丸の数字は本文の手順 1〜5 に対応する。
+同じ形のブロックが $L$ 個重なっているが、図には 1 個だけを描いた。
+ブロックの中の右側の線が残差接続で、注意と MLP の出力は「元のベクトルに足し込まれる」。
+因果自己注意は、因果マスク付きの自己注意（\chapref{ch:attention}）のこと。
+形の記号は、$B$: バッチサイズ（一度に入れる文の数）、$T$: トークン数、$d$: 埋め込みの次元、$V$: 語彙の大きさ、$L$: ブロックの数。
+本書の基盤モデルでは $L=4$、$d=192$、$V=4096$、$T\le 128$。位置の番号はコードでは 0 から数える。}
 \label{fig:tf-overview}
 \end{figure}
 
 図で見てほしいのは、次の 2 点です。
 第一に、埋め込みを足した直後から最後の正規化の手前まで、テンソルの形は $(B,T,d)$ のまま変わりません。
-形が変わるのは、入口（$(B,T)\to(B,T,d)$）と出口（$(B,T,d)\to(B,T,V)$）だけです。
+ブロックを外から見ると、形が変わるのは、入口の埋め込み（$(B,T)\to(B,T,d)$）と出口の出力ヘッド（$(B,T,d)\to(B,T,V)$）だけです。
 入口では、1 個の整数だったトークン ID が $d$ 次元のベクトルに変わるので、軸が 1 本増えます。
 出口では、$d$ 次元のベクトルが語彙 $V$ 個分の点数に変わるので、最後の軸の長さが $V$ になります。
 だからこそ、同じ形のブロックを何個でも重ねられるのです。
 第二に、ブロックの中の右側の線（残差接続）です。
 注意と MLP は、入ってきたベクトルを\textbf{置き換える}のではなく、\textbf{足し込む}ものを計算します。
-この「足し込む」という設計が、深く重ねても学習できる鍵になります（\secref{sec:tf-residual}）。
+この「足し込む」という設計が、深く重ねても学習できる主な理由になります（\secref{sec:tf-residual}）。
 
 \subsection*{形の追跡表}
 
@@ -159,7 +172,7 @@ $B$ はバッチサイズ、$T$ は系列長、$d$ は埋め込み次元、$V$ �
 
 \begin{table}[tbp]
 \centering
-\caption{ミニGPT の各段階のテンソルの形。右端は基盤モデル（$d=192$, $V=4096$, $H=4$）で $B=2$, $T=8$ のときの値。形が変わるのは入口と出口だけである。}
+\caption{ミニGPT の各段階のテンソルの形。右端は基盤モデル（$d=192$, $V=4096$, $H=4$）で $B=2$, $T=8$ のときの値。ブロックを外から見ると、形が変わるのは入口と出口だけである（中ほどの 3 行は、ブロックの中だけで現れる形）。}
 \label{tab:tf-shapes}
 \small
 \begin{tabular}{llll}
@@ -207,7 +220,7 @@ MLP の中間 & \code{fc(x)} & $(B,T,4d)$ & $(2,8,768)$ \\
 
 \subsection*{何に困っているか}
 
-注意の出力は、キーとバリューの\textbf{集合}だけで決まり、並び順には関係しません。
+1 回の注意の出力は、ある位置から見ると、それより前（と自分）にあるキーとバリューの組の\textbf{集まり}だけで決まり、その並び順には関係しません（同じトークンが 2 回あれば、2 回数えます）。
 たとえば計算ドリルの「\code{12+35=}」と「\code{21+53=}」を考えます。
 最後の「\code{=}」から見ると、どちらも同じ数字 1, 2, 3, 5 と記号 \code{+} が過去にある、というだけになってしまいます。
 しかし答えは 47 と 74 で違います。
@@ -223,33 +236,43 @@ MLP の中間 & \code{fc(x)} & $(B,T,4d)$ & $(2,8,768)$ \\
 \label{eq:tf-input}
 \end{equation}
 ここで $\ve_{x_t}\in\R^d$ はトークン $x_t$ の埋め込み（\chapref{ch:embedding}）、$\vp_t\in\R^d$ は位置 $t$ のベクトルです。
+$\ve$ の添字はトークン（どの文字か）、$\vp$ の添字は位置の番号（何番目か）で、別のものを指します。
 右肩の $(0)$ は「ブロックに入る前（0 層目）」を表します。
-\figref{fig:tf-posadd}を見てください。
-同じ「\code{1}」というトークンでも、1 番目にあれば $\ve_{\code{1}}+\vp_1$、4 番目にあれば $\ve_{\code{1}}+\vp_4$ と違うベクトルになります。
-クエリとキーは、この入力ベクトルに行列を掛けて作るので、位置の情報がクエリとキーにも混ざります。
-これで、「すぐ前のトークン」「3 つ前のトークン」を区別して見られるようになります。
+\figref{fig:tf-posadd}の「\code{73+79=}」を見てください。
+「\code{7}」というトークンが 1 番目と 4 番目にあります。
+1 番目の「\code{7}」は $\ve_{\text{「7」}}+\vp_1$、4 番目の「\code{7}」は $\ve_{\text{「7」}}+\vp_4$ で、違うベクトルになります。
+クエリとキーは、この入力ベクトルに行列を掛けて作るので、位置の情報がクエリとキーにも入ります。
+すると、たとえば「=」の位置のクエリが「自分は 6 番目」を表す成分を持ち、5 番目のトークンのキーが「自分は 5 番目」を表す成分を持つ、ということができます。
+この 2 つの内積が大きくなるように重みが学習されれば、「=」は「すぐ前のトークン」に大きな注意の重みを付けられます。
+こうして、「すぐ前のトークン」「3 つ前のトークン」を区別して見られるようになります。
 このように、位置の情報をベクトルで表してモデルに渡す仕組みを\term{位置エンコーディング}{positional encoding}と呼びます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=14mm,y=9.5mm,
   v/.style={minimum width=11.5mm,minimum height=6mm,font=\scriptsize,inner sep=1pt}]
-  \foreach \i/\t/\s in {1/1/orangebox,2/2/box,3/+/box,4/1/orangebox,5/5/box,6/=/box} {
+  \foreach \i/\t/\s in {1/7/purplebox,2/3/box,3/+/box,4/7/purplebox,5/9/box,6/=/box} {
+    \node[font=\scriptsize,text=bookgray] at (\i,3.55) {位置 \i};
     \node[tok,minimum width=8mm] (x\i) at (\i,3) {\texttt{\t}};
-    \node[\s,v] (e\i) at (\i,2) {$\ve_{\texttt{\t}}$};
-    \node[graybox,v] (p\i) at (\i,1) {$\vp_{\i}$};
-    \node[greenbox,v] (h\i) at (\i,0) {$\ve_{\texttt{\t}}{+}\vp_{\i}$};
+    \node[\s,v,minimum width=8mm] (e\i) at (\i,2) {$\ve_{\text{「\texttt{\t}」}}$};
+    \node[graybox,v,minimum width=8mm] (p\i) at (\i,1) {$\vp_{\i}$};
+    \node[op,minimum size=4mm,font=\scriptsize] (o\i) at (\i,0.12) {$+$};
+    \node[greenbox,v] (h\i) at (\i,-0.75) {$\ve_{\text{「\texttt{\t}」}}{+}\vp_{\i}$};
     \draw[arr] (x\i) -- (e\i);
-    \node[font=\scriptsize] at (\i,1.5) {$+$};
-    \draw[arr] (p\i) -- (h\i);
+    \draw[arr] (e\i.east) -- ++(0.08,0) |- (o\i.east);
+    \draw[arr] (p\i) -- (o\i);
+    \draw[arr] (o\i) -- (h\i);
   }
   \node[lbl,anchor=east] at (0.45,3) {トークン};
   \node[lbl,anchor=east] at (0.45,2) {トークン埋め込み};
-  \node[lbl,anchor=east] at (0.45,1) {位置埋め込み};
-  \node[lbl,anchor=east] at (0.45,0) {入力 $\vh^{(0)}_t$};
+  \node[lbl,anchor=east,align=right] at (0.45,1) {位置埋め込み\\（位置の番号で引く）};
+  \node[lbl,anchor=east] at (0.45,0.12) {足す};
+  \node[lbl,anchor=east] at (0.45,-0.75) {入力 $\vh^{(0)}_t$};
 \end{tikzpicture}
-\caption{位置埋め込みを足す（式\eqref{eq:tf-input}）。説明のため 1 文字を 1 トークンとした。
-2 か所の「\texttt{1}」は、トークン埋め込み（橙）は同じだが、足される位置のベクトルが $\vp_1$ と $\vp_4$ で違うので、ブロックに入るベクトル（緑）は別のものになる。}
+\caption{位置埋め込みを足す（式\eqref{eq:tf-input}）。説明のため 1 文字を 1 トークンとし、「\texttt{73+79=}」を例にした。
+$\ve$ の添字（かぎ括弧の中）はトークン、$\vp$ の添字は位置の番号である。
+2 か所の「\texttt{7}」（位置 1 と位置 4）は、トークン埋め込み（紫）は同じだが、足される位置のベクトルが $\vp_1$ と $\vp_4$ で違うので、ブロックに入るベクトル（緑）は別のものになる。
+各位置で、トークン埋め込みと位置埋め込みの両方から矢印が出て、＋の丸で足される。}
 \label{fig:tf-posadd}
 \end{figure}
 
@@ -267,12 +290,20 @@ $\mP$ はほかのパラメータと同じく、勾配降下法で学習する�
 
 \begin{caution}{足したら情報が混ざってしまわないか}
 トークンのベクトルと位置のベクトルを「足す」と、両者が区別できなくなりそうに思えます。
-しかし $d=192$ 次元もあれば、学習によって「トークンの情報を主に載せる方向」と「位置の情報を主に載せる方向」を使い分けられます。
-足し算は、2 つのベクトルを縦に並べて（連結して）から線形変換するのと、表現力の点でほぼ変わりません。
-連結したベクトルに行列 $[\mA\ \mB]$ をかけると
+先に議論の筋を書きます。
+(1) 2 つを縦に並べる（連結する）なら、混ざらない。
+(2) しかし、連結したベクトルにモデルが最初にするのは、行列を掛ける線形変換である。
+(3) その結果は「それぞれを変換してから足したもの」という和の形になる。
+(4) だから、初めから和にしておいても、失うものはほとんどない。
+
+(2) と (3) を式で確かめます。
+$\mA$ と $\mB$ を、どちらも $d'\times d$ の行列とし、横に並べた $d'\times 2d$ の行列を $[\mA\ \mB]$ と書きます。
+連結したベクトルにこれを掛けると
 $[\mA\ \mB]\begin{bmatrix}\ve\\ \vp\end{bmatrix}=\mA\ve+\mB\vp$
-となり、結局は「それぞれを変換してから足したもの」になるからです。
+となり、確かに和の形です。
 しかも、トークン埋め込みも位置埋め込みも学習される表なので、$\mA\ve$ にあたるものを $\ve$ として、$\mB\vp$ にあたるものを $\vp$ として、初めから覚えてしまえます。
+「ほとんど」と書いたのは、連結なら、クエリ用・キー用・バリュー用の行列ごとに別の $\mA,\mB$ を選べるのに対し、和では $\ve+\vp$ を 1 つだけ共有するからです。
+それでも $d=192$ 次元もあれば、学習によって「トークンの情報を主に載せる方向」と「位置の情報を主に載せる方向」を使い分けられます。
 足し算のほうが次元が増えないので、こちらが標準になっています。
 \end{caution}
 
@@ -283,8 +314,9 @@ $[\mA\ \mB]\begin{bmatrix}\ve\\ \vp\end{bmatrix}=\mA\ve+\mB\vp$
 
 \snippet{位置埋め込みの有無と、語順の入れ替えへの反応}{code:tf-pos-check}{ch10/pos_encoding.py}{pos-check}
 
-1〜4 行目で、1 層・16 次元の小さなモデル（学習前）と、比べる 2 つの入力を作ります（5, 7, 9 は適当に選んだトークン ID です）。
-\code{GPT} は\secref{sec:tf-gpt}で読むクラスで、ここでは「トークン ID を入れると（ロジット, 損失）の組を返す箱」として使います。
+1〜4 行目で、ブロック 1 個・16 次元の小さなモデル（学習前）と、比べる 2 つの入力を作ります（5, 7, 9 は適当に選んだトークン ID です）。
+ブロックを 1 個にしたのは、注意 1 回の性質だけを見るためです（ブロックを増やすと何が変わるかは、すぐ後で確かめます）。
+\code{GPT} は\secref{sec:tf-gpt}で読むクラスで、ここでは「トークン ID を入れると（ロジット, 損失）の組を返すもの」として使います。
 2 行目の \code{.eval()}（評価用のモード）と 5 行目の \code{torch.no_grad()}（勾配の記録をとらない。\secref{sec:pt-autograd}）は、学習をせず出力を見るだけのときの指定です。
 6〜7 行目の \code{model(a)[0]} がそのロジットで、続く \code{[0, -1]} で最後の位置を取り出し、差の絶対値の最大を表示します。
 8 行目で位置埋め込みの重みを \code{zero_()} ですべて 0 にして位置の情報を消し、9〜10 行目で同じ比較をもう一度します。
@@ -298,6 +330,42 @@ $[\mA\ \mB]\begin{bmatrix}\ve\\ \vp\end{bmatrix}=\mA\ve+\mB\vp$
 最後の「9」から見ると、「5」と「7」のどちらが先だったのかが分からないのです。
 位置のベクトルを足しただけで、語順が見えるようになりました。
 
+ただし、この「分からない」は、ブロックが 1 個のときの話です。
+ブロックを 2 個以上重ねると、位置埋め込みがなくても、語順の違いは最後の位置に届きます。
+理由は因果マスクにあります。
+1 個目のブロックの出口では、各位置のベクトルに、その位置より前にあったトークンの情報が足し込まれています。
+「5 7 9」の「5」は前に何もありませんが、「7 5 9」の「5」は前に「7」があります。
+同じ「5」でも、1 個目のブロックを出たベクトルが違うので、2 個目のブロックの最後の位置は、その違いを読めるのです。
+\file{ch10/sweep_poslayers.py} で、同じ比較をブロックの数 $L$ と初期値の乱数の種（5 通り）を変えて行いました（\figref{fig:tf-poslayers}）。
+$L=1$ の青い点の中に上の実行結果の $2.92\times10^{-3}$ が、赤い点の中に $2.98\times10^{-8}$ があります（種 0 の 1 組です）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=0.4\linewidth,ymode=log,
+  xlabel={ブロックの数 $L$},ylabel={ロジットの差の最大},
+  xtick={1,2,3,4},xmin=0.5,xmax=4.5,ymin=3e-10,ymax=5e-2,ytick={1e-9,1e-7,1e-5,1e-3},
+  legend style={at={(0.98,0.04)},anchor=south east,font=\footnotesize}]
+\addplot[only marks,mark=*,mark size=1.6pt,bookblue] table[col sep=comma,x=x_with,y=with_pos]{code/ch10/out/sweep_poslayers.csv};
+\addlegendentry{位置埋め込みあり}
+\addplot[only marks,mark=square*,mark size=1.6pt,bookaccent] table[col sep=comma,x=x_without,y=without_pos]{code/ch10/out/sweep_poslayers.csv};
+\addlegendentry{位置埋め込みなし（0 にした）}
+\end{axis}
+\end{tikzpicture}
+\caption{「5 7 9」と「7 5 9」の、最後の位置のロジットの差（学習前、$d=16$）。縦軸は対数。各 $L$ に青と赤が 5 点ずつ（初期値の乱数の種を 5 通り。値の近い点は重なって見える）。青と赤が重ならないよう、青は目盛りの少し左、赤は少し右にずらして描いた。
+位置埋め込みがないとき（赤）、$L=1$ では差が丸め誤差の大きさ（$10^{-9}$〜$10^{-8}$）まで消えるが、$L\ge2$ では、位置埋め込みがあるとき（青）と同じ $10^{-3}$ ほどの差が残る。数値は \file{ch10/out/sweep_poslayers.csv}。}
+\label{fig:tf-poslayers}
+\end{figure}
+
+図の赤い点を左から見てください。
+$L=1$ では $10^{-9}$〜$10^{-8}$ と、丸め誤差の大きさしかなかった差が、$L=2$ からは青い点と同じ高さになります。
+では、位置埋め込みは要らないのでしょうか。
+そうではありません。
+ブロックを重ねて残る違いは、「前に何があったか」から間接的に生まれる手がかりで、「何番目か」そのものではありません。
+たとえば、同じトークンだけが並んだ「5 5 5 5」では、どの位置から見ても「同じものが前にいくつかある」だけです。
+位置埋め込みを 0 にした 4 ブロックのモデルで確かめると、4 つの位置のロジットは丸め誤差（$3\times10^{-8}$ 以下）の範囲で一致し、何番目かを区別できませんでした（\file{ch10/out/sweep_poslayers.txt} の最後の行）。
+「何番目か」を直接、確実に渡すのが、位置埋め込みの役目です。
+
 \subsection*{原論文の正弦波の位置エンコーディング}
 \skimread{押さえる結論は「原論文は位置のベクトルを sin と cos の式で作った。本書と GPT-2 は、学習する表を使う」です。式の細部は 2 周目で足ります。}
 
@@ -310,6 +378,8 @@ p_{t,2i+1} = \cos\!\left(\frac{t}{10000^{2i/d}}\right)
 \end{equation}
 とします。
 成分の組 $(2i, 2i+1)$ ごとに、$\sin$ と $\cos$ の波を割り当てるわけです（10000 は原論文が選んだ定数です）。
+$\sin$ だけだと、波の上りと下りで同じ値をとる 2 つの位置（たとえば $\sin(1)$ と $\sin(\pi-1)$）を区別できません。
+$\cos$ を組にすると、$(\sin,\cos)$ の組は半径 1 の円の上の点になり、1 周するまでは、位置ごとに違う点になります。
 $i=0$ の組は、分母が $10000^{0}=1$ なので周期 $2\pi\approx 6.3$ で速く回り、$i$ が大きくなるほど周期が長くなります。
 たとえば $d=16$、位置 $t=1$ では、$i=0$ の成分が $\sin(1)=0.8415$ です。
 $i=1$ の成分は、分母が $10000^{2/16}\approx3.162$ なので、$\sin(1/3.162)=\sin(0.3162)=0.3110$ です。
@@ -330,22 +400,44 @@ $i=1$ の成分は、分母が $10000^{2/16}\approx3.162$ なので、$\sin(1/3.
 \addlegendentry{成分 6（$i=3$）}
 \end{axis}
 \end{tikzpicture}
-\caption{正弦波の位置エンコーディング（式\eqref{eq:tf-sinusoid}、$d=16$）の偶数番目の成分（整数の位置での値を線で結んだ）。成分の番号が大きいほど波がゆっくり変わる。
-時計の秒針・分針・時針のように、速い波と遅い波の組み合わせで、位置ごとに異なるベクトルができる。}
+\caption{正弦波の位置エンコーディング（式\eqref{eq:tf-sinusoid}、$d=16$）の成分のうち 4 個（整数の位置での値を線で結んだ）。成分 0 は 1 周が約 6.3 位置と短いので、折れ線が角ばり、山の高さもそろわずに見えるが、もとは滑らかな正弦波である。
+$d=16$ なら偶数番目（$\sin$）の成分は 0, 2, …, 14 の 8 個あるが、周期の短い 4 個（0, 2, 4, 6）だけを描き、奇数番目（$\cos$）の 8 個は省いた。成分の番号は 0 から数える。
+成分の番号が大きいほど波がゆっくり変わる。速い波と遅い波の組み合わせで、位置ごとに異なるベクトルができる。}
 \label{fig:tf-sinusoid}
 \end{figure}
 
 \figref{fig:tf-sinusoid}を見てください。
 成分 0（青）は数位置ごとに上下しますが、成分 6（紫）は 64 位置かけてもまだ半周しません。
-時計の秒針・分針・時針の組で時刻が一つに決まるのと同じく、速い波と遅い波の組で位置が一つに決まります。
+時計の秒針・分針・時針にたとえると、速い波が秒針、遅い波が時針に当たります。
+3 本の針の組で時刻が一つに決まるのと同じく、速い波と遅い波の組で位置が一つに決まります。
+ただし時計が 12 時間で同じ針の位置に戻るように、このたとえが成り立つのは、いちばん遅い波が 1 周するまでです（$d=16$ なら周期は $2\pi\times10000^{14/16}\approx$ 約 2 万位置で、ふつうの文脈長よりずっと長い）。
 正弦波の利点は、学習するパラメータがいらないことと、学習中に見たより長い位置にも式で値を作れることです。
 一方、学習型は、データに合わせて位置の表し方を自由に決められます。
 GPT-2\cite{radford2019language} は学習型を選び、本書もそれに従います。
 現在の LLM の多くは、どちらでもない\textbf{回転}による位置表現（RoPE）を使います（\chapref{ch:modern-arch}）。
+3 つの方法を\tabref{tab:tf-posenc}に並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{位置の情報を渡す方法の比較。RoPE の仕組みは\chapref{ch:modern-arch}で説明する。}
+\label{tab:tf-posenc}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{14mm}}
+\toprule
+方法 & 仕組みの要点 & 長所 & 短所 & 使う所 \\
+\midrule
+学習型（位置埋め込み） & 位置ごとのベクトルの表 $\mP$ を学習して、埋め込みに足す & データに合わせて、位置の表し方を自由に決められる & 表の行数 $T_{\max}$ より長い入力を扱えない。「3 つ前」のような相対的な関係も、位置ごとに別々に学ぶしかない & GPT-2、本書 \\
+正弦波 & 式\eqref{eq:tf-sinusoid}で作ったベクトルを、埋め込みに足す & 学習するパラメータが要らない。学習中に見たより長い位置にも、式で値を作れる & 位置の表し方は式で決まり、データに合わせて変えられない & 原論文 \\
+回転（RoPE） & クエリとキーを、位置に応じた角度だけ回す（足し算ではない） & クエリとキーの内積が、2 つの位置の差だけで決まる & 学習した長さより長い文脈では、そのままでは性能が落ちる（\chapref{ch:modern-arch}） & 現在の LLM の多く \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 この節で分かったのは、語順の情報は「位置ごとのベクトルを埋め込みに足す」だけで渡せるということです。
+ただし、ブロックを重ねると因果マスクからも間接的な手がかりが生まれるので、位置埋め込みは「何番目か」を直接、確実に渡すための部品だと理解しておきましょう。
 
-\section{MLP：各位置で「考える」部品}\label{sec:tf-mlp}
+\section{MLP：各位置で情報を加工する部品}\label{sec:tf-mlp}
 
 位置の情報が加わり、注意は「どこに何があるか」を見て情報を集められるようになりました。
 しかし、注意の出力はバリューの重み付き平均、つまり\textbf{集めてきた情報を混ぜたもの}にすぎません。
@@ -359,14 +451,17 @@ GPT-2\cite{radford2019language} は学習型を選び、本書もそれに従い
 これは「集める」ではなく「計算する」仕事です。
 
 注意の計算を振り返ると、非線形な部分は softmax で重みを決めるところだけでした。
-バリューに対しては、重み付きの和という\textbf{線形な}操作しかしていません。
-線形な操作をいくら重ねても線形のままなので（\chapref{ch:nn}）、繰り上がりの判定のような「しきい値で分ける」計算は苦手です。
+注意は、どこから集めるか（重み）は入力から非線形に決めますが、集めた中身（バリュー）には、重み付きの和をとる以外の加工をしません。
+集めたベクトルの成分を「ある値より大きいか」で分けるような、各位置での非線形な変換を持っていないのです。
+そのため、繰り上がりの判定のような「しきい値で分ける」計算は苦手です。
 そこで、各位置に、非線形な活性化関数を持つ MLP（\chapref{ch:nn}）を置きます。
 
 \subsection*{位置ごとの MLP}
 
-Transformer の MLP は、2 層の全結合ネットワークです。
-位置 $t$ のベクトル $\vu_t\in\R^d$ に対して、
+Transformer の MLP は、2 層の全結合ネットワークです（原論文では「位置ごとのフィードフォワード層」と呼ばれ、FFN と略されることもあります。同じものです）。
+MLP に入る位置 $t$ のベクトルを $\vu_t\in\R^d$ と書きます。
+中身は、次の節で見るとおり、その位置のベクトル $\vh_t$ を LayerNorm に通したものです。
+この $\vu_t$ に対して、
 \begin{equation}
 \mathrm{MLP}(\vu_t) = \mW_2^\T\,\gelu\!\left(\mW_1^\T \vu_t\right),\qquad
 \mW_1\in\R^{d\times 4d},\ \mW_2\in\R^{4d\times d}
@@ -376,12 +471,16 @@ Transformer の MLP は、2 層の全結合ネットワークです。
 転置の付いた書き方は、\chapref{ch:attention}の $\vq_s=\mW_q^\T\vx_s$ と同じ約束です（$\mW_1$ は「入力の次元 × 出力の次元」の形）。
 1 層目で $d$ 次元を 4 倍の $4d$ 次元（基盤モデルでは 768）に広げ、活性化関数 GELU（すぐ後で説明します）を通し、2 層目で $d$ 次元に戻します（\figref{fig:tf-mlp-shape}）。
 いったん広げるのは、活性化関数を通す「しきい値の判定」を、たくさん並べて一度に行うためです。
+中間の $4d=768$ 個の成分の 1 つ 1 つは、「入力の成分の重み付きの和」を GELU に通したもので、和が 0 より大きいかどうかで出力が大きく変わります。
+つまり、1 個の成分が 1 個の判定を受け持てます。
+たとえば、集めてきた情報から「一の位の 2 つの数の和 $-\,9.5$」を計算する成分があれば、その成分は繰り上がりがあるときだけ正になります（説明のための例で、学習した MLP がこの形の成分を持つとは限りません）。
+768 個あれば、そうした判定を 768 通り同時にできます。
 4 倍という値は原論文\cite{vaswani2017attention}以来の慣習で、理論的に決まった値ではありません。
 \code{llmbook} ではバイアスを省いています（GPT-2 にはありますが、なくても学習でき、パラメータも数えやすくなります）。
 
-ここで大事なのは、\textbf{同じ MLP（同じ $\mW_1,\mW_2$）を、すべての位置に別々に適用する}ことです。
+ここで大事なのは、\textbf{同じ MLP（同じ $\mW_1,\mW_2$）を、1 つのブロックの中のすべての位置に別々に適用する}ことです（ブロックが違えば $\mW_1,\mW_2$ も別で、4 ブロックなら 4 組あります）。
 MLP は位置 $t$ のベクトルだけを見て、ほかの位置のベクトルは見ません。
-位置の間で情報をやりとりするのは注意だけ、各位置で計算するのは MLP だけ、という分業になっています。
+位置の間で情報をやりとりするのは注意だけで、各位置での非線形な加工は主に MLP が受け持つ、という分業になっています。
 同じ重みを使い回すのは、どの位置でも「集まった情報を加工する」という同じ種類の仕事をするからです（位置ごとに別の重みを持つと、パラメータが系列長に比例して増えてしまいます）。
 
 \begin{figure}[tbp]
@@ -400,8 +499,8 @@ MLP は位置 $t$ のベクトルだけを見て、ほかの位置のベクト�
   \node[lbl,anchor=west,align=left] at (6.6,3) {同じ重みの MLP を\\位置ごとに別々に};
   \node[lbl,anchor=west,align=left] at (6.6,1.5) {「=」の位置が\\2, 5, 4, 8 を集める};
 \end{tikzpicture}
-\caption{注意と MLP の分業。注意（赤）は位置の間で情報をやりとりする「通信」で、赤い曲線は「=」の位置が数字を集める様子（ほかの位置も、それぞれ自分より前から集めている）。
-MLP（緑）は各位置で、集まった情報から新しい情報（たとえば繰り上がりの有無）を作る「計算」。MLP は隣の位置を見ない。}
+\caption{注意と MLP の分業。注意（赤）は位置の間で情報をやりとりする「通信」で、赤い曲線は「=」の位置が数字を集める様子。「=」の位置は「+」と自分自身からも読むが、数字からの 4 本だけを描いた（ほかの位置も、それぞれ自分とそれより前から集めるが、曲線は省いた）。
+MLP（緑）は各位置で、集まった情報から新しい情報（たとえば繰り上がりの有無）を作る「計算」。MLP は隣の位置を見ない。分業を見せるため、残差接続と LayerNorm は省いた。}
 \label{fig:tf-comm-comp}
 \end{figure}
 
@@ -416,10 +515,11 @@ Karpathy の講義\cite{karpathy2022zerotohero}では、この分業を「注意
 
 式\eqref{eq:tf-mlp}の活性化関数には、ReLU（\chapref{ch:nn}）ではなく GELU\cite{hendrycks2016gelu}を使います。
 \begin{equation}
-\gelu(u) = u\,\Phi(u)
+\gelu(a) = a\,\Phi(a)
 \label{eq:tf-gelu}
 \end{equation}
-$\Phi(u)$ は、平均 0・分散 1 の正規分布に従う乱数が $u$ 以下になる確率で、$u$ が大きな正の数なら 1、大きな負の数なら 0 に近づきます。
+ここで $a$ は 1 個の数（スカラー）で、ベクトルに使うときは成分ごとに適用します（式\eqref{eq:tf-mlp}なら、$\mW_1^\T\vu_t$ の $4d$ 個の成分の 1 つ 1 つに）。
+$\Phi(a)$ は、標準正規分布（平均 0・分散 1 の正規分布）に従う確率変数が $a$ 以下になる確率（累積分布関数）で、$a$ が大きな正の数なら 1、大きな負の数なら 0 に近づきます。
 したがって GELU は、正の大きな入力はほぼそのまま通し（$\gelu(3)=3\times0.9987\approx 3.00$）、負の大きな入力はほぼ 0 にします（$\gelu(-3)=-3\times0.0013\approx -0.004$）。
 ここまでは ReLU と同じです。
 違うのは 0 の近くで、たとえば $\gelu(-0.5)=-0.5\times 0.3085\approx-0.154$ のように、少しだけ負の値を通し、角のない滑らかな曲線になります（\figref{fig:tf-gelu}。数値は \file{ch10/gelu_curve.py} で計算しました）。
@@ -431,23 +531,23 @@ ReLU との差は小さく、「GPT-2 が使ったので本書も使う」と考
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,
   bar/.style={minimum height=4.5mm,font=\scriptsize,inner sep=1pt}]
-  \node[box,bar,minimum width=14mm] (a) at (0,0) {$d=192$};
-  \node[greenbox,bar,minimum width=56mm] (b) at (0,11) {$4d=768$ 次元に広げる};
-  \node[greenbox,bar,minimum width=56mm] (c) at (0,22) {負の成分をほぼ 0 にする};
-  \node[box,bar,minimum width=14mm] (d) at (0,33) {$d=192$};
-  \draw[arr] (a) -- node[lbl,right] {\code{fc}（$\mW_1$）} (b);
-  \draw[arr] (b) -- node[lbl,right] {GELU} (c);
-  \draw[arr] (c) -- node[lbl,right] {\code{proj}（$\mW_2$）} (d);
+  \node[box,bar,minimum width=14mm] (a) at (0,0) {192 次元};
+  \node[greenbox,bar,minimum width=56mm] (b) at (0,11) {768 次元};
+  \node[greenbox,bar,minimum width=56mm] (c) at (0,22) {768 次元（大きな負の成分はほぼ 0）};
+  \node[box,bar,minimum width=14mm] (d) at (0,33) {192 次元};
+  \draw[arr] (a) -- node[lbl,right] {\code{fc}（$\mW_1$）で $4d$ に広げる} (b);
+  \draw[arr] (b) -- node[lbl,right] {GELU を成分ごとに} (c);
+  \draw[arr] (c) -- node[lbl,right] {\code{proj}（$\mW_2$）で $d$ に戻す} (d);
   \node[lbl,anchor=east] at (-9,0) {入力 $\vu_t$};
   \node[lbl,anchor=east] at (-9,33) {出力};
 \end{tikzpicture}
-\caption{MLP の中の形（基盤モデル）。下から上へ進む。いったん 4 倍に広げ、GELU を通してから元の幅に戻す。}
+\caption{MLP の中の形（基盤モデル、$d=192$）。下から上へ進む。箱は 1 つの位置のベクトルで、幅が次元の数に比例する。矢印の横が、そこで行う計算。}
 \label{fig:tf-mlp-shape}
 \end{minipage}\hfill
 \begin{minipage}[b]{0.44\linewidth}
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=1.08\linewidth,height=0.86\linewidth,xlabel={入力 $u$},
+\begin{axis}[width=1.08\linewidth,height=0.86\linewidth,xlabel={入力 $a$},ylabel={出力},
   xmin=-4,xmax=4,ymin=-0.6,ymax=4,
   legend pos=north west,legend style={font=\scriptsize}]
 \addplot[bookblue,very thick,no marks] table[col sep=comma,x=u,y=gelu]{code/ch10/out/gelu.csv};
@@ -470,18 +570,18 @@ ReLU との差は小さく、「GPT-2 が使ったので本書も使う」と考
 「位置ごとに別々に」は、この性質だけで実現されているのです。
 なお、\code{nn.Linear} は重みを「出力 × 入力」の形で保存するので、\code{fc.weight} の形 $(4d,d)$ は式の $\mW_1^\T$ に当たります。
 11 行目が式\eqref{eq:tf-mlp}そのもので、\code{fc} → \code{F.gelu} → \code{proj} の順に通し、最後にドロップアウト（\chapref{ch:training}。基盤モデルでは率 0 なので何もしない）をかけます。
-\code{proj} という名前は注意の出力射影と同じで、どちらも「残差に足し込む直前の層」です。この名前は初期化（\secref{sec:tf-gpt}）で使われます。
+\code{proj} という名前は注意の出力射影と同じで、どちらも「残差ストリーム（\secref{sec:tf-residual}）に足し込む直前の層」です。この名前は初期化（\secref{sec:tf-gpt}）で使われます。
 
 この節で分かったのは、注意が集めた情報を、各位置の MLP が非線形に組み合わせる、という分業です。
 
 \section{深く積むための工夫：残差接続とレイヤー正規化}\label{sec:tf-residual}
 
 注意（通信）と MLP（計算）がそろいました。
-この 2 つを 1 組にして何層も重ねれば、「集めて考える」を何度も繰り返せます。
+この 2 つを 1 組にして何層も重ねれば、「集めて加工する」を何度も繰り返せます。
 しかし、層を深く重ねたネットワークは、そのままでは学習がうまく進みません。
-\secref{sec:nn-deep}の実験では、ReLU の MLP を隠れ層 10 枚にしただけで、損失が何も学んでいないときの値 $\log 3\approx1.099$ から動かなくなりました。
+\secref{sec:nn-deep}の実験では、ReLU の MLP を隠れ層 10 枚にしただけで、損失が、何も学習していないモデルの値（$\log 3\approx1.099$）のまま下がらなくなりました。
 逆伝播では層の数だけ掛け算が重なるので、勾配が途中で消えたり、爆発したりするのでした。
-\chapref{ch:training}は、これを初期化・レイヤー正規化・残差接続で解き、50 枚の MLP を 5 回とも学習させました。
+\chapref{ch:training}は、これを初期化・レイヤー正規化・残差接続で解き、隠れ層 50 枚の MLP を 5 回とも学習させました。
 
 この節の問いは、「注意と MLP を何層も重ねても学習が進むようにするには、どうつなげばよいか」です。
 答えは、\chapref{ch:training}の二つの道具、残差接続とレイヤー正規化を、決まった順序で組み込むことです。
@@ -494,62 +594,134 @@ ReLU との差は小さく、「GPT-2 が使ったので本書も使う」と考
 \vh \leftarrow \vh + F(\vh)
 \label{eq:tf-residual}
 \end{equation}
+$F$ が計算するのは、出力と入力の差（$\vh$ に足す分）だけです。
+この差を残差と呼ぶのが、名前の由来でした。
 Transformer ブロックでは、注意と MLP のそれぞれに残差接続を付けます。
-なぜこれで深くしても学習できるのかを、勾配でおさらいします。
-式\eqref{eq:tf-residual}の右辺では、$\vh$ が「そのまま足される道」と「$F$ の入力」の 2 か所で使われています。
-逆伝播では、出口側から届いた勾配 $\vg$ が足し算のところで 2 つの道に分かれるので、$\vh$ に届く勾配は
+
+なぜこれで深くしても学習できるのかを、勾配でおさらいします（\figref{fig:tf-resgrad}）。
+式\eqref{eq:tf-residual}の右辺では、$\vh$ が 2 か所で使われています。
+そのまま足される 1 つ目と、$F$ の入力になる 2 つ目です。
+\chapref{ch:math}・\chapref{ch:nn}と同じく、計算の順に値をつないだもの（計算グラフの上で、ある値から別の値までたどれる矢印の列）を\textbf{経路}と呼びます。
+$\vh$ から足し算の出力までには、$F$ を通らず足し算だけを通る経路と、$F$ を通る経路の 2 本があります。
+前者が、\chapref{ch:training}の\figref{fig:training-residual}で\textbf{近道}と呼んだもの（英語では skip connection）です。
+
+足し算の出力についての損失の勾配を $\vg$ とします（出口の側から逆伝播で届いた勾配です）。
+逆伝播では、$\vg$ が 2 本の経路に分かれて $\vh$ に戻るので、$\vh$ に届く勾配は
 \begin{equation}
-\underbrace{\vg}_{\text{近道を通る分}}+\underbrace{(F\text{ を逆向きに通った }\vg)}_{F\text{ を通る分}}
+\underbrace{\vg}_{\text{近道を通る分}}+\underbrace{\left(\pd{F}{\vh}\right)^{\!\T}\vg}_{F\text{ を通る分}}
 \label{eq:tf-residual-grad}
 \end{equation}
 です（式\eqref{eq:training-residual-grad}と同じです）。
+第 2 項の $\pd{F}{\vh}$ は $F$ のヤコビ行列（出力の各成分を入力の各成分で微分した値を並べた行列。\chapref{ch:math}）で、「$\vg$ を $F$ の逆向きに通す」計算を表します。
 2 か所で使われた値の勾配は足す、という\chapref{ch:nn}の規則です（式\eqref{eq:nn-fanout}）。
 足し算は勾配をそのまま渡すので、第 1 項は何も掛けられない $\vg$ のままです。
-足し込みを何回重ねても、この「近道」は出口から入口まで 1 本につながっています。
-したがって、$F$ を通る道で勾配がどれだけ小さくなっても、損失の勾配は近道を通って、入口近くの層まで届きます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+  \node[lbl] (hin) at (0,0) {入力 $\vh$};
+  \fill[black!70] (0,6) circle (0.6mm);
+  \node[redbox,minimum width=16mm,font=\footnotesize] (F) at (0,16) {$F$（注意 / MLP）};
+  \node[op] (plus) at (0,28) {$+$};
+  \node[lbl] (hout) at (0,38) {出力 $\vh+F(\vh)$};
+  \draw[thick,black!70] (hin) -- (0,6);
+  \draw[arr] (0,6) -- (F);
+  \draw[arr] (F) -- (plus);
+  \draw[arr] (plus) -- (hout);
+  \draw[arr,bookblue,very thick] (0,6) -- (20,6) |- (plus);
+  \node[lbl,anchor=east,text=bookblue] at (19.5,12) {近道};
+  % 逆伝播
+  \draw[->,thick,dashed,bookaccent] (4,35.5) -- (4,31);
+  \node[lbl,anchor=west,text=bookaccent] at (5,33.5) {$\vg$（出口の側から届く勾配）};
+  \draw[->,thick,dashed,bookaccent] (24,27) -- (24,8);
+  \node[lbl,anchor=west,text=bookaccent,align=left] at (25,17.5) {近道を戻る分：\\$\vg$ のまま};
+  \draw[->,thick,dashed,bookaccent] (-16,26) -- (-16,8);
+  \node[lbl,anchor=east,text=bookaccent,align=right] at (-17,17) {$F$ を逆向きに\\通る分：\\$(\partial F/\partial\vh)^{\T}\vg$};
+  \node[lbl,anchor=north,text=bookaccent] at (10,-3) {$\vh$ に届く勾配 ＝ 2 つの和（式\eqref{eq:tf-residual-grad}）};
+\end{tikzpicture}
+\caption{残差接続の計算グラフ。実線の矢印が順伝播、赤い破線が逆伝播の勾配。$\vh$ は黒い点で 2 つに分かれ、$F$ を通る経路と、足し算だけを通る経路（近道、青）で使われる。逆伝播では、近道を戻る分は何も掛けられない。}
+\label{fig:tf-resgrad}
+\end{figure}
+
+ブロックを何個重ねても、近道どうしは足し算でつながり、出口から入口まで、足し算だけを通る経路が 1 本残ります。
+したがって、$F$ を通る経路で勾配がどれだけ小さくなっても、損失の勾配は近道を通って、入口近くの層まで届きます。
 残差接続がなければ、勾配はすべての $F$ を順に通るしかなく、層が深いほど消えたり爆発したりしやすくなります。
 
 \subsection*{残差ストリームという見方}
 
-残差接続のおかげで、ブロックの中のデータの流れを、別の見方で眺められます。
-埋め込みを足した直後のベクトルを $\vh^{(0)}$ とし、$\ell$ 番目のブロックの注意と MLP が足し込む量をそれぞれ $\va^{(\ell)}$、$\vm^{(\ell)}$ とすると、最後のブロックの出力は
+残差接続のおかげで、ブロックの中のデータの受け渡しを、別の見方で整理できます。
+位置 $t$ について、埋め込みを足した直後のベクトルを $\vh^{(0)}$ とし（以下、位置の添字 $t$ は省きます）、$\ell$ 番目のブロックの注意と MLP が足し込む量をそれぞれ $\va^{(\ell)}$、$\vm^{(\ell)}$ とすると、最後のブロックの出力は
 \begin{equation}
 \vh^{(L)} = \vh^{(0)} + \sum_{\ell=1}^{L}\left(\va^{(\ell)} + \vm^{(\ell)}\right)
 \label{eq:tf-stream}
 \end{equation}
 と書けます（式\eqref{eq:tf-residual}を $2L$ 回くり返して、足し込んだ量を並べただけです）。
 1 番目のブロックを出ると $\vh^{(1)}=\vh^{(0)}+\va^{(1)}+\vm^{(1)}$、2 番目を出ると $\vh^{(2)}=\vh^{(1)}+\va^{(2)}+\vm^{(2)}=\vh^{(0)}+\va^{(1)}+\vm^{(1)}+\va^{(2)}+\vm^{(2)}$ で、これを $L$ 番目まで続けます。
-つまり、各位置には 1 本の $d$ 次元の「流れ」があり、注意と MLP はそこから読み出して、計算結果を書き足していくのです。
-この流れを\term{残差ストリーム}{residual stream}と呼びます。
+つまり、各位置には $d$ 次元のベクトルが 1 本あり、ブロックを進むたびに、注意と MLP の計算結果がそこへ足されていきます。
+この、位置ごとの $d$ 次元のベクトルを、ブロックを進む順に $\vh^{(0)},\vh^{(1)},\dots,\vh^{(L)}$ と並べて見たものを\term{残差ストリーム}{residual stream}と呼びます（stream は「流れ」の意味です）。
+$T$ 個の位置のそれぞれに 1 本ずつ、全部で $T$ 本あります。
+この見方では、部品とストリームの関係を、次の 2 つの言葉で言います。
+\begin{itemize}
+\item \textbf{読み出す}：ストリームの値（$\vh$）を LayerNorm に通して、部品の入力にすること。
+\item \textbf{書き足す}：部品の出力（$\va^{(\ell)}$ や $\vm^{(\ell)}$）を、ストリームの値に足すこと。
+\end{itemize}
+読み出すときに、注意は自分の位置と、それより前の位置のストリームから読みます。
+MLP は自分の位置のストリームだけから読みます。
+書き足すのは、どちらも自分の位置のストリームだけです。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=9.2mm,y=10mm]
-  \draw[line width=5pt,bookblue!35,->] (0,0) -- (11.6,0);
-  \node[lbl,anchor=east] at (-0.1,0) {$\vh^{(0)}$};
-  \node[lbl,anchor=west] at (11.7,0) {$\vh^{(L)}$};
-  \foreach \x/\n/\c/\s in {1.5/注意/redbox/1, 3.8/MLP/greenbox/1, 6.6/注意/redbox/2, 8.9/MLP/greenbox/2} {
-    \node[\c,minimum width=13mm,font=\footnotesize] (b) at (\x,1.3) {\n\ $\ell{=}\s$};
-    \draw[arr] (\x-0.7,0) to[out=90,in=-90] (b.south west);
-    \draw[arr] (b.south east) to[out=-90,in=90] (\x+0.8,0.05);
-    \node[op,fill=white,inner sep=0pt,minimum size=4mm,font=\scriptsize] at (\x+0.8,0) {$+$};
+\begin{tikzpicture}[x=8.5mm,y=10mm]
+  % 3 本のストリーム（位置 1, 2, 3）
+  \foreach \yy/\t in {0/1, 0.75/2, 1.5/3} {
+    \draw[line width=4pt,bookblue!30,->] (0,\yy) -- (11.6,\yy);
+    \node[lbl,anchor=east] at (-0.1,\yy) {位置 \t：$\vh^{(0)}_{\t}$};
+    \node[lbl,anchor=west] at (11.7,\yy) {$\vh^{(L)}_{\t}$};
   }
-  \node[lbl] at (10.5,0.5) {$\cdots$};
+  \foreach \x/\n/\c/\s/\isatt in {1.5/注意/redbox/1/1, 3.8/MLP/greenbox/1/0, 6.6/注意/redbox/2/1, 8.9/MLP/greenbox/2/0} {
+    \node[\c,minimum width=13mm,font=\footnotesize] (b) at (\x,2.75) {\n\ $\ell{=}\s$};
+    % 読み出し（自分の位置 = 位置 3）
+    \draw[arr] (\x-0.55,1.5) -- (\x-0.55,2.75 |- b.south);
+    % 書き足し
+    \draw[arr] (\x+0.55,2.75 |- b.south) -- (\x+0.55,1.72);
+    \node[op,fill=white,inner sep=0pt,minimum size=4mm,font=\scriptsize] at (\x+0.55,1.5) {$+$};
+    \ifnum\isatt=1
+      % 注意だけは、前の位置のストリームからも読む
+      \fill[bookaccent] (\x-0.33,0) circle (0.5mm);
+      \fill[bookaccent] (\x-0.13,0.75) circle (0.5mm);
+      \draw[->,thick,bookaccent] (\x-0.33,0) -- (\x-0.33,2.75 |- b.south);
+      \draw[->,thick,bookaccent] (\x-0.13,0.75) -- (\x-0.13,2.75 |- b.south);
+    \fi
+  }
+  \node[lbl] at (10.5,2.75) {$\cdots$};
+  \draw[->,thick,bookgray] (0.3,-0.65) -- (11.2,-0.65);
+  \node[lbl,anchor=north] at (5.75,-0.7) {ブロックの深さ（ブロック 1、ブロック 2、…、ブロック $L$）};
+  \draw[bookgray,dashed,rounded corners] (0.55,-0.35) rectangle (4.75,3.3);
+  \node[lbl,anchor=south] at (2.65,3.3) {ブロック 1};
+  \draw[bookgray,dashed,rounded corners] (5.65,-0.35) rectangle (9.85,3.3);
+  \node[lbl,anchor=south] at (7.75,3.3) {ブロック 2};
 \end{tikzpicture}
-\caption{残差ストリームの見方。太い青の帯が各位置を流れるベクトル（形は $(B,T,d)$ のまま）で、注意と MLP は帯から読み出し（左の矢印）、計算結果を書き足す（右の矢印と $+$）。
-どの部品も帯を「置き換え」ない。損失の勾配も、帯に沿ってそのまま入口まで流れる。}
+\caption{残差ストリームの見方（模式図）。横方向はブロックの深さで、トークンの位置ではない。太い薄青の帯が、位置ごとの残差ストリーム（1 本が $d$ 次元のベクトル、$T$ 本で形は $(B,T,d)$）。
+ここでは位置 1〜3 の 3 本を描き、部品は位置 3 の分だけを描いた（ほかの位置にも同じ部品がある）。
+部品は帯から読み出し（上向きの矢印）、計算結果を書き足す（下向きの矢印と $+$）。注意（赤）だけは、前の位置の帯からも読む（赤い点から出る赤い矢印。自分の位置からの黒い矢印と並んで、同じ注意の箱に入る）。読み出しの途中の LayerNorm は省いた。}
 \label{fig:tf-stream}
 \end{figure}
 
-\figref{fig:tf-stream}の太い帯がその流れです。
-帯の上の部品は、帯を書き換えずに「メモを書き足す」だけなので、ある部品が役に立たない段階でも、帯の情報は壊れません。
-学習の初めに、足し込む量を小さく初期化しておく（\secref{sec:tf-gpt}）のも、この見方からは自然です。
-最初は「ほとんど何も書き足さない」ところから始めて、少しずつ役に立つメモを書けるようにするのです。
+\figref{fig:tf-stream}で、位置 3 の帯を左から右へたどってください。
+部品は帯の値を置き換えず、計算結果を足すだけです。
+学習の初めに、ある部品の出力がまだ役に立たない値でも、その部品が足し込む量が 0 に近ければ、それまでの値はほぼそのまま次の部品に渡ります。
+置き換える設計なら、役に立たない出力で $\vh$ が上書きされ、それまでのブロックの計算結果が失われます。
+ただし、足し算だからといって元の値が必ず残るわけではありません。
+大きな値を足せば元の値は相対的に小さくなり、$-\vh$ に近い値を足せば打ち消されます。
+学習の初めに、足し込む量を小さく初期化しておく（\secref{sec:tf-gpt}）のは、この見方からは自然です。
+最初は「ほとんど何も足さない」ところから始めて、学習で少しずつ、役に立つ量を足せるようにするのです。
 
 \subsection*{レイヤー正規化：大きさをそろえる}
 
 残差ストリームには、層を重ねるたびに値が足し込まれていきます。
 そのままだと、ベクトルの大きさが層ごとにまちまちになり、注意や MLP は「毎回違う大きさの入力」を相手にしなければなりません。
+たとえば注意に入るベクトルが 10 倍になると、クエリもキーも 10 倍になるので、スコア（内積）は 100 倍になります。
+すると softmax の出力は、ほぼ 1 か所だけに重みを置くものになってしまいます。
 そこで、部品に入れる前に、ベクトルの大きさをそろえます。
 これが\term{レイヤー正規化}{layer normalization}（LayerNorm）\cite{ba2016layer}で、式は\chapref{ch:training}の式\eqref{eq:training-layernorm}と同じです。
 1 つの位置のベクトル $\vu\in\R^d$ について、その $d$ 個の成分の平均 $\mu$ と分散 $\sigma^2$ を計算し、
@@ -566,6 +738,8 @@ $\vu=(1,2,3,6)$ の平均は 3、平均との差は $(-2,-1,0,3)$、分散は $(
 差を標準偏差で割ると、$\mathrm{LN}(\vu)\approx(-1.069,\,-0.535,\,0,\,1.604)$ になります。
 $\vu$ を 10 倍した $(10,20,30,60)$ を入れても、平均 30 を引いて標準偏差 18.71 で割るので、出力は同じです（\figref{fig:tf-ln-example}）。
 入力の「大きさ」が変わっても、部品が受け取る値の大きさは一定に保たれるのです。
+このとき失われるのは、ベクトル全体の大きさ（10 倍かどうか）と平均で、成分どうしの大小の並びと比は残ります。
+正規化は部品に渡す値に対してだけ行うので（次の小節）、大きさの情報そのものは、残差ストリームの側には残っています。
 
 \begin{figure}[tbp]
 \centering
@@ -573,21 +747,24 @@ $\vu$ を 10 倍した $(10,20,30,60)$ を入れても、平均 30 を引いて�
   v/.style={font=\footnotesize,minimum height=6mm,inner sep=2pt}]
   \node[box,v,minimum width=29mm] (a) at (0,6) {$(1,\ 2,\ 3,\ 6)$};
   \node[orangebox,v,minimum width=29mm] (b) at (0,-6) {$(10,\ 20,\ 30,\ 60)$};
-  \node[graybox,v,minimum width=22mm,minimum height=10mm] (ln) at (41,0) {LayerNorm};
-  \node[greenbox,v,minimum width=46mm] (o) at (86,0) {$(-1.069,\ -0.535,\ 0,\ 1.604)$};
-  \draw[arr] (a.east) -- (ln.west |- 0,2);
-  \draw[arr] (b.east) -- (ln.west |- 0,-2);
-  \draw[arr] (ln) -- (o);
+  \node[graybox,v,minimum width=22mm] (ln) at (36,6) {LayerNorm};
+  \node[graybox,v,minimum width=22mm] (ln2) at (36,-6) {LayerNorm};
+  \node[greenbox,v,minimum width=46mm] (o) at (83,6) {$(-1.069,\ -0.535,\ 0,\ 1.604)$};
+  \node[greenbox,v,minimum width=46mm] (o2) at (83,-6) {$(-1.069,\ -0.535,\ 0,\ 1.604)$};
+  \draw[arr] (a) -- (ln); \draw[arr] (ln) -- (o);
+  \draw[arr] (b) -- (ln2); \draw[arr] (ln2) -- (o2);
+  \node[lbl] at (0,0) {別々に入れる};
   \node[lbl,anchor=south] at (0,10) {大きさの違う入力};
-  \node[lbl,anchor=south] at (86,4) {同じ出力（平均 0、分散 1）};
+  \node[lbl,anchor=south] at (83,10) {同じ出力（平均 0、分散 1）};
 \end{tikzpicture}
-\caption{レイヤー正規化は、ベクトルの大きさの違いを消す（$\vgamma=\vone$、$\vbeta=\vzero$ のとき）。10 倍した入力を入れても、出力は変わらない。}
+\caption{レイヤー正規化は、ベクトルの大きさの違いを消す（$\vgamma=\vone$、$\vbeta=\vzero$ のとき）。上下の 2 つの入力は、別々に LayerNorm に入れたもの。10 倍した入力を入れても、出力は変わらない。}
 \label{fig:tf-ln-example}
 \end{figure}
 
 正規化は\textbf{各位置のベクトルごと}に行い、位置どうし・バッチの中のデータどうしは混ぜません。
 平均も分散も、その位置の $d$ 個の成分だけから計算するので、未来のトークンの情報が正規化を通って漏れることもありません。
-最後の $\vgamma,\vbeta$ は、「そろえた後に、成分ごとに好きな大きさと位置へ戻してよい」という自由度で、パラメータは $2d$ 個です。
+最後の $\vgamma,\vbeta$ は、そろえた後に、成分 $j$ ごとに $\gamma_j$ 倍して $\beta_j$ を足すためのパラメータで、全部で $2d$ 個です。
+どの倍率と、どれだけ足すのがよいかは、学習で決まります。
 
 \subsection*{どこに正規化を置くか：Post-LN と Pre-LN}
 
@@ -595,55 +772,97 @@ $\vu$ を 10 倍した $(10,20,30,60)$ を入れても、平均 30 を引いて�
 
 \begin{itemize}
 \item \textbf{Post-LN}（原論文\cite{vaswani2017attention}）: 足した\textbf{後}に正規化する。$\vh\leftarrow\mathrm{LN}(\vh+F(\vh))$。
-\item \textbf{Pre-LN}（GPT-2\cite{radford2019language} 以降）: 部品に入れる\textbf{前}に正規化し、残差の道には何も挟まない。$\vh\leftarrow\vh+F(\mathrm{LN}(\vh))$。\chapref{ch:training}の式\eqref{eq:training-preln}（事前正規化）と同じ形です。
+\item \textbf{Pre-LN}（GPT-2\cite{radford2019language} 以降）: 部品に入れる\textbf{前}に正規化し、近道の上には何も置かない。$\vh\leftarrow\vh+F(\mathrm{LN}(\vh))$。\chapref{ch:training}の式\eqref{eq:training-preln}（事前正規化）と同じ形です。
 \end{itemize}
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[node distance=3mm,
-  s/.style={box,font=\footnotesize,minimum width=18mm,minimum height=6mm}]
-  % Post-LN
-  \node[lbl] (t1) at (0,0) {入力 $\vh$};
-  \node[s,redbox,above=5mm of t1] (f1) {$F$（注意/MLP）};
-  \node[op,above=3mm of f1] (p1) {$+$};
-  \node[s,graybox,above=3mm of p1] (n1) {LayerNorm};
-  \node[lbl,above=3mm of n1] (o1) {出力};
-  \draw[arr] (t1) -- (f1); \draw[arr] (f1) -- (p1); \draw[arr] (p1) -- (n1); \draw[arr] (n1) -- (o1);
-  \draw[arr] ($(t1.north)+(0,1.5mm)$) -- ++(14mm,0) |- (p1);
-  \node[font=\small\bfseries,above=1mm of o1] {Post-LN（原論文）};
-  % Pre-LN
-  \begin{scope}[xshift=55mm]
-  \node[lbl] (t2) at (0,0) {入力 $\vh$};
-  \node[s,graybox,above=5mm of t2] (n2) {LayerNorm};
-  \node[s,redbox,above=3mm of n2] (f2) {$F$（注意/MLP）};
-  \node[op,above=3mm of f2] (p2) {$+$};
-  \node[lbl,above=3mm of p2] (o2) {出力};
-  \draw[arr] (t2) -- (n2); \draw[arr] (n2) -- (f2); \draw[arr] (f2) -- (p2); \draw[arr] (p2) -- (o2);
-  \draw[arr,bookblue,very thick] ($(t2.north)+(0,1.5mm)$) -- ++(14mm,0) |- (p2);
-  \node[font=\small\bfseries,above=1mm of o2] {Pre-LN（GPT-2・本書）};
-  \node[lbl,anchor=west,align=left] at ($(p2)+(16mm,-6mm)$) {残差の道に\\何もない};
+\begin{tikzpicture}[x=1mm,y=1mm,
+  s/.style={box,font=\footnotesize,minimum width=19mm,minimum height=5.6mm,inner sep=1pt},
+  hl/.style={draw=bookorange,line width=1.4pt}]
+  % ---- Post-LN（左）: 2 ブロック
+  \node[lbl] (ti) at (0,0) {入力 $\vh$};
+  \node[s,redbox] (fa) at (0,11) {$F$（注意）};
+  \node[op] (pa) at (0,21) {$+$};
+  \node[s,graybox,hl] (na) at (0,29.5) {LayerNorm};
+  \node[s,redbox] (fb) at (0,41) {$F$（MLP）};
+  \node[op] (pb) at (0,51) {$+$};
+  \node[s,graybox,hl] (nb) at (0,59.5) {LayerNorm};
+  \node[lbl] (to) at (0,68) {出力};
+  \draw[arr] (0,4) -- (fa); \draw[arr] (fa) -- (pa);
+  \draw[arr] (0,35) -- (fb); \draw[arr] (fb) -- (pb);
+  \draw[arr,bookblue,very thick] (0,4) -- (15,4) |- (pa);
+  \draw[arr,bookblue,very thick] (0,35) -- (15,35) |- (pb);
+  \draw[bookblue,very thick] (ti) -- (0,4) (na) -- (0,35);
+  \draw[arr,bookblue,very thick] (pa) -- (na); \draw[arr,bookblue,very thick] (pb) -- (nb); \draw[arr,bookblue,very thick] (nb) -- (to);
+  \fill[bookblue] (0,4) circle (0.6mm); \fill[bookblue] (0,35) circle (0.6mm);
+  \node[lbl,anchor=east,align=right,text=bookorange] at (-11,44.5) {近道の上に\\LayerNorm\\（2 個）};
+  \node[font=\small\bfseries] at (0,75) {Post-LN（原論文）};
+  % ---- Pre-LN（右）: 2 ブロック
+  \begin{scope}[xshift=62mm]
+  \node[lbl] (ui) at (0,0) {入力 $\vh$};
+  \node[s,graybox] (ma) at (0,11) {LayerNorm};
+  \node[s,redbox] (ga) at (0,20) {$F$（注意）};
+  \node[op] (qa) at (0,30) {$+$};
+  \node[s,graybox] (mb) at (0,41) {LayerNorm};
+  \node[s,redbox] (gb) at (0,50) {$F$（MLP）};
+  \node[op] (qb) at (0,60) {$+$};
+  \node[lbl] (uo) at (0,68) {出力};
+  \draw[arr] (0,4) -- (ma); \draw[arr] (ma) -- (ga); \draw[arr] (ga) -- (qa);
+  \draw[arr] (0,35) -- (mb); \draw[arr] (mb) -- (gb); \draw[arr] (gb) -- (qb);
+  \draw[arr,bookblue,very thick] (0,4) -- (15,4) |- (qa);
+  \draw[arr,bookblue,very thick] (0,35) -- (15,35) |- (qb);
+  \draw[bookblue,very thick] (ui) -- (0,4) (qa) -- (0,35);
+  \draw[arr,bookblue,very thick] (qb) -- (uo);
+  \fill[bookblue] (0,4) circle (0.6mm); \fill[bookblue] (0,35) circle (0.6mm);
+  \node[lbl,anchor=west,align=left,text=bookblue] at (17,32) {近道の上は\\足し算（$+$）\\だけ};
+  \node[font=\small\bfseries] at (0,75) {Pre-LN（GPT-2・本書）};
   \end{scope}
 \end{tikzpicture}
-\caption{Post-LN と Pre-LN。左の Post-LN では、残差の道の途中に LayerNorm が挟まる。右の Pre-LN では、残差の道（青の太線）は入口から出口まで足し算だけでつながる。}
+\caption{Post-LN と Pre-LN（部品を 2 つ縦に重ねた）。青い太線は、入口から出口まで、どの $F$ も通らずにたどれる経路（近道と、$+$ から次の分かれ目までの縦の区間をつないだ 1 本の線）。
+左の Post-LN では、この経路が足し算の後の LayerNorm（橙の枠）を部品ごとに通る。右の Pre-LN では、この経路の上には足し算しかなく、LayerNorm は $F$ に入る側の枝にだけある。}
 \label{fig:tf-preln}
 \end{figure}
 
-\figref{fig:tf-preln}の右の青い太線を見てください。
-Pre-LN では、残差の道に足し算しかないので、式\eqref{eq:tf-residual-grad}の近道が、出口から入口まで途切れずにつながります。
-Post-LN では、この道の途中に毎回 LayerNorm が挟まり、「何も掛けられない近道」ではなくなります。
+\figref{fig:tf-preln}の青い太線を、下から上へ指でたどってください。
+右の Pre-LN では、通るのは $+$ だけなので、式\eqref{eq:tf-residual-grad}の第 1 項（何も掛けられない $\vg$）が、出口から入口まで途切れずにつながります。
+左の Post-LN では、同じ経路が部品ごとに LayerNorm（橙）を通ります。
+LayerNorm は標準偏差で割る計算を含むので、逆伝播では勾配にも、その割り算に由来する係数が掛かります。
+部品を $2L$ 個重ねれば、その係数が $2L$ 回掛かり、「何も掛けられない近道」ではなくなります。
 Xiong らは解析と実験で、Post-LN では学習の初めに、出口に近い層の勾配が大きくなることを示しました\cite{xiong2020layer}。
 導出は本書の範囲を超えるので、図の違いと次の結論だけ押さえれば十分です（比べる実験は演習問題にあります）。
 勾配が大きいと、最初の数回の更新でパラメータが動きすぎて、学習が不安定になります。
 それを防ぐために、学習率を小さな値から始めるウォームアップ（\secref{sec:training-schedule}）が欠かせません。
 Pre-LN ではこの偏りが小さく、ウォームアップに頼る度合いが下がります。
 そのため、GPT-2 以降の LLM のほとんどが Pre-LN を使います。
+2 つの置き方の違いを\tabref{tab:tf-ln-compare}にまとめます。
+
+\begin{table}[tbp]
+\centering
+\caption{Post-LN と Pre-LN の比較。本文と\cite{xiong2020layer}の結論をまとめたもの。}
+\label{tab:tf-ln-compare}
+\small
+\begin{tabular}{p{30mm}p{42mm}p{42mm}}
+\toprule
+ & Post-LN & Pre-LN \\
+\midrule
+式 & $\vh\leftarrow\mathrm{LN}(\vh+F(\vh))$ & $\vh\leftarrow\vh+F(\mathrm{LN}(\vh))$ \\
+近道の上にあるもの & 部品ごとに LayerNorm & 足し算だけ \\
+学習の初めの勾配 & 出口に近い層で大きくなる & 層による偏りが小さい \\
+ウォームアップ & 欠かせない & 頼る度合いが下がる \\
+最後の LayerNorm & 要らない（各部品の出口でそろえる） & 要る（ストリームは正規化されない） \\
+使われている所 & 原論文 & GPT-2 以降の LLM のほとんど、本書 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 ただし Pre-LN では、残差ストリームそのものは正規化されないまま出口に届きます。
-Pre-LN の LayerNorm が大きさをそろえるのは、注意や MLP に渡す\textbf{写し}だけで、ストリームの本体には $2L$ 回の足し込みがそのまま積もるからです（式\eqref{eq:tf-stream}）。
-これをそのまま出力ヘッドに入れると、ロジットが大きくなりすぎて softmax の出力が極端になり、学習が不安定になります。
+Pre-LN の LayerNorm が大きさをそろえるのは、注意や MLP に渡す\textbf{写し}だけで、ストリームの本体には $2L$ 回の足し込みがそのまま加わっていくからです（式\eqref{eq:tf-stream}）。
+これをそのまま出力ヘッドに入れると、ロジットが大きくなりやすく、softmax の確率がほぼ 1 つのトークンに集まった極端な分布になって、学習が不安定になることがあります。
+ロジット全体が大きくなるのは、温度を小さくしたのと同じ効果です（\secref{sec:lm-generation}）。
 そこで、最後のブロックの後に\textbf{最後の LayerNorm}（\figref{fig:tf-overview}の上のほう）を置き、出力ヘッドに入れる前に大きさをそろえます。
 Post-LN では、各ブロックの出口で毎回そろえているので、この追加は要りません。
-\chapref{ch:training}の実験でも、この最後の正規化を抜くと、50 枚の MLP は 5 回とも発散しました（\secref{sec:training-residual}）。
+\chapref{ch:training}の実験でも、この最後の正規化を抜くと、隠れ層 50 枚の MLP は 5 回とも発散しました（\secref{sec:training-residual}）。
 
 \subsection*{Transformer ブロックのコード}
 
@@ -653,7 +872,7 @@ Post-LN では、各ブロックの出口で毎回そろえているので、こ
 
 6〜9 行目で、2 つの LayerNorm、注意（\coderef{code:attn-class}）、MLP（\coderef{code:tf-mlp}）を用意します。
 \code{nn.LayerNorm(config.n_embd)} は、最後の軸（大きさ $d$）について式\eqref{eq:tf-layernorm}を計算し、$\vgamma$（\code{weight}）と $\vbeta$（\code{bias}）を持ちます。
-12 行目が「正規化してから注意に通し、結果を残差に足す」、13 行目が「正規化してから MLP に通し、結果を残差に足す」です。
+12 行目が「正規化してから注意に通し、結果を残差ストリーム \code{x} に足す」、13 行目が「正規化してから MLP に通し、結果を \code{x} に足す」です。
 \figref{fig:tf-preln}右の Pre-LN を、そのまま 2 回書いた形になっています。
 入力も出力も $(B,T,d)$ なので、このブロックは何個でも重ねられます。
 
@@ -661,7 +880,7 @@ Post-LN では、各ブロックの出口で毎回そろえているので、こ
 \skimread{押さえる結論は「残差接続を外すと、損失がユニグラムの高さで止まる。正規化を外すと、下がり方が遅くなる」です。\figref{fig:tf-ablation}だけ見れば足ります。}
 
 残差接続とレイヤー正規化は、本当に必要なのでしょうか。
-差が見えやすいように基盤モデルの 2 倍の 8 層にした小さなモデル（$d=64$、文字単位、漱石コーパスの先頭 50 万字）で、次の 3 つを同じ条件で 600 ステップ学習させて確かめます（\file{ch10/ablation.py}、3 モデル合わせて約 4 分）。
+差が見えやすいように基盤モデルの 2 倍の 8 ブロック（8 層）にした小さなモデル（$d=64$、文字単位、漱石コーパスの先頭 50 万字）で、次の 3 つを同じ条件で 600 ステップ学習させて確かめます（\file{ch10/ablation.py}、3 モデル合わせて約 4 分）。
 \begin{itemize}
 \item \textbf{そのまま}: \coderef{code:tf-block}のとおり。
 \item \textbf{残差なし}: 12〜13 行目の \code{x = x + ...} を \code{x = ...} に変えて、足し込まずに置き換える。
@@ -676,42 +895,45 @@ Post-LN では、各ブロックの出口で毎回そろえているので、こ
 \centering
 \begin{tikzpicture}
 \begin{axis}[width=0.92\linewidth,height=0.35\linewidth,xlabel={学習ステップ},ylabel={訓練損失（10 ステップ平均）},
-  xmin=0,xmax=600,ymin=3.8,ymax=8.5,legend style={at={(0.98,0.96)},anchor=north east,font=\footnotesize}]
+  xmin=0,xmax=600,ymin=3.8,ymax=8.5,extra y ticks={5.352},extra y tick labels={5.352},extra y tick style={grid=none,tick label style={font=\scriptsize,text=bookgray}},
+  legend style={at={(0.98,0.96)},anchor=north east,font=\footnotesize}]
+\addplot[bookgray,dashed,thick,domain=0:600] {5.352};
+\addlegendentry{ユニグラム 5.352}
 \addplot[bookblue,thick,no marks] table[col sep=comma,x=step,y=full]{code/ch10/out/ablation.csv};
 \addlegendentry{そのまま（残差＋Pre-LN）}
 \addplot[bookorange,thick,no marks] table[col sep=comma,x=step,y=no_layernorm]{code/ch10/out/ablation.csv};
 \addlegendentry{正規化なし}
 \addplot[bookaccent,thick,no marks] table[col sep=comma,x=step,y=no_residual]{code/ch10/out/ablation.csv};
 \addlegendentry{残差なし}
-\addplot[bookgray,dotted,thick,domain=0:600] {5.352};
-\addlegendentry{ユニグラム 5.352}
 \end{axis}
 \end{tikzpicture}
-\caption{8 層の文字単位モデルで、残差接続と LayerNorm を外したときの学習曲線（\file{ch10/out/ablation.csv}）。点線は、同じデータでのユニグラムの損失。残差を外す（赤）とユニグラムの高さで止まり、正規化を外す（橙）と下がり方が遅くなる。}
+\caption{8 ブロックの文字単位モデルで、残差接続と LayerNorm を外したときの学習曲線（\file{ch10/out/ablation.csv}）。灰色の破線は、同じ訓練データでのユニグラムの損失（5.352。縦軸に目盛りを足した。赤い線が隠れないよう、破線を下に描いた）。残差を外す（赤）と、この破線とほぼ重なる高さで止まり、正規化を外す（橙）と下がり方が遅くなる。}
 \label{fig:tf-ablation}
 \end{figure}
 
 最後の 50 ステップの平均損失（\file{ch10/out/ablation.txt}）は、「そのまま」が 4.165、「残差なし」が 5.384、「正規化なし」が 4.721 でした。
-図の点線は、同じデータでのユニグラム（文字の出やすさだけで当てるモデル、\chapref{ch:lm}）の損失 5.352 です（\file{ch10/ablation_baseline.py} で測りました）。
+図の破線は、同じデータでのユニグラム（文字の出やすさだけで当てるモデル、\chapref{ch:lm}）の損失 5.352 です（\file{ch10/ablation_baseline.py} で測りました）。
+この実験のデータはコーパスの先頭 50 万字なので、\secref{sec:tf-train}の検証データで測るユニグラムの値（5.198）とは別の値です。
 「残差なし」は、100 ステップを過ぎたあたりから、この線とほぼ同じ 5.3〜5.4 で横ばいです。
 文字の出やすさは覚えても、文脈をまだ使えていません。
-8 層を置き換えでつなぐと、勾配が入口近くの層まで届きにくく、文脈を使う学習がなかなか進まないのです。
-「正規化なし」は、最初の 30 ステップほどは「そのまま」より速く下がりますが（その理由はここでは追いません）、その後は下がり方が鈍り、600 ステップでは 0.56 の差（パープレキシティで約 1.7 倍）がつきます。
+8 ブロックを置き換えでつなぐと、文脈を使う学習がなかなか進まないのです。
+近道がなくなり、勾配が入口近くのブロックまで届きにくくなること（式\eqref{eq:tf-residual-grad}）が理由の一つと考えられますが、この実験では原因までは確かめていません。
+「正規化なし」は、最初の 10 ステップ（グラフの左端の点）では「そのまま」より高いものの、そこから 50 ステップほどまでは、はっきり速く下がります（25 ステップの付近で 5.59 対 6.36）。しかし 55 ステップのあたりで「そのまま」に追い越され、その後は下がり方が鈍り、600 ステップでは 0.56 の差（パープレキシティで約 1.7 倍）がつきます。
 
-\chapref{ch:training}の 50 枚の MLP では、正規化のない残差接続は発散しましたが、ここでは発散しません。
+\chapref{ch:training}の隠れ層 50 枚の MLP では、正規化のない残差接続は発散しましたが、ここでは発散しません。
 条件が違うからです。
-あちらは He の初期化で、足し込む量が元の値と同じくらい大きく、1 段ごとに倍々に膨らみました。
+あちらは He の初期化で、足し込む量が元の値と同じくらい大きく、値が 1 段ごとに倍々に大きくなりました。
 こちらは重みの標準偏差が 0.02 以下と小さく（\secref{sec:tf-gpt}）、学習前に測ると、残差ストリームの値の大きさは 8 ブロックを通っても 1.000 倍のままでした。
-出発点では、ストリームに積もる量がごく小さいので、最後の LayerNorm を外してあっても、ロジットは大きくなりません。
+学習の初めは、ストリームに足し込まれる量がごく小さいので、最後の LayerNorm を外してあっても、ロジットは大きくなりません。
 発散はしなくても、学習は遅くなるのです。
 これは小さなモデルで 600 ステップだけ学習させた結果なので、差の大きさそのものを一般化はできません。
 しかし、残差接続と正規化は、深い Transformer を学習させるための前提だと考えてください。
 
-この節で分かったのは、注意と MLP を「残差に足し込む」形でつなぎ、部品の前で LayerNorm をかける（Pre-LN）ことで、深く重ねても学習が進むようになることです。
+この節で分かったのは、注意と MLP を「残差ストリームに足し込む」形でつなぎ、部品の前で LayerNorm をかける（Pre-LN）ことで、深く重ねても学習が進むようになることです。
 
 \section{組み上げる：GPT クラスを読む}\label{sec:tf-gpt}
 
-\begin{intuition}{ここまでの道のり}
+\begin{intuition}{ここまでのまとめ}
 注意に足りなかった三つ（\tabref{tab:tf-three}）への答えがそろいました。
 \begin{itemize}
 \item 語順を知らない → \textbf{位置埋め込み}を入力に足す（式\eqref{eq:tf-input}）。
@@ -728,7 +950,7 @@ Post-LN では、各ブロックの出口で毎回そろえているので、こ
 
 \subsection*{設定と初期化：部品を並べ、重みを決める}
 
-モデルの大きさを決める数（\textbf{ハイパーパラメータ}、\chapref{ch:ml}）は、\code{GPTConfig} というクラスにまとめてあります（\tabref{tab:tf-config}）。
+モデルの形を決める設定（学習で決めるのではなく、人が先に決める数。\textbf{ハイパーパラメータ}、\chapref{ch:ml}）は、\code{GPTConfig} というクラスにまとめてあります（\tabref{tab:tf-config}）。
 \code{GPTConfig(n_embd=192)} のように、変えたい項目だけを指定して作ります。
 この設定を受け取って部品を並べ、重みの初期値を決めるのが、\code{GPT} クラスの前半（\coderef{code:tf-gpt-init}）です。
 
@@ -762,51 +984,84 @@ Post-LN では、各ブロックの出口で毎回そろえているので、こ
 
 \paragraph{重み共有} 12 行目は、出力ヘッドの重みを、トークン埋め込みの重みと\textbf{同じテンソル}にしています（\code{nn.Linear(d, V)} の重みは「出力 × 入力」の $(V,d)$ という形で、埋め込みの表と同じ形なので、代入できます）。
 これを\term{重み共有}{weight tying}\cite{press2017using}と呼びます（\figref{fig:tf-tying}）。
+写しを作るのではなく、1 つのテンソルを 2 か所で使います。
+そのため学習では、入口で使われた分の勾配と出口で使われた分の勾配が足されて、1 つの $\mE$ が更新されます。
 意味を考えてみましょう。
 トークン埋め込みの表 $\mE\in\R^{V\times d}$ の $v$ 行目 $\ve_v$ は、トークン $v$ を表すベクトルでした。
-出力ヘッドも同じ $\mE$ を使うと、位置 $t$ の最後のベクトル $\vh_t$ からロジットを
+入口では、位置 $t$ の入力トークン $x_t$ の行 $\ve_{x_t}$ を取り出します。
+出口では、最後の LayerNorm を通した後の、位置 $t$ のベクトルを $\vh_t$ と書くと、出力ヘッドも同じ $\mE$ を使って、語彙のすべての候補 $v=1,\dots,V$ のロジットを
 \begin{equation}
 \vz_t = \mE\,\vh_t,\qquad z_{t,v} = \ve_v^\T\vh_t
 \label{eq:tf-tying}
 \end{equation}
 と作ることになります（$\mE$ は初めから $V\times d$ の形なので、転置なしで掛けます）。
-トークン $v$ のロジットは、$\vh_t$ とトークン $v$ の埋め込みとの内積、つまり\textbf{似ている度合い}です（\chapref{ch:attention}で、内積を類似度として使いました）。
-「次に来そうなトークンの埋め込みに似たベクトルを作れば、そのトークンの確率が高くなる」という、分かりやすい形になります。
-たとえば $\ve_1=(1,0)$、$\ve_2=(0,1)$、$\vh_t=(2,-1)$ なら、$z_{t,1}=1\times2+0\times(-1)=2$、$z_{t,2}=0\times2+1\times(-1)=-1$ で、向きの近い $\ve_1$ のほうが大きくなります。
+候補のトークン $v$ のロジットは、$\vh_t$ とトークン $v$ の埋め込みとの内積、つまり\textbf{似ている度合い}です（\chapref{ch:attention}で、内積を類似度として使いました）。
+ここで、入口の $x_t$（いま入力したトークン）と、出口の $v$（点数を付けられる候補）は、別のトークンです。
+位置 $t$ の正解は次のトークン $x_{t+1}$ なので、学習が進むと $\vh_t$ は、いま入力した $\ve_{x_t}$ ではなく、次に来そうなトークンの埋め込みに似るようになります。
+「次に来そうなトークンの埋め込みに似たベクトルを作れば、そのトークンの確率が高くなる」という、分かりやすい形です。
+たとえば語彙が 3 個で $\ve_1=(1,0)$、$\ve_2=(0,1)$、$\ve_3=(-1,1)$、$\vh_t=(2,-1)$ なら、
+$z_{t,1}=1\times2+0\times(-1)=2$、$z_{t,2}=0\times2+1\times(-1)=-1$、$z_{t,3}=(-1)\times2+1\times(-1)=-3$ で、向きの近い $\ve_1$ のロジットがいちばん大きくなります（\figref{fig:tf-tying}）。
 同じ表を入口と出口で使うので、パラメータも $V\times d$ 個（基盤モデルで 786,432 個）減ります（GPT-2 も同じです）。
+\chapref{ch:math}で「文脈ベクトル $\vh$」と「出力の重み行列 $\mW$」と呼んだものは、本書のモデルでは、この $\vh_t$ と $\mE$ のことです。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,
+  c/.style={draw=black!40,minimum width=6mm,minimum height=5mm,font=\scriptsize,inner sep=0pt,fill=white},
   b/.style={font=\scriptsize,minimum height=9mm,inner sep=1.5pt,align=center}]
-  \node[tok,minimum width=10mm] (id) at (0,0) {ID $v$};
-  \node[purplebox,b,minimum width=21mm] (look) at (21,0) {$\mE$ の $v$ 行目\\を取り出す};
-  \node[font=\small] (e) at (39,0) {$\ve_v$};
-  \node[box,b,minimum width=22mm] (blk) at (57,0) {位置を足し、\\ブロック $\times L$};
-  \node[font=\small] (h) at (75,0) {$\vh_t$};
-  \node[purplebox,b,minimum width=21mm] (dot) at (93,0) {$\mE$ の各行\\との内積};
-  \node[tok,minimum width=10mm] (z) at (112,0) {$\vz_t$};
-  \draw[arr] (id) -- (look); \draw[arr] (look) -- (e); \draw[arr] (e) -- (blk);
-  \draw[arr] (blk) -- (h); \draw[arr] (h) -- (dot); \draw[arr] (dot) -- (z);
-  \draw[bookpurple,very thick] (look.south) -- ++(0,-5) -| (dot.south);
-  \node[lbl,anchor=north] at (57,-10.5) {同じ行列 $\mE$（$V\times d$）を、入口と出口の両方で使う};
-  \node[lbl,anchor=south] at (21,5) {入口（埋め込み）};
-  \node[lbl,anchor=south] at (93,5) {出口（出力ヘッド）};
+  % 入口: E の行を引く
+  \node[lbl,anchor=south] at (6,3) {入口：$\mE$（$V\times d$）};
+  \foreach \r/\a/\b in {1/1/0,2/0/1,3/-1/1} {
+    \pgfmathsetmacro{\yy}{5-5*\r}
+    \node[c] at (3,\yy) {$\a$}; \node[c] at (9,\yy) {$\b$};
+    \node[lbl,anchor=east] at (-0.3,\yy) {\scriptsize\r};
+  }
+  \draw[bookpurple,line width=1.2pt] (0,-7.5) rectangle (12,-2.5);
+  \node[tok,minimum width=9mm,font=\scriptsize] (id) at (-15,-5) {$x_t=2$};
+  \node[lbl,anchor=north,align=center] at (-15,-8.5) {入力した\\トークン};
+  \draw[arr] (id) -- (-3.2,-5);
+  \node[lbl,anchor=north,align=center] at (6,-13) {2 行目を引く\\（行の番号＝トークン ID）};
+  \draw[arr] (12.5,-5) -- (17.5,-5);
+  \node[font=\small] at (20.5,-5) {$\ve_{2}$};
+  \node[box,b,minimum width=25mm] (blk) at (38.5,-5) {位置を足し、\\ブロック $\times L$、\\最後の LayerNorm};
+  \draw[arr] (23.5,-5) -- (blk.west);
+  \node[font=\footnotesize,inner sep=1mm] (ht) at (62.8,-5) {$\vh_t=(2,-1)$};
+  \draw[arr] (blk.east) -- (ht.west);
+  \draw[arr] (ht.east) -- (74.6,-5);
+  % 出口: E の各行との内積
+  \node[lbl,anchor=south] at (81,3) {出口：同じ $\mE$};
+  \foreach \r/\a/\b/\z in {1/1/0/2,2/0/1/-1,3/-1/1/-3} {
+    \pgfmathsetmacro{\yy}{5-5*\r}
+    \node[c] at (78,\yy) {$\a$}; \node[c] at (84,\yy) {$\b$};
+    \draw[->,black!60] (87.5,\yy) -- (93,\yy);
+    \node[c,fill=figpurple] at (96.5,\yy) {$\z$};
+    \node[lbl,anchor=west] at (99.8,\yy) {$z_{t,\r}$};
+  }
+  \node[lbl,anchor=south] at (96.5,3) {$\vz_t$};
+  \draw[bookaccent,line width=1.2pt] (93.5,-2.5) rectangle (99.5,2.5);
+  \node[lbl,anchor=north,align=center] at (88,-13) {各行と $\vh_t$ の内積。\\赤枠が最大（候補 1）};
+  \node[lbl,anchor=north] at (44,-16) {左右の $\mE$ は同じ行列（重み共有）};
 \end{tikzpicture}
-\caption{重み共有。入口では $\mE$ の行を「引く」、出口では $\mE$ の各行と「内積をとる」。トークン $v$ のロジットは、$\vh_t$ と $\ve_v$ がどれだけ似ているかを表す。}
+\caption{重み共有を、語彙 3 個・$d=2$ の数値例で描いた図（本文の例）。入口では、入力トークン $x_t$（ここでは 2）の行を $\mE$ から「引く」。出口では、最後の LayerNorm を通した $\vh_t$ と、$\mE$ の\textbf{すべての}行との「内積をとり」、候補ごとのロジット $\vz_t$ を並べる。
+入力した候補 2 ではなく、$\vh_t$ と向きの近い候補 1 のロジットが最大になる。$\vh_t=(2,-1)$ は説明のために選んだ値。}
 \label{fig:tf-tying}
 \end{figure}
 
 \paragraph{初期化} 14 行目の \code{self.apply(self._init_weights)} は、すべての部品に 22〜24 行目の関数を適用します（21 行目の \code{@staticmethod} は、\code{self} を使わない関数に付ける印です）。
 部品が \code{Linear} か \code{Embedding} なら（23 行目の \code{isinstance}）、その重みを平均 0・標準偏差 0.02 の正規分布で初期化します。
-0.02 は GPT-2 の実装が使った値です。
+0.02 は GPT-2 の実装が使った値で、導いた値ではなく、選ばれた値です。
 \chapref{ch:training}の He の初期化なら $\sqrt{2/192}\approx0.10$ ですが、各部品の前の LayerNorm が入力の大きさをそろえるので、初期値を厳密に合わせなくても学習が始まります。
 LayerNorm の $\vgamma$ は 1、$\vbeta$ は 0 のままなので、学習の初めは「平均 0・分散 1 にそろえるだけ」の層です。
 
 16〜19 行目は、\code{named_parameters()} が順に返す（名前, パラメータ）の組のうち、名前が \code{proj.weight} で終わる重み、つまり\textbf{残差ストリームに足し込む直前の層}（注意の出力射影と MLP の 2 層目）だけを、さらに $1/\sqrt{2L}$ 倍小さく初期化し直します（細かい工夫なので、初めて読むときは結論だけで構いません）。
-式\eqref{eq:tf-stream}のとおり、残差ストリームには $2L$ 個の量が足し込まれます。
-足し込む量がそれぞれ独立で分散 $s^2$ なら、和の分散は $2L\cdot s^2$ に膨らみます（独立な値を足すと分散も足し算になるのでした。\secref{sec:training-init}）。
+こちらの $1/\sqrt{2L}$ は、次の見積もりから導いた値です。
+骨組みを先に書くと、「$2L$ 個の足し込む量が互いに独立で、どれも同じ分散だと\textbf{仮定する} → 和の分散は $2L$ 倍になる → 重みを $1/\sqrt{2L}$ 倍にすれば元に戻る」です。
+
+式\eqref{eq:tf-stream}のとおり、残差ストリームには $2L$ 個の量（$\va^{(\ell)}$ と $\vm^{(\ell)}$）が足し込まれます。
+足し込む量の各成分の分散を $s^2$ とし、$2L$ 個が互いに独立だとすると、和の各成分の分散は $2L\cdot s^2$ に大きくなります（独立な値を足すと分散も足し算になるのでした。\secref{sec:training-init}）。
 重みを $1/\sqrt{2L}$ 倍にすれば、その層の出力である足し込む量も $1/\sqrt{2L}$ 倍、分散は $1/(2L)$ 倍になり、和の分散は層の数 $L$ によらず $s^2$ 程度に保たれます。
+実際の足し込む量は、同じストリームから計算されるので、互いに独立とは限りません。
+したがって、これは初期値の大きさを決めるための目安です。
 基盤モデル（$L=4$）では $0.02/\sqrt{8}\approx 0.0071$ です。
 これは GPT-2 の論文に書かれた工夫です\cite{radford2019language}。
 
@@ -825,10 +1080,45 @@ LayerNorm の $\vgamma$ は 1、$\vbeta$ は 0 のままなので、学習の初
 12 行目で最後の LayerNorm と出力ヘッドを通して、ロジット $(B,T,V)$ を得ます。
 14〜16 行目は、正解 \code{targets} が与えられたときに交差エントロピー（\chapref{ch:lm}）を計算します。
 \code{targets} は入力を 1 つ先にずらした $(B,T)$ のトークン ID で、どの位置にも「次のトークン」という正解があります。
+位置 $t$ の正解は $x_{t+1}$ で、そのとき入力として使われるのは、$x_t$ の 1 個ではなく、$x_1$ から $x_t$ までの全部です（\figref{fig:tf-xy}）。
 \code{F.cross_entropy} は、「（個数, クラス数）のロジット」と「（個数,）の正解」の組を受け取るので、バッチの軸と位置の軸を 1 本にまとめます。
 15 行目の \code{logits.view(-1, logits.size(-1))} が $(B,T,V)$ を $(BT, V)$ に、16 行目の \code{targets.view(-1)} が $(B,T)$ を $(BT,)$ に並べ直し（たとえば $(4,16,4096)$ を $(64,4096)$ に）、$BT$ 個の位置の次トークン予測の損失を平均します。
 \code{targets} を渡さなければ、13 行目の \code{loss = None} のまま、ロジットだけが返ります（生成のときの使い方です）。
-全位置の予測を一度に学習できるのは、因果マスクのおかげでした（\chapref{ch:attention}）。
+学習では、文章の窓（長さ $T$）を丸ごと 1 回入れて、$T$ 個の位置の予測を同時に計算します。
+窓には正解の $x_{t+1}$ も入っているので、隠さなければ、位置 $t$ の予測が答えを見てしまいます。
+それを防いで、全位置の予測を一度に学習できるようにしているのが、因果マスクでした（\chapref{ch:attention}）。
+生成のときは事情が違い、未来のトークンはそもそも手元にありません（\secref{sec:tf-generate}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=8mm,y=6.4mm,
+  c/.style={draw=black!35,minimum width=7mm,minimum height=5.4mm,font=\footnotesize,inner sep=0pt}]
+  \foreach \i/\ch in {1/吾,2/輩,3/は,4/猫,5/で,6/あ} {
+    \node[lbl] at (\i,7.1) {$t{=}\i$};
+    \node[c,fill=figorange] at (\i,6.2) {\ch};
+  }
+  \node[lbl,anchor=east] at (0.45,6.2) {入力 $x_1,\dots,x_6$};
+  % 階段: 行 t には x_1..x_t、右に正解
+  \foreach \t/\y in {1/輩,2/は,3/猫,4/で,5/あ,6/る} {
+    \pgfmathsetmacro{\yy}{5.3-0.85*\t}
+    \foreach \i/\ch in {1/吾,2/輩,3/は,4/猫,5/で,6/あ} {
+      \ifnum\i>\t
+        \node[c,fill=white,text=black!25] at (\i,\yy) {\ch};
+      \else
+        \node[c,fill=figblue] at (\i,\yy) {\ch};
+      \fi
+    }
+    \node[lbl,anchor=east] at (0.45,\yy) {位置 \t の予測};
+    \draw[arr] (6.5,\yy) -- (7.4,\yy);
+    \node[c,fill=figgreen] at (8,\yy) {\y};
+  }
+  \node[lbl] at (8,5.3) {正解};
+  \node[lbl,anchor=west,align=left] at (8.6,2.7) {正解の列\\（\code{targets}）は\\入力を 1 つ\\ずらしたもの};
+\end{tikzpicture}
+\caption{学習の 1 本の窓（説明のため $T=6$、文字単位）。上の段が入力 $x$。その下の 6 行は、位置 $t$ の予測が見てよい範囲（青、$x_1$〜$x_t$）と、正解 $x_{t+1}$（緑）。灰色の字は、因果マスクで隠される未来のトークン。
+6 つの予測は、窓を 1 回入れるだけで同時に計算される。緑の列を縦に読むと「輩は猫である」で、入力を 1 つずらした正解の列 \code{targets} になる。}
+\label{fig:tf-xy}
+\end{figure}
 \code{ignore_index=-100} は、正解が $-100$ の位置を損失から外す指定です（\chapref{ch:attention}の実験でも使いました）。
 
 \subsection*{形を確かめる}
@@ -837,6 +1127,8 @@ LayerNorm の $\vgamma$ は 1、$\vbeta$ は 0 のままなので、学習の初
 PyTorch には、部品に「呼ばれるたびに実行する関数」を取り付ける\textbf{フック}（hook）という仕組みがあります。
 これで各部品の入力と出力の形を記録し、$B=2$, $T=8$ の入力を流しました（\file{ch10/count_params.py}）。
 次の出力は、「部品の名前、入力の形 \code{->} 出力の形」を、順伝播で計算が終わった順に並べたものです。
+見やすさのため、記録する部品を選んであります。
+ブロックは 4 個ありますが、最初の 1 個（\code{blocks.0}）だけを、その中も主な部品（\code{ln1}、\code{attn}、\code{mlp.fc}、\code{mlp}）だけを表示しました（\code{ln2}、\code{mlp.proj}、\code{blocks.1}〜\code{blocks.3} は省いています）。
 
 \outputfile{ch10/out/shapes.txt}
 
@@ -873,9 +1165,9 @@ PyTorch には、部品に「呼ばれるたびに実行する関数」を取り
 \item 最後の LayerNorm: $2d$。出力ヘッド: 重み共有なので $0$。
 \end{itemize}
 
-全体は
+パラメータの総数を $N_{\text{param}}$ と書くと（データ数の $N$ と区別するため、添字を付けます）、全体は
 \begin{equation}
-N = Vd + T_{\max}d + L\,(12d^2+4d) + 2d
+N_{\text{param}} = Vd + T_{\max}d + L\,(12d^2+4d) + 2d
 \label{eq:tf-params}
 \end{equation}
 です。
@@ -906,8 +1198,8 @@ $Vd=4096\times192=786{,}432$、$T_{\max}d=128\times 192=24{,}576$ です。
 \midrule
 トークン埋め込み（＝出力ヘッド） & $Vd$ & 786,432 & 30.4\% \\
 位置埋め込み & $T_{\max}d$ & 24,576 & 1.0\% \\
-注意（4 層） & $L\cdot 4d^2$ & 589,824 & 22.8\% \\
-MLP（4 層） & $L\cdot 8d^2$ & 1,179,648 & 45.7\% \\
+注意（4 ブロック分） & $L\cdot 4d^2$ & 589,824 & 22.8\% \\
+MLP（4 ブロック分） & $L\cdot 8d^2$ & 1,179,648 & 45.7\% \\
 LayerNorm（9 個） & $L\cdot 4d+2d$ & 3,456 & 0.1\% \\
 \midrule
 合計 & 式\eqref{eq:tf-params} & 2,583,936 & 100\% \\
@@ -917,7 +1209,7 @@ LayerNorm（9 個） & $L\cdot 4d+2d$ & 3,456 & 0.1\% \\
 
 \tabref{tab:tf-params}の割合を見てください。
 いちばん大きいのは MLP で、注意の 2 倍です（$8d^2$ 対 $4d^2$）。
-「Transformer は注意のモデル」という印象とは裏腹に、基盤モデルでは全体の約 46\%、つまり半分近くが MLP にあるのです。
+「Transformer は注意のモデル」という印象とは違って、基盤モデルでは全体の約 46\%、つまり半分近くが MLP にあるのです。
 ブロックの部分（$12Ld^2$）だけで見れば、MLP は 3 分の 2 を占めます。
 また、本書のモデルは小さいので、埋め込みが 3 割を占めています。
 $d$ が大きくなると $d^2$ に比例するブロックの項が支配的になり、埋め込みの割合は小さくなります（\figref{fig:tf-param-bar}）。
@@ -927,7 +1219,7 @@ $d$ が大きくなると $d^2$ に比例するブロックの項が支配的に
 \begin{tikzpicture}
 \begin{axis}[xbar stacked,width=0.84\linewidth,height=34mm,bar width=5.5mm,
   xmin=0,xmax=100,xlabel={パラメータ数に占める割合（\%）},
-  ytick={0,1},yticklabels={基盤モデル,GPT-2（最大）},enlarge y limits=0.55,
+  ytick={0,1},yticklabels={基盤モデル,GPT-2（最大）},enlarge y limits=0.55,y dir=reverse,
   ymajorgrids=false,area legend,legend columns=4,
   legend style={at={(0.5,1.06)},anchor=south,font=\footnotesize,/tikz/every even column/.append style={column sep=2mm}}]
 \addplot[fill=figpurple,draw=bookpurple] table[col sep=comma,x=emb,y expr=\coordindex]{code/ch10/out/param_share.csv};
@@ -941,7 +1233,8 @@ $d$ が大きくなると $d^2$ に比例するブロックの項が支配的に
 \end{axis}
 \end{tikzpicture}
 \caption{パラメータの内訳の割合（\file{ch10/out/param_share.csv}。式\eqref{eq:tf-params}による。0.1\% 以下の LayerNorm は省いた）。
-基盤モデル（258 万個）では埋め込みが 3 割を占めるが、GPT-2 の最大のモデル（約 15.6 億個）では 5\% になり、注意と MLP がほぼすべてを占める。MLP は注意の 2 倍。}
+上の棒が基盤モデル（258 万個）、下の棒が GPT-2 の最大のモデル（約 15.6 億個。$L=48$、$d=1600$、\tabref{tab:tf-scale}）。
+基盤モデルでは埋め込みが 3 割を占めるが、GPT-2（最大）では 5\% になり、注意と MLP がほぼすべてを占める（位置埋め込みは 0.1\% で、棒では見えない）。MLP は注意の 2 倍。}
 \label{fig:tf-param-bar}
 \end{figure}
 
@@ -957,7 +1250,7 @@ $L$ を 2 倍にしたときは、ブロック全体がちょうど 2 倍にな�
 \subsection*{本物の LLM と比べる}
 
 同じ式\eqref{eq:tf-params}で、GPT-2 の最小モデル（$V=50{,}257$, $T_{\max}=1024$, $L=12$, $d=768$）も数えられます。
-GPT-2 は \code{Linear} にバイアスがあるので、その分（1 層あたり $3d+d+4d+d=9d$）を足すと、約 1.24 億になります（演習問題）。
+GPT-2 は \code{Linear} にバイアスがあるので、その分（1 ブロックあたり、\code{qkv} の $3d$、出力射影の $d$、MLP の 1 層目の $4d$ と 2 層目の $d$ で、合わせて $9d$）を足すと、約 1.24 億になります（演習問題）。
 \tabref{tab:tf-scale}に、本書のモデルと GPT-2、GPT-3 の設定を並べました。
 
 \begin{table}[tbp]
@@ -967,7 +1260,7 @@ GPT-2 は \code{Linear} にバイアスがあるので、その分（1 層あた
 \small
 \begin{tabular}{lrrrrrr}
 \toprule
-モデル & 層 $L$ & 次元 $d$ & ヘッド $H$ & 文脈長 & 語彙 $V$ & パラメータ \\
+モデル & ブロック $L$ & 次元 $d$ & ヘッド $H$ & 文脈長 & 語彙 $V$ & パラメータ \\
 \midrule
 本書の基盤モデル & 4 & 192 & 4 & 128 & 4,096 & 258 万 \\
 本章の文字単位モデル & 4 & 128 & 4 & 64 & 4,078 & 132 万 \\
@@ -1011,7 +1304,7 @@ GPT-3 は本書の基盤モデルの約 7 万倍の大きさですが（$1{,}750
 
 \snippet{文字単位のミニGPT の学習ループ}{code:tf-char-loop}{ch10/train_char_gpt.py}{train-loop}
 
-長く見えますが、骨組みは\chapref{ch:nn}の「5 行のループ」のままです（23 行目が順伝播と損失、24 行目が勾配を消す、25 行目が逆伝播、27 行目が更新）。
+長く見えますが、骨組みは\chapref{ch:nn}の「5 行のループ」のままです（23 行目が順伝播と損失で、ここでは 2 つの仕事を 1 行にまとめています。24 行目が勾配を消す、25 行目が逆伝播、27 行目が更新）。
 ほかの行は、学習を安定させる工夫（\chapref{ch:training}）と途中経過の記録なので、\chapref{ch:training}をまだ読んでいない人は、工夫の中身を気にせず先へ進んで構いません。
 
 1 行目で、1,500 ステップ、バッチ 32、最大学習率 $2\times10^{-3}$ と決めます。
@@ -1019,10 +1312,10 @@ GPT-3 は本書の基盤モデルの約 7 万倍の大きさですが（$1{,}750
 5 行目の \code{range(max_steps + 1)} が 1 回多く回るのは、最後の更新のあとにも損失を測るためで、測り終えたら 18〜19 行目の \code{break} で抜けます。
 6〜12 行目で、100 ステップごとに訓練損失と検証損失をそれぞれ 20 バッチの平均で見積もります（\code{estimate_loss}）。
 13〜17 行目で、決まったステップでは「　吾輩は」の続きを 40 文字生成して残します（温度 0.8、top-$k$ 50。生成の設定は\secref{sec:tf-generate}で説明します）。
-14 行目で毎回同じ乱数の種を設定しているのは、どのステップでも同じ「くじの列」を使い、生成例の違いがモデルの違いだけを映すようにするためです。
+14 行目で毎回同じ乱数の種を設定しているのは、どのステップでも同じ乱数の列を使い、生成例の違いがモデルの違いだけを映すようにするためです。
 20〜21 行目で、学習率をウォームアップ 100 ステップ＋コサイン減衰で変えます（\code{lr_at}）。
 22〜27 行目が 1 ステップの学習です。
-ランダムな位置から 64 文字の窓を 32 本切り出し（\code{get_batch}。正解 \code{y} は、入力 \code{x} を 1 文字先にずらした同じ形の列です）、順伝播で損失を求め、前の勾配を消してから逆伝播し、勾配のノルムを 1.0 で切りそろえて（勾配クリッピング）、パラメータを更新します。
+ランダムな位置から 64 文字の窓を 32 本切り出し（\code{get_batch}。正解 \code{y} は、入力 \code{x} を 1 文字先にずらした同じ形の列で、\figref{fig:tf-xy}の窓を 32 本並べたものです）、順伝播で損失を求め、前の勾配を消してから逆伝播し、勾配のノルムを 1.0 で切りそろえて（勾配クリッピング）、パラメータを更新します。
 
 \subsection*{結果}
 
@@ -1050,7 +1343,7 @@ GPT-3 は本書の基盤モデルの約 7 万倍の大きさですが（$1{,}750
 \centering
 \begin{tikzpicture}
 \begin{axis}[width=0.92\linewidth,height=0.36\linewidth,xlabel={学習ステップ},ylabel={交差エントロピー},
-  xmin=0,xmax=1500,ymin=2.8,ymax=8.6,legend style={at={(0.98,0.96)},anchor=north east,font=\footnotesize}]
+  xmin=0,xmax=1500,ymin=2.8,ymax=8.6,legend columns=4,legend style={at={(0.5,1.03)},anchor=south,font=\footnotesize,/tikz/every even column/.append style={column sep=3mm}}]
 \addplot[bookblue,thick,mark=*,mark size=1.2pt] table[col sep=comma,x=step,y=val_loss]{code/ch10/out/train_char_gpt.csv};
 \addlegendentry{ミニGPT（検証）}
 \addplot[bookgray,thick,dashed,mark=none] table[col sep=comma,x=step,y=train_loss]{code/ch10/out/train_char_gpt.csv};
@@ -1067,14 +1360,16 @@ GPT-3 は本書の基盤モデルの約 7 万倍の大きさですが（$1{,}750
 
 \figref{fig:tf-curve}を見ると、最初の 100 ステップで損失が 8.3 から 4.2 へ急に下がっています。
 この 100 ステップで、モデルは「よく出る文字」（ユニグラムの情報）を覚え、さらに直前の文字を使った予測も覚え始めて、ユニグラムの 5.198 を下回ります。
-その後は下がり方がゆるやかになり、より長い文脈を使った予測を少しずつ身につけていきます。
+その後は下がり方がゆるやかになり、より長い文脈を使った予測が、少しずつできるようになっていきます。
 曲線はまだ下がり続けているので、もっと長く学習させれば、さらに下がるはずです。
 なお、検証損失が訓練損失より少し低いのは、検証データ（コーパスの末尾に置かれた作品の一部）が、たまたま訓練データより少し予測しやすかったためで、間違いではありません。
+実際、文字の頻度だけで当てるユニグラムでも、検証データの損失（5.198）は訓練データの損失（5.282）より低くなります（訓練データの頻度で作ったユニグラムを、両方のデータで測った値です）。
 
 \begin{table}[tbp]
 \centering
 \caption{同じ検証データ（漱石コーパスの末尾 5\%、約 12 万字）での、1 文字あたりの損失とパープレキシティ（$e^{\text{損失}}$）。
-†は 1 トークンあたりの損失（5.512 と 4.863）を、1 トークン = 平均 1.75 字として 1 文字あたりに直した目安の値。}
+†は 1 トークンあたりの損失（5.512 と 4.863）を、1 トークン = 平均 1.75 字として 1 文字あたりに直した目安の値。
+ミニGPT の値は、検証データからランダムに切り出した 20 バッチ（約 4 万字分）での見積もりで、数え上げのモデル（検証データ全体で測った値）とは測り方が違う。1,500 ステップのモデルで切り出しを 10 通り変えると 3.03〜3.08 の範囲でゆれ、検証データ全体を 64 字ずつに区切って測ると 3.052 だった。}
 \label{tab:tf-loss}
 \small
 \begin{tabular}{lrrl}
@@ -1113,10 +1408,10 @@ step 0 では、ほぼ一様な分布から引くので、コーパスにある 
 step 100 では、「あった。」「ない。」「彼の」のように、よく出る仮名と短い言い回しが現れますが、文になっていません。
 step 300 では句読点の位置がそれらしくなり、step 1,500 では「その晩は無論」「不思議に対して、こう云う事も」のように、漱石らしい言い回しが続くようになりました。
 意味はまだ通りませんが、文字の並びの統計は、確実に学習されています。
-読ませたのは 1,500 ステップ × 32 本 × 64 文字で約 307 万文字、コーパスの約 1.3 周分にすぎません。
+読ませたのは 1,500 ステップ × 32 本 × 64 文字で約 307 万文字、訓練データの約 1.3 エポック分にすぎません（窓はランダムに選ぶので、どの文字もちょうど 1.3 回ずつ読んだわけではありません）。
 
 \paragraph{ここまでで手に入ったもの}
-いま動いたのは、借りてきたモデルではありません。
+いま動いたのは、他人が作って学習させたモデルではありません。
 埋め込み（\chapref{ch:embedding}）、注意（\chapref{ch:attention}）、この章の三つの部品を、自分で読んだコードで組んだモデルです。
 その約 132 万個のパラメータが、\chapref{ch:nn}から変わらない 5 行のループで 8 分学習しただけで、次のように変わりました。
 \begin{itemize}
@@ -1139,11 +1434,13 @@ GPT-2 や GPT-3 も、これと同じ種類の部品を、同じ組み方で大�
 この節の問いは、「Transformer では、その選び方をどうコードに書くか。設定によって、基盤モデルの書く文章はどう変わるか」です。
 ここからは、文字単位モデルではなく、基盤モデル \file{base.pt} を使います。
 8 分しか学習していない文字単位モデルでは、設定による文章の違いが見えにくいからです。
-\file{base.pt} は、同じ \code{GPT} クラス（\tabref{tab:tf-config}の「基盤モデル」の列）を BPE トークンで 30〜40 分学習させた完成品で、\chapref{ch:attention}でも借りました（学習のやり方は\chapref{ch:pretraining}）。
+\file{base.pt} は、同じ \code{GPT} クラス（\tabref{tab:tf-config}の「基盤モデル」の列）を BPE トークンで 30〜40 分学習させた完成品で、\chapref{ch:attention}でも使いました（学習のやり方は\chapref{ch:pretraining}）。
 
 \subsection*{おさらい：自己回帰と温度}
 
 文章の生成は、(1) いまの文脈をモデルに入れて\textbf{最後の位置}のロジット $\vz\in\R^V$ を得る、(2) $\vz$ から次のトークンを 1 つ選ぶ、(3) 選んだトークンを文脈の末尾に付け足して (1) に戻る、の繰り返し（自己回帰）でした。
+モデルは学習のときと同じく全部の位置のロジットを出しますが、途中の位置のロジットは、すでに文脈にあるトークンを当てる予測なので、生成には使いません（計算はされて、捨てられます。この無駄は\chapref{ch:modern-arch}の KV キャッシュで減らします）。
+生成では、未来のトークンはまだ作られていないので、そもそも手元にありません。
 (2) で、毎回いちばん確率の高いトークンを選ぶのが貪欲法、確率に従ってくじを引くのがサンプリングです。
 貪欲法は、文章では同じ言い回しの繰り返しに陥りやすいことが知られています\cite{holtzman2020curious}。
 サンプリングの際、ロジットを温度 $\tau$ で割ってから softmax をとると（式\eqref{eq:lm-temperature}）、分布のとがり具合を調整できるのでした。
@@ -1155,9 +1452,12 @@ $\tau<1$ なら確率の高いトークンに集中し、$\tau>1$ なら平ら�
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[ybar,bar width=2.6mm,width=0.92\linewidth,height=0.33\linewidth,
-  xlabel={温度 1 での順位},ylabel={確率},xtick={1,...,8},ymin=0,ymax=1,
-  legend style={at={(0.98,0.95)},anchor=north east,font=\footnotesize}]
+\begin{axis}[name=main,ybar,bar width=2.2mm,width=0.62\linewidth,height=0.36\linewidth,
+  xlabel={次のトークン（温度 1 での順位の順）},ylabel={確率},xtick={1,...,8},ymin=0,ymax=1,
+  xticklabels from table={code/ch10/out/fig_temp_labels.csv}{token},table/col sep=comma,
+  xticklabel style={rotate=50,anchor=east,font=\scriptsize},
+  legend style={at={(0.98,0.95)},anchor=north east,font=\footnotesize,/tikz/every even column/.append style={column sep=1mm}},
+  legend image code/.code={\draw[#1,draw=none] (0cm,-0.1cm) rectangle (0.22cm,0.12cm);}]
 \addplot[fill=bookblue,draw=bookblue] table[col sep=comma,x=rank,y=t05]{code/ch10/out/temperature.csv};
 \addlegendentry{$\tau=0.5$}
 \addplot[fill=bookorange,draw=bookorange] table[col sep=comma,x=rank,y=t10]{code/ch10/out/temperature.csv};
@@ -1165,16 +1465,26 @@ $\tau<1$ なら確率の高いトークンに集中し、$\tau>1$ なら平ら�
 \addplot[fill=bookgreen,draw=bookgreen] table[col sep=comma,x=rank,y=t20]{code/ch10/out/temperature.csv};
 \addlegendentry{$\tau=2.0$}
 \end{axis}
+\begin{axis}[at={(main.east)},anchor=west,xshift=11mm,ybar,bar width=2.4mm,width=0.35\linewidth,height=0.36\linewidth,
+  title={$\tau=2.0$ だけ（縦軸を拡大）},title style={font=\footnotesize},
+  xtick={1,...,8},ymin=0,ymax=0.06,ytick={0,0.02,0.04,0.06},scaled y ticks=false,
+  yticklabel style={font=\footnotesize,/pgf/number format/fixed,/pgf/number format/precision=2},
+  xticklabels from table={code/ch10/out/fig_temp_labels.csv}{token},table/col sep=comma,
+  xticklabel style={rotate=50,anchor=east,font=\scriptsize}]
+\addplot[fill=bookgreen,draw=bookgreen] table[col sep=comma,x=rank,y=t20]{code/ch10/out/temperature.csv};
+\end{axis}
 \end{tikzpicture}
-\caption{基盤モデルに「どうも仕方が」を与えたときの、次トークンの上位 8 個の確率と温度。1 位は「ない。」。
-$\tau=0.5$（青）では 1 位に 9 割以上が集まり、$\tau=2$（緑）では 1 位でも 5.5\% まで下がり、2 位以下との差が小さくなって平らになる。}
+\caption{基盤モデルに「どうも仕方が」を与えたときの、次トークンの上位 8 個の確率と温度（確率は \file{ch10/out/temperature.csv}、トークンの名前は \file{ch10/fig_temp_labels.py} で書き出した）。
+左: $\tau=0.5$（青）では 1 位の「ない。」に 9 割以上が集まる。右: $\tau=2$（緑）だけを縦軸 0〜0.06 で描き直したもの。1 位でも 5.5\% まで下がり、2 位以下との差が小さくなって平らになる。}
 \label{fig:tf-temp}
 \end{figure}
 
 温度 1.0 での 1 位「ない。」の確率 0.559 は、\chapref{ch:intro}で見た基盤モデルの予測と同じです。
-温度 0.5 にすると 0.934 に跳ね上がり、温度 2.0 にすると 0.055 まで下がります。
+温度 0.5 にすると 0.934 に上がり、温度 2.0 にすると 0.055 まで下がります。
 温度 2.0 では、上位 8 個を合わせても 2 割に届きません（\figref{fig:tf-temp}の緑。8 個の確率を足すと 0.151 です）。
 残りの 8 割以上（約 85\%）は、4,000 個以上ある「ありそうもないトークン」に薄く広がっているのです。
+確率の高い順に並べたとき、後ろのほうに長く続く、1 個ずつは確率の小さいトークンの集まりを、分布の\textbf{裾}と呼びます（\figref{fig:tf-temp}なら、右端よりさらに先に 4,000 個以上続く部分です）。
+温度を上げると、裾の 1 個ずつの確率が上がり、裾全体の確率の合計も大きくなります。これを「裾が厚くなる」と言います。
 
 \subsection*{おさらい：候補を絞る top-\texorpdfstring{$k$}{k} と top-\texorpdfstring{$p$}{p}}
 
@@ -1233,6 +1543,8 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
   \node[purplebox,b] (s) at (107.5,0) {softmax\\くじを引く};
   \draw[arr] (c) -- (m); \draw[arr] (m) -- (t); \draw[arr] (t) -- (k); \draw[arr] (k) -- (p); \draw[arr] (p) -- (s);
   \draw[arr,bookblue,very thick] (s.south) -- ++(0,-9) -| (c.south);
+  \foreach \x in {21.5,43,64.5,86} \node[font=\tiny,text=bookblue] at (\x,-6.7) {$\to(B,V)$};
+  \node[font=\tiny,text=bookblue,anchor=west] at (108.5,-7) {$(B,1)$};
   \node[lbl,anchor=north] at (53.75,-14.5) {選んだトークンを文脈の末尾に付け足す（31 行目）};
   \node[lbl,anchor=south] at (0,5) {7 行目};
   \node[lbl,anchor=south] at (21.5,5) {8〜9 行目};
@@ -1241,8 +1553,9 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
   \node[lbl,anchor=south] at (86,5) {21〜28 行目};
   \node[lbl,anchor=south] at (107.5,5) {29〜30 行目};
 \end{tikzpicture}
-\caption{\code{generate} が 1 トークンを選ぶ流れ。箱の上は\coderef{code:tf-generate}の行番号。これを \code{max_new_tokens} 回くり返す。
-温度が 0 のときは、「$\tau$ で割る」から先の代わりに、最大のロジットのトークンを選ぶ（10〜15 行目）。}
+\caption{\code{generate} が 1 トークンを選ぶ流れ。箱の上は\coderef{code:tf-generate}の行番号。箱の下の青い字は、その箱から出る数の形（最後の位置のロジットと確率は $(B,V)$、選んだトークンは $(B,1)$）。これを \code{max_new_tokens} 回くり返す（終わりの印 \code{stop_token} が出たら、途中で止める。32〜33 行目）。
+温度が 0 のときは、「$\tau$ で割る」から先の代わりに、最大のロジットのトークンを選ぶ（10〜15 行目）。
+くり返しのたびに文脈がどう伸びるかは、\figref{fig:tf-wagahai-steps}と\figref{fig:tf-window}で見る。}
 \label{fig:tf-genflow}
 \end{figure}
 
@@ -1251,11 +1564,50 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
 1 行目の \code{@torch.no_grad()} は、勾配の計算に必要な記録をとらない指定で、推論を速く、省メモリにします。
 6 行目のループが、上の (1)〜(3) の繰り返しです。
 7 行目で文脈を後ろから \code{block_size} 個に切り詰めます。位置埋め込みの表は 128 行しかないからです。
+切り詰めた列には、先頭から改めて位置 1, 2, …（コードでは 0, 1, …）を振ります。
+位置埋め込みが表すのは「文の先頭から何番目か」ではなく、「いま入力している列の中で何番目か」なのです。
+そのため、ひとつ前の回に位置 5 だったトークンが、次の回には位置 4 として扱われることがあります（\figref{fig:tf-window}）。
+129 トークン目以降も生成はできますが、そのとき、いちばん古いトークンはもう見えていません。
+
 8〜9 行目でモデルに通し、最後の位置のロジット $(B,V)$ だけを取り出します。
 10〜15 行目は温度 0 の場合（貪欲法）で、\code{argmax} で最大のトークンを選んで \code{torch.cat} で末尾に付け足し、終わりの印（\code{stop_token}）がバッチの全部で出たら（\code{.all()}）止めます。
 温度 0 だけを別に扱うのは、16 行目の「温度で割る」計算が、0 ではできないからです。
 16 行目が、ロジットを温度で割る計算です。
 17〜20 行目が top-$k$ で、\code{torch.topk} で $k$ 番目に大きいロジットを求め、それより小さいロジットを $-\infty$（確率 0）にします。
+順番は、温度で割る → top-$k$ → top-$p$ です。したがって top-$p$ の「確率の和」は、温度で割り、top-$k$ で絞った\textbf{後}の分布で計算されます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  t/.style={draw=black!45,fill=figorange,minimum width=12.5mm,minimum height=6mm,font=\scriptsize,inner sep=0.5pt},
+  new/.style={t,fill=figgreen,draw=bookgreen,thick},
+  gone/.style={t,fill=white,draw=black!25,text=black!35,dashed},
+  q/.style={t,fill=white,draw=bookaccent,thick,text=bookaccent}]
+  % コマ 1
+  \node[lbl,anchor=east,align=right] at (-7.5,0) {(a) 文脈\\3 個};
+  \node[t] at (0,0) {＼n　}; \node[t] at (14,0) {吾輩は}; \node[t] at (28,0) {主人};
+  \node[q] at (42,0) {？};
+  \foreach \x/\n in {0/1,14/2,28/3} \node[lbl] at (\x,-5.2) {位置 \n};
+  % コマ 2
+  \node[lbl,anchor=east,align=right] at (-7.5,-15) {(b) 文脈\\4 個};
+  \node[t] at (0,-15) {＼n　}; \node[t] at (14,-15) {吾輩は}; \node[t] at (28,-15) {主人};
+  \node[new] at (42,-15) {の\texttt{<e6>}}; \node[q] at (56,-15) {？};
+  \foreach \x/\n in {0/1,14/2,28/3,42/4} \node[lbl] at (\x,-20.2) {位置 \n};
+  \node[lbl,anchor=west,align=left] at (64,-15) {上限 4 個に\\ちょうど届いた};
+  % コマ 3
+  \node[lbl,anchor=east,align=right] at (-7.5,-30) {(c) 5 個目\\を付けた};
+  \node[gone] at (0,-30) {＼n　}; \node[t] at (14,-30) {吾輩は}; \node[t] at (28,-30) {主人};
+  \node[t] at (42,-30) {の\texttt{<e6>}}; \node[new] at (56,-30) {\texttt{<a8><aa>}};
+  \foreach \x/\n in {14/1,28/2,42/3,56/4} \node[lbl,text=bookaccent] at (\x,-35.2) {位置 \n};
+  \node[lbl] at (0,-35.2) {（外れる）};
+  \node[q] at (70,-30) {？};
+  \draw[bookblue,thick,rounded corners] (6.5,-26) rectangle (63.5,-38);
+  \node[lbl,anchor=west,align=left,text=bookblue] at (78,-30) {モデルに入れる\\のは枠の 4 個だけ};
+\end{tikzpicture}
+\caption{文脈の切り詰め（模式図。説明のため、文脈の上限 \code{block_size} を 4 とした。本書の基盤モデルでは 128）。トークンは\figref{fig:tf-wagahai-steps}と同じ「吾輩は」の例。緑はそのコマで付け足したトークン、赤い「？」は次に選ぶトークン。
+(c) で 5 個目を付けると、いちばん古いトークン（破線の枠）が外れ、残った 4 個に位置 1〜4 が振り直される（赤い数字）。たとえば「主人」は、(b) では位置 3、(c) では位置 2 になる。}
+\label{fig:tf-window}
+\end{figure}
 
 21〜28 行目が top-$p$ です（考え方は\coderef{code:lm-sample-next}と同じなので、細かい書き方は読み飛ばしても構いません）。
 22 行目でロジットを大きい順に並べ、23 行目で確率にします。
@@ -1263,6 +1615,9 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
 これが $p$ を超えるトークンのロジットを $-\infty$ にします。
 27〜28 行目の \code{scatter} は、並べ替えたロジットを元の語彙の順に戻す操作です。
 29〜31 行目で確率に直し、\code{torch.multinomial} で確率に従って 1 つ引いて、末尾に付け足します。
+29 行目の softmax は、$-\infty$ にしなかった（残った）トークンだけで確率をとり直す計算になります。
+捨てた分の確率は、残ったトークンに、元の確率に比例して割り振られ、合計は 1 に戻ります。
+たとえば\tabref{tab:tf-topp}の例で上位 3 個が残ると、確率は $0.5/0.95$、$0.3/0.95$、$0.15/0.95$（約 0.53、0.32、0.16）になります。
 
 \subsection*{設定による出力の違い}
 
@@ -1278,13 +1633,72 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
 4,096 個の語彙には、1 個ずつの確率は小さくても、合わせると無視できない「ありそうもないトークン」の裾があり、30 トークンも引くと、どこかでその裾を引いてしまうのです。
 4 行目の温度 1.5 は裾をさらに厚くするので、「□」は 3 個に増えています。
 本書の BPE はバイト単位なので（\chapref{ch:tokenizer}）、漢字 1 字の 3 バイトの途中までしか表さないトークンがあります。
-裾から引いたそうしたトークンがちぐはぐに並ぶと、文字にならない並びができてしまいます。
+裾から引いたそうしたトークンが、続きのバイトを持つトークンとつながらずに並ぶと、文字にならないバイト列ができてしまいます。
 5 行目の top-$k$ 10 と 6 行目の top-$p$ 0.9 は、温度 1.0 のままでも、変な字がほとんどありません。
 この裾を、引く前に候補から外したからです。
 
 書き出しにも注目してください。
 2 行目と 5 行目は「例のごとく笑」まで、3 行目と 4 行目は「下宿の門を□交る□ユ」まで同じで、6 行目も「下宿の門を」で始まります。
 同じ乱数の列を使ったので、分布が似ているあいだは同じトークンが選ばれるのです。
+くじの引き方は、0 から 1 の乱数を 1 つ引き、確率を高い順（または語彙の順）に積み上げた区間のどこにその乱数が入ったかでトークンを決める、と考えると分かりやすいでしょう（\code{torch.multinomial} の中の計算の細部は、ここでは追いません）。
+分布が少し違っても、区間の境目があまり動かなければ、同じ乱数は同じ区間に入り、同じトークンが選ばれます。
+
+\subsection*{設定を少しずつ変えると：小さなスイープ}
+
+上の 6 行は、1 本ずつの生成なので、たまたまの結果かもしれません。
+そこで、設定を少しずつ変えたときの傾向を数で見ます。
+\file{ch10/sweep_sampling.py} で、温度を 0（貪欲法）、0.3、0.5、0.7、1.0、1.3、1.6 の 7 通りに変え、それぞれ「絞らない」「top-$k$ 10」「top-$p$ 0.9」の 3 通りと組み合わせました。
+各設定で「\texttt{\textbackslash n}　吾輩は」の続きを 30 トークンずつ 20 本生成し、次の 3 つを 20 本で平均します（2 スレッドで 1 分ほど）。
+\begin{itemize}
+\item \textbf{文字にならないバイト列}：生成した文の中の「□」の個数（1 本あたり）。
+\item \textbf{繰り返しの割合}：1 本の中で、前に出たのと同じ 3 トークンの並びがもう一度出た割合。
+\item \textbf{$-\log$ 確率}：選んだトークンに、温度 1 のモデルが付けた確率の $-\log$ の平均。小さいほど、モデルから見て「ありそうな」トークンを選んでいる。
+\end{itemize}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{sw/.style={width=0.37\linewidth,height=0.36\linewidth,xlabel={温度 $\tau$},
+  xmin=-0.1,xmax=1.7,xtick={0,0.5,1,1.5},title style={font=\footnotesize},
+  tick label style={font=\scriptsize},label style={font=\footnotesize}}}
+\begin{axis}[sw,name=a1,title={文字にならないバイト列},ylabel={□ の個数（1 本あたり）},ymin=0]
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=tau,y=bad_none]{code/ch10/out/sweep_sampling_wide.csv};
+\addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=tau,y=bad_topk10]{code/ch10/out/sweep_sampling_wide.csv};
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=tau,y=bad_topp09]{code/ch10/out/sweep_sampling_wide.csv};
+\end{axis}
+\begin{axis}[sw,name=a2,at={(a1.east)},anchor=west,xshift=11mm,title={繰り返しの割合},ymin=0,
+  yticklabel style={/pgf/number format/fixed,/pgf/number format/precision=2}]
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=tau,y=rep_none]{code/ch10/out/sweep_sampling_wide.csv};
+\addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=tau,y=rep_topk10]{code/ch10/out/sweep_sampling_wide.csv};
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=tau,y=rep_topp09]{code/ch10/out/sweep_sampling_wide.csv};
+\end{axis}
+\begin{axis}[sw,name=a3,at={(a2.east)},anchor=west,xshift=9mm,title={$-\log$ 確率（温度 1 で測る）},ymin=2,
+  legend to name=tfswleg,legend columns=3,legend style={font=\footnotesize,/tikz/every even column/.append style={column sep=3mm}}]
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=tau,y=nll_none]{code/ch10/out/sweep_sampling_wide.csv};
+\addlegendentry{絞らない}
+\addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=tau,y=nll_topk10]{code/ch10/out/sweep_sampling_wide.csv};
+\addlegendentry{top-$k$ 10}
+\addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=tau,y=nll_topp09]{code/ch10/out/sweep_sampling_wide.csv};
+\addlegendentry{top-$p$ 0.9}
+\end{axis}
+\node[anchor=south] at ([yshift=7mm]a2.north) {\pgfplotslegendfromname{tfswleg}};
+\end{tikzpicture}
+\caption{生成の設定を変えたときの、書いた文の性質（基盤モデル、「\texttt{\textbackslash n}　吾輩は」の続き 30 トークン × 20 本の平均。\file{ch10/out/sweep_sampling_wide.csv}）。
+横軸の温度 0 は貪欲法で、3 本の線が同じ点になる。乱数の種は固定してあり、20 本の平均なので、細かい上下にはゆれが含まれる。}
+\label{fig:tf-sampling-sweep}
+\end{figure}
+
+結果が\figref{fig:tf-sampling-sweep}です。
+3 枚のグラフを、左から順に見てください。
+\begin{itemize}
+\item \textbf{左（□ の個数）}：絞らない場合（青）は、温度 1.0 で 1 本あたり 0.5 個、1.6 で 2.4 個と、温度とともに急に増えます。裾が厚くなるからです。top-$k$ 10（橙）は、温度を上げても 0.25 個以下にとどまります。top-$p$ 0.9（緑）はその中間です。
+\item \textbf{中（繰り返し）}：貪欲法（温度 0）では、3 トークンの並びの 14\% がくり返しでした（\file{ch10/out/sampling.txt} 1 行目の「君に君に君に」と同じ生成です）。温度を 0.5 まで上げるだけで、1\% 前後に減ります。
+\item \textbf{右（$-\log$ 確率）}：温度を上げるほど、モデルから見てありそうもないトークンを選ぶようになり、値が大きくなります。top-$k$ 10 は、上位 10 個からしか選ばないので、温度 1.6 でも 3.4 ほどにとどまります。
+\end{itemize}
+つまり、温度を下げると「ありそう」だが繰り返しやすく、上げると繰り返さないが、ありそうもないトークン（□ になる断片など）を選びやすい、という釣り合いがあります。
+top-$k$ と top-$p$ は、裾を切ることで、温度を上げたときに、ありそうもないトークンを選ぶ割合を小さくします。
+どちらの絞り方がよいかは、絞る強さ（$k$ と $p$ の値）にもよるので、この図だけで決まるわけではありません。
+選び方の一覧は\tabref{tab:lm-sampling}にあります。
 
 \begin{practice}{どの設定を使うか}
 決まった正解がある課題（計算、コード、事実の質問）には、貪欲法か低い温度（0〜0.3 程度）を使います。
@@ -1294,6 +1708,279 @@ top-$p$ をコードに書くときは、「\textbf{自分より上位の確率�
 \end{practice}
 
 この節で分かったのは、同じモデルでも、確率分布からの選び方（貪欲法・温度・top-$k$・top-$p$）によって、生成される文章の性質が大きく変わることです。
+
+\section{通して見る：「吾輩は」の次の 1 トークンができるまで}\label{sec:tf-walkthrough}
+
+部品はすべてそろい、学習させ、生成の設定も見ました。
+しかし、ここまでは部品を 1 つずつ見てきたので、「1 トークンが選ばれるまでに、全部でどんな段があるのか」は、まだ 1 枚の絵になっていません。
+この節の問いは、「『吾輩は』を入れてから、次の 1 トークンが選ばれて列の末尾に付くまでに、どの部品が、どんな形の数を、どの順に受け渡すのか」です。
+実際の基盤モデル \file{base.pt}（4 ブロック、4 ヘッド、$d=192$、語彙 4,096）で、1 段ずつ追います。
+
+\subsection*{設定}
+
+入力は「\texttt{\textbackslash n}　吾輩は」です（\chapref{ch:math}と同じく、行の先頭を表す改行と全角の空白を前に付けます。図では改行を「＼n」と書きます）。
+次のトークンの選び方は貪欲法（温度 0）にします。
+毎回同じ結果になるので、図の数値を手元で再現できます。
+数値はすべて \file{ch10/fig_wagahai.py} で、本物のモデルの途中の値を記録したものです（出力は \file{ch10/out/fig_wagahai.txt}。実行は数秒）。
+\figref{fig:tf-wagahai}に、1 トークンを選ぶまでの 10 の段を、コマ割りで並べました。
+番号の順に読み、各コマの左下の青い枠で、そこを流れる数の形を確かめてください。
+形の書き方は\tabref{tab:tf-shapes}と同じですが、入れる文は 1 つなので、バッチの軸（$B=1$）は省いて $(T,d)=(2,192)$ のように書きます。
+この節では、位置・ブロック・ヘッドの番号を 1 から数えます（\file{ch10/out/fig_wagahai.txt} の表示と同じです）。\chapref{ch:attention}とコードは 0 から数えるので、たとえばこの節のヘッド 4 は、コードの番号では 3 です。
+
+\begin{figure}[p]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  pn/.style={draw=bookblue,fill=bookblue,text=white,circle,inner sep=0.5pt,minimum size=4.2mm,font=\scriptsize\sffamily\bfseries},
+  pt/.style={anchor=west,font=\footnotesize\bfseries},
+  tx/.style={font=\scriptsize,align=left,anchor=north west,inner sep=0.5pt},
+  sh/.style={anchor=south west,font=\scriptsize,fill=figblue,draw=bookblue!50,rounded corners=1pt,inner sep=1.2pt},
+  tk/.style={draw=black!50,fill=figorange,rounded corners=1pt,minimum height=4.6mm,font=\scriptsize,inner sep=1pt},
+  bar/.style={draw=bookblue,fill=figblue,minimum height=2.6mm,inner sep=0pt},
+  nx/.style={->,thick,bookblue}]
+% パネルの枠
+\foreach \c/\r/\n/\t in {0/0/1/トークン化, 1/0/2/埋め込みと位置, 0/1/3/第 1 ブロック：注意, 1/1/4/第 1 ブロック：MLP（FFN）,
+  0/2/5/第 2〜4 ブロック, 1/2/6/最後の LayerNorm, 0/3/7/出力ヘッド：ロジット, 1/3/8/（参考）温度 1 なら：softmax で確率,
+  0/4/9/選ぶ, 1/4/10/末尾に付けて、次の 1 トークンへ} {
+  \begin{scope}[shift={(\c*66.5,-\r*34.5)}]
+    \draw[black!45,rounded corners=2pt,fill=white] (0,0) rectangle (62.5,-30);
+    \node[pn] at (3.6,-3.4) {\n};
+    \node[pt] at (6.6,-3.4) {\t};
+  \end{scope}
+}
+% コマの間の矢印
+\foreach \r in {0,...,4} { \draw[nx] (62.7,-\r*34.5-15) -- (66.3,-\r*34.5-15); }
+\foreach \r in {0,...,3} { \draw[nx] (97.75,-\r*34.5-30.2) -- (97.75,-\r*34.5-32.2) -- (31.25,-\r*34.5-32.2) -- (31.25,-\r*34.5-34.3); }
+% ---- 1 トークン化
+\begin{scope}[shift={(0,0)}]
+  \node[tk,fill=white] (s) at (31,-9.5) {文字列「＼n　吾輩は」};
+  \node[tk] (k1) at (17,-18.5) {＼n　（ID 319）};
+  \node[tk] (k2) at (44,-18.5) {吾輩は（ID 2819）};
+  \draw[arr] (s.south) -- (k1.north); \draw[arr] (s.south) -- (k2.north);
+  \node[tx,anchor=north] at (31,-21.6) {BPE（\chapref{ch:tokenizer}）で 2 トークンになる};
+  \node[sh] at (1.5,-29.3) {文字列 $\to$ トークン ID の列 $(T)=(2)$};
+\end{scope}
+% ---- 2 埋め込みと位置
+\begin{scope}[shift={(66.5,0)}]
+  \node[tx] at (2,-6.4) {トークン埋め込み $\mE$（$4096\times192$）から ID 319 と\\ID 2819 の行を引き、位置埋め込み $\mP$ の位置 1・\\位置 2 の行（コードでは 0, 1 の行）を足す};
+  \node[bar,minimum width=40mm] at (34,-19) {};
+  \node[bar,minimum width=40mm] at (34,-22.6) {};
+  \node[font=\scriptsize,anchor=east] at (13.5,-19) {$\vh^{(0)}_1$};
+  \node[font=\scriptsize,anchor=east] at (13.5,-22.6) {$\vh^{(0)}_2$};
+  \node[font=\tiny,anchor=west,text=bookgray] at (54.5,-20.8) {192 個};
+  \node[sh] at (1.5,-29.3) {$(2)\to(2,192)$};
+\end{scope}
+% ---- 3 第 1 ブロック：注意
+\begin{scope}[shift={(0,-34.5)}]
+  \node[tx,text width=26mm,font=\tiny] at (1.5,-6.6) {LayerNorm に通し、\code{qkv} で $\mQ,\mK,\mV$（各 $(2,192)$）を作る。4 ヘッドに分けて $(4,2,48)$。重みを掛けてバリューを集め、ヘッドをつなげて \code{proj} を通し、$\vh$ に足す};
+  \node[anchor=north west,inner sep=0pt] at (29.5,-6) {\scriptsize\setlength{\tabcolsep}{2.2pt}%
+    \begin{tabular}{lrr}
+    \multicolumn{3}{l}{「吾輩は」から見た重み}\\
+    \hline
+     & ＼n　 & 吾輩は \\
+    ヘッド 1 & 0.66 & 0.34 \\
+    ヘッド 2 & 0.32 & 0.68 \\
+    ヘッド 3 & 0.48 & 0.52 \\
+    ヘッド 4 & 0.84 & 0.16 \\
+    \end{tabular}};
+  \node[sh] at (1.5,-29.3) {$(2,192)\to(4,2,48)\to(2,192)$};
+\end{scope}
+% ---- 4 第 1 ブロック：MLP
+\begin{scope}[shift={(66.5,-34.5)}]
+  \node[bar,minimum width=10mm,anchor=west] at (3,-8.5) {};
+  \node[bar,minimum width=40mm,anchor=west,fill=figgreen,draw=bookgreen] at (3,-13) {};
+  \node[bar,minimum width=40mm,anchor=west,fill=figgreen,draw=bookgreen] at (3,-17.5) {};
+  \node[bar,minimum width=10mm,anchor=west] at (3,-22) {};
+  \node[font=\tiny,anchor=west] at (13.5,-8.5) {192：LayerNorm を通した $\vu_t$};
+  \node[font=\tiny,anchor=west] at (43.5,-13) {768（\code{fc}）};
+  \node[font=\tiny,anchor=west] at (43.5,-17.5) {768（GELU）};
+  \node[font=\tiny,anchor=west] at (13.5,-22) {192（\code{proj}）$\to$ $\vh$ に足す};
+  \node[sh] at (1.5,-29.3) {$(2,192)\to(2,768)\to(2,192)$};
+\end{scope}
+% ---- 5 第 2〜4 ブロック
+\begin{scope}[shift={(0,-69)}]
+  \node[tx] at (1.5,-6.4) {③と④を、あと 3 回くり返す（重みはブロックごとに別）。};
+  \node[tx,font=\tiny] at (1.5,-10.6) {（参考）ブロック 1〜4 の各出口で、出力ヘッドに通したときの 1 位};
+  \node[anchor=north west,inner sep=0pt] at (1.5,-13.6) {\scriptsize\setlength{\tabcolsep}{3.2pt}%
+    \begin{tabular}{lcccc}
+    \hline
+    ブロック & 1 & 2 & 3 & 4 \\
+    1 位 & 一 & また & 「 & 主人 \\
+    確率 & 0.033 & 0.041 & 0.068 & 0.044 \\
+    \end{tabular}};
+  \node[sh] at (1.5,-29.3) {$(2,192)\to(2,192)$ を 3 回};
+\end{scope}
+% ---- 6 最後の LayerNorm
+\begin{scope}[shift={(66.5,-69)}]
+  \node[tx] at (2,-6.4) {ストリーム $\vh^{(4)}$ は、8 回の足し込みで大きさが\\まちまち。位置ごとに平均 0・分散 1 にそろえ、\\$\gamma_j$ 倍して $\beta_j$ を足す（式\eqref{eq:tf-layernorm}）};
+  \node[bar,minimum width=40mm,fill=figgray,draw=black!45] at (34,-20.5) {};
+  \node[bar,minimum width=40mm,fill=figgray,draw=black!45] at (34,-24.1) {};
+  \node[font=\scriptsize,anchor=east] at (13.5,-20.5) {$\vh_1$};
+  \node[font=\scriptsize,anchor=east] at (13.5,-24.1) {$\vh_2$};
+  \node[sh] at (1.5,-29.3) {$(2,192)\to(2,192)$};
+\end{scope}
+% ---- 7 出力ヘッド：ロジット
+\begin{scope}[shift={(0,-103.5)}]
+  \node[tx] at (1.5,-6.4) {$\mE$ の 4,096 行すべてと内積をとる（重み共有）};
+  \node[bar,minimum width=30mm,anchor=west,fill=figgray,draw=black!30] at (3,-11.5) {};
+  \node[font=\tiny,anchor=west,text=bookgray] at (33.5,-11.5) {位置 1：使わない};
+  \node[bar,minimum width=30mm,anchor=west,fill=figpurple,draw=bookpurple] at (3,-15.3) {};
+  \node[font=\tiny,anchor=west] at (33.5,-15.3) {位置 2：これを使う};
+  \node[tx] at (1.5,-18.2) {ロジットの上位: 主人 5.58、この\texttt{<e5>} 4.57、\\また 4.49、「 4.34};
+  \node[sh] at (1.5,-29.3) {$(2,192)\to(2,4096)\to$ 最後の行 $(4096)$};
+\end{scope}
+% ---- 8 温度と softmax
+\begin{scope}[shift={(66.5,-103.5)}]
+  \begin{axis}[at={(13mm,-24mm)},anchor=south west,xbar,width=20mm,height=14mm,scale only axis,
+    bar width=2.2mm,xmin=0,xmax=0.07,y dir=reverse,ytick={0,1,2,3},
+    yticklabels from table={code/ch10/out/fig_wagahai_top.csv}{token},table/col sep=comma,
+    xtick=\empty,scaled x ticks=false,tick label style={font=\tiny},axis lines*=left,
+    enlarge y limits=0.18,axis line style={black!40},grid=none,
+    nodes near coords,nodes near coords style={font=\tiny},
+    every node near coord/.append style={/pgf/number format/fixed,/pgf/number format/precision=3}]
+  \addplot[fill=figpurple,draw=bookpurple] table[col sep=comma,x=p10,y expr=\coordindex,skip coords between index={4}{8}]{code/ch10/out/fig_wagahai_top.csv};
+  \end{axis}
+  \node[tx,text width=21mm] at (40,-6.4) {棒は温度 1 の確率（上位 4 個）。\\温度 0.5 なら「主人」は 0.431。\\「猫」は 83 位で 0.002};
+  \node[sh] at (1.5,-29.3) {$(4096)\to(4096)$（合計 1）};
+\end{scope}
+% ---- 9 選ぶ
+\begin{scope}[shift={(0,-138)}]
+  \node[tx] at (1.5,-6.4) {貪欲法：⑦のロジットがいちばん大きいトークンを選ぶ。};
+  \node[tk,fill=figgreen,draw=bookgreen,thick] at (31,-14.5) {主人（ID 977）};
+  \node[tx] at (1.5,-19) {温度 1 のサンプリングなら、0.044 の確率で「主人」、\\0.016 で「この\texttt{<e5>}」…と、くじで選ぶ};
+  \node[sh] at (1.5,-29.3) {$(4096)\to$ ID 1 個};
+\end{scope}
+% ---- 10 末尾に付けて次へ
+\begin{scope}[shift={(66.5,-138)}]
+  \node[tk] at (10,-10) {＼n　}; \node[tk] at (24,-10) {吾輩は};
+  \node[tk,fill=figgreen,draw=bookgreen,thick] at (38,-10) {主人};
+  \node[tx] at (1.5,-14.2) {$T=3$ の列で①に戻る。続けると「の\texttt{<e6>}」\\「\texttt{<a8><aa>}」「顔」で「吾輩は主人の横顔」\\（\figref{fig:tf-wagahai-steps}）};
+  \node[sh] at (1.5,-29.3) {$(2)\to(3)$};
+\end{scope}
+\end{tikzpicture}
+\caption{「吾輩は」から次の 1 トークンができるまでの全部の段（基盤モデル \file{base.pt} での実測。\file{ch10/fig_wagahai.py}）。番号の順に読む。各コマの左下の青い枠は、そこで流れる数の形（バッチの軸 $B=1$ は省いた。2 は文脈のトークン数 $T$）。
+③の注意の重み、⑤のブロックごとの 1 位、⑦のロジット、⑧の確率は実測の値。
+この節の設定は貪欲法（温度 0）なので、実際の生成では⑧を計算せず、⑦のロジットの最大（主人 5.58）を選ぶ。選ばれるトークンは、⑧の確率の最大と同じである。⑧の棒は、参考として温度 1 の確率を示した。
+位置・ブロック・ヘッドの番号は 1 から数えた（コードでは 0 から。たとえばヘッド 4 はコードの head 3）。トークン ID はコードの値のまま。
+ベクトルを表す横長の箱の長さはコマごとの模式で、比が合うのは④の中（192 と 768）だけ。⑦のロジットの行は縮めて描いた（実際は 4,096 個で、192 次元の約 21 倍）。\texttt{<e5>} のような表示は、文字の途中で切れたバイト（16 進）を表す。}
+\label{fig:tf-wagahai}
+\end{figure}
+
+コマを順に見ていきます。
+
+\paragraph{① トークン化}
+「吾輩は」は 3 文字ですが、トークンは 1 個（ID 2819）です。
+BPE（\chapref{ch:tokenizer}）が、コーパスでよく出る並びとして、まとめて 1 つにしていたからです。
+前に付けた改行と全角の空白も 1 個（ID 319）なので、文脈は $T=2$ トークンです。
+
+\paragraph{② 埋め込みと位置}
+トークン ID は表の行番号です。
+$\mE$ から ID 319 と ID 2819 の行を引き、位置埋め込み $\mP$ から位置 1 と位置 2 の行（コードの番号では 0 と 1）を引いて足します（式\eqref{eq:tf-input}）。
+ここで、2 個の整数が 2 本の 192 次元のベクトル $\vh^{(0)}_1,\vh^{(0)}_2$ になり、形は $(2)\to(2,192)$ です。
+
+\paragraph{③ 第 1 ブロックの注意}
+各位置のベクトルを LayerNorm に通してから、\code{qkv} で $\mQ,\mK,\mV$ を作り、4 個のヘッドに 48 次元ずつ分けます。
+表は、位置 2（「吾輩は」）のクエリが、位置 1（＼n　）と位置 2（自分）にどれだけの重みを付けたかを、ヘッドごとに並べたものです。
+因果マスクがあるので、位置 2 より後ろには重みがありません（そもそも、まだ何もありません）。
+ヘッド 4 は前の改行に 0.84、ヘッド 2 は自分に 0.68 と、ヘッドごとに見る所が違います。
+4 個のヘッドの出力をつなげて $(2,192)$ に戻し、\code{proj} を通して、残差ストリームに足します。
+
+\paragraph{④ 第 1 ブロックの MLP}
+もう一度 LayerNorm に通し、\code{fc} で 768 次元に広げ、GELU を通し、\code{proj} で 192 次元に戻して、ストリームに足します。
+この計算は、2 つの位置で別々に行われます。
+
+\paragraph{⑤ 第 2〜4 ブロック}
+③と④を、あと 3 回くり返します。
+形は $(2,192)$ のまま変わりません。
+コマの表は参考のための測定で、各ブロックの出口のストリームに、最後の LayerNorm と出力ヘッドをそのまま当てはめたときの 1 位です（実際のモデルは、途中でこの計算をしていません）。
+1 位は「一」「また」「「」と移り、4 個目のブロックを出たところで、最終的な答えと同じ「主人」になります。
+
+\paragraph{⑥ 最後の LayerNorm}
+ストリームには 8 回の足し込みがたまっています（式\eqref{eq:tf-stream}、$2L=8$）。
+出力ヘッドに入れる前に、位置ごとに大きさをそろえます。
+
+\paragraph{⑦ 出力ヘッド}
+重み共有（\figref{fig:tf-tying}）なので、$\mE$ の 4,096 行すべてと内積をとり、$(2,4096)$ のロジットになります。
+位置 1 の行は「＼n　の次」の予測で、答え（吾輩は）はもう分かっているので使いません。
+使うのは位置 2 の行、つまり「吾輩は」の次の予測 $(4096)$ だけです。
+
+\paragraph{⑧ 温度と softmax（参考）}
+この節の設定の貪欲法では、実はこの段を計算しません（\coderef{code:tf-generate}の 10〜15 行目）。
+softmax は大小の順を変えないので、⑦のロジットの最大を選んでも、確率の最大を選んでも、同じトークンになるからです。
+ここでは参考として、サンプリングで使う確率を見ます。
+ロジットを温度で割って softmax をとると、合計 1 の確率になります。
+温度 1 では、1 位の「主人」でも 0.044 しかありません。
+このモデルの確率は、「吾輩は」の次では、多くの候補に薄く分かれているのです。
+温度 0.5 にすると、「主人」は 0.431 まで上がります（\figref{fig:tf-temp}と同じ効果です）。
+夏目漱石の文で思い浮かぶ「猫」は 83 位で、確率は 0.002 でした。
+ちなみに、コーパス全体を数えると「吾輩は」は 188 回出てきて、直後が「猫」の例は 10 回、「主人」は 6 回、「この」は 11 回です（\file{ch10/out/fig_wagahai.txt} の最後の行）。
+モデルは、こうした数え上げをそのまま写しているわけではありません。
+数えるモデル（\chapref{ch:lm}）と違い、小さな Transformer の予測は、学習した重みから計算された値なので、個々の並びの回数とは順位が食い違うことがあります。
+
+\paragraph{⑨ 選ぶ}
+貪欲法なので、ロジットがいちばん大きい「主人」（ID 977。⑧の確率でも 1 位）を選びます。
+温度 1 のサンプリングなら、0.044 の確率で「主人」、0.016 の確率で 2 位のトークン、…と、くじで選びます（\secref{sec:tf-generate}）。
+
+\paragraph{⑩ 末尾に付けて、次へ}
+「主人」を列の末尾に付けると、文脈は $T=3$ になります。
+この $(3)$ の列で①に戻り、同じ 10 段をもう一度たどります。
+
+このくり返しを 4 回続けたのが\figref{fig:tf-wagahai-steps}です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  tk/.style={draw=black!50,fill=figorange,rounded corners=1pt,minimum width=10.5mm,minimum height=5mm,font=\scriptsize,inner sep=0.5pt},
+  nw/.style={tk,fill=figgreen,draw=bookgreen,thick},
+  cand/.style={font=\scriptsize,anchor=west,inner sep=0.5pt}]
+\node[lbl,anchor=west] at (62,6) {上位 3 個の候補と確率（温度 1）};
+\foreach \s/\T in {1/2,2/3,3/4,4/5} {
+  \pgfmathsetmacro{\yy}{-(\s-1)*11}
+  \node[lbl,anchor=east,align=right] at (-3.5,\yy) {ステップ \s\\$T=\T$};
+}
+% 文脈
+\node[tk] at (3,0) {＼n　}; \node[tk] at (14,0) {吾輩は};
+\node[tk] at (3,-11) {＼n　}; \node[tk] at (14,-11) {吾輩は}; \node[nw] at (25,-11) {主人};
+\node[tk] at (3,-22) {＼n　}; \node[tk] at (14,-22) {吾輩は}; \node[tk] at (25,-22) {主人}; \node[nw] at (36,-22) {の\texttt{<e6>}};
+\node[tk] at (3,-33) {＼n　}; \node[tk] at (14,-33) {吾輩は}; \node[tk] at (25,-33) {主人}; \node[tk] at (36,-33) {の\texttt{<e6>}}; \node[nw,font=\tiny] at (47,-33) {\texttt{<a8><aa>}};
+% 矢印と候補
+\foreach \s/\x in {1/20,2/31,3/42,4/53.5} {
+  \pgfmathsetmacro{\yy}{-(\s-1)*11}
+  \draw[arr] (\x,\yy) -- (60,\yy);
+}
+\node[cand] at (62,0) {\textbf{主人 0.044}\quad この\texttt{<e5>} 0.016\quad また 0.015};
+\node[cand] at (62,-11) {\textbf{の\texttt{<e6>} 0.045}\quad の\texttt{<e7>} 0.036\quad も 0.034};
+\node[cand] at (62,-22) {\textbf{\texttt{<a8><aa>} 0.057}\quad \texttt{<9f>} 0.037\quad \texttt{<9e>} 0.026};
+\node[cand] at (62,-33) {\textbf{顔 0.109}\quad 着 0.070\quad から 0.044};
+\node[lbl,anchor=west] at (-14,-42) {できた文：吾輩は／主人／の［横の 1 バイト目］／［横の残り 2 バイト］／顔 ＝「吾輩は主人の横顔」};
+\end{tikzpicture}
+\caption{「吾輩は」から 4 トークンを貪欲法で生成するコマ送り（実測）。各行が 1 ステップで、左が文脈（緑は直前のステップで付け足したトークン）、右がそのステップの上位 3 個の候補と確率（太字を選んだ）。
+1 ステップごとに文脈が 1 トークン伸び、モデルはそのたびに文脈の全部の位置を計算し直して、最後の位置の予測だけを使う。\texttt{<e6>} などは文字の途中のバイト（16 進）で、「横」の 3 バイト（\texttt{e6 a8 aa}）が 2 つのトークンに分かれている。数値は \file{ch10/out/fig_wagahai_steps.csv}。}
+\label{fig:tf-wagahai-steps}
+\end{figure}
+
+\figref{fig:tf-wagahai-steps}の左の列を上から下へ見てください。
+文脈は 1 ステップごとに 1 トークン伸び、2 → 3 → 4 → 5 個になります。
+ステップ 2 と 3 で選ばれたのは、どちらも文字の途中で切れたトークンです。
+「の」と「横」の 1 バイト目（\texttt{e6}）が 1 トークン、「横」の残りの 2 バイト（\texttt{a8 aa}）が次の 1 トークンで、2 つそろって初めて「横」という文字になります。
+バイト単位の BPE（\chapref{ch:tokenizer}）では、このように 1 文字が 2 つのトークンにまたがることがあります。
+4 トークンをつなげると「吾輩は主人の横顔」で、\file{ch10/out/sampling.txt} の 1 行目（貪欲法）の書き出しと同じです。
+
+ここで、計算の量に目を向けましょう。
+ステップ 4 では、文脈の 5 つの位置すべてについて、①〜⑦の計算をしています。
+しかし使うのは、最後の位置のロジットだけです。
+しかも、位置 1〜4 の計算は、ステップ 3 でもほとんど同じことをしていました。
+生成が長くなるほど、この「すでにした計算のやり直し」が増えていきます。
+このやり直しを省くのが、\chapref{ch:modern-arch}の KV キャッシュです。
+ただし\chapref{ch:modern-arch}では、説明のために、短い別の列（「吾輩は」→「猫／である。…」）で KV キャッシュを描きます（\figref{fig:ma-kvcache}）。
+この節の実測（「＼n　吾輩は」の 2 トークンから「主人」「の\texttt{<e6>}」…と続く列）とは、列が違います。
+そのため、あちらの「位置 1」は「吾輩は」で、この節の「位置 1」（＼n　）とは別のトークンです。
+何を取っておけば計算をやり直さずに済むのかの数え方は、どちらの列でも同じです。
+
+本書の基盤モデルでは、①〜⑩の中の③④が 4 回くり返されるだけでした。
+大きなモデルでは、同じ形の段が数十回くり返され、ヘッドの数も数十になります（\tabref{tab:tf-scale}の GPT-3 は 96 ブロック・96 ヘッド）。
+それでも、1 トークンを選ぶまでの段の並びは、\figref{fig:tf-wagahai}と同じです。
+
+この節で分かったのは、1 トークンの生成が「トークン化 → 埋め込みと位置 → ブロック（注意と MLP）× $L$ → 最後の LayerNorm → 出力ヘッド →（サンプリングなら）温度と softmax → 選ぶ → 末尾に付ける」という段の列で、その間、形は $(T,d)$ のまま流れ、最後の位置の $(V)$ 個のロジット（サンプリングなら確率）だけが使われる、ということです。
 
 \section{Transformer の系譜：なぜデコーダのみか}\label{sec:tf-family}
 \laterread{飛ばしても、この先の章は読めます。「エンコーダ」や BERT という言葉に出会ったときに戻れば足ります。}
@@ -1327,8 +2014,22 @@ Transformer の原論文\cite{vaswani2017attention}は、英語の文を読ん�
     \node[font=\footnotesize\bfseries] at (\x,1.0) {\t};
     \node[lbl] at (\x,1.45) {\u};
   }
+  % 見える範囲のマス目（行 = 見る側の位置、列 = 見られる側の位置）
+  \foreach \x/\full/\col in {0/1/bookgreen, 3.4/0/bookaccent, 6.8/1/bookgreen, 9.8/0/bookaccent} {
+    \foreach \i in {1,...,4} { \foreach \j in {1,...,4} {
+      \pgfmathtruncatemacro{\on}{(\full==1 || \j<=\i) ? 1 : 0}
+      \ifnum\on=1
+        \fill[\col!45] (\x-0.5+0.25*\j-0.25,-1.05-0.25*\i+0.25) rectangle ++(0.25,-0.25);
+      \fi
+    }}
+    \draw[step=0.25,black!40] (\x-0.5,-1.05) grid (\x+0.5,-2.05);
+    \draw[black!60] (\x-0.5,-1.05) rectangle (\x+0.5,-2.05);
+  }
+  \node[lbl,align=center] at (1.7,-2.45) {マス目：行が見る側、列が見られる側（4 トークン）};
+  \node[lbl] at (8.3,-2.45) {色のマスが見える範囲};
 \end{tikzpicture}
-\caption{Transformer の 3 つの系統。緑はマスクなしの自己注意（前後を見る）、赤は因果マスク付きの自己注意（過去だけを見る）。本書のミニGPT と現在の LLM の多くは右の「デコーダのみ」。}
+\caption{Transformer の 3 つの系統。緑はマスクなしの自己注意（前後を見る）、赤は因果マスク付きの自己注意（過去だけを見る）。下の $4\times4$ のマス目は、4 トークンの列で、各位置（行）がどの位置（列）を見られるかを示す。緑は全部のマス、赤は下三角（自分とそれより前）だけ。
+交差注意では、デコーダの各位置が、エンコーダの出力の全部の位置を見る（矢印）。本書のミニGPT と現在の LLM の多くは右の「デコーダのみ」。}
 \label{fig:tf-family}
 \end{figure}
 
@@ -1342,13 +2043,17 @@ Transformer の原論文\cite{vaswani2017attention}は、英語の文を読ん�
 \caption{Transformer の 3 つの系統の比較。本書のミニGPT は右端の列。}
 \label{tab:tf-family3}
 \small
-\begin{tabular}{llll}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{36mm}>{\raggedright\arraybackslash}p{34mm}>{\raggedright\arraybackslash}p{36mm}}
 \toprule
  & エンコーダ–デコーダ & エンコーダのみ & デコーダのみ \\
 \midrule
 自己注意 & 読む側は前後、書く側は過去 & 前後を見る & 過去だけを見る \\
+交差注意 & あり（書く側が、読む側の出力を見る） & なし & なし \\
 学習の課題 & 文から文への変換 & 穴埋め & 次トークン予測 \\
 向いている用途 & 翻訳、要約 & 文の分類、検索 & 文章の生成 \\
+長所 & 入力の文の全体を前後から読んでから、訳や要約を書ける & 文の全体を前後から読める。検索用の文の埋め込みなどで今も広く使われる & 目的が単純で、どんな文章も教材になる。生成と理解が 1 つの形で済む。部品が少なく大きくしやすい \\
+短所 & 2 種類のブロックと交差注意が要り、部品の種類が多い & 損失を計算するのは隠した一部（15\%）だけ。続きを書く生成には向かない & 各位置は、自分より後ろのトークンを見られない \\
 代表 & 原論文、T5 & BERT & GPT、現在の LLM \\
 \bottomrule
 \end{tabular}
@@ -1378,13 +2083,15 @@ GPT-3\cite{brown2020language}は、大きなデコーダのみのモデルが、
 
 \begin{summary}
 \item Transformer（デコーダのみ）は、埋め込み＋位置 → ブロック × $L$ → 最後の LayerNorm → 出力ヘッドで、テンソルの形は入口と出口以外 $(B,T,d)$ のまま。
-\item 注意は語順を知らないので、位置ごとのベクトルを埋め込みに足す（位置エンコーディング）。本書と GPT-2 は学習型、原論文は正弦波。
+\item 1 回の注意は語順を知らないので、位置ごとのベクトルを埋め込みに足す（位置エンコーディング）。ブロックを重ねると因果マスクから間接的な手がかりも生まれるが、「何番目か」を直接渡すのは位置埋め込み。本書と GPT-2 は学習型、原論文は正弦波。
 \item 注意は位置の間の「通信」、MLP は各位置での「計算」。MLP は $d\to4d\to d$ の 2 層で、ブロックのパラメータの 3 分の 2（基盤モデルでは全体の約 46\%）を占める。
-\item 残差接続は、勾配が何も掛けられずに戻る「近道」を作り、深く重ねても学習を可能にする。各位置を流れるベクトルを残差ストリームとみなせる。
+\item 位置 $t$ のロジットは、$x_1,\dots,x_t$ の全部を見て $x_{t+1}$ を当てる予測。学習では $T$ 個の予測を一度に計算し、生成では最後の位置の予測だけを使う。
+\item 残差接続は、足し算だけを通る経路（近道）を作り、勾配が何も掛けられずに入口まで戻れるようにして、深く重ねても学習を可能にする。位置ごとのベクトルをブロックの順に並べたものを、残差ストリームとみなせる。
 \item LayerNorm は各位置のベクトルを平均 0・分散 1 にそろえる。部品の前に置く Pre-LN が GPT-2 以降の標準。
-\item 出力ヘッドはトークン埋め込みと重みを共有し、残差に足し込む層は $1/\sqrt{2L}$ 倍小さく初期化する。
+\item 出力ヘッドはトークン埋め込みと重みを共有し、残差ストリームに足し込む層は $1/\sqrt{2L}$ 倍小さく初期化する。
 \item パラメータ数は $Vd+T_{\max}d+L(12d^2+4d)+2d$。基盤モデルは 2,583,936。
-\item 生成では、貪欲法・温度・top-$k$・top-$p$ で選び方を変えられ、文章の性質が大きく変わる。
+\item 生成では、貪欲法・温度・top-$k$・top-$p$ で選び方を変えられ、文章の性質が大きく変わる。温度を上げるほど繰り返しは減るが、文字にならない並びが増える。
+\item 「吾輩は」の次の 1 トークンは、トークン化 → 埋め込みと位置 → ブロック × 4（③〜⑤）→ 最後の LayerNorm → 出力ヘッド →（サンプリングなら）温度と softmax → 選ぶ → 末尾に付ける、の 10 段で作られる（\figref{fig:tf-wagahai}の①〜⑩）。
 \end{summary}
 
 \section*{次の章へ}
@@ -1393,9 +2100,9 @@ GPT-3\cite{brown2020language}は、大きなデコーダのみのモデルが、
 しかし、書いた文の意味はまだ通りません。
 もっと大きなモデルを、BPE トークンで、もっと長く学習させるとどこまで行けるかは、\chapref{ch:pretraining}（事前学習）で確かめます。
 
-本章で組み立てたミニGPT は、2019 年の GPT-2 と同じ設計です。
+本章で組み立てたミニGPT は、2019 年の GPT-2 とほぼ同じ設計です（違いは、\code{Linear} のバイアスを省いたことくらいです）。
 しかし、それから現在までに、LLM の設計にはいくつもの改良が加えられてきました。
-学習型の位置埋め込みは文脈長の上限を超えられず、生成のたびに過去の全トークンを計算し直すのは無駄です（基盤モデルは 129 番目のトークンを入力できず、\coderef{code:tf-generate}の 8 行目は毎回、文脈の全体を通し直していました）。
+学習型の位置埋め込みは文脈長の上限を超えられず、生成のたびに過去の全トークンを計算し直すのは無駄です（基盤モデルは一度に 129 個以上のトークンを入力できず、\coderef{code:tf-generate}の 8 行目は毎回、文脈の全体を通し直していました。\figref{fig:tf-wagahai-steps}のステップ 4 で、5 位置分を計算して 1 位置分だけを使ったとおりです）。
 次の\chapref{ch:modern-arch}では、現在の LLM が GPT-2 とどこが違い、なぜそう変わったのかを、一つずつ実装しながら確かめます。
 初めて読む人は、\chapref{ch:modern-arch}と\chapref{ch:gpu}を後に回して、この章の \code{GPT} クラスを BPE トークンで学習させる\chapref{ch:pretraining}へ進んで構いません。
 
@@ -1403,14 +2110,14 @@ GPT-3\cite{brown2020language}は、大きなデコーダのみのモデルが、
 
 \begin{itemize}
 \item Vaswani ら「Attention Is All You Need」\cite{vaswani2017attention}：Transformer の原論文。エンコーダ–デコーダ、正弦波の位置エンコーディング、Post-LN。
-\item Radford ら「Language Models are Unsupervised Multitask Learners」\cite{radford2019language}：GPT-2。Pre-LN、最後の LayerNorm、残差の初期化の工夫。本書のミニGPT の設計の元。
+\item Radford ら「Language Models are Unsupervised Multitask Learners」\cite{radford2019language}：GPT-2。Pre-LN、最後の LayerNorm、足し込む層の初期化の工夫。本書のミニGPT の設計の元。
 \item Karpathy「nanoGPT」\cite{karpathy2022nanogpt}と講義「Let's build GPT」\cite{karpathy2022zerotohero}：\code{llmbook.model} とほぼ同じ構造の実装と、それを一から書く動画。同じ範囲を扱う書籍に Raschka\cite{raschka2024build}がある。
 \end{itemize}
 
 \begin{exercises}
 \exfirst{1 と 4}
 \item （手計算）$\vu=(2,4,4,6)$ に LayerNorm（$\vgamma=\vone$, $\vbeta=\vzero$, $\epsilon=0$）を適用した結果を求めてください。また、$\vu$ のすべての成分に 100 を足したベクトルでは結果がどうなるでしょうか。
-\item （手計算）式\eqref{eq:tf-params}に GPT-2 最小モデルの設定（$V=50{,}257$, $T_{\max}=1024$, $L=12$, $d=768$）を代入し、\code{Linear} のバイアス（1 層あたり $9d$）も足して、約 1.24 億になることを確かめてください。$12Ld^2$ は全体の何割でしょうか。
+\item （手計算）式\eqref{eq:tf-params}に GPT-2 最小モデルの設定（$V=50{,}257$, $T_{\max}=1024$, $L=12$, $d=768$）を代入し、\code{Linear} のバイアス（1 ブロックあたり $9d$）も足して、約 1.24 億になることを確かめてください。$12Ld^2$ は全体の何割でしょうか。
 \item （コード）\file{ch10/ablation.py} に「Post-LN」の版（\code{x = ln1(x + attn(x))} のように足した後に正規化する）を加えて、学習曲線を比べてください。
 \item （コード）\file{ch10/sampling_demo.py} で、計算ドリル「\texttt{\textbackslash n12+35=}」の続きを温度 0、0.8、1.5 で 20 回ずつ生成し、「47」が出た回数を数えて、結果を\figref{fig:tf-temp}の考え方で説明してください。
 \item （考察）エンコーダのみのモデル（BERT）で文章を 1 トークンずつ生成しようとすると、何が困るでしょうか。因果マスクの有無と、学習の目的の違いから説明してください。

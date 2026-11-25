@@ -1,9 +1,9 @@
 $ torchrun --standalone --nproc_per_node=2 ch14/ddp_train.py
-step 10: loss 8.196（ランク 0 の値） 保存しました
-step 20: loss 7.619（ランク 0 の値） 保存しました
-step 30: loss 6.696（ランク 0 の値） 保存しました
-world=2: 30720 トークンを 1.6 秒
+step 10: loss 8.151（ランク 0 の値） 保存しました
+step 20: loss 7.207（ランク 0 の値） 保存しました
+step 30: loss 7.174（ランク 0 の値） 保存しました
+world=2: 30720 トークンを 7.7 秒
 $ STEPS=40 torchrun --standalone --nproc_per_node=2 ch14/ddp_train.py
 checkpoints/ch14_ddp.pt の step 30 から再開します
-step 40: loss 7.511（ランク 0 の値） 保存しました
-world=2: 10240 トークンを 0.5 秒
+step 40: loss 7.554（ランク 0 の値） 保存しました
+world=2: 10240 トークンを 2.1 秒

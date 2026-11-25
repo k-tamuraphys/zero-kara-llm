@@ -8,7 +8,7 @@
 GPU、ネットワーク、ストレージは、何を基準に選べばよいのでしょうか。\\[1mm]
 \textbf{この章を終えると}:
 \begin{itemize}
-\item パラメータ数から、計算量・GPU 時間・日数・費用までを一本の計算でつなげられます。
+\item パラメータ数から、計算量・GPU 時間・日数・費用までを、1 つの計算の手順でつなげられます。
 \item その見積もりを、本書のミニGPT・GPT-2・Llama 級の公開値で検算し、どのくらい当たるかを言えます。
 \item メモリ、データとチェックポイントの容量、書き込み時間を見積もれます。
 \item GPU・ネットワーク・ストレージ・電力・契約形態を、「何に効くか」で選べます。
@@ -17,9 +17,9 @@ GPU、ネットワーク、ストレージは、何を基準に選べばよい�
 
 \begin{readingguide}
 \item[\rgpre] この章は 3 周目に読む章です。\chapref{ch:gpu}の $6ND$ と MFU、\chapref{ch:pretraining}の $D\approx20N$ を思い出せれば読めます。
-\item[\rgmust] \secref{sec:infra-pipeline}と\secref{sec:infra-memory}：パラメータ数から GPU 時間・費用までの一本道と、メモリの見積もり（$16N$ と $2N$）です。全員が知っておくとよい見積もりの考え方で、\chapref{ch:capstone}が式\eqref{eq:infra-gpuhours}などをそのまま使います。\textbf{\chapref{ch:capstone}の前に、この 2 節は必ず読んでください。}
-\item[\rgmust] \secref{sec:infra-configs}の「事例：10 億パラメータのモデルを 1 週間で」：一本道を最初から最後まで使う、この章の答えです。
-\item[\rgskim] \secref{sec:infra-verify}、\secref{sec:infra-gpu}、\secref{sec:infra-storage}、\secref{sec:infra-ckpt}：見出しの下の札に書いた結論だけ押さえれば、事例は読めます。実際に GPU とストレージを選ぶときに読み直してください。
+\item[\rgmust] \secref{sec:infra-pipeline}と\secref{sec:infra-memory}：パラメータ数から GPU 時間・費用までを 5 段の計算で順につなぐ見積もりの手順と、メモリの見積もり（$16N$ と $2N$）です。全員が知っておくとよい見積もりの考え方で、\chapref{ch:capstone}が式\eqref{eq:infra-gpuhours}などをそのまま使います。\textbf{\chapref{ch:capstone}の前に、この 2 節は必ず読んでください。}
+\item[\rgmust] \secref{sec:infra-configs}の「事例：10 億パラメータのモデルを 1 週間で」：見積もりの手順を最初から最後まで使う、この章の答えです。
+\item[\rgskim] \secref{sec:infra-verify}、\secref{sec:infra-gpu}、\secref{sec:infra-storage}、\secref{sec:infra-ckpt}：見出しの下の囲みに書いた結論だけ押さえれば、事例は読めます。実際に GPU とストレージを選ぶときに読み直してください。
 \item[\rglater] \secref{sec:infra-node}、\secref{sec:infra-power}、\secref{sec:infra-cloud}と、\secref{sec:infra-configs}の事例以外の小節：複数のノードを借りる・組むとき、自分で計算機を置くとき、買うかどうかを決めるときに戻れば足ります。
 \end{readingguide}
 
@@ -29,9 +29,9 @@ GPU、ネットワーク、ストレージは、何を基準に選べばよい�
 一方で、大規模な学習は一度始めたら数日から数か月かかり、やり直しは高くつきます。
 だから実務では、学習を\textbf{始める前に}紙の上で見積もります。
 
-うれしいことに、必要な道具はもうそろっています。
+うれしいことに、必要な式はもうそろっています。
 計算量は $6ND$（\chapref{ch:gpu}）、データの量の目安は $D\approx 20N$（\chapref{ch:pretraining}）、通信の時間は $2S/\beta$（\chapref{ch:distributed}）です。
-この章では、それらを一本につなぎ、小さな\textbf{見積もり電卓}（\file{ch15/estimate.py}）にまとめます。
+この章では、それらを順につないで 1 つの計算の手順にし、小さな\textbf{見積もり電卓}（\file{ch15/estimate.py}）にまとめます。
 電卓は、答えの分かっている 3 つの例で検算します。
 そのうえで、GPU、ノード、ネットワーク、ストレージ、電力、契約形態を順に見て、「何を基準に選ぶか」を表にまとめます。
 
@@ -39,40 +39,44 @@ GPU、ネットワーク、ストレージは、何を基準に選べばよい�
 価格は数か月で変わります。
 覚えてほしいのは数値ではなく、\textbf{数値を入れ替えれば何度でも使える計算の手順}です。
 
-\section{見積もりの一本道：パラメータ数から費用まで}\label{sec:infra-pipeline}
+\section{見積もりの手順：パラメータ数から費用まで}\label{sec:infra-pipeline}
 
 最初の問いは、「作りたいモデルの大きさだけが決まっているとき、費用までを何段の計算で出せるか」です。
 答えは\figref{fig:infra-pipeline}の 5 段です。
 左から順に見てください。
-各段で、上に書いた入力を 1 つずつ足していきます。
+各段で、灰色で書いた入力を 1 つずつ足していきます（2 段目だけは、外からの入力がなく $6N$ を掛けるだけです）。
+図の青い数は、このあと例\ref{ex:infra-8b}で手計算する 80 億パラメータのモデルの値です。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,
-  s/.style={box,minimum width=19mm,minimum height=11mm,font=\footnotesize},
-  i/.style={font=\scriptsize,text=bookgray,align=center}]
-\node[s] (n) at (0,0) {パラメータ数\\$N$};
-\node[s] (d) at (25,0) {トークン数\\$D$};
-\node[s] (c) at (50,0) {計算量\\$C=6ND$};
-\node[redbox,minimum width=19mm,minimum height=11mm,font=\footnotesize] (g) at (75,0) {GPU 時間};
-\node[s] (t) at (100,0) {日数};
-\node[greenbox,minimum width=19mm,minimum height=11mm,font=\footnotesize] (p) at (100,-17) {費用};
+  s/.style={box,minimum width=20mm,minimum height=14mm,font=\footnotesize,align=center},
+  i/.style={font=\scriptsize,text=bookgray,align=center},
+  ex/.style={font=\scriptsize,text=bookblue}]
+\node[s] (n) at (0,0) {パラメータ数\\$N$\\[-0.5mm]{\color{bookblue}\scriptsize $8\times10^{9}$}};
+\node[s] (d) at (25,0) {トークン数\\$D$\\[-0.5mm]{\color{bookblue}\scriptsize $1.6\times10^{11}$}};
+\node[s] (c) at (50,0) {計算量\\$C=6ND$\\[-0.5mm]{\color{bookblue}\scriptsize $7.68\times10^{21}$}};
+\node[redbox,minimum width=20mm,minimum height=14mm,font=\footnotesize,align=center] (g) at (75,0) {GPU 時間\\[-0.5mm]{\color{bookblue}\scriptsize 5,390}};
+\node[s] (t) at (100,0) {日数\\[-0.5mm]{\color{bookblue}\scriptsize 3.5 日}};
+\node[greenbox,minimum width=20mm,minimum height=11mm,font=\footnotesize,align=center] (p) at (100,-20) {費用\\[-0.5mm]{\color{bookblue}\scriptsize 2.15 万ドル}};
 \draw[arr] (n) -- (d); \draw[arr] (d) -- (c); \draw[arr] (c) -- (g); \draw[arr] (g) -- (t);
 \draw[arr] (g.south) |- (p.west);
-\node[i] at (12.5,11) {$D/N$\\（目安 20）};
-\node[i] at (62.5,11) {公称 FLOP/s\\$\times$ MFU};
-\node[i] at (87.5,11) {GPU の枚数\\$G$};
-\node[i] at (79,-21) {1 GPU 時間の価格};
-\draw[darr] (12.5,7) -- (12.5,1); \draw[darr] (62.5,7) -- (62.5,1); \draw[darr] (87.5,7) -- (87.5,1);
-\draw[darr] (79,-19) -- (79,-17.5);
+\node[i] at (12.5,14) {$D/N$\\（目安 20）};
+\node[i] at (37.5,14) {$6N$ を掛ける\\（外の入力なし）};
+\node[i] at (62.5,14) {公称 $P$ $\times$ MFU\\{\color{bookblue}989 T $\times$ 0.4}};
+\node[i] at (87.5,14) {GPU の枚数 $G$\\{\color{bookblue}64 枚}};
+\node[i,anchor=east] at (86,-26) {単価（1 GPU 時間の価格）\\{\color{bookblue}3.99 ドル}};
+\draw[darr] (12.5,10) -- (12.5,1); \draw[darr] (37.5,10) -- (37.5,1); \draw[darr] (62.5,10) -- (62.5,1); \draw[darr] (87.5,10) -- (87.5,1);
+\draw[darr] (84,-23) -- (84,-20.5);
 \end{tikzpicture}
-\caption{見積もりの一本道。箱が求める量、灰色の文字がその段で足す入力。
-GPU 時間（赤）が決まれば、枚数で割って日数が、価格を掛けて費用（緑）が出る。}
+\caption{見積もりの 5 段の計算。箱が求める量、灰色の文字がその段で足す入力（$P$ は GPU 1 枚の公称の速さ、FLOP/s）。
+GPU 時間（赤）が決まれば、枚数 $G$ で割って日数が、単価を掛けて費用（緑）が出る。
+青い数は例\ref{ex:infra-8b}（$N=8\times10^{9}$、H100 を 64 枚）の値。989 T は $989\times10^{12}$ FLOP/s。}
 \label{fig:infra-pipeline}
 \end{figure}
 
 \textbf{1 段目}は、トークン数 $D$ です。
-計算量が同じなら $D\approx 20N$ が釣り合いのよい配分でした（Chinchilla の目安、\secref{sec:pt-scaling}）。
+計算量が同じなら、$D\approx 20N$ が損失をいちばん小さくする配分の目安でした（Chinchilla の目安、\secref{sec:pt-scaling}）。
 \textbf{2 段目}は計算量で、$C\approx 6ND$ FLOPs です（式\eqref{eq:gpu-6n}）。
 ここまでは GPU と無関係に決まります。
 
@@ -94,17 +98,20 @@ GPU を $G$ 枚使い、1 GPU 時間の価格を「単価」と呼ぶと、次�
 \text{費用} \;=\; \text{GPU 時間} \times \text{単価}
 \label{eq:infra-days-cost}
 \end{equation}
-式\eqref{eq:infra-days-cost}には大事な性質が隠れています。
-\textbf{費用は枚数 $G$ によりません}。
+式\eqref{eq:infra-days-cost}からは、大事な性質が読み取れます。
+\textbf{MFU が変わらなければ、費用は枚数 $G$ によりません}。
 8 枚で 10 日でも、80 枚で 1 日でも、GPU 時間が同じなら費用は同じです。
-枚数は「いつ終わるか」だけを決めます（通信で効率が落ちる分は、\secref{sec:infra-node}で考えます）。
+このとき枚数は「いつ終わるか」だけを決めます。
+ただし、枚数を増やすと GPU どうしの通信が増え、MFU が下がることがあります。
+MFU が下がれば GPU 時間が増え、その分だけ費用も増えます。
+どこまで MFU を保てるかは、\secref{sec:infra-node}で同期の時間と比べて判断します。
 
-\begin{example}[80 億パラメータのモデルを手で見積もる]
+\begin{example}[80 億パラメータのモデルを手で見積もる]\label{ex:infra-8b}
 $N=8\times10^{9}$ とします。
 \begin{enumerate}
 \item トークン数：$D=20N=1.6\times10^{11}$（1,600 億トークン）。
 \item 計算量：$C=6\times(8\times10^{9})\times(1.6\times10^{11})=7.68\times10^{21}$ FLOPs。
-\item GPU 時間：H100 の公称値は 989 TFLOP/s です。MFU を 40\% と置くと、実効は $989\times10^{12}\times0.4\approx3.96\times10^{14}$ FLOP/s。
+\item GPU 時間：H100（SXM 版）の公称値は 989 TFLOP/s です。MFU を 40\% と置くと、実効は $989\times10^{12}\times0.4\approx3.96\times10^{14}$ FLOP/s。
 $7.68\times10^{21}\div(3.96\times10^{14})\approx1.94\times10^{7}$ 秒で、3600 で割ると約 5,390 GPU 時間。
 \item 日数：64 枚なら $5390\div(64\times24)\approx3.5$ 日。
 \item 費用：1 GPU 時間 3.99 ドルなら $5390\times3.99\approx2.15$ 万ドル。
@@ -134,6 +141,7 @@ $7.68\times10^{21}\div(3.96\times10^{14})\approx1.94\times10^{7}$ 秒で、3600 
 末尾の桁が少し違う（5,393 と 5,390）のは、手計算では実効の速さを $3.96\times10^{14}$ に丸めたのに、電卓は丸めずに計算するからです。
 「学習の状態メモリ」から下の行は、この章の残りで 1 行ずつ説明していきます。
 その行の「128 GB（H100 は 1 枚 80 GB）」は、1 枚には載らないという警告です。
+「読み出しの必要速度」の行の「527 kトークン/秒」の k は 1,000 のことで、毎秒 52.7 万トークンです。
 
 入力のうち、自分で決めるのは $N$ と $G$ だけで、残りは\tabref{tab:infra-inputs}のように外から持ってきます。
 この表で最も不確かなのは MFU です。
@@ -169,11 +177,11 @@ $D=6\times10^{10}$、$C=6\times(3\times10^{9})\times(6\times10^{10})=1.08\times1
 実効の速さ $3.96\times10^{14}$ FLOP/s で割ると $2.73\times10^{6}$ 秒、つまり約 758 GPU 時間。
 16 枚なら $758\div(16\times24)\approx2.0$ 日、費用は $758\times3.99\approx3{,}000$ ドルです。
 $N$ を 8B から 3B へ約 2.7 分の 1 にしただけで、GPU 時間は 5,390 から 758 へ約 7 分の 1 になりました。
-$D$ も $N$ に比例させるので、\textbf{計算量は $N$ の 2 乗}で効くのです。
+$D$ も $N$ に比例させるので、\textbf{計算量は $N$ の 2 乗}に比例して増えるのです。
 式で書けば $C=6N\times20N=120N^{2}$ で、$N$ が $8/3\approx2.7$ 倍なら、計算量は $(8/3)^{2}\approx7.1$ 倍です。
 
 \begin{example}[逆向きに使う：40 ドルでどこまで作れるか]
-一本道は逆にもたどれます。
+この手順は逆向きにもたどれます。
 H100 を 1 枚、10 時間借りると、費用は $3.99\times10\approx40$ ドルです。
 この間にこなせる計算は $3.96\times10^{14}\times36{,}000\approx1.4\times10^{19}$ FLOPs。
 $D=20N$ なら $C=6N\times20N=120N^{2}$ なので、$N=\sqrt{1.4\times10^{19}\div120}\approx3.4\times10^{8}$ です。
@@ -182,7 +190,7 @@ $D=20N$ なら $C=6N\times20N=120N^{2}$ なので、$N=\sqrt{1.4\times10^{19}\di
 \end{example}
 
 この節の答えをまとめます。
-見積もりは、$N \to D \to C \to$ GPU 時間 $\to$ 日数・費用の一本道です。
+見積もりは、$N \to D \to C \to$ GPU 時間 $\to$ 日数・費用と、5 段の計算を順にたどる手順です。
 GPU に関する入力は「公称の速さ $\times$ MFU」と「価格」の 2 つだけです。
 
 \section{電卓を検算する：見積もりはどのくらい当たるか}\label{sec:infra-verify}
@@ -195,6 +203,7 @@ GPU に関する入力は「公称の速さ $\times$ MFU」と「価格」の 2 
 \subsection*{例 1：本書のミニGPT}
 
 \file{base.pt} は、$N=2{,}583{,}936$ のモデルを延べ $D=4000\times4096\approx1.6\times10^{7}$ トークンで学習したものでした。
+4,000 は学習のステップ数、4,096 は 1 ステップで読むトークン数（バッチ $B=32$ $\times$ 文脈長 $T=128$）です。
 「延べ」と断るのは、\file{train.bin} に入っているトークンは 2,479,113 個で、同じデータを約 6.6 回読んだからです（\chapref{ch:pretraining}）。
 計算量を決めるのは延べの $D$ で、ディスクの容量を決めるのはファイルにあるトークンの数です。
 実際にかかった時間は 2,163 秒（約 36 分）です。
@@ -204,23 +213,33 @@ CPU も「公称の速さと MFU を持つ装置」とみなせば、同じ電�
 
 公称の速さには、\chapref{ch:gpu}で測った 2 スレッドの行列積の速さ（127.4 GFLOP/s）を入れました。
 MFU は、同じ章で測った 1 ステップ 0.731 秒から逆算しています。
+式で言えば、「1 ステップの計算量（$6N\times4096$）$\div$ 1 ステップの時間（0.731 秒）$\div$ 公称の速さ」です（コードの 4 行目）。
+ただし、ここでの分母は仕様表の値ではなく実測の速さなので、\secref{sec:gpu-arch}で定義した MFU そのものではなく、MFU に似た量です。
 
 \outputfile{ch15/out/verify_mini.txt}
 
-計算量は、フックで 1 つずつ数えた値の 0.94 倍でした。
-$6ND$ は埋め込みの参照など細かい部分を省いた近似ですが、6\% しか違いません。
+計算量は、フックで 1 つずつ数えた値（\secref{sec:gpu-flops}）の 0.94 倍でした。
+$6ND$ が少し小さく出るのは、パラメータを持たない計算を数えないからです。
+注意のスコア $\mQ\mK^\T$ と、注意の重みを掛けたバリューの和がそれで、順伝播と逆伝播を合わせて 1 トークンあたり約 $12LTd$ FLOPs です
+（層数 $L=4$、文脈長 $T=128$、幅 $d=192$ なら 1,179,648）。
+逆に、表を引くだけの位置埋め込みと LayerNorm のパラメータは、$N$ に入っているのに行列積がないので、$6ND$ を大きくする側に働きます。
+差し引きは 1 トークンあたり 1,011,456 FLOPs で、数えた値と $6N$ の差にちょうど一致します（\chapref{ch:gpu}と同じ内訳です）。
+$12LTd$ は文脈長 $T$ に比例するので、文脈が長いモデルほど $6ND$ は小さめに出ます。
+この例では、その差は 6\% でした。
 ファイルの大きさは 0.1\% 以内で当たりました。
 重みは 1 個 4 バイト（本書のミニGPT は FP32）、トークンは 1 個 2 バイト（\code{uint16}）という単純な掛け算だからです。
 
 時間は実際の 1.35 倍でした。
-ただし、この行は独立した検算ではありません。
+この行で見せたいのは、「1 ステップの時間がばらつくと、MFU の見当がそのまま答えのずれになる」ことです。
+この行は、当たるかどうかの独立した検算ではありません。
 MFU を「1 ステップ 0.731 秒」から逆算して入れたので、電卓は $4000\times0.731=2{,}924$ 秒を計算し直しただけです。
-ずれは、0.731 秒を測ったときと、\file{base.pt} を学習したとき（平均 $2163\div4000\approx0.54$ 秒）とで、計算機の混み具合が違ったことから来ています。
+ずれは、0.731 秒を測ったときと、\file{base.pt} を学習したとき（平均 $2163\div4000\approx0.54$ 秒）とで、同じ計算機でほかのプログラムがどれだけ CPU を使っていたかが違ったことから来ています（本書の執筆環境は、ほかの作業と CPU を分け合っています）。
 この章であとから同じ 1 ステップを測ったときは、約 1.9 秒かかりました（\secref{sec:infra-storage}）。
 同じ計算機と同じプログラムでも、1 ステップの時間は 3 倍以上ばらつくのです。
 \textbf{MFU が 3 割ずれれば、答えも 3 割ずれます}。
 この例で確かめられたのは計算量と容量で、時間が当たるかどうかは MFU の見当しだいです。
-なお、68\% という MFU が GPU の事例より高いのは、分母が仕様表の値ではなく、同じ CPU で測った行列積の速さだからです。
+なお、68\% という値が GPU の事例の MFU より高いのは、分母が仕様表の値ではなく、同じ CPU で測った行列積の速さだからです。
+実測の速さは理論上の最大より小さいので、同じ計算でも割合は大きく出ます。
 
 \subsection*{例 2：GPT-2 124M}
 
@@ -257,21 +276,28 @@ LLaMA の 650 億パラメータ版は、A100 を 2,048 枚、約 21 日使い�
 電卓の見積もりは 122 万 GPU 時間で、比は 1.18 でした。
 逆算した MFU は 47\% です。
 SmolLM3~\cite{huggingface2025smollm3}（30 億パラメータ、H100 が 384 枚で 24 日）は見積もりの 1.6 倍かかっており、逆算した MFU は 26\% です。
-GPT-2 の 55\% が例 2 の報告値（約 60\%）と少し違うのは、「約 90 分」という丸めた時間から逆算したためです。
+GPT-2 の 55\% が例 2 の報告値（約 60\%）と少し違う理由は、この報告からは決められません。
+「約 90 分」という丸めた時間から逆算したことと、報告の MFU が注意のスコア計算（例 1 で見た、$6ND$ が数えない分）まで含めて数えている可能性が考えられます。
 
 $D/N$ の列にも注目してください。
 81、22、3,733 と、目安の 20 から大きく外れる例があります。
 SmolLM3 は、モデルを小さく保ったまま、目安の約 190 倍のトークンを読ませました。
-$D\approx20N$ は計算量が決まっているときの釣り合いの目安で、出発点にすぎません。
+$D\approx20N$ は、計算量が決まっているときに損失をいちばん小さくする配分の目安で、出発点にすぎません。
 $D$ は、自分の計画に合わせて入れ直します。
 
 「計算量そのものが公開されている例」の下の 3 行は、論文が計算量そのものを書いている例です。
 GPT-3\cite{brown2020language}も Llama 3.1 405B\cite{dubey2024llama3}も、$6ND$ と 1\% 以内で一致します。
+ただし、これは $6ND$ が 1\% の精度で正しいという証拠ではありません。
+FLOPs は計算機で直接測る量ではなく、論文の値も、モデルの設計とトークン数から計算した見積もりだからです。
+ここで確かめられるのは、私たちの $N$ と $D$ の読み方が論文と同じだということです。
+$6ND$ の精度を確かめたのは、1 つずつ数えた値と比べた例 1（6\% の差）です。
 最後の行は、Llama 3.1 405B を H100 16,000 枚で学習する日数の見積もりで、MFU 40\% なら 69 日です。
 論文は学習全体の日数を書いていないので（\chapref{ch:distributed}で見た 54 日は、中断の回数を数えた期間です）、この例では MFU を逆算できません。
 
 \figref{fig:infra-verify}は、はじめの 3 行を両対数のグラフに置いたものです。
-点が破線の上にあれば、見積もりと公開値が一致しています。
+点が破線の線上にあれば、見積もりと公開値が一致しています。
+破線より上側の点は見積もりが多め（実際は見積もりより早く終わった）、下側の点は実際のほうが長くかかったことを表します。
+出力の「比」は「見積もり $\div$ 公開値」なので、上側の点は比が 1 より大きく（LLaMA の 1.18）、下側の点は 1 より小さくなります（SmolLM3 の 0.64。実際は見積もりの $1\div0.64\approx1.6$ 倍かかった）。
 GPU 時間は 12 から 100 万まで 5 桁にわたりますが、どの点も破線から 2 倍以内に収まっています。
 
 \begin{figure}[htbp]
@@ -280,7 +306,7 @@ GPU 時間は 12 から 100 万まで 5 桁にわたりますが、どの点も�
 \begin{axis}[width=0.62\linewidth,height=52mm,xmode=log,ymode=log,
   xmin=3,xmax=1e7,ymin=3,ymax=1e7,
   xlabel={公開値（GPU 時間）},ylabel={見積もり（GPU 時間）},
-  legend pos=north west]
+  ]
 \addplot[only marks,mark=*,mark size=2.2pt,bookaccent]
   table[col sep=comma,x=pub,y=est]{code/ch15/out/verify.csv};
 \addplot[dashed,black!60,domain=3:1e7,samples=2] {x};
@@ -289,9 +315,11 @@ GPU 時間は 12 から 100 万まで 5 桁にわたりますが、どの点も�
 \node[font=\scriptsize,anchor=west] at (axis cs:18,13) {GPT-2 124M};
 \node[font=\scriptsize,anchor=north west] at (axis cs:1.6e5,5e4) {SmolLM3 3B};
 \node[font=\scriptsize,anchor=south east] at (axis cs:5e5,1.5e6) {LLaMA 65B};
+\node[font=\scriptsize,text=bookgray,anchor=north west,align=left] at (axis cs:4,6e6) {破線より上：\\見積もりが多め};
+\node[font=\scriptsize,text=bookgray,anchor=south east,align=right,fill=white,inner sep=1pt] at (axis cs:8e6,4) {破線より下：\\実際のほうが長くかかった};
 \end{axis}
 \end{tikzpicture}
-\caption{電卓の見積もり（MFU 40\% を仮定）と公開値。破線は一致、薄い線は 2 倍と 2 分の 1。}
+\caption{電卓の見積もり（MFU 40\% を仮定）と公開値。破線は一致（見積もり $=$ 公開値）、薄い線は 2 倍と 2 分の 1。}
 \label{fig:infra-verify}
 \end{figure}
 
@@ -309,7 +337,8 @@ MoE（\chapref{ch:modern-arch}）では、1 トークンが通るパラメータ
 
 \begin{table}[tbp]
 \centering
-\caption{本書のモデルと実物の規模。トークン列は 2 バイト/トークン、保存 1 回（完全なチェックポイント）は 12 バイト/パラメータで計算（\secref{sec:infra-storage}, \secref{sec:infra-ckpt}）。
+\caption{本書のモデルと実物の規模。トークン列は、語彙が 65,536 以下なら 2 バイト/トークン、それより大きければ 4 バイト/トークン（Llama 3.1 は語彙 128,256 なので 4 バイト）。保存 1 回（完全なチェックポイント）は 12 バイト/パラメータで計算（\secref{sec:infra-storage}, \secref{sec:infra-ckpt}）。
+Llama 3.1 405B の学習日数は論文に書かれていない（本文）。
 $D$ は延べの数。\file{base.pt} は同じデータを約 6.6 回読んだので、トークン列はファイルにある 248 万トークンの分（$^{*}$）。}
 \label{tab:infra-scale}
 \footnotesize\setlength{\tabcolsep}{3.5pt}
@@ -320,13 +349,13 @@ $D$ は延べの数。\file{base.pt} は同じデータを約 6.6 回読んだ�
 本書 \file{base.pt} & $2.6\times10^{6}$ & $1.6\times10^{7}$ & $2.5\times10^{14}$ & CPU、36 分 & 5 MB$^{*}$ & 31 MB \\
 GPT-2 124M & $1.2\times10^{8}$ & $1.0\times10^{10}$ & $7.4\times10^{18}$ & A100 $\times$ 8、90 分 & 20 GB & 1.5 GB \\
 LLaMA 65B & $6.5\times10^{10}$ & $1.4\times10^{12}$ & $5.5\times10^{23}$ & A100 $\times$ 2,048、21 日 & 2.8 TB & 0.78 TB \\
-Llama 3.1 405B & $4.1\times10^{11}$ & $1.6\times10^{13}$ & $3.8\times10^{25}$ & H100 $\times$ 16,000 & 31 TB & 4.9 TB \\
+Llama 3.1 405B & $4.1\times10^{11}$ & $1.6\times10^{13}$ & $3.8\times10^{25}$ & H100 $\times$ 16,000 & 62 TB & 4.9 TB \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 この節の答えです。
-計算量 $6ND$ は数\% で当たり、ファイルの大きさはほぼ正確に当たります。
+計算量 $6ND$ は、1 つずつ数えた値と 6\% の差で当たり（文脈が長いほど少し小さめに出ます）、ファイルの大きさはほぼ正確に当たります。
 時間と費用は MFU 次第で、MFU を 40\% と置いた見積もりは公開値の 0.6〜1.4 倍でした。
 
 \section{メモリの見積もり：その GPU に載るか}\label{sec:infra-memory}
@@ -347,6 +376,7 @@ Llama 3.1 405B & $4.1\times10^{11}$ & $1.6\times10^{13}$ & $3.8\times10^{25}$ & 
 \begin{table}[tbp]
 \centering
 \caption{1 パラメータあたりのバイト数。場面ごとに、何をどの精度で持つかが違う。
+主重みは、重みの更新を正確に行うために別に持つ FP32 の重みの写し（\secref{sec:gpu-memory}）。
 本書のミニGPT はすべて FP32 なので、\file{base.pt} の重みは 1 個 4 バイト。}
 \label{tab:infra-bytes}
 \footnotesize
@@ -368,41 +398,52 @@ M_{\text{学習}} \;\approx\; 16N \;+\; A \quad\text{（バイト）}
 \end{equation}
 $A$ は活性化で、バッチサイズ $\times$ 系列長 $\times$ 層数 $\times$ 幅にほぼ比例します（\figref{fig:gpu-activation}）。
 活性化は、バッチを小さくして勾配累積を使えば減らせます。
-しかし状態の $16N$ は、1 枚の GPU で学習する限り減らせません。
+勾配累積は分散学習でもデータ並列と組み合わせて使い、GPU 間で勾配を平均する回数を減らせます（\secref{sec:dist-torchrun}）。
+しかし状態の $16N$ は、混合精度と AdamW をそのまま使い、状態を全部 1 枚の GPU に置く限り減らせません。
 \figref{fig:infra-memory}は、モデルの大きさごとの $16N$ を、GPU のメモリと比べたものです。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[xbar,width=0.8\linewidth,height=52mm,xmode=log,xmin=0.1,xmax=20000,log origin=infty,
-  bar width=2.6mm,ytick=data,y dir=reverse,enlarge y limits=0.15,
-  table/col sep=comma,yticklabels from table={code/ch15/out/memory.csv}{model},
+\begin{axis}[xbar,width=0.8\linewidth,height=66mm,xmode=log,xmin=0.1,xmax=20000,log origin=infty,
+  bar width=2.3mm,ytick=data,y dir=reverse,enlarge y limits=0.12,
+  yticklabels={GPT-2 124M,1B,Llama 3 8B,Llama 3 70B,Llama 3.1 405B},
   yticklabel style={font=\footnotesize},
   xlabel={メモリ（GB、対数目盛）},
-  legend style={at={(0.98,0.96)},anchor=north east}]
-\addplot[fill=figred,draw=bookaccent] table[col sep=comma,x=train_gb,y expr=\coordindex]{code/ch15/out/memory.csv};
-\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=infer_gb,y expr=\coordindex]{code/ch15/out/memory.csv};
-\legend{学習の状態 $16N$,推論の重み $2N$}
-\draw[dashed,black!60] (axis cs:24,-1) -- (axis cs:24,5);
-\draw[dashed,black!60] (axis cs:80,-1) -- (axis cs:80,5);
-\draw[dashed,black!60] (axis cs:180,-1) -- (axis cs:180,5);
-\node[font=\scriptsize,anchor=south,rotate=90] at (axis cs:24,0.25) {24 GB};
-\node[font=\scriptsize,anchor=south,rotate=90] at (axis cs:80,0.25) {80 GB};
-\node[font=\scriptsize,anchor=south,rotate=90] at (axis cs:180,0.25) {180 GB};
+  legend style={at={(0.5,-0.2)},anchor=north,font=\scriptsize,legend columns=2,/tikz/every even column/.append style={column sep=3mm}},clip=false]
+\addplot[fill=figred,draw=bookaccent,bar shift=1.3mm] table[col sep=comma,x=train_gb,y expr=\coordindex]{code/ch15/out/memory.csv};
+\addplot[fill=figblue,draw=bookblue,bar shift=-1.3mm] table[col sep=comma,x=infer_gb,y expr=\coordindex]{code/ch15/out/memory.csv};
+\legend{学習の状態 $16N$（各組の上）,推論の重み $2N$（各組の下）}
+\draw[black!15] (axis cs:0.1,0.5) -- (axis cs:20000,0.5);
+\draw[black!15] (axis cs:0.1,1.5) -- (axis cs:20000,1.5);
+\draw[black!15] (axis cs:0.1,2.5) -- (axis cs:20000,2.5);
+\draw[black!15] (axis cs:0.1,3.5) -- (axis cs:20000,3.5);
+\draw[dashed,black!60] (axis cs:24,-0.48) -- (axis cs:24,4.48);
+\draw[dashed,black!60] (axis cs:80,-0.48) -- (axis cs:80,4.48);
+\draw[dashed,black!60] (axis cs:180,-0.48) -- (axis cs:180,4.48);
+\node[font=\scriptsize,anchor=west,rotate=90,inner sep=1pt] at (axis cs:24,-0.5) {RTX 4090（24 GB）};
+\node[font=\scriptsize,anchor=west,rotate=90,inner sep=1pt] at (axis cs:80,-0.5) {H100（80 GB）};
+\node[font=\scriptsize,anchor=west,rotate=90,inner sep=1pt] at (axis cs:180,-0.5) {B200（180 GB）};
 \end{axis}
 \end{tikzpicture}
 \caption{学習の状態（赤、16 バイト/パラメータ）と推論の重み（青、BF16 で 2 バイト/パラメータ）。
+1 つのモデルの 2 本の棒を 1 組にし、組の間を細い線で区切った。
 破線は GPU 1 枚のメモリ（RTX 4090、H100、B200）。活性化と KV キャッシュの分は含まない。}
 \label{fig:infra-memory}
 \end{figure}
 
-赤い棒の右端が破線より左にあれば、その GPU 1 枚で学習できる見込みがあります。
-10 億パラメータ（16 GB）は 24 GB の GPU にぎりぎり、80 GB なら余裕で載ります。
+赤い棒の右端が破線より左にあれば、その GPU 1 枚に状態が載ります。
+ただし学習には、状態のほかに活性化の分が要ります。
+10 億パラメータ（16 GB）は 24 GB の GPU にも状態だけなら載りますが、活性化に使えるのは残りの 8 GB だけです。
+80 GB なら余裕で載ります。
 Llama 3 8B の大きさ（128 GB）は、80 GB にも載りません。
 このときは、状態を複数の GPU に分けて持つ FSDP（\secref{sec:dist-sharding}）を使います。
 64 枚に分ければ 1 枚あたり $128\div64=2$ GB ほどで（\chapref{ch:distributed}の見積もりでも、75 億パラメータを 64 枚に分けて 1.9 GB でした）、残りを活性化に回せます。
 目安として、\textbf{状態が GPU のメモリの半分を超えたら、分割を考える}とよいでしょう。
 残りの半分は活性化のために空けておきます。
+24 GB の GPU で 1B を学習する例は、この目安を超えています。
+1 枚でも、バッチを小さくして勾配累積で補えば動く見込みはありますが、余裕はほとんどありません。
+GPU を 2 枚以上使えるなら、状態を分けて持つほうが安全です。
 
 \subsection*{推論時：重みと KV キャッシュ}
 
@@ -423,7 +464,9 @@ KV キャッシュは 1 トークン 128 KiB なので（\chapref{ch:modern-arch
 
 \begin{table}[tbp]
 \centering
-\caption{Llama 3 8B（BF16）を 1 枚の GPU に載せたとき、8,192 トークンの系列を同時に何本処理できるか（\file{ch15/out/tables.txt}）。}
+\caption{Llama 3 8B（BF16）を 1 枚の GPU に載せたとき、8,192 トークンの系列を同時に何本処理できるか（\file{ch15/out/tables.txt}）。
+全部の系列が文脈いっぱいまで使い、活性化や実行環境が使うメモリを 0 とした上限。
+GPU のメモリは、仕様表の数値（24、80 など）をそのまま $10^{9}$ バイト単位の GB として計算した。}
 \label{tab:infra-infer}
 \footnotesize
 \begin{tabular}{lrrr}
@@ -443,7 +486,7 @@ H200 & 141 GB & 124.9 GB & 116 本 \\
 1 パラメータあたり 16 バイトと 2 バイトで、8 倍の差があるからです。
 同時に処理できる本数は、重みを引いた\textbf{残り}のメモリで決まります。
 H100 と H200 は計算の速さが同じですが、H200 は約 2 倍の本数を持てます。
-推論向けの GPU 選びでは、メモリの大きさがそのまま「さばける利用者の数」になるのです。
+推論向けの GPU 選びでは、メモリの大きさが、同時に応答できる利用者の数を決めるのです（速さの上限は\secref{sec:infra-configs}で見ます）。
 重みをさらに小さくする量子化は\chapref{ch:distillation}で、1 秒に何トークン返せるかという速さの話は\chapref{ch:eval-serving}で扱います。
 
 この節の答えです。
@@ -451,7 +494,7 @@ H100 と H200 は計算の速さが同じですが、H200 は約 2 倍の本数�
 同じモデルでも、学習は推論の 8 倍以上のメモリを使います。
 
 \section{GPU を選ぶ：仕様表の読み方と価格}\label{sec:infra-gpu}
-\skimread{結論は「同じ計算の費用は、どの GPU でも 2 倍も違わない。だから、載るか・間に合うか・借りられるかで選ぶ。価格には日付を付ける」です。実際に GPU を借りるときに読み直してください。}
+\skimread{結論は「同じ MFU が出るなら、同じ計算の費用は、どの GPU でも 2 倍も違わない。だから、載るか・間に合うか・借りられるかで選ぶ。価格には日付を付ける」です。実際に GPU を借りるときに読み直してください。}
 
 電卓の入力のうち、GPU に関するものは公称の速さ、メモリ、価格でした。
 この節の問いは、「たくさんある GPU の仕様表のどこを見て、どう比べるか」です。
@@ -464,8 +507,8 @@ H100 と H200 は計算の速さが同じですが、H200 は約 2 倍の本数�
 
 \begin{table}[tbp]
 \centering
-\caption{主な GPU の仕様と価格（2026 年 11 月時点）。仕様は各社の製品ページ~\cite{nvidia2026h100,nvidia2026h200,nvidia2026l40s,nvidia2026rtx5090,nvidia2026gb200}による。公称は密な BF16 の行列積の値（B200 は FP8 の公表値の半分とした推定）。
-価格は GPU クラウド各社の 1 GPU 時間あたりの価格の目安（各社の価格表を 2026 年 11 月に調べた中央値。GB200 は 1 社の価格）。「---」は公表値がないか、確認できなかったもの。
+\caption{主な GPU の仕様と価格（2026 年 11 月時点）。仕様は各社の製品ページ~\cite{nvidia2026h100,nvidia2026h200,nvidia2026l40s,nvidia2026rtx5090,nvidia2026gb200}による。公称は密な BF16 の行列積の値（B200 は、FP8 の密な行列での公表値 4.5 PFLOP/s の半分とした推定）。
+価格は 1 GPU 時間あたりのオンデマンド価格の目安（価格の集計サイトに載った各社の価格の、2026 年 11 月の中央値。GB200 は 1 社の価格）。「---」は公表値がないか、確認できなかったもの。
 GB200 は、GPU 72 枚を 1 つの棚（ラック）に収めた製品（GB200 NVL72）の、1 枚あたりの値。}
 \label{tab:infra-gpus}
 \footnotesize\setlength{\tabcolsep}{5pt}
@@ -494,7 +537,10 @@ GB200 & 2,500 & 186 & 8 & あり & --- & 10.50 & 2.92 \\
 \item \textbf{メモリ帯域}（TB/s）。メモリから 1 秒に読める量です。
 推論のように重みを読む時間が支配的な処理では、これが速さを決めます（\secref{sec:gpu-memory-bw}）。
 \item \textbf{接続}。GPU どうしを直接つなぐ NVLink があるかどうかです（表の NVLink の列）。
-L40S にはなく、複数枚で 1 つのモデルを学習する用途には向きません。
+L40S にはなく、GPU どうしの通信は PCIe（Gen4）を通ります。
+H100 の世代の PCIe Gen5 でも送受信の合計で 128 GB/s で、NVLink の 900 GB/s の約 7 分の 1 です。
+そのため L40S は、大きなモデルを複数枚で学習する用途、特にノード内の通信が多いテンソル並列（\secref{sec:dist-mp}）には向きません。
+小さなモデルを DDP で学習するだけなら、同期の量が小さいので PCIe でも足りることがあります（\tabref{tab:infra-sync}で確かめられます）。
 \item \textbf{消費電力}（W）。自分で設置するなら、電源と冷却の設計を決めます（\secref{sec:infra-power}）。
 \end{enumerate}
 
@@ -519,34 +565,41 @@ H100 なら $3.99\div(989\times10^{12}\times0.4\times3600\div10^{18})\approx2.80
   symbolic x coords={A100,L40S,H100,H200,B200,GB200},xtick=data,
   xticklabel style={font=\scriptsize,rotate=45,anchor=east},
   ylabel={ドル/EFLOP},nodes near coords,
-  nodes near coords style={font=\tiny,/pgf/number format/fixed,/pgf/number format/precision=2},
+  nodes near coords style={font=\tiny,/pgf/number format/fixed,/pgf/number format/fixed zerofill,/pgf/number format/precision=2},
   title={\footnotesize (a) 計算あたりの費用}]
 \addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=gpu,y=usd_per_eflop]{code/ch15/out/gpu_cost.csv};
 \end{axis}
 \end{tikzpicture}\hspace{1mm}%
 \begin{tikzpicture}
-\begin{axis}[xbar,width=0.42\linewidth,height=50mm,bar width=2.6mm,xmin=0,xmax=14,
+\begin{axis}[xbar,width=0.42\linewidth,height=50mm,bar width=2.6mm,xmin=0,xmax=18,
   ytick=data,y dir=reverse,enlarge y limits=0.1,
-  table/col sep=comma,yticklabels from table={code/ch15/out/h100_price.csv}{label},
+  yticklabels={スポット（中央値）,予約（中央値）,オンデマンド（中央値）,Lambda,CoreWeave,AWS,Azure,Google Cloud},
   yticklabel style={font=\scriptsize},xlabel={ドル/GPU 時},
   nodes near coords,nodes near coords style={font=\tiny,/pgf/number format/fixed,/pgf/number format/precision=2},
   title={\footnotesize (b) H100 の 1 GPU 時間の価格}]
 \addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=price,y expr=\coordindex]{code/ch15/out/h100_price.csv};
+\draw[black!50,dashed] (axis cs:0,2.5) -- (axis cs:18,2.5);
+\node[font=\tiny,text=bookgray,anchor=south east] at (axis cs:17.8,2.5) {上：契約ごとの中央値};
+\node[font=\tiny,text=bookgray,anchor=north east] at (axis cs:17.8,2.5) {下：各社のオンデマンド};
 \end{axis}
 \end{tikzpicture}
 \caption{(a) $10^{18}$ FLOPs の計算にかかる費用（MFU 40\%、\tabref{tab:infra-gpus}の価格）。
-(b) 同じ H100 でも、契約と事業者で価格は約 5 倍違う（2026 年 11 月の定価）。}
+(b) 同じ H100 でも、契約と事業者で価格は約 5 倍違う（2026 年 11 月）。
+上の 3 本は価格の集計サイトによる契約の種類ごとの中央値（「オンデマンド（中央値）」が本章で使う 3.99 ドル）、下の 5 本は各社のオンデマンドの価格表の値。}
 \label{fig:infra-cost}
 \end{figure}
 
 \figref{fig:infra-cost}(a) が結果です。
 時間あたりの価格は L40S と GB200 で 6 倍以上違うのに、計算あたりの費用は 2.6〜4.5 ドルの間に収まっています。
-つまり、\textbf{どの GPU を選んでも、同じ計算の費用は 2 倍も変わりません}。
+つまり、\textbf{どの GPU でも同じ MFU（ここでは 40\%）が出るなら、同じ計算の費用は 2 倍も変わりません}。
+実際の MFU は GPU ごとに違います。
+NVLink のない GPU を複数枚使う場合や、出たばかりの世代でソフトウェアの対応が追いついていない時期には、MFU が下がることがあります。
+候補の GPU を短い時間だけ借りて MFU を測ってから比べるのが確実です。
 では何で選ぶのかというと、費用以外の 3 つです。
 \begin{itemize}
-\item \textbf{載るか}。H200 は H100 と同じ速さで、価格は約 1.2 倍、メモリは約 1.8 倍です。払っているのはメモリ代です。
+\item \textbf{載るか}。H200 は H100 と同じ速さで、価格は約 1.2 倍、メモリは約 1.8 倍です。価格の差は、メモリの大きさに払っている分です。
 \item \textbf{間に合うか}。速い GPU なら少ない枚数で済み、通信で失う効率も小さくなります。
-\item \textbf{借りられるか}。新しい世代は品薄で、古い世代は数がそろいます。2026 年は Blackwell 世代（B200 など）が出荷の中心になりましたが、H100 と H200 も借りやすい基準機として残っています。
+\item \textbf{借りられるか}。新しい世代は品薄で、古い世代は数がそろいます。2026 年は Blackwell 世代（B200 など）が出荷の中心になりましたが、H100 と H200 も、借りやすい標準的な選択肢として残っています。
 \end{itemize}
 
 \subsection*{同じ GPU でも価格は 5 倍違う}
@@ -555,28 +608,58 @@ H100 なら $3.99\div(989\times10^{12}\times0.4\times3600\div10^{18})\approx2.80
 いちばん安いのは\term{スポット}{spot}で、空いている GPU を安く借りる代わりに、途中で取り上げられることがあります（\chapref{ch:distributed}で見たプリエンプションです）。
 \term{予約}{reserved}は、数か月から数年の利用を約束して割引を受ける契約です。
 約束なしで使った分だけ払うのが\term{オンデマンド}{on-demand}です。
-オンデマンドの価格は、GPU の貸し出しを専門とする\textbf{GPU クラウド}（Lambda~\cite{lambda2026gpu}、CoreWeave~\cite{coreweave2026cloud} など）で 4〜6 ドル、
-大手の総合クラウド（AWS、Azure、Google Cloud）で 7〜11 ドルです。
+図の (b) の上の 3 本は、価格の集計サイトがまとめた、契約の種類ごとの中央値です。
+下の 5 本は、事業者ごとのオンデマンドの価格です。
+オンデマンドの価格は、GPU の貸し出しを専門とする\textbf{GPU クラウド}（Lambda~\cite{lambda2026gpu}、CoreWeave~\cite{coreweave2026cloud} など）で約 4.6〜6.2 ドル、
+大手の総合クラウド（AWS、Azure、Google Cloud）で約 7〜11 ドル（6.88〜11.07 ドル）です。
+本章の計算で使う 3.99 ドルは、事業者を区別しない、オンデマンド価格全体の中央値です。
+個々の大手の GPU クラウドより安いのは、小さな事業者の安い価格も中央値に入っているからです。
 総合クラウドは高めですが、すでに使っているほかのサービスと組み合わせやすいという利点があります。
 
 \begin{caution}{価格には必ず日付を付ける}
 GPU の価格は下がり続けるとは限りません。
 2026 年は、メモリ部品の不足で多くの事業者が値上げをしました。
 たとえば Lambda は、2026 年 11 月に H100 を 3.99 ドルから 4.59 ドルに上げたと報じられています（現在の価格は価格表~\cite{lambda2026gpu}で確かめられます）。
+値上げ前の 3.99 ドルが、本章で使う中央値と同じ値なのは偶然です。
 古い記事の「H100 は 1 時間 2 ドル」をそのまま使うと、費用を半分に見積もってしまいます。
 DeepSeek-V3 の論文\cite{liu2024deepseekv3}は、278.8 万 GPU 時間の学習費用を 557.6 万ドルと書いていますが、これは 1 GPU 時間 2 ドルという仮定での値です。
 仮に 3.99 ドルで計算すると、約 1,110 万ドルになります。
 \end{caution}
 
-\begin{practice}{NVIDIA 以外の選択肢}
-AMD の Instinct（MI300X~\cite{amd2026mi300x} は 192 GB、公称 1,307 TFLOP/s）や、クラウド事業者が自社で設計した Google の TPU、AWS の Trainium もあります。
-メモリが大きい、安いといった利点がある一方、TPU は JAX という別のライブラリが中心であるなど、ソフトウェアの事情が違います。
-\textbf{自分の PyTorch のコードがそのまま動くか}を、小さな実験で先に確かめるのが安全です。
-\end{practice}
+\subsection*{NVIDIA 以外の選択肢}
+
+ここまでは NVIDIA の GPU だけを見てきました。
+ほかにも、AMD の Instinct（MI300X~\cite{amd2026mi300x} は 192 GB、公称 1,307 TFLOP/s）や、クラウド事業者が自社で設計した Google の TPU、AWS の Trainium があります。
+どれを選ぶかで迷う点は、主にソフトウェアです。
+\tabref{tab:infra-accel}に、4 つの系統を並べました。
+
+\begin{table}[tbp]
+\centering
+\caption{学習に使える計算装置の系統（2026 年 11 月時点。メモリは 1 枚・1 チップあたりの公表値）。
+どれが得かは、価格だけでなく、自分のコードで出る MFU で決まるので、表だけでは決められない。}
+\label{tab:infra-accel}
+\footnotesize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{32mm}>{\raggedright\arraybackslash}p{19mm}}
+\toprule
+系統 & 例（メモリ） & 長所 & 短所・ソフトウェアの事情 & 手に入れ方 \\
+\midrule
+NVIDIA の GPU & H100（80 GB）、B200（180 GB） & ソフトウェアがいちばんそろっている。本書の PyTorch のコードがそのまま動く & 2026 年は品薄と値上げ（\secref{sec:infra-gpu}の注意） & 多くのクラウドで借りられる。買える \\
+\addlinespace[2pt]
+AMD Instinct & MI300X（192 GB）、MI355X（288 GB） & 1 枚のメモリが大きい & CUDA ではなく ROCm の上で動く。PyTorch には ROCm 版がある & 借りられる。買える \\
+\addlinespace[2pt]
+Google の TPU & Ironwood（192 GB） & 最大 9,216 チップを 1 つの構成につなげる & ライブラリは JAX/XLA が中心（PyTorch/XLA もある） & Google Cloud で借りるだけ（売っていない） \\
+\addlinespace[2pt]
+AWS の Trainium & Trainium3（144 GB） & 最大 144 チップを 1 台の UltraServer にまとめられる & CUDA 向けのコードはそのままでは動かない & AWS で借りる \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+どの系統でも、\textbf{自分の PyTorch のコードがそのまま動くか}と、\textbf{そのとき MFU がいくつ出るか}を、小さな実験で先に確かめるのが安全です。
+計算あたりの費用は「価格 $\div$（公称 $\times$ MFU）」なので、仕様表の速さが大きくても、MFU が低ければ得にはなりません。
 
 この節の答えです。
 仕様表では、公称の速さ（密な値）・メモリ・帯域・接続・電力の 5 つを見ます。
-計算あたりの費用は GPU によらずほぼ同じなので、載るか、間に合うか、借りられるかで選びます。
+同じ MFU が出るなら、計算あたりの費用は GPU によらずほぼ同じなので、載るか、間に合うか、借りられるかで選びます。
 価格は契約で 5 倍違い、時期でも変わります。
 
 \section{ノードとネットワーク：GPU の外側}\label{sec:infra-node}
@@ -585,7 +668,7 @@ AMD の Instinct（MI300X~\cite{amd2026mi300x} は 192 GB、公称 1,307 TFLOP/s
 GPU は単体では動きません。
 この節の問いは、「GPU を載せる計算機と、それらをつなぐネットワークには何が要るか」です。
 
-\subsection*{8 GPU ノードの解剖}
+\subsection*{8 GPU ノードの中身}
 
 GPU を何枚か載せた 1 台の計算機が\textbf{ノード}でした（\chapref{ch:distributed}）。
 \figref{fig:infra-node}は、H100 を 8 枚載せた代表的なノードの中身です（DGX H100。NVIDIA が売っている完成品のサーバです）。
@@ -593,38 +676,48 @@ GPU を借りるだけの人にも、この図は役に立ちます。
 借りるときの仕様表には、CPU・主メモリ・SSD・回線の速さが並んでいるからです。
 GPU 以外の部品が、それぞれ何のためにあるかを見てください。
 
-\begin{figure}[tbp]
+\begin{figure}[b]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize]
-\draw[draw=black!50,rounded corners=3pt,fill=black!3] (-3,-27) rectangle (113,25);
-\node[anchor=north west,font=\footnotesize\bfseries] at (-2,25) {1 ノード（消費電力は最大 10.2 kW）};
-\node[orangebox,minimum width=30mm,minimum height=8mm] (cpu) at (16,12) {CPU $\times$ 2};
-\node[orangebox,minimum width=30mm,minimum height=8mm] (ram) at (50,12) {主メモリ 2 TB};
-\node[greenbox,minimum width=38mm,minimum height=8mm] (nvme) at (89,12) {NVMe SSD 約 30 TB};
+\draw[draw=black!50,rounded corners=3pt,fill=black!3] (-3,-23) rectangle (119,31);
+\node[anchor=north west,font=\footnotesize\bfseries] at (-2,31) {1 ノード（消費電力は最大 10.2 kW）};
+\node[orangebox,minimum width=22mm,minimum height=8mm] (cpu) at (12,22) {CPU $\times$ 2};
+\node[orangebox,minimum width=18mm,minimum height=8mm,align=center] (ram) at (40,22) {主メモリ\\[-1mm]2 TB};
+\node[greenbox,minimum width=20mm,minimum height=8mm,align=center] (nvme) at (69,22) {NVMe SSD\\[-1mm]約 30 TB};
+\node[box,minimum width=22mm,minimum height=8mm,align=center] (snic) at (102,22) {\scriptsize ストレージ用\\[-1mm]\scriptsize NIC};
+% 計算用の NIC 8 個は、それぞれ別の回線で外へ出る（入れ子の L 字で、線どうしは交わらない）
 \foreach \i in {0,...,7} {
-  \node[redbox,minimum width=11mm,minimum height=8mm] (g\i) at (\i*13.6+7,-2) {GPU\\[-1mm]{\tiny 80 GB}};
+  \node[box,minimum width=10mm,minimum height=4.5mm,font=\scriptsize,inner sep=1pt] (c\i) at (\i*13.6+7,3) {NIC};
+  \node[redbox,minimum width=11mm,minimum height=8mm] (g\i) at (\i*13.6+7,-6) {GPU\\[-1mm]{\tiny 80 GB}};
+  \draw[draw=bookblue] (g\i.north) -- (c\i.south);
+  \pgfmathsetmacro{\ly}{6.2+0.75*(7-\i)}
+  \pgfmathsetmacro{\lx}{110.5+0.75*(7-\i)}
+  \draw[draw=bookblue,semithick] (c\i.north) -- (\i*13.6+7,\ly) -- (\lx,\ly) -- (\lx,-27);
 }
-\node[purplebox,minimum width=106mm,minimum height=5mm] (nvs) at (54.6,-12) {NVSwitch $\times$ 4：NVLink で全 GPU を相互接続（900 GB/s）};
+\node[lbl,text=bookblue,anchor=north east,align=right] at (119,-27.5) {計算用ネットワークへ（8 本。それぞれ別のリーフへ、\figref{fig:infra-fabric}）};
+\draw[dashed,draw=bookaccent,rounded corners=2pt] (0.6,-10.8) rectangle (108.6,-1.2);
+\node[purplebox,minimum width=102mm,minimum height=5mm,font=\scriptsize] (nvs) at (54.6,-16.5) {NVSwitch $\times$ 4：NVLink で全 GPU を相互接続（GPU 1 枚あたり 900 GB/s、送受信の合計）};
 \foreach \i in {0,...,7} { \draw[thick,draw=bookpurple] (g\i.south) -- (g\i.south|-nvs.north); }
-\node[box,minimum width=78mm,minimum height=5mm] (nic) at (41,-21) {計算用 NIC $\times$ 8（各 400 Gb/s、GPU 1 枚に 1 口）};
-\node[box,minimum width=25mm,minimum height=5mm] (snic) at (97,-21) {ストレージ用 NIC};
-\draw[arr] (nic.south) -- ++(0,-6) node[below,lbl] {計算用ネットワークへ};
-\draw[arr] (snic.south) -- ++(0,-6) node[below,lbl] {共有ストレージへ};
-\draw[darr] (cpu.south) -- (cpu.south|-g0.north);
+\draw[arr] (snic.north) -- ++(0,6) node[above,lbl] {共有ストレージへ};
 \draw[darr] (nvme.west) -- (ram.east);
 \draw[darr] (ram.west) -- (cpu.east);
+\draw[darr] (13.8,18) -- (13.8,-1.2);
+\node[lbl,anchor=west,font=\tiny] at (14.3,15) {PCIe で 8 枚の GPU へ};
 \end{tikzpicture}
-\caption{8 GPU ノードの中身（DGX H100 の公表仕様~\cite{nvidia2026dgxh100}）。赤が GPU、紫が GPU どうしの接続、青が外への接続、橙と緑が GPU を支える部品。}
+\caption{8 GPU ノードの中身（DGX H100 の公表仕様~\cite{nvidia2026dgxh100}）。赤が GPU、紫が GPU どうしの接続、青が外への接続、橙と緑が GPU にデータを渡す部品。
+計算用の NIC は GPU 1 枚に 1 つずつ付いていて、8 つの口からは 8 本の回線が別々に出て、それぞれ別のリーフスイッチへつながる（\figref{fig:infra-fabric}）。破線の矢印は学習データの流れ（NVMe $\to$ 主メモリ $\to$ CPU $\to$ 赤の破線で囲んだ 8 枚の GPU のそれぞれ）。
+4 つの NVSwitch は 1 本の帯にまとめて描いた。}
 \label{fig:infra-node}
 \end{figure}
 
 \begin{itemize}
-\item \textbf{CPU と主メモリ}。データを読み、バッチを組み、GPU に送るのは CPU の仕事です（\figref{fig:gpu-host-device}）。
+\item \textbf{CPU と主メモリ}。データを読み、バッチを組み、PCIe を通して 8 枚の GPU のそれぞれに送るのは CPU の仕事です（\figref{fig:gpu-host-device}）。
 主メモリは 2 TB で、GPU のメモリの合計（640 GB）の約 3 倍あります。
 読んだデータを OS がキャッシュしておく場所にもなります。
 \item \textbf{NVMe SSD}。ノードに内蔵された高速な記憶装置です。
 容量は約 30 TB で、学習データの手元の写し（キャッシュ）を置きます。
 \item \textbf{NVSwitch}。8 枚の GPU を NVLink でつなぎます。ノードの中の通信はここを通ります。
+図の 900 GB/s は GPU 1 枚あたりの、送る向きと受け取る向きを合わせた値です（片方向では 450 GB/s。\chapref{ch:distributed}）。
 \item \textbf{NIC}（ネットワークの口）。計算用が GPU 1 枚につき 1 口あり、ストレージ用は別にあります。
 \end{itemize}
 構成を自分で決めるときも、この例が目安になります。
@@ -638,43 +731,79 @@ GPU 以外の部品が、それぞれ何のためにあるかを見てくださ�
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize]
-\foreach \i/\x in {1/0,2/24,3/48} { \node[graybox,minimum width=19mm,minimum height=9mm] (n\i) at (\x,0) {ノード\\[-0.5mm]{\tiny GPU $\times$ 8}}; }
+\foreach \i/\x in {1/0,2/24,3/48,4/77} { \node[graybox,minimum width=19mm,minimum height=9mm] (n\i) at (\x,0) {ノード\\[-0.5mm]{\tiny GPU $\times$ 8}}; }
 \node at (62.5,0) {$\cdots$};
-\node[graybox,minimum width=19mm,minimum height=9mm] (n4) at (77,0) {ノード\\[-0.5mm]{\tiny GPU $\times$ 8}};
-\foreach \i/\x in {1/12,2/38,3/64} { \node[box,minimum width=17mm,minimum height=6mm] (l\i) at (\x,17) {リーフ}; }
+\foreach \i/\x in {1/12,2/38,3/64} { \node[box,minimum width=17mm,minimum height=6mm] (l\i) at (\x,17) {リーフ \i}; }
 \foreach \i/\x in {1/25,2/51} { \node[box,minimum width=17mm,minimum height=6mm] (s\i) at (\x,31) {スパイン}; }
-\foreach \n in {1,2,3,4} { \foreach \l in {1,2,3} { \draw[draw=bookblue,line width=0.5pt] (n\n.north) -- (l\l.south); } }
+% 各ノードの口 1, 2, 3 が、それぞれリーフ 1, 2, 3 へ
+\foreach \n/\x in {1/0,2/24,3/48,4/77} {
+  \foreach \l/\o in {1/-6,2/0,3/6} {
+    \fill[bookblue] (\x+\o-0.8,4.5) rectangle (\x+\o+0.8,5.9);
+    \draw[draw=bookblue,line width=0.5pt] (\x+\o,5.9) -- (l\l.south);
+  }
+}
 \foreach \l in {1,2,3} { \foreach \s in {1,2} { \draw[draw=bookblue,line width=0.5pt] (l\l.north) -- (s\s.south); } }
 \node[lbl,anchor=east,text=bookblue,align=right] at (13,31) {(1) 計算用\\{\scriptsize 勾配の同期}};
-\node[orangebox,minimum width=26mm,minimum height=9mm] (st) at (107,0) {共有ストレージ};
-\draw[draw=bookorange,thick] (n1.south) -- ++(0,-6) -| (st.south);
-\foreach \n in {2,3,4} { \draw[draw=bookorange,thick] (n\n.south) -- ++(0,-6); }
-\node[lbl,text=bookorange,anchor=north] at (50,-11.5) {(2) ストレージ用：データとチェックポイント};
-\node[plainbox,minimum width=26mm,minimum height=9mm] (mg) at (107,17) {管理サーバ};
-\draw[darr] (mg.west) -- (n4.north east);
-\node[lbl,anchor=south west,align=left] at (87,23) {(3) 管理用（起動）\\(4) 監視用（電源・温度）};
+\node[lbl,anchor=west,text=bookblue,font=\tiny,align=left] at (87,9) {$\leftarrow$ 計算用の口\\（各ノードの左から 1, 2, 3）};
+\node[orangebox,minimum width=24mm,minimum height=9mm] (st) at (108,0) {共有ストレージ};
+\node[plainbox,minimum width=24mm,minimum height=6mm] (mg) at (108,-12.5) {管理用のサーバ};
+\node[plainbox,minimum width=24mm,minimum height=6mm] (mon) at (108,-20) {監視用の装置};
+\draw[draw=bookorange,thick] (0,-4.5) -- (0,-8) -| (st.south);
+\draw[draw=black!55] (-6,-4.5) -- (-6,-12.5) -- (mg.west);
+\draw[draw=black!80,densely dotted,thick] (6,-4.5) -- (6,-20) -- (mon.west);
+\foreach \x in {24,48,77} {
+  \draw[draw=bookorange,thick] (\x,-4.5) -- (\x,-8);
+  \draw[draw=black!55] (\x-6,-4.5) -- (\x-6,-12.5);
+  \draw[draw=black!80,densely dotted,thick] (\x+6,-4.5) -- (\x+6,-20);
+}
+\draw[draw=bookorange,thick] (-4,-27) -- ++(8,0) node[right,lbl,text=bookorange] {(2) ストレージ用：データとチェックポイント};
+\draw[draw=black!55] (-4,-31) -- ++(8,0) node[right,lbl] {(3) 管理用：ジョブの起動、ログイン};
+\draw[draw=black!80,densely dotted,thick] (-4,-35) -- ++(8,0) node[right,lbl] {(4) 監視用：電源の操作、温度（ノードの OS が止まっても届く）};
 \end{tikzpicture}
 \caption{クラスタの 4 つのネットワーク。計算用（青）はリーフとスパインの 2 段のスイッチで全ノードをつなぐ。
-ストレージ用（橙）を分けるのは、チェックポイントの書き込みが勾配の同期を邪魔しないようにするため。}
+各ノードの口 $i$ はリーフ $i$ へつながる。
+ストレージ用（橙）を分けるのは、チェックポイントの書き込みが勾配の同期を邪魔しないようにするため。
+管理用と監視用は、どちらも全ノードにつながる別々の系統（図では行き先を別の箱に分けた）。
+図はノードを 4 台、各ノードの計算用の口を 3 つ、リーフを 3 台、スパインを 2 台に省いて描いた
+（NVIDIA の設計例の 1 組は、ノード 31 台、口は 1 台に 8 つ、リーフ 8 台、スパイン 4 台）。}
 \label{fig:infra-fabric}
 \end{figure}
 
 ノードどうしは\textbf{スイッチ}でつなぎます。
 スイッチは、たくさんの口を持ち、届いたデータを宛先につながる口へ渡す中継の装置です。
 
-いちばん太いのは、勾配の同期が流れる (1) \textbf{計算用}です。
-各ノードの 8 つの口が、それぞれ別の\textbf{リーフ}スイッチにつながり、リーフどうしは上の段の\textbf{スパイン}スイッチで結ばれます（図ではリーフを 3 台に省略しています）。
-どのノードの間にも複数の道があるので、1 本が混んでも別の道を使えます。
+帯域がいちばん大きいのは、勾配の同期が流れる (1) \textbf{計算用}です。
+各ノードの 8 つの口が、それぞれ別の\textbf{リーフ}スイッチにつながり（どのノードでも、口 $i$ はリーフ $i$ へ）、リーフどうしは上の段の\textbf{スパイン}スイッチで結ばれます（図ではリーフを 3 台に省略しています）。
+どの 2 つのノードの間にも、通るスイッチの組み合わせ（経路）が複数あるので、1 本の回線が混んでも別の経路で送れます。
 NVIDIA の設計例~\cite{nvidia2023superpod}では、ノード 32 台分を 1 組とし、リーフ 8 台とスパイン 4 台でつなぎます。
 32 台分のうち 1 台分はネットワークの管理装置が使うので、1 組なら 31 ノード（GPU 248 枚）、4 組なら $4\times32-1=127$ ノード（GPU 1,016 枚）です。
 回線には InfiniBand か、RoCE に対応した Ethernet を使います（\secref{sec:dist-comm}）。
+どちらを選ぶかは、業界でも選択が分かれています。
+\tabref{tab:infra-ibroce}に違いをまとめました。
 Llama 3.1 の 405B は 400 Gb/s の RoCE で、それより小さいモデルは InfiniBand で学習されており\cite{dubey2024llama3}、どちらでも大規模な学習はできます。
+
+\begin{table}[tbp]
+\centering
+\caption{計算用ネットワークの 2 つの選択肢。どちらも H100 の世代で 1 口 400 Gb/s。}
+\label{tab:infra-ibroce}
+\footnotesize
+\begin{tabular}{>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{34mm}>{\raggedright\arraybackslash}p{29mm}}
+\toprule
+ & 長所 & 短所・手間 & 使われた例 \\
+\midrule
+InfiniBand & データを落とさないしくみが、規格に最初から組み込まれている & 専用のスイッチと NIC が要る & Llama 3 の 405B より小さいモデル。NVIDIA の設計例~\cite{nvidia2023superpod} \\
+\addlinespace[2pt]
+RoCE（Ethernet） & 広く使われている Ethernet の機器と運用の知識を使える & データを落とさないよう、混雑の制御を Ethernet 側で設定する必要がある & Llama 3.1 405B（GPU 約 1.6 万枚） \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 残りの 3 つは、計算用の邪魔をしないために分けてあります。
 (2) \textbf{ストレージ用}は、学習データの読み出しとチェックポイントの書き込みを運びます。
 (3) \textbf{管理用}は、ジョブの起動やログインといった普段の操作に使います。
 (4) \textbf{監視用}はさらに別の系統で、ノードが応答しなくなっても、外から電源を操作し、温度などの状態を確かめられるようにします。
-\chapref{ch:distributed}で見たとおり、大きなクラスタでは故障が日常なので、壊れたノードに手が届く道が要るのです。
+\chapref{ch:distributed}で見たとおり、大きなクラスタでは故障が日常的に起きます。
+そのため、故障して OS が応答しないノードでも、OS を通さずに電源を入れ直したり状態を調べたりできる、別の回線が要るのです。
 
 \subsection*{帯域は学習の速さにどう効くか}
 
@@ -686,20 +815,26 @@ Llama 3.1 の 405B は 400 Gb/s の RoCE で、それより小さいモデルは
 \begin{table}[tbp]
 \centering
 \caption{勾配 1 回分の同期時間 $2S/\beta$（秒）。$S$ は BF16 の勾配で $2N$ バイト。
-回線の速さは\tabref{tab:dist-links}のもの（\file{ch15/out/tables.txt}）。}
+$\beta$ は片方向の帯域。回線の速さは\tabref{tab:dist-links}のもので、NVLink は公表値 900 GB/s（送受信の合計）の半分の 450 GB/s を使った
+（\file{ch15/out/tables.txt}、NVLink の列は \file{ch15/out/sweep_infra.txt}）。}
 \label{tab:infra-sync}
 \footnotesize
 \begin{tabular}{lrrrr}
 \toprule
  & 勾配 $S$ & ノード間 400 Gb/s & ノード間 800 Gb/s & ノード内 NVLink \\
- & & （50 GB/s） & （100 GB/s） & （900 GB/s） \\
+ & & （50 GB/s） & （100 GB/s） & （片方向 450 GB/s） \\
 \midrule
-1B & 2.0 GB & 0.08 & 0.04 & 0.004 \\
-Llama 3 8B & 16.1 GB & 0.64 & 0.32 & 0.036 \\
-Llama 3 70B & 141.1 GB & 5.64 & 2.82 & 0.31 \\
+1B & 2.0 GB & 0.08 & 0.04 & 0.009 \\
+Llama 3 8B & 16.1 GB & 0.64 & 0.32 & 0.071 \\
+Llama 3 70B & 141.1 GB & 5.64 & 2.82 & 0.63 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+NVLink の列は、公表値の 900 GB/s ではなく、その半分の 450 GB/s で計算しました。
+$2S/\beta$ の $\beta$ は片方向の帯域なのに、NVLink の公表値は送る向きと受け取る向きの合計だからです（\chapref{ch:distributed}）。
+ノード間の 400 Gb/s（50 GB/s）は、もともと片方向の値です。
+片方向どうしで比べると、ノード内はノード間の約 9 倍速いことになります。
 
 この時間を、1 ステップの計算時間と比べます。
 H100 が MFU 40\% で 8B のモデルを学習すると、1 枚で毎秒約 8,200 トークンを処理します（\code{tokens_per_s}）。
@@ -708,10 +843,46 @@ H100 が MFU 40\% で 8B のモデルを学習すると、1 枚で毎秒約 8,20
 400 Gb/s の回線での同期 0.64 秒は、その約 3 分の 1 にあたります。
 同期は逆伝播と重ねて送れます（\figref{fig:dist-overlap}）。
 逆伝播は 1 ステップの計算の約 3 分の 2 なので（\figref{fig:gpu-6n}）、重ねられるのは約 1.3 秒までです。
-0.64 秒ならこの中に収まります。
-回線を半分の速さにすると同期は 1.28 秒になり、余裕がなくなります。
+\figref{fig:infra-overlap}は、この重なりを時間の帯で描いたものです。
+いちばん上の帯が計算で、その下の帯が同期です。
+同期の帯が、逆伝播が終わる時刻（2.0 秒の縦の破線）より左で終われば、同期を待つ時間はありません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=28mm,y=1mm,font=\scriptsize]
+\def\rowh{3.2}
+\node[anchor=east] at (-0.03,0) {計算};
+\filldraw[fill=figblue,draw=bookblue] (0,-\rowh) rectangle (0.67,\rowh); \node at (0.335,0) {順伝播 0.67 秒};
+\filldraw[fill=bookblue!35,draw=bookblue] (0.67,-\rowh) rectangle (2.0,\rowh); \node at (1.335,0) {逆伝播 1.33 秒};
+\node[anchor=east] at (-0.03,-10) {400 Gb/s、DDP（0.64 秒）};
+\filldraw[fill=figgreen,draw=bookgreen] (0.67,-10-\rowh) rectangle (1.31,-10+\rowh); \node at (0.99,-10) {収まる};
+\node[anchor=east] at (-0.03,-18) {400 Gb/s、FSDP（0.96 秒）};
+\filldraw[fill=figgreen,draw=bookgreen] (0.67,-18-\rowh) rectangle (1.63,-18+\rowh); \node at (1.15,-18) {収まる};
+\node[anchor=east] at (-0.03,-26) {200 Gb/s、DDP（1.28 秒）};
+\filldraw[fill=figgreen,draw=bookgreen] (0.67,-26-\rowh) rectangle (1.95,-26+\rowh); \node at (1.31,-26) {余裕がない};
+\node[anchor=east] at (-0.03,-34) {200 Gb/s、FSDP（1.92 秒）};
+\filldraw[fill=figgreen,draw=bookgreen] (0.67,-34-\rowh) rectangle (2.0,-34+\rowh); \node at (1.335,-34) {逆伝播と重なる部分};
+\filldraw[fill=figred,draw=bookaccent] (2.0,-34-\rowh) rectangle (2.59,-34+\rowh);
+\node[anchor=west,text=bookaccent] at (2.6,-34) {0.59 秒待つ};
+\draw[dashed,black!60] (2.0,5) -- (2.0,-39);
+\draw[dashed,black!60] (0.67,5) -- (0.67,-39);
+\node[anchor=south,text=black!70] at (2.0,5) {逆伝播の終わり};
+\node[anchor=south,text=black!70] at (0.67,5) {逆伝播の始まり（同期の開始）};
+\draw[->,black!60] (0,-41) -- (2.8,-41) node[right] {時間（秒）};
+\foreach \t in {0,0.5,1,1.5,2,2.5} { \draw[black!60] (\t,-41) -- (\t,-42) node[below] {\t}; }
+\end{tikzpicture}
+\caption{8B のモデルを H100 で学習するときの 1 ステップの時間の帯（模式図）。上が計算、下の 4 本が勾配の同期（緑）。
+同期は逆伝播の始まりから送り始めると単純化した。FSDP は通信量が DDP の約 1.5 倍。
+赤は、逆伝播が終わったあとも同期を待つ時間。}
+\label{fig:infra-overlap}
+\end{figure}
+
+回線を半分の速さ（200 Gb/s）にすると同期は 1.28 秒になり、逆伝播の 1.33 秒とほぼ同じで、余裕がなくなります。
 しかも、8B の状態は 1 枚に載らないので FSDP で分けて持つことになり、その通信量は DDP の約 1.5 倍でした（\secref{sec:dist-sharding}）。
-目安は、\textbf{$2S/\beta$ が 1 ステップの計算時間の 3 分の 1 程度までに収まること}です。
+200 Gb/s の FSDP では同期が 1.92 秒になり、図のいちばん下の帯のように、約 0.6 秒は計算が止まって同期を待ちます。
+さらに、逆伝播の最後に出る勾配は、もう重ねる相手の計算が残っていないので、その分の同期は必ず待ちになります。
+そこで目安は、\textbf{$2S/\beta$ が 1 ステップの計算時間の 3 分の 1 程度までに収まること}とします。
+3 分の 1 なら、FSDP で 1.5 倍になっても 2 分の 1 で、重ねられる上限の 3 分の 2 に対して余裕が残るからです。
 
 表からは、あと 2 つのことが読み取れます。
 1B のモデルなら同期は 0.08 秒で、回線はほとんど問題になりません。
@@ -719,7 +890,7 @@ H100 が MFU 40\% で 8B のモデルを学習すると、1 枚で毎秒約 8,20
 このため大きなモデルでは、通信の多いテンソル並列を NVLink の届くノード内に閉じ込め、ノード間の通信を減らします（\secref{sec:dist-mp}）。
 
 この節の答えです。
-ノードには、GPU を支える CPU・主メモリ・内蔵 SSD と、GPU ごとの回線が要ります。
+ノードには、GPU にデータを渡す CPU・主メモリ・内蔵 SSD と、GPU ごとの回線が要ります。
 回線の速さは、同期時間 $2S/\beta$ を 1 ステップの計算時間と比べて決めます。
 
 \section*{ここまでの道のり}
@@ -735,7 +906,7 @@ $N$ から GPU 時間・日数・費用を出し（\secref{sec:infra-pipeline}�
 \section{ストレージとファイルシステム：何をどこに置くか}\label{sec:infra-storage}
 \skimread{結論は「トークン列は $2$〜$4$ バイト $\times D$。テキストの学習では読む速さはまず問題にならず、問題はファイルの数。小さなファイルは大きなファイルにまとめる」です。実験の詳細は、データの置き場所を決めるときに。}
 
-GPU の話に比べて、ストレージ（記憶装置）は地味に見えます。
+GPU の話に比べると、ストレージ（記憶装置）は後回しにされがちです。
 しかし、置き方を誤ると、高価な GPU がデータを待って止まります。
 この節の問いは、「何を、どのくらい、どこに置くのか。置き場所で何が変わるのか」です。
 
@@ -774,21 +945,22 @@ GPU の話に比べて、ストレージ（記憶装置）は地味に見えま�
 
 前半は本書のミニGPT です。
 \code{get_batch} は、学習が消費する 1,000 倍以上の速さでトークンを供給できます
-（1 ステップに約 1.9 秒かかっているのは、\secref{sec:infra-verify}で触れた計算機の混み具合のためです）。
+（1 ステップに約 1.9 秒かかっているのは、\secref{sec:infra-verify}で触れたとおり、ほかの作業と CPU を分け合っていたためです）。
 後半は大きな学習で、語彙が大きい場合を考えて 1 トークン 4 バイトで計算しました
 （見積もりシートは 2 バイトで計算するので、同じ条件ならシートの値はこの半分です）。
 405B のモデルを 16,000 枚の H100 で学習しても、読むのはクラスタ全体で毎秒 10 MB ほどです。
 意外に小さいと感じたでしょうか。
 モデルが大きいほど 1 トークンの計算に時間がかかるので、データの消費はゆっくりなのです。
-\textbf{テキストだけの LLM の学習では、データを読む速さが足かせになることはまれです}。
-足かせになるのは、次に見る「ファイルの数」と、\secref{sec:infra-ckpt}で見る「チェックポイントを書く速さ」です。
+\textbf{テキストだけの LLM の学習では、データを読む速さが学習の速さを制限すること（ボトルネックになること）はまれです}。
+ボトルネックになりやすいのは、次に見る「ファイルの数」と、\secref{sec:infra-ckpt}で見る「チェックポイントを書く速さ」です。
 
 \subsection*{4 種類の置き場所}
 
-置き場所は、\figref{fig:infra-tiers}のように GPU からの「近さ」で 4 つに分けられます。
+置き場所は 4 種類あり、\figref{fig:infra-tiers}のように、GPU からの近さ（データが GPU に届くまでに、ネットワークをどれだけ通るか）で 3 段に並びます。
+真ん中の段は全ノードで共有するファイルシステムで、NFS と並列 FS の 2 種類があります。
 右へ行くほど容量が大きく、多くのノードから見えますが、読み書きは遅くなります。
 
-\begin{figure}[tbp]
+\begin{figure}[b]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
   t/.style={minimum width=25mm,minimum height=13mm}]
@@ -803,12 +975,14 @@ GPU の話に比べて、ストレージ（記憶装置）は地味に見えま�
 \draw[arr] (obj.west) -- (nfs.east);
 \draw[arr] (obj.west) -- (pfs.east);
 \node[lbl] at (25,-12) {そのノードだけ};
-\node[lbl] at (56,-20) {全ノードから同じ場所に見える};
+\draw[dashed,draw=black!45,rounded corners=2pt] (42,-16.5) rectangle (70,16.5);
+\node[lbl,align=center] at (56,-21.5) {共有のファイルシステム（2 種）：\\全ノードから同じ場所に見える};
 \node[lbl] at (90,-12) {どこからでも（名前で出し入れ）};
-\draw[->,black!50] (8,22) -- (98,22) node[midway,above,lbl] {容量が大きい・共有しやすい・遅い};
-\draw[->,black!50] (98,19) -- (8,19) node[midway,below,lbl] {速い・待ち時間が短い};
+\draw[->,black!50] (8,26) -- (98,26) node[midway,above,lbl] {容量が大きい・共有しやすい・遅い};
+\draw[->,black!50] (98,23) -- (8,23) node[midway,below,lbl] {速い・待ち時間が短い};
 \end{tikzpicture}
-\caption{4 種類の置き場所。矢印は学習データの流れ。原本をオブジェクトストレージに置き、共有のファイルシステムを経て、各ノードのローカル NVMe に写して読む。}
+\caption{4 種類の置き場所。矢印は学習データの流れ。原本をオブジェクトストレージに置き、共有のファイルシステム（NFS か並列 FS のどちらか。大きなクラスタでは並列 FS）を経て、各ノードのローカル NVMe に写して読む。
+NVMe から GPU までの間は、主メモリと CPU を経る（\figref{fig:infra-node}。この図では省略）。}
 \label{fig:infra-tiers}
 \end{figure}
 
@@ -818,7 +992,7 @@ GPU の話に比べて、ストレージ（記憶装置）は地味に見えま�
 \item[並列ファイルシステム] データを多数のサーバに分けて置き、並列に読み書きします。
 「ファイルの中身」を持つサーバと、「どのファイルがどこにあるか」（\term{メタデータ}{metadata}）を持つサーバが分かれているのが特徴です。
 代表的な製品は Lustre です。
-\item[オブジェクトストレージ] 「名前を渡すと、データの塊が返る」だけの単純な貯蔵庫です。
+\item[オブジェクトストレージ] 「名前を渡すと、データの塊が返る」だけの、単純な保管の仕組みです。
 代表的なサービスは Amazon S3 です。
 \end{description}
 
@@ -834,7 +1008,7 @@ GPU の話に比べて、ストレージ（記憶装置）は地味に見えま�
 \toprule
 種類 & 得意 & 苦手 & 主な用途 \\
 \midrule
-ローカル NVMe & 最も速い。小さなファイルにも強い & 共有できない。ノードと運命を共にする & データの写し、一時ファイル \\
+ローカル NVMe & 最も速い。小さなファイルにも強い & 共有できない。ノードが故障すると、中のデータも失われる & データの写し、一時ファイル \\
 NFS & 手軽。どのノードからも同じパス & サーバ 1 台に集中。小さなファイル多数、同時の大量書き込み & ホーム、コード、小規模な共有 \\
 並列 FS & 大きなファイルの並列読み書き（毎秒数 GB 以上） & 小さなファイル多数（メタデータに集中）。運用に専門知識 & データセット、チェックポイント \\
 オブジェクト & 容量と耐久性。どこからでも届く & 書き換え・追記。1 回ごとの待ち時間 & 原本、長期保管 \\
@@ -874,7 +1048,7 @@ OS は一度読んだファイルを主メモリに覚えていて、2 回目か
 \begin{tikzpicture}
 \begin{axis}[ybar,width=0.5\linewidth,height=52mm,ymode=log,ymin=5,ymax=20000,log origin=infty,
   bar width=4.5mm,xtick={0,1,2},xticklabels={小さなファイル,seek+read,memmap},
-  xticklabel style={font=\scriptsize},enlarge x limits=0.25,
+  xticklabel style={font=\scriptsize,text height=1.6ex,text depth=0.4ex},enlarge x limits=0.25,
   ylabel={2,000 個を読む時間（ミリ秒）},legend style={at={(0.98,0.97)},anchor=north east}]
 \addplot[fill=figgreen,draw=bookgreen] table[col sep=comma,x=idx,y=local_ms]{code/ch15/out/io_bench_wide.csv};
 \addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=idx,y=shared_ms]{code/ch15/out/io_bench_wide.csv};
@@ -889,15 +1063,16 @@ OS は一度読んだファイルを主メモリに覚えていて、2 回目か
   \draw[->,draw=bookaccent,thick] (4,\y) -- (38,\y-2) node[midway,above,sloped,inner sep=1pt] {\l};
   \draw[->,draw=bookaccent] (38,\y-2.5) -- (4,\y-4.5);
 }
-\node[text=bookaccent,align=center] at (21,1.5) {$\vdots$\\[-1mm]これを 2,000 回};
+\node[text=bookaccent] at (21,3) {$\vdots$};
+\node[text=bookaccent] at (21,-2.2) {これを 2,000 回};
 \draw[black!30,dashed] (0,-5) -- (42,-5);
-\draw[->,draw=bookblue,thick] (4,-8) -- (38,-10) node[midway,above,sloped,inner sep=1pt] {開く（1 回だけ）};
-\draw[->,draw=bookblue] (38,-10.5) -- (4,-12.5);
-\draw[->,draw=bookblue,thick] (4,-15) -- (38,-17) node[midway,above,sloped,inner sep=1pt] {まとめて読む};
-\draw[->,draw=bookblue,line width=1.6pt] (38,-17.5) -- (4,-19.5);
+\draw[->,draw=bookpurple,thick] (4,-8) -- (38,-10) node[midway,above,sloped,inner sep=1pt] {開く（1 回だけ）};
+\draw[->,draw=bookpurple] (38,-10.5) -- (4,-12.5);
+\draw[->,draw=bookpurple,thick] (4,-15) -- (38,-17) node[midway,above,sloped,inner sep=1pt] {まとめて読む};
+\draw[->,draw=bookpurple,line width=1.6pt] (38,-17.5) -- (4,-19.5);
 \end{tikzpicture}
 \caption{左：2,000 個の塊を読む時間（\file{ch15/out/io_bench.txt}、縦軸は対数）。
-右：その理由。小さなファイル（上、赤）は 1 個ごとにサーバと何往復もするが、1 つのファイル（下、青）は開くのが 1 回で、中身をまとめて受け取れる。}
+右：その理由。小さなファイル（上、赤）は 1 個ごとにサーバと何往復もするが、1 つのファイルを memmap で読む場合（下、紫）は開くのが 1 回で、中身をまとめて受け取れる。右の色は左の棒の色とは関係ない。}
 \label{fig:infra-iobench}
 \end{figure}
 
@@ -917,6 +1092,17 @@ OS は一度読んだファイルを主メモリに覚えていて、2 回目か
 1 つの大きなファイルなら、問い合わせは最初の 1 回で済み、あとは中身をまとめて受け取れます。
 並列ファイルシステムでも事情は同じで、メタデータを持つサーバに問い合わせが集中します。
 
+では、同じ 1 つのファイルなのに、NFS で \code{seek+read}（382 ミリ秒）が \code{memmap}（66 ミリ秒）の約 6 倍かかったのはなぜでしょうか。
+どちらも、ファイルを開くのは 1 回だけです。
+違うのは、中身の受け取り方だと考えられます。
+\code{seek+read} は、8 KiB の \code{read} を 2,000 回呼びます。
+読む位置がばらばらなので、OS は「次にどこを読むか」を予想できず、1 回の \code{read} ごとにサーバとの往復が起きやすくなります。
+\code{memmap} では、OS がファイルの中身を、要求された部分の周りまでまとめて読み込みます（これを\term{先読み}{readahead}と呼びます）。
+16 MB のファイルなら、少ない往復でほぼ全体が手元に届きます。
+ただし、この実験では OS の中の動きまでは確かめていないので、ここに書いたのは考えられる理由です。
+確かに言えるのは、\textbf{ファイルを 1 つにまとめても、小さな読み出しをくり返すと、往復の回数で遅くなりうる}ことです。
+大きなデータは、シャード（数 GB の塊）ごとにまとめて順に読むのが安全です。
+
 \begin{quiz}
 100 万件の文書を、1 件 1 ファイルで NFS に置きました。
 上の実測（1 個あたり約 2.2 ミリ秒）のとおりなら、全部を 1 回読むのに何分かかるでしょうか。
@@ -924,7 +1110,10 @@ OS は一度読んだファイルを主メモリに覚えていて、2 回目か
 \end{quiz}
 
 答えは、$10^{6}\times2.2$ ミリ秒 $=2{,}200$ 秒で約 37 分、まとめれば $10^{6}\times33$ マイクロ秒 $=33$ 秒です。
-しかも前者は、その間ずっとサーバに問い合わせを浴びせ続け、同じサーバを使うほかの人の作業まで遅くします。
+しかも前者は、その間ずっとサーバに問い合わせを送り続け、同じサーバを使うほかの人の作業まで遅くします。
+なお、後者の 33 秒は下限の目安です。
+実験のファイルは 16 MB と小さいので、先読みでほぼ丸ごと手元に届いた可能性があります。
+100 万件（約 8 GB）のファイルをばらばらの位置から読むと、先読みが効きにくく、これより遅くなることがあります。
 
 対策は単純で、\textbf{小さなものは、少数の大きなファイルにまとめてから置く}ことです。
 \chapref{ch:pretraining}でトークン列を 1 つの \file{train.bin} にまとめたのは、このためでもありました。
@@ -939,7 +1128,7 @@ OS は一度読んだファイルを主メモリに覚えていて、2 回目か
 \section{チェックポイント戦略：何 GB を何秒で書き、何分おきに保存するか}\label{sec:infra-ckpt}
 \skimread{結論は「完全なチェックポイントは $12N$ バイト。書く時間は大きさ $\div$ 書き込みの速さ。間隔の目安は $\sqrt{2cT_{\mathrm{fail}}}$ で、GPU が数枚なら 1〜2 時間おき」です。}
 
-ストレージに最も重い仕事をさせるのは、実はチェックポイントです。
+ストレージに最も大きな負荷をかけるのは、実はチェックポイントです。
 この節の問いは、「チェックポイントはどのくらい大きく、書くのに何秒かかり、何分おきに書けばよいか」です。
 
 \subsection*{大きさ：12 バイト/パラメータ}
@@ -965,12 +1154,14 @@ $12N$ の見積もりは、実際のファイルと 0.1\% しか違いません�
 
 \begin{table}[tbp]
 \centering
-\caption{チェックポイントの大きさと、書き込みにかかる時間（\file{ch15/out/tables.txt}）。}
+\caption{チェックポイントの大きさと、書き込みにかかる時間（\file{ch15/out/tables.txt}）。
+書き込みの速さは、チェックポイント全体を書く速さ（全体の合計）。
+2 GB/s と 20 GB/s は、設計指針にあるノード 1 台からの書き込みの最小と最大の段階で、1 台のノードが全部を書く場合にあたる。}
 \label{tab:infra-ckpt}
 \footnotesize
 \begin{tabular}{lrrrr}
 \toprule
-モデル & 重みだけ（$2N$） & 完全（$12N$） & 2 GB/s で書く & 20 GB/s で書く \\
+モデル & 重みだけ（$2N$） & 完全（$12N$） & 全体 2 GB/s で書く & 全体 20 GB/s で書く \\
 \midrule
 GPT-2 124M & 0.2 GB & 1.5 GB & 0.7 秒 & 0.1 秒 \\
 1B & 2.0 GB & 12 GB & 6 秒 & 0.6 秒 \\
@@ -983,7 +1174,8 @@ GPT-2 124M & 0.2 GB & 1.5 GB & 0.7 秒 & 0.1 秒 \\
 
 \subsection*{書く時間：その間、GPU は待っている}
 
-チェックポイントを書いている間、学習は止まります。
+いちばん単純な書き方では、チェックポイントを書いている間、学習は止まります。
+NVIDIA の設計指針~\cite{nvidia2023superpod}も、書いている間は学習が止まる前提で、ストレージに求める書き込みの速さを示しています。
 書く時間は、大きさを書き込みの速さで割れば出ます（\code{write_seconds}）。
 実測の (2) は、本書の執筆環境で 256 MB のテンソルを書いた速さです。
 ローカルディスクで毎秒約 0.3 GB、NFS では約 0.1 GB でした。
@@ -991,11 +1183,17 @@ GPT-2 124M & 0.2 GB & 1.5 GB & 0.7 秒 & 0.1 秒 \\
 何千枚もの GPU が、その間ずっと待つことになります。
 
 だから大規模なクラスタでは、書き込みの速いストレージを用意します。
+ここで大事なのは、\textbf{その速さが「ノード 1 台から」の値なのか、「クラスタ全体の合計」なのか}を区別することです。
 NVIDIA の DGX H100 向けの設計指針~\cite{nvidia2023superpod}は、ノード 1 台からの書き込みの速さを 3 段階（毎秒 2 GB、4 GB、20 GB）で示しています。
-GB200 向けの設計指針~\cite{nvidia2025superpod}は、LLM の学習では書き込みを読み出しの半分以上の速さにするよう勧めています。
-\tabref{tab:infra-ckpt}の右の 2 列が、その下限と上限にあたります。
-また、FSDP のように状態が各 GPU に分かれている場合は、各 GPU が自分の担当分を同時に書きます（\secref{sec:dist-cluster}）。
-Llama 3 の学習では、GPU 1 枚あたり 1 MB から 4 GB のチェックポイントが一斉に書かれ、ストレージ用のネットワークが一時的に埋まるほどでした\cite{dubey2024llama3}。
+\tabref{tab:infra-ckpt}の右の 2 列は、その最小（2 GB/s）と最大（20 GB/s）で、1 台のノードがチェックポイント全体を書く場合にあたります。
+GB200 向けの設計指針~\cite{nvidia2025superpod}は、LLM の学習では、書き込みを読み出しの半分以上の速さにするよう勧めています。
+
+FSDP のように状態が各 GPU に分かれている場合は、各 GPU が自分の担当分を同時に書きます（\secref{sec:dist-cluster}）。
+このとき全体の書き込みの速さは、およそ「1 台の速さ $\times$ ノード数」まで伸びます。
+ただし、共有ストレージ全体の上限を超えることはできません。
+同じ DGX H100 向けの設計指針では、全体の書き込みの速さを、ノード 32 台分の 1 組で毎秒 7〜62 GB、4 組で毎秒 30〜250 GB としています。
+Llama 3 の学習で使ったストレージは、持続して毎秒 2 TB、最大で毎秒 7 TB を出せるものでした\cite{dubey2024llama3}。
+それでも、GPU 1 枚あたり 1 MB から 4 GB のチェックポイントが一斉に書かれると、ストレージ用のネットワークの帯域が一時的に使い切られるほどでした。
 \figref{fig:infra-fabric}でストレージ用のネットワークを分けたのは、このためです。
 
 \subsection*{間隔：短すぎても長すぎても損をする}
@@ -1004,20 +1202,64 @@ Llama 3 の学習では、GPU 1 枚あたり 1 MB から 4 GB のチェックポ
 \secref{sec:dist-cluster}で見たとおり、目安は Young の式~\cite{young1974first,daly2006higher} $\tau\approx\sqrt{2cT_{\mathrm{fail}}}$ です。
 $c$ は保存 1 回の時間、$T_{\mathrm{fail}}$ は平均故障間隔でした。
 そこでは $c$ を仮に 5 分と置きましたが、いまは $c$ を「大きさ $\div$ 書き込みの速さ」で見積もれます。
+
 この式がどこから来るかは、「失う時間の割合」を考えると分かります。
+議論の骨組みを先に書きます。
+(1) 保存の間隔 $\tau$ ごとに、保存の時間 $c$ だけ止まる。
+(2) 故障は、保存と保存の間のどの時刻にも同じくらいの確率で起きる、と仮定する。
+(3) この 2 つから失う時間の割合を式にし、それを最小にする $\tau$ を求める。
+時間の流れは\figref{fig:infra-ckpt-timeline}のとおりです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+\def\h{3.5}
+\filldraw[fill=figgreen,draw=bookgreen] (0,-\h) rectangle (30,\h); \node at (15,0) {計算（長さ $\tau$）};
+\filldraw[fill=figgray,draw=black!50] (30,-\h) rectangle (37,\h); \node at (33.5,0) {保存};
+\filldraw[fill=figgreen,draw=bookgreen] (37,-\h) rectangle (67,\h); \node at (52,0) {計算（長さ $\tau$）};
+\filldraw[fill=figgray,draw=black!50] (67,-\h) rectangle (74,\h); \node at (70.5,0) {保存};
+\filldraw[fill=figred,draw=bookaccent] (74,-\h) rectangle (93,\h); \node at (83.5,0) {計算};
+\node[text=bookaccent,font=\large\bfseries] at (94.5,0) {$\times$};
+\node[text=bookaccent,anchor=west] at (96,0) {故障};
+\draw[->,bookaccent,thick] (94.5,-\h-1) to[out=-150,in=-30] node[below,text=bookaccent] {最後の保存から再開し、赤の部分をやり直す} (74,-\h-1);
+\draw[decorate,decoration={brace,amplitude=2mm},black!70] (30,\h+1) -- (37,\h+1) node[midway,above=2mm,align=center,text=black] {$c$：第 1 項\\のもと};
+\draw[decorate,decoration={brace,amplitude=2mm},black!70] (74,\h+1) -- (93,\h+1) node[midway,above=2mm,align=center,text=bookaccent] {失う長さ：0〜$\tau$\\平均 $\tau/2$（第 2 項のもと）};
+\draw[->,black!60] (0,-15) -- (104,-15) node[right] {時間};
+\end{tikzpicture}
+\caption{保存と故障の時間の流れ（模式図）。計算を $\tau$ 続けるごとに、$c$ だけ止まって保存する（灰）。
+故障（$\times$）が起きると、最後の保存のあとの計算（赤）をやり直す。
+故障の時刻が保存の間のどこでも同じように起きやすいなら、赤の長さは平均して $\tau/2$。}
+\label{fig:infra-ckpt-timeline}
+\end{figure}
+
+図の灰色の部分が、保存で失う時間です。
 間隔 $\tau$ ごとに $c$ だけ止まるので、保存で失う割合は $c/\tau$ です。
+図の赤い部分が、故障で失う時間です。
 故障が起きると、最後の保存からの計算をやり直します。
-失うのは平均して間隔の半分 $\tau/2$ で、それが $T_{\mathrm{fail}}$ ごとに起きるので、割合は $\tau/(2T_{\mathrm{fail}})$ です。
+故障の時刻は保存の間のどこでも同じように起きやすいと仮定したので、やり直す長さは 0 から $\tau$ の間に均等に散らばり、平均は $\tau/2$ です。
+それが平均して $T_{\mathrm{fail}}$ ごとに起きるので、割合は $\tau/(2T_{\mathrm{fail}})$ です。
 \begin{equation}
 \text{失う時間の割合} \;\approx\; \frac{c}{\tau} \;+\; \frac{\tau}{2T_{\mathrm{fail}}}
 \label{eq:infra-waste}
 \end{equation}
+保存の最中に故障する場合や、再起動にかかる時間は、ここでは無視しています（1 次の近似）。
 第 1 項は $\tau$ が短いほど大きく、第 2 項は $\tau$ が長いほど大きくなります。
 合計が最小になる $\tau$ は、微分して 0 と置けば求まります。
 $-c/\tau^{2}+1/(2T_{\mathrm{fail}})=0$ から $\tau^{2}=2cT_{\mathrm{fail}}$、つまり $\tau=\sqrt{2cT_{\mathrm{fail}}}$ です。
-\figref{fig:infra-waste}は、70B のモデルについてこの式を描いたものです。
+この $\tau$ を式\eqref{eq:infra-waste}に戻すと、2 つの項はどちらも $\sqrt{c/(2T_{\mathrm{fail}})}$ になり、ちょうど等しくなります。
+合計は次のとおりです。
+\begin{equation}
+\text{最適な間隔での損失} \;\approx\; 2\sqrt{\frac{c}{2T_{\mathrm{fail}}}} \;=\; \sqrt{\frac{2c}{T_{\mathrm{fail}}}}
+\label{eq:infra-waste-min}
+\end{equation}
+損失は、保存の時間 $c$ の平方根に比例します。
+書き込みを 100 倍速くすれば、損失は 10 分の 1 になります。
+
+\figref{fig:infra-waste}は、70B のモデルについて式\eqref{eq:infra-waste}を描いたものです。
 故障間隔には、\tabref{tab:dist-failures}の 2 つの値を使いました。
 Llama 3 の学習~\cite{dubey2024llama3}（GPU 約 1.6 万枚）の 3.1 時間と、GPU 1,024 枚のジョブの 7.9 時間です。
+書き込みの速さは、\tabref{tab:infra-ckpt}と同じく全体で 2 GB/s と 20 GB/s とします。
+これは、1 台のノードが全部を書くような、書き込みが 1 か所に集中する不利な場合です。
 
 \begin{figure}[tbp]
 \centering
@@ -1026,27 +1268,69 @@ Llama 3 の学習~\cite{dubey2024llama3}（GPU 約 1.6 万枚）の 3.1 時間�
   xlabel={保存の間隔 $\tau$（分、対数目盛）},ylabel={失う時間の割合（\%）},
   xtick={2,5,10,20,50,100,200},xticklabels={2,5,10,20,50,100,200},
   legend style={at={(1.04,0.5)},anchor=west,font=\scriptsize},legend cell align=left]
+\addplot[draw=none,fill=black!10,forget plot] coordinates {(2,0) (7,0) (7,80) (2,80)} -- cycle;
+\node[font=\scriptsize,text=black!70,align=center] at (axis cs:3.75,66) {$\tau<c$\\（赤・橙）};
 \addplot[bookaccent,thick] table[col sep=comma,x=tau_min,y=w2]{code/ch15/out/ckpt_waste.csv};
 \addplot[bookorange,thick,dashed] table[col sep=comma,x=tau_min,y=w2_m79]{code/ch15/out/ckpt_waste.csv};
 \addplot[bookblue,thick] table[col sep=comma,x=tau_min,y=w20]{code/ch15/out/ckpt_waste.csv};
-\legend{2 GB/s・故障 3.1 時間ごと,2 GB/s・故障 7.9 時間ごと,20 GB/s・故障 3.1 時間ごと}
+\legend{全体 2 GB/s・故障 3.1 時間ごと,全体 2 GB/s・故障 7.9 時間ごと,全体 20 GB/s・故障 3.1 時間ごと}
 \addplot[only marks,mark=*,mark size=1.8pt,black] coordinates {(51,27.4) (81,17.2) (16,8.7)};
 \end{axis}
 \end{tikzpicture}
-\caption{70B のモデル（保存 1 回 840 GB）の、保存の間隔と失う時間の割合（式\eqref{eq:infra-waste}）。黒い点が各曲線の最小（Young の式の間隔）。}
+\caption{70B のモデル（保存 1 回 840 GB）の、保存の間隔と失う時間の割合（式\eqref{eq:infra-waste}）。黒い点が各曲線の最小（Young の式の間隔）。
+赤と橙の線は、間隔が約 9 分より短いと損失が 80\% を超え、図の外に出る。
+灰色の帯（2〜7 分）は、その 2 本で間隔 $\tau$ が保存の時間 $c=7$ 分より短くなる範囲で、式の前提から外れる（青の線は $c$ が 42 秒なので、帯の中でも前提を満たす）。
+書き込みの速さは全体の値で、1 台のノードが全部を書く不利な場合。}
 \label{fig:infra-waste}
 \end{figure}
 
-赤い実線は、毎秒 2 GB で書き、3.1 時間に 1 回止まる場合です。
+赤い実線は、全体で毎秒 2 GB で書き、3.1 時間に 1 回止まる場合です。
 保存 1 回は $c=840\div2=420$ 秒、つまり 7 分で、3.1 時間は 186 分です。
 Young の式から $\tau=\sqrt{2\times7\times186}\approx51$ 分が最もよい間隔です。
 それでも、式\eqref{eq:infra-waste}に入れると $7/51+51/(2\times186)\approx0.14+0.14=0.27$ で、時間の 27\% を失います。
-4 枚に 1 枚の GPU が、何も生み出していないのと同じです。
-青い線は、ストレージだけを 10 倍速くした場合です。
-保存が 42 秒で済むので、16 分おきに保存でき、失う割合は 9\% に下がります。
-\textbf{書き込みの速いストレージは、GPU を買い足すのと同じ効果を持つ}のです。
+2 つの項が等しくなっていることも確かめられます。
+青い線は、書き込みだけを 10 倍速くした場合です。
+保存が 42 秒で済むので、16 分おきに保存でき、失う割合は 9\% に下がります（$\sqrt{10}\approx3.2$ 分の 1）。
 橙の破線は、故障間隔が 7.9 時間の場合で、損失は 17\% です。
 なお、式\eqref{eq:infra-waste}は再起動の時間などを省いた近似で、実際の損失はこれより少し大きくなります。
+
+ただし、27\% という数字をそのまま覚えないでください。
+これは、GPU 1.6 万枚のジョブの故障の頻度に、ノード 1 台分の書き込みの速さを組み合わせた、極端に不利な場合です。
+実際の大きなクラスタでは、各ノードが自分の担当分を同時に書くので、全体の書き込みの速さはずっと大きくなります。
+\figref{fig:infra-ckpt-sweep}は、全体の書き込みの速さを 2 GB/s から 2,000 GB/s まで変えたときの、最適な間隔での損失（式\eqref{eq:infra-waste-min}）です。
+\file{ch15/sweep_infra.py} で、70B と 405B の 2 つのモデルと、2 つの故障間隔の組み合わせを計算しました。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.66\linewidth,height=58mm,xmode=log,ymode=log,xmin=2,xmax=2000,ymin=0.5,ymax=100,
+  xlabel={全体の書き込みの速さ（GB/s、対数目盛）},ylabel={最適な間隔での損失（\%、対数目盛）},
+  xtick={2,20,250,2000},xticklabels={2\\{\tiny 1 台・最小},20\\{\tiny 1 台・最大},250\\{\tiny 4 組の全体・最大},2000\\{\tiny Llama 3 の持続値}},
+  xticklabel style={align=center},
+  ytick={1,2,5,10,20,50,100},yticklabels={1,2,5,10,20,50,100},
+  legend style={at={(1.03,0.5)},anchor=west,font=\scriptsize},legend cell align=left]
+\addplot[bookpurple,thick] table[col sep=comma,x=gbps,y=w405_31]{code/ch15/out/sweep_ckpt.csv};
+\addplot[bookpurple,thick,dashed] table[col sep=comma,x=gbps,y=w405_79]{code/ch15/out/sweep_ckpt.csv};
+\addplot[bookaccent,thick] table[col sep=comma,x=gbps,y=w70_31]{code/ch15/out/sweep_ckpt.csv};
+\addplot[bookaccent,thick,dashed] table[col sep=comma,x=gbps,y=w70_79]{code/ch15/out/sweep_ckpt.csv};
+\legend{405B・故障 3.1 時間,405B・故障 7.9 時間,70B・故障 3.1 時間,70B・故障 7.9 時間}
+\draw[black!40,densely dotted] (axis cs:2,0.5) -- (axis cs:2,100);
+\draw[black!40,densely dotted] (axis cs:20,0.5) -- (axis cs:20,100);
+\draw[black!40,densely dotted] (axis cs:250,0.5) -- (axis cs:250,100);
+\draw[black!40,densely dotted] (axis cs:2000,0.5) -- (axis cs:2000,100);
+\end{axis}
+\end{tikzpicture}
+\caption{全体の書き込みの速さと、最適な間隔で保存したときに失う時間の割合（式\eqref{eq:infra-waste-min}、\file{ch15/out/sweep_ckpt.csv}）。
+横軸の目盛の下の説明は、設計指針のノード 1 台の最小と最大、ノード 32 台の組 4 つの全体の最大、Llama 3 のストレージの持続値。
+損失が数十\% の左上の範囲は、1 次の近似の精度が落ちる。}
+\label{fig:infra-ckpt-sweep}
+\end{figure}
+
+図の線は、どれも右下がりの直線です。
+両対数の目盛で傾きが $-1/2$ なのは、損失が $\sqrt{c}$、つまり書き込みの速さの平方根に反比例するからです。
+全体で 250 GB/s 出れば、70B でも 405B でも損失は数\% に収まります。
+Llama 3 の持続値（2 TB/s）なら、70B で約 0.9\%、405B で約 2\% です（\file{ch15/out/sweep_infra.txt}）。
+大きなクラスタで書き込みの速さを確保するのは、GPU が計算せずに待つ時間を数\% に抑えるためなのです。
 
 小さな規模では、様子がまったく違います。
 GPU 8 枚のジョブの平均故障間隔は 47.7 日でした~\cite{kokolis2024reliability}。
@@ -1075,8 +1359,8 @@ GPU 8 枚のジョブの平均故障間隔は 47.7 日でした~\cite{kokolis202
 \section{電力・冷却・設置：その計算機は置けるのか}\label{sec:infra-power}
 \laterread{自分で計算機を置くときに戻れば足ります。結論は「電気代は借りる価格の数\%」の 1 文だけ覚えておけば十分です。}
 
-GPU を借りるなら、電気と冷却は事業者が面倒を見てくれます。
-しかし自分で持つなら、これが最初の壁になります。
+GPU を借りるなら、電気と冷却は事業者が用意します。
+しかし自分で持つなら、これが最初に解決すべき問題になります。
 借りる人にとっても、払っている価格のうち電気がどのくらいを占めるのかを知る手がかりになります。
 この節の問いは、「GPU の計算機はどのくらい電気を使い、それは何を意味するか」です。
 
@@ -1149,14 +1433,14 @@ GPU の手に入れ方は、大きく 3 つあります。
 
 \begin{table}[htbp]
 \centering
-\caption{GPU の手に入れ方の比較。価格は H100 の 1 GPU 時間（2026 年 11 月、\figref{fig:infra-cost}）。}
+\caption{GPU の手に入れ方の比較。価格は H100 の 1 GPU 時間（2026 年 11 月、\figref{fig:infra-cost}）。このあとの損益の計算は、表にない B300 で行う。}
 \label{tab:infra-cloud}
 \footnotesize
 \begin{tabular}{l>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{30mm}}
 \toprule
  & 総合クラウド & GPU クラウド & 自前（オンプレミス） \\
 \midrule
-価格 & 7〜11 ドル & 4〜6 ドル（スポットは 2〜3 ドル） & 購入費 $+$ 電気 $+$ 運用 \\
+価格 & 約 7〜11 ドル & 約 4.6〜6.2 ドル（スポットの中央値は 2.33 ドル） & 購入費 $+$ 電気 $+$ 運用 \\
 最初に払う額 & なし & なし & 大きい（8 GPU のサーバで数十万ドル） \\
 増減 & 空きがあればすぐ & 空きがあればすぐ & 調達と設置に時間 \\
 運用 & 事業者に任せる & 事業者に任せる & 電源・冷却・故障対応を自分で \\
@@ -1169,7 +1453,8 @@ GPU の手に入れ方は、大きく 3 つあります。
 借りる場合は使った時間だけ払い、買う場合は最初にまとめて払います。
 どちらが得かは、\textbf{稼働率}（買った GPU を実際に使っている時間の割合）で決まります。
 B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算してみます。
-\tabref{tab:infra-gpus}にない GPU ですが、購入額の見積もり（約 55 万ドル）が報じられているので選びました。
+\tabref{tab:infra-gpus}にも上の表にもない GPU ですが、8 枚載せたサーバの購入額について、報道による概算（約 55 万ドル）があるので選びました。
+NVIDIA は購入価格を公表していないので、この額はおおよその目安です。
 同じ GPU を借りると、中央値で 1 枚 9.00 ドル/時です。
 
 \snippet{買う場合と借りる場合の累計費用（\file{ch15/tables.py}）}{code:infra-breakeven}{ch15/tables.py}{breakeven}
@@ -1177,6 +1462,7 @@ B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算し
 \coderef{code:infra-breakeven}のリスト \code{cost} の先頭が買う場合で、購入額に電気代（式\eqref{eq:infra-power}）を足したものです。
 消費電力には、同じ 8 GPU の DGX B200 の 14.3 kW を使いました（DGX B300 も約 14 kW です）。
 買う側の電気代は、稼働率によらず 24 時間分を入れています。
+使わない時間も電源を入れたままにすると仮定した、買う側に不利な（安全側の）見積もりです。
 残りの 3 つが借りる場合で、実際に使う時間（稼働率 \code{u} を掛けた分）だけを払います。
 1 か月は 730 時間として計算しています。
 
@@ -1189,9 +1475,9 @@ B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算し
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.74\linewidth,height=54mm,xmin=0,xmax=48,ymin=0,ymax=2000,
+\begin{axis}[width=0.6\linewidth,height=54mm,xmin=0,xmax=48,ymin=0,ymax=2000,
   xlabel={使い始めてからの月数},ylabel={累計の費用（千ドル）},
-  xtick={0,12,24,36,48},legend pos=north west,
+  xtick={0,12,24,36,48},legend style={at={(1.03,0.5)},anchor=west,font=\scriptsize},legend cell align=left,
   scaled y ticks=false,yticklabel style={/pgf/number format/fixed,/pgf/number format/1000 sep={,}}]
 \addplot[black,very thick] table[col sep=comma,x=month,y=buy]{code/ch15/out/breakeven.csv};
 \addplot[bookaccent,thick] table[col sep=comma,x=month,y=rent100]{code/ch15/out/breakeven.csv};
@@ -1205,7 +1491,8 @@ B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算し
 \end{axis}
 \end{tikzpicture}
 \caption{8 GPU のサーバを買う場合（黒）と、同じ GPU を借りる場合の累計費用。
-借りる線が黒い線を追い越す時点（黒い点）が損益の分かれ目。場所代、ネットワーク、ストレージ、人件費は含まない。}
+借りる線が黒い線を追い越す時点（黒い点）が損益の分かれ目。場所代、ネットワーク、ストレージ、人件費は含まない。
+買った機材をあとで売るときの値段も含まない。}
 \label{fig:infra-breakeven}
 \end{figure}
 
@@ -1234,13 +1521,15 @@ B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算し
 
 \tabref{tab:infra-configs}は、3 つの規模での典型的な構成です。
 左から右へ、GPU の枚数が約 1 桁ずつ増えていきます。
+表の「ジョブ管理」は、多くの人の学習に GPU を順番に割り当てる仕組みです。
+Slurm と Kubernetes（多数のコンテナをまとめて管理するソフトウェア）は、\secref{sec:dist-cluster}で紹介しました。
 
 \begin{table}[tbp]
 \centering
 \caption{規模別の構成例。「1 週間で学習できる $N$」は、H100・MFU 40\%・$D=20N$ での計算（\file{ch15/out/tables.txt}）。}
 \label{tab:infra-configs}
 \footnotesize
-\begin{tabular}{l>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}p{32mm}}
+\begin{tabular}{>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{32mm}}
 \toprule
  & 個人（GPU 1 枚） & 研究室（8 GPU ノード 1 台） & クラスタ（数百枚以上） \\
 \midrule
@@ -1250,15 +1539,15 @@ B200 の後継にあたる B300 を 8 枚載せたサーバを例に、計算し
 \addlinespace[2pt]
 GPU 間の接続 & 不要 & ノード内の NVLink & NVLink $+$ InfiniBand か RoCE \\
 \addlinespace[2pt]
-データの置き場所 & 内蔵 SSD & 内蔵 NVMe（$+$ NFS） & 並列 FS $+$ ローカル NVMe $+$ オブジェクト \\
+データの置き場所 & 内蔵 NVMe SSD & 内蔵 NVMe SSD（$+$ NFS） & 並列 FS $+$ ローカル NVMe $+$ オブジェクト \\
 \addlinespace[2pt]
-チェックポイント & 内蔵 SSD に 1〜2 時間おき & 同左。共有の場所にも写す & 並列 FS に並列で書く。間隔は $\sqrt{2cT_{\mathrm{fail}}}$ \\
+チェックポイント & 内蔵 NVMe SSD に 1〜2 時間おき & 同左。共有の場所にも写す & 並列 FS に並列で書く。間隔は $\sqrt{2cT_{\mathrm{fail}}}$ \\
 \addlinespace[2pt]
 故障の頻度 & まれ & 月に 1 回未満 & 1 日に 1 回前後。数千枚なら数時間に 1 回 \\
 \addlinespace[2pt]
 電力 & 1 kW 前後 & 約 10 kW & 300 kW〜数 MW \\
 \addlinespace[2pt]
-ジョブ管理 & 不要 & 簡単な予約表でも可 & Slurm か Kubernetes \\
+ジョブ管理（誰の学習にどの GPU をいつ割り当てるか） & 不要 & 簡単な予約表でも可 & Slurm か Kubernetes（\secref{sec:dist-cluster}） \\
 \addlinespace[2pt]
 手に入れ方 & 借りる。小型なら買う & GPU クラウド & 予約、または自前 \\
 \bottomrule
@@ -1267,8 +1556,33 @@ GPU 間の接続 & 不要 & ノード内の NVLink & NVLink $+$ InfiniBand か R
 
 1 行目に注目してください。
 GPU を 1 枚から 1,016 枚へ約 1,000 倍にしても、1 週間で学習できるモデルは 14 億から 450 億へ、約 32 倍（$\sqrt{1016}\approx32$）にしかなりません。
-\secref{sec:infra-pipeline}で見たとおり、計算量は $N$ の 2 乗で増えるからです。
-逆に言えば、\textbf{学習できるモデルの大きさは、GPU の枚数の平方根でしか伸びません}。
+\secref{sec:infra-pipeline}で見たとおり、$D=20N$ なら計算量は $N$ の 2 乗で増えるからです。
+逆に言えば、期間を固定し、$D=20N$ とし、枚数を増やしても MFU が保てるとすれば、\textbf{学習できるモデルの大きさは、GPU の枚数の平方根でしか伸びません}。
+\figref{fig:infra-week}は、この関係を枚数の全範囲で描いたものです（\file{ch15/sweep_infra.py}）。
+両対数の目盛で傾きが $1/2$ の直線になり、期間を 1 週間から 30 日に延ばすと、線は約 2 倍（$\sqrt{30/7}\approx2.1$）上に平行移動します。
+$D$ を $N$ と別に決める場合（たとえば $D$ を固定する場合）は、計算量が $N$ に比例するので、この平方根の関係は成り立ちません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.62\linewidth,height=54mm,xmode=log,ymode=log,xmin=1,xmax=16000,ymin=0.5,ymax=1000,
+  xlabel={H100 の枚数（対数目盛）},ylabel={学習できる $N$（10 億、対数目盛）},
+  xtick={1,8,248,1016,16000},xticklabels={1,8,248,1016,16000},
+  ytick={1,10,100,1000},yticklabels={1,10,100,1000},
+  legend pos=north west,legend style={font=\scriptsize},legend cell align=left]
+\addplot[bookaccent,thick] table[col sep=comma,x=g,y=week_b]{code/ch15/out/sweep_week.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=g,y=month_b]{code/ch15/out/sweep_week.csv};
+\legend{1 週間,30 日}
+\draw[black!30,densely dotted] (axis cs:8,0.5) -- (axis cs:8,1000);
+\draw[black!30,densely dotted] (axis cs:248,0.5) -- (axis cs:248,1000);
+\draw[black!30,densely dotted] (axis cs:1016,0.5) -- (axis cs:1016,1000);
+\end{axis}
+\end{tikzpicture}
+\caption{GPU の枚数と、期間内に学習できるモデルの大きさ $N$（H100、MFU 40\%、$D=20N$、\file{ch15/out/sweep_week.csv}）。
+点線は\tabref{tab:infra-configs}の 8 枚、248 枚、1,016 枚。MFU が枚数によらず一定と仮定した。}
+\label{fig:infra-week}
+\end{figure}
+
 一方、右へ行くほど、ネットワーク、ストレージ、故障、電力と、考えることは増えていきます。
 小さく始められるなら、小さく始めるのが得策です。
 各段階でどの道具を選ぶかは、\appref{app:toolmap}に、レイヤー別と規模別（\secref{sec:tm-scale}）にまとめました。
@@ -1285,17 +1599,82 @@ GPU を 1 枚から 1,016 枚へ約 1,000 倍にしても、1 週間で学習で
 
 例で計算してみます。
 Llama 3 8B を H100 に載せ、同時に 100 人が使い、1 人あたり毎秒 20 トークンを返したいとします。
-まず速さです。
-1 トークンを生成するには、重み全体（16.1 GB）を 1 回読み通します。
-H100 のメモリ帯域は 3.35 TB/s なので、読み通せるのは多くても 1 秒に約 200 回です。
-同じ GPU に載った系列は、この 1 回で一斉に 1 トークンずつ進みます。
-各系列の上限は毎秒約 200 トークンで、その 1 割しか出なくても毎秒 20 トークンには足ります。
-次にメモリです。
+まずメモリです。
 H100 1 枚が持てる文脈いっぱいの系列は 59 本でした（\tabref{tab:infra-infer}）。
 100 人分には $100\div59\approx1.7$ を切り上げて、2 枚が要ります。
-この例では、メモリが枚数を決めます。
+1 枚あたりの系列は 50 本です。
 
-ただし、上の「毎秒約 200 回」は理屈の上での上限です。
+次に速さです。
+1 トークンを生成する 1 ステップでは、重み全体（16.1 GB）を 1 回読み通します。
+同じ GPU に載った系列は、この 1 回で一斉に 1 トークンずつ進みます。
+ただし、そのステップでは、各系列の KV キャッシュ（それまでのトークンのキーとバリュー。\secref{sec:ma-kvcache}）も全部読みます。
+\figref{fig:infra-infer-frames}は、この様子を 3 ステップ分のコマで描いたものです。
+どのコマでも重みは同じ量を読み、KV キャッシュは系列ごとに 1 トークン分ずつ増えていきます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+\foreach \k/\x/\t in {0/0/t,1/43/t+1,2/86/t+2} {
+  \draw[black!40,rounded corners=2pt] (\x-1,-23) rectangle (\x+39,9);
+  \node[anchor=north west,font=\footnotesize\bfseries] at (\x,8.5) {ステップ $\t$};
+  \node[graybox,minimum width=37mm,minimum height=5mm,inner sep=1pt,anchor=west,font=\scriptsize] at (\x+0.5,0) {重み 16.1 GB を全部読む};
+  \foreach \r/\y/\name in {1/-7/系列 1,2/-12/系列 2,3/-19/系列 50} {
+    \node[anchor=east,font=\tiny] at (\x+9,\y) {\name};
+    \foreach \c in {0,...,5} { \draw[fill=figblue,draw=bookblue] (\x+9.5+\c*2.6,\y-1.1) rectangle (\x+11.6+\c*2.6,\y+1.1); }
+    \ifnum\k>0 \foreach \c in {1,...,\k} { \draw[fill=figblue,draw=bookblue] (\x+9.5+5*2.6+\c*2.6,\y-1.1) rectangle (\x+11.6+5*2.6+\c*2.6,\y+1.1); } \fi
+    \pgfmathsetmacro{\nx}{\x+9.5+(5+\k+1)*2.6}
+    \draw[fill=figorange,draw=bookorange] (\nx,\y-1.1) rectangle (\nx+2.1,\y+1.1);
+  }
+  \node[font=\tiny] at (\x+17,-15.3) {$\vdots$};
+}
+\end{tikzpicture}
+\caption{推論の 1 ステップずつの動き（模式図。H100 1 枚に 50 本の系列。系列 3〜49 は省略）。
+各ステップで、重み全体と、全部の系列の KV キャッシュ（青）を読み、各系列の末尾に 1 トークン（橙）を生成する。
+生成したトークンのキーとバリューは、次のステップでは KV キャッシュに加わって青になる。}
+\label{fig:infra-infer-frames}
+\end{figure}
+
+50 本が文脈いっぱいなら、KV キャッシュは $50\times1.07\approx53.5$ GB で、重みの 3 倍以上あります。
+1 ステップで読むのは、重みと合わせて約 70 GB です。
+H100 のメモリ帯域は 3.35 TB/s なので、1 秒に回せるステップは多くても $3350\div70\approx48$ 回です。
+各系列の上限は毎秒約 48 トークンで、毎秒 20 トークンを返すには、その 4 割強が出れば足ります。
+KV キャッシュを読む分を忘れると、上限を $3350\div16.1\approx200$ 回と、4 倍も大きく見積もってしまいます。
+この例では、メモリが枚数を決め、速さもその 2 枚で足りる見込みです。
+
+\figref{fig:infra-infer-sweep}は、同時に処理する本数を変えたときの上限です（\file{ch15/sweep_infra.py}）。
+文脈いっぱい（8,192 トークン）の場合と、1 本あたり 2,048 トークンしか使わない場合を比べました。
+左のグラフのとおり、本数を増やすほど、1 ステップで読む KV キャッシュが増えて、\textbf{1 本あたりの速さは落ちます}。
+右のグラフのとおり、\textbf{GPU 全体のトークン数は増えます}が、本数に比例するほどは増えません。
+文脈が短ければ、1 本の KV キャッシュが小さいので、同じメモリにより多くの本数が載り、速さも落ちにくくなります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=50mm,xmin=0,xmax=240,ymin=0,ymax=220,
+  xlabel={同時に処理する本数},ylabel={1 本あたり（トークン/秒）},
+  title={\footnotesize (a) 1 本あたりの上限},legend style={font=\tiny,at={(0.97,0.97)},anchor=north east},legend cell align=left]
+\addplot[bookaccent,thick] table[col sep=comma,x=n,y=per_seq]{code/ch15/out/sweep_infer_8k.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=n,y=per_seq]{code/ch15/out/sweep_infer_2k.csv};
+\addplot[black!50,densely dotted,domain=0:240,samples=2] {20};
+\legend{{文脈 8{,}192},{文脈 2{,}048},{毎秒 20 トークン}}
+\end{axis}
+\end{tikzpicture}\hspace{1mm}%
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=50mm,xmin=0,xmax=240,ymin=0,ymax=11000,
+  xlabel={同時に処理する本数},ylabel={GPU 全体（トークン/秒）},
+  scaled y ticks=false,yticklabel style={/pgf/number format/fixed,/pgf/number format/1000 sep={,}},
+  title={\footnotesize (b) GPU 全体の上限}]
+\addplot[bookaccent,thick] table[col sep=comma,x=n,y=total]{code/ch15/out/sweep_infer_8k.csv};
+\addplot[bookblue,thick,dashed] table[col sep=comma,x=n,y=total]{code/ch15/out/sweep_infer_2k.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{Llama 3 8B を H100 1 枚で推論するときの、速さの上限（3.35 TB/s $\div$ 1 ステップで読む量。\file{ch15/out/sweep_infer_8k.csv} と \file{sweep_infer_2k.csv}）。
+赤は全部の系列が 8,192 トークン、青の破線は 2,048 トークンを使う場合。線はメモリに載る本数（59 本と 238 本）で終わる。
+メモリの読み出しだけで決まる上限で、計算の時間は含まない。}
+\label{fig:infra-infer-sweep}
+\end{figure}
+
+ただし、上の「毎秒約 48 回」は、メモリの読み出しだけから出した理屈の上での上限です。
 実際の速さは、モデル、バッチの組み方、量子化で大きく変わるので、実測が欠かせません。
 測り方と速くする工夫は\chapref{ch:eval-serving}で扱います。
 学習との違いは、推論が\textbf{毎日 24 時間動き続ける}ことです。
@@ -1319,11 +1698,11 @@ GPU の速さ $\times$ MFU & 学習の時間 & 式\eqref{eq:infra-gpuhours}で G
 \addlinespace[2pt]
 GPU のメモリ & 載るかどうか、推論の同時本数 & 学習は $16N$ がメモリの半分以下か。推論は $2N+{}$KV キャッシュ \\
 \addlinespace[2pt]
-GPU の枚数 & 日数（費用は変わらない） & GPU 時間 $\div$（24 $\times$ 許される日数） \\
+GPU の枚数 & 日数（MFU が保てれば費用はほぼ同じ） & GPU 時間 $\div$（24 $\times$ 許される日数）。ノードをまたぐなら同期の時間も見る \\
 \addlinespace[2pt]
 価格と契約 & 費用 & GPU 時間 $\times$ 単価。日付を控える。スポットは再開の仕組みが前提 \\
 \addlinespace[2pt]
-NVLink & 複数枚での学習の効率 & 複数の GPU で 1 つのモデルを学習するなら必要 \\
+NVLink & 複数枚での学習の効率 & 大きなモデルを複数枚で学習する（特にテンソル並列）なら必要。小さなモデルの DDP なら、\tabref{tab:infra-sync}で同期の時間を確かめる \\
 \addlinespace[2pt]
 ノード間の回線 & 同期の時間、MFU & $2S/\beta$ が 1 ステップの計算時間の 3 分の 1 程度までか \\
 \addlinespace[2pt]
@@ -1331,7 +1710,7 @@ CPU・主メモリ & データの供給 & 供給（トークン/秒）が消費�
 \addlinespace[2pt]
 ローカル NVMe & データを読む待ち時間 & トークン列（$2$〜$4$ バイト $\times D$）が丸ごと入るか \\
 \addlinespace[2pt]
-共有ストレージの書き込み & チェックポイントで止まる時間 & $12N\div$ 書き込みの速さ。式\eqref{eq:infra-waste}で損失を出す \\
+共有ストレージの書き込み & チェックポイントで止まる時間 & $12N\div$ 全体の書き込みの速さ。式\eqref{eq:infra-waste}で損失を出す \\
 \addlinespace[2pt]
 ファイルの置き方 & メタデータの負荷 & 小さなファイルを、大きなファイルにまとめたか \\
 \addlinespace[2pt]
@@ -1354,6 +1733,7 @@ $N=10^{9}$ です。
 \textbf{手順 2：GPU と枚数の案を作る}。
 電卓で 3 つの案を比べます（\coderef{code:infra-case}）。
 
+\par\penalty0\relax\ifdim\pagetotal<\pagegoal\ifdim\dimexpr\pagegoal-\pagetotal\relax<13\baselineskip\relax\newpage\fi\fi
 \snippet{3 つの案を電卓にかける（\file{ch15/case_1b.py}）}{code:infra-case}{ch15/case_1b.py}{case}
 
 \outputfile{ch15/out/case_1b.txt}
@@ -1365,7 +1745,36 @@ H100 の約 2.3 倍（$2250\div989$）の公称の速さを持つ B200（\tabref
 案 B は 7.0 日で、締め切りぎりぎりになります。
 \secref{sec:infra-verify}で公開事例から逆算した MFU は 26〜55\% に散らばっていました。
 このように MFU は 2 倍くらいずれるので、案 B を選ぶなら 8 枚に増やして余裕を持たせるのが安全です。
-枚数を増やしても費用は変わりません。
+8 枚でも 1 台のノードに収まり、GPU どうしは NVLink でつながるので、MFU は大きくは落ちないと見込めます。
+MFU が同じなら、枚数を増やしても費用は変わりません。
+
+MFU を 20\% から 60\% まで変えたときの日数を、\file{ch15/sweep_infra.py} で計算しました（\figref{fig:infra-case-mfu}）。
+日数は MFU に反比例するので、MFU が低い左側ほど急に増えます。
+案 B（4 枚）の線は、MFU が約 25\% より下で 7 日の締め切りを越えます。
+8 枚に増やした線は、MFU が 20\% でも 5 日以内に収まります。
+費用も MFU に反比例しますが、枚数にはよりません（案 B の 4 枚と 8 枚で同じ。\file{ch15/out/sweep_infra.txt}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.62\linewidth,height=54mm,xmin=20,xmax=60,ymin=0,ymax=10,
+  xlabel={MFU（\%）},ylabel={日数},
+  legend style={at={(1.03,0.5)},anchor=west,font=\scriptsize},legend cell align=left]
+\addplot[bookgreen,thick] table[col sep=comma,x=mfu,y=A]{code/ch15/out/sweep_mfu.csv};
+\addplot[bookaccent,thick] table[col sep=comma,x=mfu,y=B]{code/ch15/out/sweep_mfu.csv};
+\addplot[bookaccent,thick,dashed] table[col sep=comma,x=mfu,y=B8]{code/ch15/out/sweep_mfu.csv};
+\addplot[bookblue,thick,dotted] table[col sep=comma,x=mfu,y=C]{code/ch15/out/sweep_mfu.csv};
+\addplot[black!60,domain=20:60,samples=2] {7};
+\legend{案 A（$D=20N$、H100 $\times$ 1）,案 B（$D=100N$、H100 $\times$ 4）,案 B を 8 枚に,案 C（$D=100N$、B200 $\times$ 2）,締め切り（7 日）}
+\draw[black!30] (axis cs:40,0) -- (axis cs:40,10);
+\node[font=\tiny,text=bookgray,anchor=north west] at (axis cs:40,10) {見積もりの MFU 40\%};
+\end{axis}
+\end{tikzpicture}
+\caption{事例の 3 案と、案 B を 8 枚に増やした場合の、MFU と日数（$N=10^{9}$）。
+数値は \file{ch15/out/sweep_mfu.csv} で、MFU 以外は\coderef{code:infra-case}と同じ。
+MFU 40\% の縦線上の値が、出力の「日数」の列にあたる。}
+\label{fig:infra-case-mfu}
+\end{figure}
 
 \textbf{手順 3：残りの行を埋める}。
 案 B の見積もりシートを印字します。
@@ -1395,13 +1804,13 @@ DeepSeek-V3 の論文\cite{liu2024deepseekv3}も、公表した学習費用に�
 冒頭の 80 億パラメータなら、\secref{sec:infra-pipeline}の見積もりシートのとおり、H100 を 64 枚、3.5 日、約 2.2 万ドルです。
 
 \begin{summary}
-\item 見積もりは一本道です。$N \to D\,(\approx20N) \to C=6ND \to$ GPU 時間 $=C/(P\times\mathrm{MFU}\times3600) \to$ 日数と費用。費用は GPU の枚数によりません。
-\item 電卓を 3 つの例で検算しました。計算量とファイルの大きさは数\% 以内、時間と費用は MFU 次第で、公開値の 0.6〜1.4 倍でした。MFU は 40\% と置き、2 倍の幅を見ます。
-\item メモリは、学習が $16N+{}$活性化、推論が $2N+{}$KV キャッシュです。状態が GPU のメモリの半分を超えたら、複数の GPU に分けます。
-\item 計算あたりの費用は GPU によらず 2 倍も違いません。載るか・間に合うか・借りられるかで選びます。価格は契約で約 5 倍違い、時期でも変わるので、日付を控えます。
-\item 回線の速さは、同期時間 $2S/\beta$ を 1 ステップの計算時間と比べて決めます。
+\item 見積もりは 5 段の計算を順にたどる手順です。$N \to D\,(\approx20N) \to C=6ND \to$ GPU 時間 $=C/(P\times\mathrm{MFU}\times3600) \to$ 日数と費用。MFU が保てる範囲では、費用は GPU の枚数によりません。
+\item 電卓を 3 つの例で検算しました。計算量は 1 つずつ数えた値と 6\% の差（$6ND$ は注意のスコア計算を数えないので少し小さめ）、ファイルの大きさはほぼ正確で、時間と費用は MFU 次第で公開値の 0.6〜1.4 倍でした。MFU は 40\% と置き、2 倍の幅を見ます。
+\item メモリは、学習が $16N+{}$活性化、推論が $2N+{}$KV キャッシュです。状態が GPU のメモリの半分を超えたら、複数の GPU に分けます。推論の速さの上限は「メモリ帯域 $\div$（重み $+$ 全系列の KV キャッシュ）」で、本数を増やすほど 1 本あたりは遅くなります。
+\item 同じ MFU が出るなら、計算あたりの費用は GPU によらず 2 倍も違いません。載るか・間に合うか・借りられるかで選び、候補の MFU は試し運転で測ります。価格は契約で約 5 倍違い、時期でも変わるので、日付を控えます。
+\item 回線の速さは、同期時間 $2S/\beta$（$\beta$ は片方向の帯域）を 1 ステップの計算時間と比べて決めます。
 \item テキストの学習では、読む速さよりファイルの数が問題です。NFS では、小さなファイル 2,000 個を読むのに \code{memmap} の 65 倍かかりました。小さなものはまとめて置きます。
-\item 完全なチェックポイントは $12N$ バイトです。書く間は学習が止まるので、大規模では書き込みの速さが効率を左右します。間隔の目安は $\sqrt{2cT_{\mathrm{fail}}}$ です。
+\item 完全なチェックポイントは $12N$ バイトです。単純な書き方では書く間は学習が止まるので、大規模では全体の書き込みの速さが効率を左右します。間隔の目安は $\sqrt{2cT_{\mathrm{fail}}}$ で、そのときの損失は $\sqrt{2c/T_{\mathrm{fail}}}$ です。
 \item 電気代は「kW $\times$ PUE $\times$ 単価」で、借りる価格の数\% です。借りるか買うかは稼働率で決まります。
 \end{summary}
 
@@ -1413,7 +1822,8 @@ DeepSeek-V3 の論文\cite{liu2024deepseekv3}も、公表した学習費用に�
 しかし、こうして作ったモデルにできるのは、\textbf{与えられた文章の続きを書くこと}だけです。
 \file{base.pt} に「日本でいちばん高い山は？」と尋ねても、答えは返ってきません。
 質問の続きとして、もっともらしい別の文章を書き始めてしまいます。
-どれだけ大きな計算機で学習しても、この性質は変わりません。
+どれだけ大きな計算機で学習しても、仕組みが「続きを書く」であることは変わりません。
+大きなモデルは、続きとして答えらしい文章を書くこともありますが、いつも質問に答え、指示に従うとは限りません。
 では、「続きを書くモデル」を、質問に答え、指示に従う\textbf{アシスタント}に変えるには、何をすればよいのでしょうか。
 第 V 部の最初の章、\chapref{ch:posttraining}で、その方法である事後学習を学びます。
 

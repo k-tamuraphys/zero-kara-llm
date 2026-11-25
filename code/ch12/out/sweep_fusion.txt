@@ -1,0 +1,16 @@
+mul2 : 初回（変換を含む） 9.4 s
+mul2 : eager との最大差 0.0e+00
+poly : 初回（変換を含む） 1.0 s
+poly : eager との最大差 0.0e+00
+tanh : 初回（変換を含む） 1.1 s
+tanh : eager との最大差 0.0e+00
+gelu : 初回（変換を含む） 0.1 s
+gelu : eager との最大差 0.0e+00
+mul2  eager  : 中央    1.4 ms（最小    1.4, 最大    1.4）
+mul2  compile: 中央    1.4 ms（最小    1.4, 最大    1.4）
+poly  eager  : 中央   11.2 ms（最小   11.2, 最大   11.2）
+poly  compile: 中央    3.2 ms（最小    3.2, 最大    3.3）
+tanh  eager  : 中央   64.4 ms（最小   64.4, 最大   64.5）
+tanh  compile: 中央   63.8 ms（最小   63.8, 最大   64.9）
+gelu  eager  : 中央   76.7 ms（最小   76.7, 最大   76.7）
+gelu  compile: 中央   78.6 ms（最小   78.5, 最大   78.7）

@@ -11,10 +11,10 @@ GPUS = {"H100": (989e12, 3.99)}  # 公称 BF16 FLOP/s、ドル/GPU 時間
 
 
 def estimate(N, D, n_gpu, gpu="H100", mfu=0.4):
-    """第 15 章の一本道: 計算量 → GPU 時間 → 日数・費用・メモリ。"""
+    """第 15 章の見積もりの手順: 計算量 → GPU 時間 → 日数・費用・メモリ。"""
     peak, price = GPUS[gpu]
     C = 6 * N * D                              # 学習の計算量（FLOPs）
-    gpu_hours = C / (peak * mfu * 3600)        # 式(15.x) の GPU 時間
+    gpu_hours = C / (peak * mfu * 3600)        # 式(15.1) の GPU 時間
     days = gpu_hours / (n_gpu * 24)
     cost = gpu_hours * price
     mem_gb = 16 * N / 1e9                      # 重み・勾配・Adam の状態

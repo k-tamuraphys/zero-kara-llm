@@ -17,7 +17,7 @@ $\partial f/\partial x_i = 3x_i^{2}$ なので、$\vx=(1,2,3)$ を代入する�
 1 回目の \code{backward()} のあと、計算の記録が捨てられるからです。
 \item 自作の \code{softmax} は \code{tensor([[nan, nan, nan]])} を返します（実測）。
 \code{float32} が表せる最大の数は約 $3.4\times10^{38}$ で、$e^{89}$ 程度で超えます。
-$e^{1000}$ はあふれて \code{inf}（無限大）になり、$\infty/\infty$ が \code{nan}（数でない値）になるのです。
+$e^{1000}$ はオーバーフローして \code{inf}（無限大）になり、$\infty/\infty$ が \code{nan}（数でない値）になるのです。
 直すには、\code{softmax} の最初の行の前に \code{z = z - z.max(dim=-1, keepdim=True).values} を入れます。
 \code{max} は行ごとの最大値（\code{.values}）とその番号を返します。ここでは値だけを使います。
 各行から同じ数 $c$ を引いても、$e^{z_i-c}/\sum_j e^{z_j-c}=e^{z_i}/\sum_j e^{z_j}$ なので、答えは変わりません。

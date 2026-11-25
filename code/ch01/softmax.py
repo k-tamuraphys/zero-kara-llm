@@ -36,9 +36,9 @@ h, W, tokens = data["h"], data["W"], data["tokens"].tolist()
 z = W @ h  # (1) 内積でスコアを作る: (4096, 192) と (192,) から (4096,)
 p = softmax(z)  # (2) スコアを確率に直す
 print("確率の和 =", p.sum().round(6))
-for i in np.argsort(-p)[:5]:  # (3) 確率の大きい順に 5 個
+for i in np.argsort(-p)[:5]:  # 確率の大きい順に 5 個を表示
     print(f"{tokens[i]!r:10} z = {z[i]:5.2f}  p = {p[i]:.3f}")
-k = np.argmax(p)
+k = np.argmax(p)  # (3) 最大を選ぶ
 print(f"正解が {tokens[k]!r} のときの損失 = {-log_softmax(z)[k]:.3f}")
 print(f"何も知らないモデルの損失 log 4096 = {np.log(4096):.3f}")
 # [end: last-step]

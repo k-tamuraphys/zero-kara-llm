@@ -18,14 +18,14 @@
 \begin{readingguide}
 \item[\rgpre] 2 周目の章です。\chapref{ch:posttraining}の SFT（\file{sft.pt} と正答率の測り方）と、\chapref{ch:transformer}のブロックにある 4 つの線形層を思い出せれば読めます。
 行列のランクは本書で初めて使うので、\secref{sec:lora-rank-review}で一から説明します。
-\item[\rgmust] \secref{sec:lora-cost}〜\secref{sec:lora-linear}：費用の内訳、低ランク分解、LoRA の式と初期化、\code{LoRALinear} の実装。この章の背骨です。
+\item[\rgmust] \secref{sec:lora-cost}〜\secref{sec:lora-linear}：費用の内訳、低ランク分解、LoRA の式と初期化、\code{LoRALinear} の実装。この章の中心です。
 \item[\rgmust] \secref{sec:lora-exp-setup}と\secref{sec:lora-merge}：全パラメータ SFT との比較、マージ、付け替え。\chapref{ch:capstone}が、ここの数値とアダプタを使います。
-\item[\rgskim] \secref{sec:lora-add}、\secref{sec:lora-exp-rank}、\secref{sec:lora-exp-targets}：差し込む関数の細部と、ランクや層を変えた実測。「$r$ は小さすぎると足りず、大きいと忘却が増える」「全部の層に薄く付ける」が結論です。
+\item[\rgskim] \secref{sec:lora-add}、\secref{sec:lora-exp-rank}、\secref{sec:lora-exp-targets}：差し込む関数の細部と、ランクや層を変えた実測。「$r$ は小さすぎると足りない。本書の設定（$\alpha=2r$）では、$r$ を大きくすると忘却が増える」「MLP を含む全線形層に付ける」が結論です。
 \item[\rgskim] \secref{sec:lora-peft}と\secref{sec:lora-limits}：\code{peft} と QLoRA、LoRA の限界。\chapref{ch:capstone}の前に読み直してください。
 \item[\rglater] \secref{sec:lora-peft-family}：DoRA などの変種。名前に出会ったときに戻れば足ります。
 \end{readingguide}
 
-前の章の SFT では、約 258 万個のパラメータをすべて動かしました（CPU で 2 分ほど）。
+前の章の SFT では、約 258 万個のパラメータをすべて動かしました（CPU で 100 秒ほど）。
 では、同じことを 70 億パラメータのモデルでやるとどうなるでしょうか。
 \chapref{ch:gpu}の見積もり（\secref{sec:gpu-memory}）を思い出すと、学習中の状態だけで 1 パラメータあたり 16 バイトが要りました。
 70 億個なら $70\text{ 億}\times16$ バイト $=1{,}120$ 億バイトで、
@@ -60,7 +60,8 @@ FP32 の写しは、\chapref{ch:gpu}で「主重み」と呼んだものです�
 \]
 で、\secref{sec:gpu-memory}の見積もりと同じです（大きな学習での使い方は\chapref{ch:infra}で扱います）。
 一方、推論だけなら BF16 の重み 2 バイトで済みます。
-$16\div2=8$ なので、学習は推論の 8 倍のメモリを食うわけです。
+重みと学習のための状態だけで比べると、$16\div2=8$ なので、学習は推論の 8 倍のメモリを使います
+（学習の活性化と、推論の KV キャッシュは、この比較に入れていません）。
 
 ここで大事な観察があります。
 16 バイトのうち、先頭の 2 を除く 14 バイト（$2+4+4+4$）は、\emph{そのパラメータを更新するから}必要になる分です。
@@ -75,13 +76,16 @@ $16\div2=8$ なので、学習は推論の 8 倍のメモリを食うわけで�
 \tabref{tab:lora-cost}に、70 億パラメータのモデルでの費用をまとめます。
 右の列は、この章の LoRA を使った場合です（学習するパラメータ数「約 4,000 万」の出し方は\secref{sec:lora-limits}で説明します）。
 
-右の列の 3 行目は、合わせて約 14.6 GB で、全パラメータ更新の 112 GB の約 8 分の 1 です（$112\div14.6\approx7.7$）。
-4 行目は、学習した 4,000 万個を BF16 で保存した大きさで、$4{,}000\text{ 万}\times2$ バイト $=80$ MB です。
+右の列の 2 行目は、合わせて約 14.6 GB で、全パラメータ更新の 112 GB の約 8 分の 1 です（$112\div14.6\approx7.7$）。
+3 行目は、学習した 4,000 万個を BF16 で保存した大きさで、$4{,}000\text{ 万}\times2$ バイト $=80$ MB です
+（本書の実験では、小さなアダプタを 1 個 4 バイトの FP32 のまま保存します。\secref{sec:lora-exp-setup}）。
 なお、活性化（順伝播の途中の値）は、どちらの方式でも要るので、表には入れていません（\chapref{ch:gpu}）。
+本書のミニGPT でも同じ計算ができます。
+基盤モデル \file{base.pt} の 258 万個に対して、$r=8$ の LoRA で学習するのは 98,304 個（3.8\%）です（\secref{sec:lora-add}）。
 
 \begin{table}[tbp]
 \centering
-\caption{70 億パラメータのモデルを適応させる費用の目安（2 行目は本書のミニGPT との対比）。全パラメータ更新は「状態 16 バイト/パラメータ」と「用途ごとに丸ごと 1 コピー」が重い。
+\caption{70 億パラメータのモデルを適応させる費用の目安。全パラメータ更新は「状態 16 バイト/パラメータ」と「用途ごとに丸ごと 1 コピー」が重い。
 LoRA は凍結した重み（2 バイト/パラメータ）と、小さな差分だけを持つ。LoRA の数値は\secref{sec:lora-limits}の構成（$r=16$、全線形層）での計算値。LoRA の学習中の状態は、凍結した重み 70 億 × 2 バイト ≒ 14 GB と、学習する 4,000 万個 × 16 バイト ≒ 0.6 GB の和（活性化は除く）}
 \label{tab:lora-cost}
 \small
@@ -90,7 +94,6 @@ LoRA は凍結した重み（2 バイト/パラメータ）と、小さな差分
  & 全パラメータ更新 & LoRA（$r=16$） \\
 \midrule
 学習するパラメータ数 & 約 70 億 & 約 4,000 万（0.6\%） \\
-（参考：本書の \file{base.pt}） & 258 万 & 98,304（3.8\%, $r=8$） \\
 学習中の状態（重み・勾配・AdamW） & 約 112 GB & 約 14 GB ＋ 0.6 GB \\
 用途 1 つあたりの保存サイズ（BF16） & 約 14 GB & 約 80 MB \\
 \bottomrule
@@ -100,22 +103,25 @@ LoRA は凍結した重み（2 バイト/パラメータ）と、小さな差分
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\small]
-  % 左: 全パラメータ更新
+  % 左: 全パラメータ更新（3 つとも同じ 14 GB なので同じ大きさで描く）
   \node[lbl] at (1.6,3.3) {全パラメータ更新};
   \foreach \i/\n in {0/計算,1/要約,2/社内文書}{
-    \node[redbox,minimum width=2.6cm,minimum height=0.7cm] at (1.6,2.4-\i*0.8) {モデル（\n） 14 GB};
+    \node[redbox,minimum width=4.1cm,minimum height=0.7cm] at (1.6,2.4-\i*0.8) {モデル（\n） 14 GB};
   }
-  % 右: LoRA
-  \node[lbl] at (7.6,3.3) {LoRA};
+  % 右: LoRA（アダプタは小さく描く）
+  \node[lbl] at (7.8,3.3) {LoRA};
   \node[box,minimum width=2.8cm,minimum height=2.2cm,align=center] (base) at (6.6,1.6) {基盤モデル\\（凍結）\\14 GB};
   \foreach \i/\n in {0/計算,1/要約,2/社内文書}{
-    \node[greenbox,minimum width=1.9cm,minimum height=0.6cm] (a\i) at (9.6,2.4-\i*0.8) {\n\ 80 MB};
-    \draw[arr] (a\i.west) -- (base.east |- a\i.west);
+    \node[greenbox,minimum width=2.5cm,minimum height=0.45cm,inner sep=1pt,font=\footnotesize] (a\i) at (9.8,2.4-\i*0.8) {\n\ 80 MB};
   }
-  \node[lbl] at (9.6,0.25) {差し替えて使うアダプタ};
+  \draw[arr] (a0.west) -- (base.east |- a0.west);
+  \draw[darr] (a1.west) -- (base.east |- a1.west);
+  \draw[darr] (a2.west) -- (base.east |- a2.west);
+  \node[lbl,align=center] at (9.8,0.05) {1 つを選んで差し込む\\（実線がいま使っているもの）};
 \end{tikzpicture}
 \caption{用途を 3 つ作るとき。左の全パラメータ更新では、モデル全体のコピーが 3 つできる。
-右の LoRA では、凍結した基盤モデル 1 つに、小さな差分（アダプタ、緑）を差し替えて使う}
+右の LoRA では、凍結した基盤モデル 1 つに、小さな差分（アダプタ、緑）を差し替えて使う。使うのは一度に 1 つ（実線）で、ほかの 2 つ（破線）は差し替えの候補。
+箱の大きさは、ファイルの大きさに比例していない（80 MB は 14 GB の約 175 分の 1）}
 \label{fig:lora-copies}
 \end{figure}
 
@@ -126,16 +132,16 @@ LoRA は凍結した重み（2 バイト/パラメータ）と、小さな差分
 では、どうすれば差分を小さくできるのでしょうか。
 これが次の節の問いです。
 
-この節をまとめます。全パラメータ更新の費用の大半は「更新するパラメータの数」に比例するので、それを減らすことが近道です。
+この節をまとめます。全パラメータ更新の費用の大半は「更新するパラメータの数」に比例するので、それを減らせば費用の大半が減ります。
 
 %======================================================================
-\section{更新は小さな部屋に収まるか：低ランクという着想}\label{sec:lora-lowrank}
+\section{更新は少数の方向で表せるか：低ランクという着想}\label{sec:lora-lowrank}
 
 更新するパラメータを減らす素朴な方法は、一部の層だけを動かすことです。
 しかし、どの層を選べばよいかは分かりません。
-LoRA はもっと巧い方法をとります。
-すべての層を少しずつ動かしますが、その「動き方」を狭い範囲に制限するのです。
-この節では、その「狭い範囲」を表す道具として、行列のランクを復習します。
+LoRA は別の方法をとります。
+すべての層を少しずつ動かしますが、各層の重みの変わり方を、少数の「方向」の組み合わせだけに制限するのです。
+この節では、「少数の方向の組み合わせ」を数式で表す道具として、行列のランクを復習します。
 ランクは大学の線形代数で習いますが、本書では初めて使うので、小さな数値例から説明し直します。
 
 まず、ファインチューニングで 1 つの線形層に何が起きるかを式にします。
@@ -185,6 +191,8 @@ LoRA はもっと巧い方法をとります。
 入力は 3 つの数を自由に選べるのに、出力はいつも $(2,1)^\T$ の何倍かにしかなりません。
 \figref{fig:lora-rank1}で言えば、出力は 1 本の直線の上にしか現れません。
 これが「ランク 1」の中身です。
+図では、3 本の列も、出力と同じ平面の点として描きました。
+$\vx=(1,0,0)^\T$ を入れたときの出力が、ちょうど 1 列目になるからです（$\vx=(0,1,0)^\T$ なら 2 列目、$(0,0,1)^\T$ なら 3 列目）。
 
 \begin{figure}[tbp]
 \centering
@@ -228,6 +236,52 @@ LoRA はもっと巧い方法をとります。
 $\mA$ は、「各列は、その 2 本を何倍ずつ足せば作れるか」を並べた行列で、3 列目の $(2,3)^\T$ が上の「2 倍と 3 倍」です。
 1 つだけ検算します。右辺の 3 行 3 列目は、$\mB$ の 3 行目 $(2,1)$ と $\mA$ の 3 列目 $(2,3)^\T$ の内積で、$2\times2+1\times3=7$ です（\chapref{ch:math}の行列の積）。左辺に一致します。
 
+\figref{fig:lora-ba-columns}は、この対応を 3 列目について描いたものです。
+左辺の 3 列目（橙）は、$\mB$ の 1 列目（青）の 2 倍と、2 列目（緑）の 3 倍の和です。
+その倍率 2 と 3 が、$\mA$ の 3 列目（橙）に並んでいます。
+つまり、$\mB$ の列が「方向」、$\mA$ の $j$ 列目が「左辺の $j$ 列目を作るための倍率」です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\footnotesize,x=6mm,y=6mm]
+  % 左辺 3x3（3 列目を橙に）
+  \fill[figorange] (2,0) rectangle (3,3);
+  \draw[step=1,black!40] (0,0) grid (3,3);
+  \foreach \v [count=\k from 0] in {1,0,2}{\node at (0.5,2.5-\k) {\v};}
+  \foreach \v [count=\k from 0] in {0,1,1}{\node at (1.5,2.5-\k) {\v};}
+  \foreach \v [count=\k from 0] in {2,3,7}{\node at (2.5,2.5-\k) {\v};}
+  \node[lbl] at (1.5,3.5) {左辺（$3\times3$）};
+  \node at (3.8,1.5) {$=$};
+  % B（3x2。1 列目を青、2 列目を緑）
+  \begin{scope}[shift={(4.5,0)}]
+    \fill[figblue] (0,0) rectangle (1,3);
+    \fill[figgreen] (1,0) rectangle (2,3);
+    \draw[step=1,black!40] (0,0) grid (2,3);
+    \foreach \v [count=\k from 0] in {1,0,2}{\node at (0.5,2.5-\k) {\v};}
+    \foreach \v [count=\k from 0] in {0,1,1}{\node at (1.5,2.5-\k) {\v};}
+    \node[lbl] at (1,3.5) {$\mB$（$3\times2$）};
+  \end{scope}
+  % A（2x3。3 列目を橙）
+  \begin{scope}[shift={(7,0.5)}]
+    \fill[figorange] (2,0) rectangle (3,2);
+    \draw[step=1,black!40] (0,0) grid (3,2);
+    \foreach \v [count=\k from 0] in {1,0,2}{\node at (0.5+\k,1.5) {\v};}
+    \foreach \v [count=\k from 0] in {0,1,3}{\node at (0.5+\k,0.5) {\v};}
+    \node[lbl] at (1.5,3.0) {$\mA$（$2\times3$）};
+  \end{scope}
+  % 3 列目の作り方
+  \node[anchor=west] at (11.0,1.5) {3 列目：
+    $\begin{pmatrix}2\\3\\7\end{pmatrix}
+    = \mathbf{2}\times\!\begin{pmatrix}1\\0\\2\end{pmatrix}
+    + \mathbf{3}\times\!\begin{pmatrix}0\\1\\1\end{pmatrix}$};
+  \node[lbl,anchor=west] at (11.0,-0.4) {倍率 2, 3 は $\mA$ の 3 列目（橙）};
+  \node[lbl,anchor=west] at (11.0,3.4) {方向は $\mB$ の 1 列目（青）と 2 列目（緑）};
+\end{tikzpicture}
+\caption{$\mB\mA$ の列の作り方（上の $3\times3$ の例）。左辺の 3 列目（橙）は、$\mB$ の 2 本の列（青・緑）を、$\mA$ の 3 列目（橙）の倍率 2 と 3 で足したもの。
+1 列目・2 列目も同じで、倍率は $\mA$ の 1 列目 $(1,0)^\T$、2 列目 $(0,1)^\T$}
+\label{fig:lora-ba-columns}
+\end{figure}
+
 同じことを一般の大きさで言います。
 ランクが $r$ 以下の $d_{\text{out}}\times d_{\text{in}}$ 行列は、必ず
 \begin{equation}
@@ -251,36 +305,43 @@ $\mA$ は入力を $r$ 個の数に縮め、$\mB$ はそれを $d_{\text{out}}$ 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\small]
-  % 大きな行列
-  \fill[figred] (0,0) rectangle (2.4,3.0);
-  \draw[thick] (0,0) rectangle (2.4,3.0);
-  \node at (1.2,1.5) {$\Delta\mW$};
-  \node[lbl] at (1.2,-0.35) {$d_{\text{in}}=192$};
-  \node[lbl,rotate=90] at (-0.35,1.5) {$d_{\text{out}}=576$};
-  \node[lbl] at (1.2,-0.8) {110,592 個};
-  \node at (3.0,1.5) {$\approx$};
-  % B
-  \fill[figgreen] (3.6,0) rectangle (3.95,3.0);
-  \draw[thick] (3.6,0) rectangle (3.95,3.0);
-  \node at (3.78,1.5) {$\mB$};
-  \node[lbl] at (3.78,-0.35) {$r$};
-  \node at (4.3,1.5) {$\times$};
-  % A
-  \fill[figblue] (4.7,1.32) rectangle (7.1,1.67);
-  \draw[thick] (4.7,1.32) rectangle (7.1,1.67);
-  \node at (5.9,1.5) {$\mA$};
-  \node[lbl] at (5.9,1.0) {$d_{\text{in}}=192$};
-  \node[lbl] at (7.35,1.5) {$r$};
-  \node[lbl,align=left,anchor=west] at (4.6,-0.55) {$r=8$ なら $8\times(192+576)$\\$=6{,}144$ 個（約 5.6\%）};
+  % 大きな行列（縦:横 = 576:192 = 3:1）
+  \fill[figred] (0,0) rectangle (1.2,3.6);
+  \draw[thick] (0,0) rectangle (1.2,3.6);
+  \node at (0.6,1.8) {$\Delta\mW$};
+  \node[lbl] at (0.6,-0.35) {$d_{\text{in}}=192$};
+  \node[lbl,rotate=90] at (-0.35,1.8) {$d_{\text{out}}=576$};
+  \node[lbl] at (0.6,-0.8) {110,592 個};
+  \node at (1.8,1.8) {$=$};
+  % B（幅 r は太く描いている）
+  \fill[figgreen] (2.4,0) rectangle (2.75,3.6);
+  \draw[thick] (2.4,0) rectangle (2.75,3.6);
+  \node at (2.575,1.8) {$\mB$};
+  \node[lbl] at (2.575,-0.35) {$r$};
+  \node[lbl,rotate=90] at (2.05,2.9) {576};
+  \node at (3.2,1.8) {$\times$};
+  % A（高さ r は太く描いている）
+  \fill[figblue] (3.65,1.625) rectangle (4.85,1.975);
+  \draw[thick] (3.65,1.625) rectangle (4.85,1.975);
+  \node at (4.25,1.8) {$\mA$};
+  \node[lbl] at (4.25,1.3) {$d_{\text{in}}=192$};
+  \node[lbl] at (5.1,1.8) {$r$};
+  \node[lbl,align=left,anchor=west] at (3.5,0.3) {$r=8$ なら $8\times(192+576)$\\$=6{,}144$ 個（約 5.6\%）};
+  \node[lbl,align=left,anchor=west] at (5.6,2.6) {LoRA は $\Delta\mW$ を\\はじめからこの形に限って\\$\mA$ と $\mB$ を学習する};
 \end{tikzpicture}
 \caption{低ランク分解の形。\code{qkv} 層の変化 $\Delta\mW$（$576\times192$）を、細長い $\mB$（$576\times r$）と平たい $\mA$（$r\times192$）の積で表す。
-$r=8$ なら必要な数は 110,592 個から 6,144 個に減る}
+$r=8$ なら必要な数は 110,592 個から 6,144 個に減る。$\Delta\mW$ の縦横比は実物どおり（3:1）だが、$\mB$ の幅と $\mA$ の高さ（$r$）は見やすいように太く描いた
+（$r=8$ なら、実物は $d_{\text{in}}$ の 24 分の 1）。
+全パラメータ更新で得た $\Delta\mW$ を後からこの形で近似するのではなく、LoRA でははじめから $\Delta\mW$ をこの形に限って学習する（\secref{sec:lora-def}）}
 \label{fig:lora-lowrank}
 \end{figure}
 
 \figref{fig:lora-lowrank}は、この形を描いたものです。
 左の大きな赤い縦長の行列を、真ん中の細長い緑の $\mB$ と、右の平たい青の $\mA$ の積に置き換えます。
-図の下にあるとおり、$r=8$ なら数の個数は 110,592 個から 6,144 個へ、約 5.6\% になります（$6{,}144\div110{,}592\approx0.056$）。
+図の右下にあるとおり、$r=8$ なら数の個数は 110,592 個から 6,144 個へ、約 5.6\% になります（$6{,}144\div110{,}592\approx0.056$）。
+図の等号は、式\eqref{eq:lora-ba}と同じ意味です。ランクが $r$ 以下の $\Delta\mW$ なら、ぴったりこの形に書けます。
+全パラメータ更新で得られる $\Delta\mW$ は、ふつうランクが $r$ より高いので、この形にぴったりとは書けません。
+そこで LoRA は、全パラメータ更新の結果を後から近似するのではなく、はじめから $\Delta\mW$ をこの形に限って、$\mA$ と $\mB$ を学習します（次の節）。
 
 \begin{quiz}
 本書のミニGPT の MLP の 1 層目 \code{fc} は $d_{\text{in}}=192$、$d_{\text{out}}=768$ です。
@@ -295,20 +356,33 @@ $r=8$ の $\mB\mA$ で表すとき、必要な数は何個ですか。元の重�
 もちろん、$r$ を小さくすると表せる変化の種類は減ります。それでも足りると期待できる根拠が二つあります。
 
 一つ目は、\term{内在次元}{intrinsic dimension}の観察です\cite{aghajanyan2021intrinsic}。
-Aghajanyan らは、パラメータをランダムに選んだ小さな部分空間の中だけで動かしても、ファインチューニングの性能の 9 割程度に届くこと、
-しかも事前学習が進んだモデルほど必要な部分空間が小さいことを示しました。
-「部分空間の中だけで動かす」とは、パラメータを 1 個ずつ自由に動かすのをやめて、あらかじめ乱数で決めた少数の向きの組み合わせだけで動かす、という意味です。
-事前学習で「下ごしらえ」が済んでいるので、仕上げに要る自由度は少ない、という解釈です。
+先に言葉を一つ決めます。
+いくつかの向き（ベクトル）を選び、それらを何倍かして足し合わせて作れるベクトル全体を、その向きが張る\term{部分空間}{subspace}と呼びます。
+\figref{fig:lora-rank1}の灰色の直線は、1 本の向き $(2,1)^\T$ が張る部分空間です。
+
+Aghajanyan らは、モデルのパラメータ全体を 1 本の長いベクトルと見ました。
+そして、そのベクトルを 1 成分ずつ自由に動かすのをやめ、あらかじめ乱数で決めた少数の向きの組み合わせだけで動かしました。
+向きの数を増やしていき、全パラメータ更新の性能の 9 割に届いた最小の向きの数を、その課題の内在次元と定めます。
+「9 割」は結果ではなく、内在次元を決めるための基準です。
+彼らが示したのは、この内在次元がパラメータの数に比べて驚くほど小さいこと、
+しかも事前学習が進んだモデルほど小さいことでした。
+事前学習で言葉の扱い方をすでに身に付けているので、新しい課題に合わせるための自由度は少なくて済む、という解釈です。
+
+ただし、内在次元は「パラメータ全体」についての話です。
+LoRA が仮定するのは、それより一歩踏み込んだ「\emph{各行列}の変化 $\Delta\mW$ のランクが低い」ことです。
+内在次元の観察は「必要な自由度は少ない」ことを示しますが、その自由度が「各行列の低ランク」という形で表せることまでは示しません。
+後者は LoRA の仮説で、確かめるのは次の二つ目の根拠と、本章の実験です。
 
 二つ目は、LoRA の論文自身の実験です\cite{hu2022lora}。
 GPT-3（1,750 億パラメータ）の注意機構に $r=1$〜$8$ 程度の差分を付けるだけで、全パラメータ更新と同等以上の結果が得られました。
 
-熟練した料理人に新しい店の味を教えるのに、包丁の握り方から教え直す必要はなく、「塩を控えめに」といった少数の調整で足りる、というのに似ています
-（ただし、まったく新しい料理なら足りないかもしれません。\secref{sec:lora-limits}で戻ってきます）。
+たとえで言えば、事前学習済みのモデルを熟練した料理人に、ファインチューニングを新しい店の味に合わせることにたとえられます。
+包丁の握り方や火の通し方（言葉や計算の基本の力。$\mW_0$ に入っている）は教え直さず、「塩を控えめに」といった少数の調整（$\mB\mA$ の $r$ 本の方向）で足りる、というわけです。
+このたとえが当てはまるのは、元の力の上に少し手を加える課題だけです。まったく新しい料理（新しい言語や大量の新しい知識）なら、少数の調整では足りないかもしれません（\secref{sec:lora-limits}で戻ってきます）。
 
 この節をまとめます。
 ランク $r$ の行列は $\mB\mA$ と分解でき、数の個数は $r(d_{\text{in}}+d_{\text{out}})$ に減ります。
-ファインチューニングの変化 $\Delta\mW$ はもともと低ランクに近い、というのが LoRA の出発点です。
+「ファインチューニングで各行列に足す変化 $\Delta\mW$ は、低ランクで足りる」というのが LoRA の出発点となる仮説です。
 
 %======================================================================
 \section{LoRA の式}\label{sec:lora-def}
@@ -342,30 +416,35 @@ $\mB$ の列は $r$ 本しかなく、$\mB\mA\vx$ は、その $r$ 本を何倍�
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\small,node distance=6mm]
-  \node[tok] (x) at (0,0) {$\vx$\ ($d_{\text{in}}$)};
-  \node[graybox,minimum width=3.0cm,minimum height=0.8cm] (W) at (3.2,1.0) {$\mW_0$（凍結）};
+  \node[tok] (x) at (0,0) {入力 $\vx$};
+  \node[graybox,minimum width=3.0cm,minimum height=0.8cm] (W) at (3.2,1.0) {元の重み $\mW_0$（凍結）};
   \node[box,minimum width=1.4cm,minimum height=0.7cm] (A) at (2.4,-1.0) {$\mA$};
   \node[greenbox,minimum width=1.4cm,minimum height=0.7cm] (B) at (4.6,-1.0) {$\mB$};
-  \node[circle,draw,thick,inner sep=1pt] (plus) at (7.0,0) {$+$};
-  \node[tok] (h) at (8.6,0) {$\vh$\ ($d_{\text{out}}$)};
-  \draw[arr] (x) |- (W);
-  \draw[arr] (x) |- (A);
+  \node[op] (sc) at (6.6,-1.0) {$\times\frac{\alpha}{r}$};
+  \node[circle,draw,thick,inner sep=1pt] (plus) at (7.6,0) {$+$};
+  \node[tok] (h) at (9.9,0) {出力 $\vh$};
+  \draw[arr] (x) |- node[lbl,pos=0.75,above]{$d_{\text{in}}$ 個} (W);
+  \draw[arr] (x) |- node[lbl,pos=0.75,below]{$d_{\text{in}}$ 個} (A);
   \draw[arr] (A) -- node[lbl,above]{$r$ 個} (B);
-  \draw[arr] (W) -| (plus);
-  \draw[arr] (B) -| node[lbl,pos=0.25,below]{$\times\frac{\alpha}{r}$} (plus);
-  \draw[arr] (plus) -- (h);
+  \draw[arr] (B) -- node[lbl,above]{$d_{\text{out}}$ 個} (sc);
+  \draw[arr] (W) -| node[lbl,pos=0.25,above]{$d_{\text{out}}$ 個} (plus);
+  \draw[arr] (sc) -| (plus);
+  \draw[arr] (plus) -- node[lbl,above]{$d_{\text{out}}$ 個} (h);
   \node[lbl,align=center] at (3.5,-1.95) {学習する（$\mB$ は 0 から始める）};
 \end{tikzpicture}
 \caption{LoRA を付けた線形層の順伝播。入力 $\vx$ は二手に分かれる。上の経路は凍結した元の重み $\mW_0$ を通る。
-下の経路は $\mA$ で $r$ 次元に縮められ、$\mB$ で広げられ、$\alpha/r$ 倍されて上の経路に足される}
+下の経路は $\mA$ で $r$ 個の数に縮められ、$\mB$ で $d_{\text{out}}$ 個に広げられ、$\alpha/r$ 倍されて上の経路に足される。矢印の横の数は、そこを流れるベクトルの成分の数}
 \label{fig:lora-forward}
 \end{figure}
 
 \figref{fig:lora-forward}に、計算の流れを描きました。
 上の灰色の経路は、元のモデルと同じ計算です。
 下の経路が LoRA で足した部分です。
-真ん中の矢印に「$r$ 個」とあるように、下の経路では信号がいったん $r$ 個の数に絞られます。
-この「細い首」が、変化を $r$ 本の方向に制限しているのです。
+$\mA$ と $\mB$ の間の矢印に「$r$ 個」とあるように、下の経路では、$d_{\text{in}}$ 個の入力の数が、いったん $r$ 個の数に絞られます。
+\chapref{ch:embedding}で、通せる情報の量を制限している箇所をボトルネックと呼びました。ここでは、この $r$ 個に絞る所がボトルネックです。
+$\mB$ が受け取るのはこの $r$ 個の数だけなので、下の経路の出力は $\mB$ の $r$ 本の列の組み合わせになります。
+このボトルネックが、変化を $r$ 本の方向に制限しているのです。
+上と下の経路の出力はどちらも $d_{\text{out}}$ 個の数なので、最後に成分ごとに足せます。
 
 下の経路は、大きな $\mB\mA$ を作らずに $\mA\vx$（$r$ 個の数）を先に計算するので、追加の計算は元の層の数 \% 程度です。
 \code{qkv} 層（$r=8$）で掛け算の回数を数えると、元の $\mW_0\vx$ は $576\times192=110{,}592$ 回です。
@@ -375,7 +454,7 @@ $\mA\vx$ は $8\times192=1{,}536$ 回、その結果に $\mB$ を掛けるのは
 
 学習を始めるとき、$\mA$ と $\mB$ をどんな値にすればよいでしょうか。
 私たちが望むのは、学習を始めた瞬間のモデルが、事前学習済みのモデルとまったく同じに振る舞うことです。
-せっかくの事前学習の知識を、乱数で壊したくないからです。
+$\mA$ と $\mB$ を両方とも乱数にすると、学習を始めた瞬間から出力に乱数の差分が足され、事前学習で身に付けた振る舞い（漱石の文章の予測など）が変わってしまいます。それを避けたいのです。
 
 それには、最初に $\mB\mA=\vzero$ となっていればよいです。
 式\eqref{eq:lora-forward}の第 2 項が消え、$\vh=\mW_0\vx$ になります。
@@ -383,23 +462,71 @@ LoRA の論文では、$\mA$ を小さな乱数で、$\mB$ を $\vzero$ で初�
 
 では、なぜ両方を $\vzero$ にしないのでしょうか。
 勾配を計算してみると分かります。
-損失 $\calL$ の、第 2 項の出力 $\vu=\frac{\alpha}{r}\mB\mA\vx$ についての勾配を $\vg=\pd{\calL}{\vu}$ とします。
+記号を 3 つ決めます（\figref{fig:lora-grad}）。
+$\mA$ で縮めた $r$ 個の数を、\emph{縮めた入力} $\vs\defeq\mA\vx$（$r$ 個）とします。
+下の経路の出力を、\emph{LoRA の出力} $\vu\defeq\frac{\alpha}{r}\mB\vs$（$d_{\text{out}}$ 個）とします。
+損失 $\calL$ の $\vu$ についての勾配を、\emph{出力側の勾配} $\vg\defeq\pd{\calL}{\vu}$（$d_{\text{out}}$ 個）とします。
+$\vh=\mW_0\vx+\vu$ と足し算でつながっているので、$\vg$ は $\pd{\calL}{\vh}$ と同じです（足し算は勾配をそのまま通します）。
+ここでは 1 トークン分の入力 $\vx$ で書きます。実際の学習では、バッチの中の全トークンについて、同じ形の勾配を足し合わせます。
 連鎖律より、$\mB$ と $\mA$ についての勾配は
 \begin{align}
 \pd{\calL}{\mB}&=\frac{\alpha}{r}\,\vg\,(\mA\vx)^\T, \label{eq:lora-grad-b}\\
 \pd{\calL}{\mA}&=\frac{\alpha}{r}\,\mB^\T\vg\,\vx^\T \label{eq:lora-grad-a}
 \end{align}
 です。
-導き方を 1 行ずつ書きます。$\vs=\mA\vx$ とおくと $\vu=\frac{\alpha}{r}\mB\vs$ です。
+導き方を 1 行ずつ書きます。$\vu=\frac{\alpha}{r}\mB\vs$ です。
+$\mB$ に係数を掛けた行列を $\mM\defeq\frac{\alpha}{r}\mB$ とおくと、$\vu=\mM\vs$ は、入力 $\vs$、重み $\mM$ のふつうの線形層です。
 線形層 $\vu=\mM\vs$ では「重みの勾配は $\vg\vs^\T$、入力の勾配は $\mM^\T\vg$」でした（\chapref{ch:nn}の式\eqref{eq:nn-layer-backward}）。
 $\mM=\frac{\alpha}{r}\mB$ に使うと、式\eqref{eq:lora-grad-b}と $\pd{\calL}{\vs}=\frac{\alpha}{r}\mB^\T\vg$ が出ます。
 $\mM$ は $\mB$ の $\frac{\alpha}{r}$ 倍なので、$\mB$ の勾配は、$\mM$ の勾配 $\vg\vs^\T$ の $\frac{\alpha}{r}$ 倍になります。
 入力の勾配 $\pd{\calL}{\vs}$ を、$\vs=\mA\vx$ にもう一度使います。今度は $\mA$ が重み、$\vx$ が入力です。
 重みの勾配は「出力側の勾配 × 入力の横ベクトル」なので $\pd{\calL}{\vs}\,\vx^\T$ で、式\eqref{eq:lora-grad-a}になります。
-式\eqref{eq:lora-grad-b}には $\mA$ が、式\eqref{eq:lora-grad-a}には $\mB$ が掛かっています。
-両方が $\vzero$ だと、どちらの勾配も $\vzero$ になり、学習が一歩も進みません。
+形も確かめます。式\eqref{eq:lora-grad-b}の $\vg\,(\mA\vx)^\T$ は、縦 $d_{\text{out}}$ 個 × 横 $r$ 個で、$\mB$ と同じ $d_{\text{out}}\times r$ です。
+式\eqref{eq:lora-grad-a}の $(\mB^\T\vg)\,\vx^\T$ は、縦 $r$ 個 × 横 $d_{\text{in}}$ 個で、$\mA$ と同じ $r\times d_{\text{in}}$ です。
+
+\figref{fig:lora-grad}で、橙の逆向きの矢印をたどってください。
+式\eqref{eq:lora-grad-b}には $\mA$ が（$\vs=\mA\vx$ として）、式\eqref{eq:lora-grad-a}には $\mB$ が掛かっています。
+両方が $\vzero$ だと、どちらの勾配も $\vzero$ になり、学習がまったく進みません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\small,x=1cm,y=1cm]
+  \node[tok] (x) at (0,0) {$\vx$};
+  \node[box,minimum width=1.0cm] (A) at (1.85,0) {$\mA$};
+  \node[tok] (s) at (3.4,0) {$\vs$};
+  \node[greenbox,minimum width=1.4cm] (M) at (5.3,0) {$\frac{\alpha}{r}\mB$};
+  \node[tok] (u) at (7.2,0) {$\vu$};
+  \node[op] (plus) at (8.5,0) {$+$};
+  \node[tok] (h) at (9.8,0) {$\vh$};
+  \node[graybox,minimum width=1.6cm] (W) at (5.3,1.2) {$\mW_0$（凍結）};
+  \node[lbl] at (11.0,0) {$\to\cdots\to\calL$};
+  \draw[arr] (x) -- node[lbl,above]{$d_{\text{in}}$ 個} (A);
+  \draw[arr] (A) -- (s);
+  \draw[arr] (s) -- (M);
+  \draw[arr] (M) -- (u);
+  \draw[arr] (u) -- (plus);
+  \draw[arr] (plus) -- (h);
+  \draw[arr] (x) |- (W);
+  \draw[arr] (W) -| (plus);
+  \node[lbl] at (3.4,0.5) {$r$ 個};
+  \node[lbl] at (7.2,0.5) {$d_{\text{out}}$ 個};
+  % 逆伝播（橙）
+  \draw[->,thick,bookorange] (9.8,-0.45) -- node[below,font=\footnotesize]{$\vg=\pd{\calL}{\vh}$} (7.2,-0.45);
+  \draw[->,thick,bookorange] (7.2,-0.45) -- node[below,font=\footnotesize,align=center]{$\pd{\calL}{\vs}=\frac{\alpha}{r}\mB^\T\vg$\\（$r$ 個）} (3.4,-0.45);
+  \node[font=\footnotesize,text=bookorange,align=center] at (5.3,-2.0) {$\pd{\calL}{\mB}=\frac{\alpha}{r}\,\vg\,\vs^\T$\\$d_{\text{out}}\times r$（$\vs=\mA\vx$ が掛かる）};
+  \node[font=\footnotesize,text=bookorange,align=center] at (1.7,-2.0) {$\pd{\calL}{\mA}=\pd{\calL}{\vs}\,\vx^\T$\\$r\times d_{\text{in}}$（$\mB$ が掛かる）};
+  \draw[->,bookorange] (6.6,-0.9) -- (5.9,-1.55);
+  \draw[->,bookorange] (3.0,-0.9) -- (2.2,-1.55);
+\end{tikzpicture}
+\caption{LoRA の下の経路の勾配の流れ（1 トークン分）。黒の矢印が順伝播、橙の矢印が逆伝播。
+縮めた入力 $\vs$（$r$ 個）、LoRA の出力 $\vu$（$d_{\text{out}}$ 個）、出力側の勾配 $\vg$ を使って、$\mB$ と $\mA$ の勾配が決まる。
+$\mB$ の勾配には $\vs=\mA\vx$ が、$\mA$ の勾配には $\mB$ が掛かるので、$\mA$ と $\mB$ が両方 $\vzero$ だと、どちらの勾配も $\vzero$ になる}
+\label{fig:lora-grad}
+\end{figure}
+
 $\mA$ を乱数にしておけば、最初のステップで $\mB$ の勾配は $\vzero$ でなくなり、$\mB$ が動き出します。
 $\mB$ が動けば、次のステップからは $\mA$ の勾配も $\vzero$ でなくなります。
+つまり、最初のステップ（ステップ 0）では $\mB$ だけが動き、ステップ 1 から $\mA$ も動き始めます。
 
 \begin{quiz}
 逆に、$\mA=\vzero$、$\mB$ を乱数にしても、「最初は元のモデルと同じ」という条件は満たせます。
@@ -409,7 +536,8 @@ $\mB$ が動けば、次のステップからは $\mA$ の勾配も $\vzero$ で
 進みます。
 $\mA=\vzero$ のとき、式\eqref{eq:lora-grad-b}の $\mB$ の勾配は $\vzero$ です。
 しかし式\eqref{eq:lora-grad-a}の $\mA$ の勾配は $\mB^\T\vg\vx^\T$ で、$\vzero$ ではありません。
-大事なのは「片方だけを $\vzero$ にする」ことで、どちらを $\vzero$ にするかは本質ではありません。
+「学習が始まるかどうか」については、大事なのは片方だけを $\vzero$ にすることで、どちらを $\vzero$ にしても同じです。
+ただし、学習の進み方まで同じだとは限りません。
 標準的な実装（論文と \code{peft}）は $\mB=\vzero$ を選んでおり、本書もそれに従います。
 
 \subsection{係数 $\alpha/r$ の役割}\label{sec:lora-alpha}
@@ -417,18 +545,44 @@ $\mA=\vzero$ のとき、式\eqref{eq:lora-grad-b}の $\mB$ の勾配は $\vzero
 最後に、式\eqref{eq:lora-forward}の $\frac{\alpha}{r}$ です。
 なぜ、わざわざ係数を付けるのでしょうか。
 
-$\mB$ は $\mA\vx$ の $r$ 個の成分を足し合わせるので（$r=8$ なら 8 個、$r=64$ なら 64 個の項の和です）、$r$ が大きいほど差分が大きくなりやすく、
-$r$ を変えるたびにちょうどよい学習率が変わってしまいます。
-そこで $r$ で割って大きさをならします。
+$\mB$ は $\mA\vx$ の $r$ 個の成分を足し合わせます（$r=8$ なら 8 個、$r=64$ なら 64 個の項の和です）。
+学習が進んで $\mB$ が $\vzero$ から離れると、項の数が多い（$r$ が大きい）ほど、差分 $\mB\mA\vx$ は大きくなりやすくなります。
+すると、$r$ を変えるたびに、ちょうどよい学習率が変わってしまいます。
+そこで、$r$ で割って大きさをそろえます。
 こうしておけば、$r$ を変えても学習率をあまり調整し直さずに済みます\cite{hu2022lora}。
-残る $\alpha$ は、差分全体の効き具合を決めるつまみです。
-実務では $\alpha=r$ か $\alpha=2r$ がよく使われ、本書では $\alpha=2r$ とします
-（このとき係数 $\alpha/r$ は常に 2 です）。
-流儀は二つあります。$\alpha=16$ に固定して $r$ を変える流儀では、係数は $r=8$ で 2、$r=16$ で 1 と変わり、$r$ が大きいほど 1 方向あたりの効きが弱まります。
-本書のように $\alpha$ を $r$ と一緒に変える流儀では、係数は一定です。どちらも実務で使われます。
+残る $\alpha$ は、差分全体の大きさを決める係数です。
+
+ここで、$\alpha$ の決め方には二つの流儀があります（\tabref{tab:lora-alpha}）。
+流儀 A は $\alpha$ を一つの値（たとえば 16）に固定して $r$ だけを変えます。係数 $\alpha/r$ は $r$ に反比例して小さくなり、「$r$ で割ってそろえる」効果がそのまま働きます。
+流儀 B は $\alpha$ を $r$ に比例させます（$\alpha=r$ や $\alpha=2r$）。係数は $r$ によらず一定なので、「$r$ で割る」効果は打ち消されます。
+本書は流儀 B の $\alpha=2r$ をとり、係数 $\alpha/r$ は常に 2 です。どちらの流儀も実務で使われます
+（\code{peft} には、係数の決め方を変える \code{use_rslora} という選択肢もあり、どの決め方がよいかには議論があります）。
+
+
+本書の $\alpha=2r$ は、実務でよく使われる $\alpha=r$ と $\alpha=2r$ のうちの一つで、本章の基準の $r=8$ では $\alpha=16$ になります。
+ただし流儀 B では、\secref{sec:lora-exp-rank}で $r$ を変える実験（学習率は 1e-3 に固定）のとき、「方向の数」と「差分の大きくなりやすさ」の両方が $r$ とともに変わります。二つの効果が混ざるのです。
+そこで本章では、流儀 A（$\alpha=16$ 固定）でも同じ実験を走らせ、両方の結果を並べます（\figref{fig:lora-rank}）。
+
+\begin{table}[htbp]
+\centering
+\caption{係数 $\alpha/r$ の二つの流儀。流儀 A（$\alpha=16$ に固定）では $r$ を上げると係数が小さくなり、差分の大きさがそろう。
+流儀 B（本書。$\alpha=2r$）では係数は 2 のままで、$r$ を上げると差分も大きくなりやすい。$r=8$ では両者が一致する}
+\label{tab:lora-alpha}
+\small
+\begin{tabular}{lrrrrl}
+\toprule
+ & \multicolumn{4}{c}{係数 $\alpha/r$} & \\
+\cmidrule(lr){2-5}
+流儀 & $r=1$ & $r=8$ & $r=16$ & $r=64$ & $r$ を上げると \\
+\midrule
+A（$\alpha=16$ 固定） & 16 & 2 & 1 & 0.25 & 差分の大きさがそろう \\
+B（$\alpha=2r$、本書） & 2 & 2 & 2 & 2 & 差分も大きくなりやすい \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 この節をまとめます。
-LoRA は、凍結した $\mW_0$ の横に、細い首を持つ経路 $\frac{\alpha}{r}\mB\mA$ を足します。
+LoRA は、凍結した $\mW_0$ の横に、$r$ 個の数のボトルネックを持つ経路 $\frac{\alpha}{r}\mB\mA$ を足します。
 $\mB=\vzero$ から始めるので、学習の最初は元のモデルとまったく同じです。
 
 %======================================================================
@@ -451,8 +605,9 @@ $\mB=\vzero$ から始めるので、学習の最初は元のモデルとまっ�
 \code{self.scale} が係数 $\alpha/r$ です。
 \code{self.A} は形 $(r, d_{\text{in}})$、\code{self.B} は形 $(d_{\text{out}}, r)$ で、式\eqref{eq:lora-ba}と同じ形です。
 $\mB$ は \code{torch.zeros} で $\vzero$ に、$\mA$ は \code{kaiming_uniform_} の小さな乱数にします。
-\code{a=math.sqrt(5)} まで含めて、\code{nn.Linear} が作られるときの既定の初期化と同じ呪文です。
-ほどよい大きさの一様乱数になります。
+\code{a=math.sqrt(5)} まで含めて、\code{nn.Linear} が作られるときの既定の初期化と同じ指定です。
+この指定では、$\mA$ の各成分は $-1/\sqrt{d_{\text{in}}}$ から $1/\sqrt{d_{\text{in}}}$ までの一様乱数になります。
+\code{qkv} 層なら $d_{\text{in}}=192$ なので、$1/\sqrt{192}\approx0.072$ で、$\pm0.072$ の範囲です。
 これが\secref{sec:lora-init}の初期化です。
 \code{self.merged} は、後の\secref{sec:lora-merge}で使う印です。
 
@@ -461,7 +616,7 @@ $\mB$ は \code{torch.zeros} で $\vzero$ に、$\mA$ は \code{kaiming_uniform_
 \chapref{ch:pytorch}で見たとおり、縦ベクトルの式を横に寝かせると、行列は右から掛ける形になり、転置（\code{.T}）が付きます。
 \code{self.base(x)} が上の経路、\code{(x @ self.A.T @ self.B.T) * self.scale} が下の経路です。
 \code{x @ self.A.T} を先に計算するので、形は \code{(B, T, d_in)} → \code{(B, T, r)} → \code{(B, T, d_out)} と、いったん細くなります（この \code{B} はバッチの大きさで、行列 $\mB$ とは別物です）。
-\figref{fig:lora-forward}の「細い首」が、ここに現れています。
+\figref{fig:lora-forward}の $r$ 個のボトルネックが、ここに現れています。
 
 \subsection{既存のモデルに差し込む}\label{sec:lora-add}
 \skimread{押さえる結論は、「\code{add_lora} は全パラメータを凍結してから、各ブロックの 4 つの線形層を \code{LoRALinear} に取り替える。$r=8$ で学習するのは 98,304 個（\tabref{tab:lora-params}）」です。}
@@ -491,15 +646,15 @@ MLP の \code{mlp.fc} と \code{mlp.proj} の 4 つの線形層がありまし�
 
 \tabref{tab:lora-params}は、$r=8$ のとき 1 ブロックあたりで増える数を、式\eqref{eq:lora-count}で計算したものです。
 
-\begin{table}[tbp]
+\begin{table}[b]
 \centering
-\caption{ミニGPT の 1 ブロックに $r=8$ の LoRA を付けたときのパラメータ数。右端の列は元の重みに対する割合。
-4 ブロックの合計 98,304 個は、\coderef{code:lora-run}の実行結果と一致する}
+\caption{ミニGPT の 1 ブロックに $r=8$ の LoRA を付けたときのパラメータ数。右端の列は、同じ行の「元の重み」（線形層の重み）に対する割合。
+4 ブロックの合計 98,304 個は、\coderef{code:lora-run}の実行結果と一致し、モデル全体（2,583,936 個。埋め込みなども含む）の 3.8\% に当たる}
 \label{tab:lora-params}
 \small
 \begin{tabular}{lrrrr}
 \toprule
-層 & $d_{\text{in}}\to d_{\text{out}}$ & 元の重み & LoRA $r(d_{\text{in}}+d_{\text{out}})$ & 割合 \\
+層 & $d_{\text{in}}\to d_{\text{out}}$ & 元の重み & LoRA $r(d_{\text{in}}+d_{\text{out}})$ & 元の重みに対する割合 \\
 \midrule
 \code{attn.qkv} & $192\to576$ & 110,592 & 6,144 & 5.6\% \\
 \code{attn.proj} & $192\to192$ & 36,864 & 3,072 & 8.3\% \\
@@ -530,7 +685,7 @@ MLP の \code{mlp.fc} と \code{mlp.proj} の 4 つの線形層がありまし�
 学習データは\chapref{ch:posttraining}と同じ対話 3,000 件（1〜3 桁の加減算、模範応答は「◯◯です。」）、
 600 ステップ、バッチ 32、ウォームアップ 30 ステップ付きのコサイン減衰、勾配クリップ 1.0 です。
 損失はアシスタントの発話だけを数える $\calL_{\text{SFT}}$（式\eqref{eq:post-sft-loss}）です。
-学習ループ（\file{ch17/common.py} の \code{train}）も第 16 章の \code{run_sft} と同じ形で、違いは次の 2 文だけです。
+学習ループ（\file{ch17/common.py} の \code{train}）も\chapref{ch:posttraining}の \code{run_sft} と同じ形で、違いは次の 2 文だけです。
 
 \begin{pycode}
 params = [p for p in model.parameters() if p.requires_grad]  # A と B だけ
@@ -544,18 +699,43 @@ AdamW のモーメントはこの分しか作られません。
 
 一つだけそろえなかったのが学習率で、全パラメータ SFT の 3e-4 に対し、LoRA では 1e-3 にしました。
 同じ 3e-4 では、600 ステップ後の正答率は 54.1\% にとどまったからです（\file{ch17/out/lora_r8_all_lr3e-4.txt}）。
-$\mB$ が $\vzero$ から出発し、少数のパラメータで変化を担うので、大きめの学習率が要るのです。
-これは実務でも標準的なやり方です（\secref{sec:lora-limits}）。
+全パラメータ SFT も $\Delta\mW=\vzero$ から出発するので、違いは「0 から始めること」ではありません。
+違いは、$\Delta\mW$ の各成分の動き方にあります。
+AdamW の 1 回の更新で各パラメータが動く幅は、勾配の大小によらず、ほぼ学習率で決まるのでした（\secref{sec:training-optim}）。
+全パラメータ更新では、$\Delta\mW$ の成分そのものがパラメータなので、1 回の更新で学習率ほど動きます。
+LoRA では、$\Delta\mW$ の成分は $\mB$ の成分と $\mA$ の成分（$\pm0.072$ 程度の小さな数）の積の和です。
+このため、同じ学習率でも、$\Delta\mW$ の 1 回の動きは小さくなりやすいのです。
+これは一つの見方で、ちょうどよい倍率を理屈だけで決めることはできません。
+LoRA では全パラメータ更新より大きな学習率がよいことは、実務でも経験的に知られています（\secref{sec:lora-limits}）。
 
 評価は、\chapref{ch:posttraining}と同じ「応答が『◯◯です。』と完全に一致する割合」です。
 ただし、200 問では正答率が ±2〜3 ポイントぶれるので、この章の比較はすべて 1,000 問（乱数の種 777）で行います。
 同じ物差しで測ると、\file{sft.pt} の正答率は 82.6\% です。
-なお、\chapref{ch:posttraining}の 89.0\% は、同章が自分で学習した \file{ch16_sft.pt} の 200 問での値です。
-この章が比べる \file{sft.pt} は、同じ設定で作った共有のファイルで、200 問では 87.0\% でした（同章のコラム）。
+\chapref{ch:posttraining}には、ほかに 89.0\% と 87.0\% という値も出てきました。3 つの値の関係を\tabref{tab:lora-sft-acc}にまとめます。
 
-実行するのは次の部分です。
+\begin{table}[tbp]
+\centering
+\caption{本書に出てくる SFT モデルの正答率。200 問（種 12345）と 1,000 問（種 777）は、別の問題の集合}
+\label{tab:lora-sft-acc}
+\small
+\begin{tabular}{llrr}
+\toprule
+モデル & 作った所 & 200 問（種 12345） & 1,000 問（種 777） \\
+\midrule
+\file{ch16_sft.pt} & \chapref{ch:posttraining}の本文で学習 & 89.0\% & — \\
+\file{sft.pt} & 同じ設定で作った共有のファイル & 87.0\% & 82.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\snippet{LoRA を差し込んで学習し、評価する（\file{train_lora.py} の中心部）}{code:lora-run}{ch17/train_lora.py}{run}
+同じ \file{sft.pt} でも、200 問では 87.0\%、1,000 問では 82.6\% と、4.4 ポイント違います。
+200 問と 1,000 問は、別の乱数の種で作った別の問題なので、問題の選び方によって値が動きます。
+200 問の正答率の標準誤差（\chapref{ch:pretraining}で見たぶれの目安 $\sqrt{p(1-p)/n}$）は $\sqrt{0.85\times0.15/200}\approx0.025$ で約 2.5 ポイントなので、4.4 ポイントの差はその 2 倍弱で、問題の選び方だけで起こりうる大きさです。
+問題の多い 1,000 問の値のほうが、ぶれが小さく信頼できます。
+
+実行するのは次の部分です（\file{train_lora.py} の中心部）。
+
+\snippet{LoRA を差し込んで学習し、評価する}{code:lora-run}{ch17/train_lora.py}{run}
 
 \code{add_lora} で 16 個の線形層（4 ブロック × 4 層）を \code{LoRALinear} に替え、学習し、アダプタだけを保存します。
 1 行目の \code{alpha=2 * r} が、\secref{sec:lora-alpha}で決めた $\alpha=2r$ です。
@@ -574,14 +754,24 @@ $r=8$ のときの出力は次のとおりです。
 全パラメータ SFT の 82.6\% との差は 0.9 ポイントです。
 正答率 $p$ を $n$ 問で測ったときのぶれの目安は、標準誤差 $\sqrt{p(1-p)/n}$ でした（\chapref{ch:pretraining}）。
 $p=0.82$、$n=1000$ なら $\sqrt{0.82\times0.18/1000}=\sqrt{0.0001476}\approx0.012$ で、1,000 問の正答率の標準誤差は約 1.2 ポイントです。
+ただし、比べたいのは 2 つの正答率の\emph{差}です。
+2 つを別々に測ったとすると、差のぶれは 1 つのぶれの約 $\sqrt{2}\approx1.4$ 倍、約 1.7 ポイントになります。
 0.9 ポイントの差はこれより小さいので、誤差の範囲と言ってよいでしょう。
+もう一つのぶれは、学習の乱数の種（$\mA$ の初期値と、バッチに選ぶ例の順）です。
+これを確かめるため、\file{ch17/sweep_seed.py} で、種だけを 0・1・2 の 3 通りに変えて同じ学習をしました。
+種 0・1・2 の正答率は 81.7\%・82.9\%・83.9\%、漱石の損失は 5.464・5.560・5.667 でした（\file{ch17/out/sweep_seed.csv}）。
+種を変えるだけで正答率は 2 ポイントほど動き、全パラメータ SFT の 82.6\% は、この幅の中に入ります。
+全パラメータ SFT の側の種による幅は測っていませんが、どちらにしても「ほぼ並ぶ」と言うのが正確です。
 6 行目のとおり、保存するアダプタは 394 KB で、\file{sft.pt} の 10,104 KB の約 26 分の 1 です（$10{,}104\div394\approx25.6$）。
 394 KB の大半は、1 個 4 バイトの FP32 で保存した $\mA$ と $\mB$ です（$98{,}304\times4=393{,}216$ バイト $=384$ KB。残りは名前などの付属の情報）。
+ここでの KB は、実行結果と同じく 1,024 バイトです（$393{,}216\div1{,}024=384$）。
+\secref{sec:lora-cost}の GB と MB は 10 億バイト・100 万バイトで数えたので、単位の数え方が違います。
 
 \begin{table}[tbp]
 \centering
 \caption{全パラメータ SFT（\file{sft.pt}）と LoRA（$r=8$、全線形層）の比較。正答率は 1,000 問（種 777）。
-LoRA は 4\% 弱のパラメータで、正答率はほぼ並び、保存サイズは 26 分の 1、漱石の損失の悪化（忘却）は小さい}
+LoRA は 4\% 弱のパラメータで、正答率はほぼ並び、保存サイズは 26 分の 1。この設定（$r=8$、学習率 1e-3）では、漱石の損失の悪化（忘却）も全パラメータ SFT より小さい。
+学習時間は、2 本ずつ並べて走らせた共有 CPU での値で、数十秒ほどぶれる}
 \label{tab:lora-vs-full}
 \small
 \begin{tabular}{lrr}
@@ -601,11 +791,17 @@ LoRA は 4\% 弱のパラメータで、正答率はほぼ並び、保存サイ�
 注目してほしいのは 4 行目、漱石の検証損失です。
 基盤モデルは 4.877 でした。
 全パラメータ SFT では 6.181 まで悪化しましたが、LoRA では 5.464 にとどまっています。
-LoRA は変化の大きさと方向を制限するので、元の能力を壊しにくいのです。
-ただし、忘却がなくなったわけではありません。
-5 行目の学習時間はほとんど変わりません。
-凍結した $\mW_0$ を通す順伝播と、入力側への誤差逆伝播は残るからです。
-LoRA が減らすのは主にメモリと保存です。
+この設定（$r=8$、学習率 1e-3）では、LoRA のほうが元の能力（漱石の文章を予測する力）が多く残りました。
+LoRA は各層の変化の方向を $r$ 本に限るので、元の重みから離れにくいのだと考えられます。
+ただし、これは LoRA ならいつでも成り立つ性質ではありません。
+忘却がなくなったわけではなく、\secref{sec:lora-exp-rank}で見るように、本書の設定（$\alpha=2r$）で $r$ を上げたり、学習率を上げたりすると忘却は増え、$r=64$ では全パラメータ SFT より大きくなります。
+
+5 行目の学習時間は、この実験ではほとんど変わりませんでした。
+凍結した $\mW_0$ については、重みの勾配（$d_{\text{out}}\times d_{\text{in}}$ の行列）を計算しなくて済みます。
+しかし、$\mW_0$ を通す順伝播は残ります。
+入力側への誤差逆伝播も残ります。手前のブロックにも $\mA,\mB$ があり、その勾配を求めるには、凍結した層を通して勾配を下の層まで送る必要があるからです。
+重みの勾配を省ける分だけ速くなる余地はありますが、この小さなモデルと CPU では、並べて走らせたことによるぶれに隠れて見えませんでした。
+LoRA が確実に減らすのは、メモリと保存です。
 
 \begin{figure}[tbp]
 \centering
@@ -614,7 +810,7 @@ LoRA が減らすのは主にメモリと保存です。
   ymode=log,xmin=0,xmax=600,
   legend columns=2,legend cell align=left,
   legend style={font=\footnotesize,at={(0.5,1.04)},anchor=south,/tikz/every even column/.append style={column sep=4mm}}]
-\addplot[bookgray,thick] table[col sep=comma,x=step,y=loss,each nth point=10]{code/ch16/out/sft_loss.csv};
+\addplot[black!30,line width=2.2pt] table[col sep=comma,x=step,y=loss,each nth point=10]{code/ch16/out/sft_loss.csv};
 \addlegendentry{全パラメータ SFT（第 16 章）}
 \addplot[bookaccent,thick,dashed] table[col sep=comma,x=step,y=loss]{code/ch17/out/lora_r1_all_loss.csv};
 \addlegendentry{LoRA $r=1$}
@@ -624,67 +820,104 @@ LoRA が減らすのは主にメモリと保存です。
 \addlegendentry{LoRA $r=16$}
 \end{axis}
 \end{tikzpicture}
-\caption{学習損失の推移（1 バッチの値。LoRA は 25 ステップごと、全パラメータ SFT は 10 ステップごと）。$r=8$ と $r=16$ の LoRA は全パラメータ SFT（灰）を追って下がるが、後半は 0.3 前後で、全パラメータ SFT（約 0.1）より高い。
+\caption{学習損失の推移（1 バッチの値。LoRA は 25 ステップごと、全パラメータ SFT は 10 ステップごと）。$r=8$ と $r=16$ の LoRA は全パラメータ SFT（太い薄い灰色の線）を追って下がるが、後半は 0.3 前後で、全パラメータ SFT（約 0.1）より高い。
 $r=1$（赤の破線）は下がり方が遅く、最後まで高い。
 灰色の線は\chapref{ch:posttraining}の学習の記録（\file{ch16_sft.pt}。\file{sft.pt} と同じ設定）}
 \label{fig:lora-curves}
 \end{figure}
 
 \figref{fig:lora-curves}は、学習損失の推移です。
-青の $r=8$ は、灰色の全パラメータ SFT を少し遅れて追い、終盤は 0.3 前後です。全パラメータ SFT（0.1 前後）ほどは下がりませんが、正答率はほぼ並びました。
+青の $r=8$ は、灰色の全パラメータ SFT を 100〜200 ステップほど遅れて追い（損失が 0.5 を切るのは、灰色が 125 ステップ前後、青が 250 ステップ前後）、終盤は 0.3 前後です。全パラメータ SFT（0.1 前後）ほどは下がりませんが、正答率はほぼ並びました。
+損失が 3 倍も違うのに正答率が同じなのは、二つが別のものを測っているからです。
+学習損失は、正解のトークンに付けた確率の対数（の符号を変えた平均）で、正解にどれだけ自信を持って高い確率を付けたかで値が変わります。
+正答率は、各位置でいちばん確率の高いトークンを選んで（貪欲に）作った答えが、正解と一致するかだけを見ます。
+たとえば正解に 0.9 の確率を付けたモデルと 0.7 を付けたモデルは、損失は違いますが、どちらも正解を選ぶので、正答率は同じです。
+また、この損失は学習に使ったバッチでの値なので、低いほど評価の問題でもよく答えられるとは限りません（\chapref{ch:ml}の過学習）。
 一方、赤い破線の $r=1$ は、下がり方がはっきり遅いです。
-ランクが小さすぎると、変化を表す「方向」が足りないことが、損失の段階で見えています。
+ランクが小さいと学習が遅いことが、損失の段階で見えています。
+ただし、その理由は「方向が 1 本しかない」ことだけではありません。\secref{sec:lora-exp-rank}で、係数 $\alpha/r$ を変えた実験と比べます。
 
 最後に、学習率を変えた結果も見ておきます。
 $r=8$ のまま学習率だけを変えると、3e-4 では正答率 54.1\%（漱石の損失 5.034）、本章の 1e-3 では 81.7\%（5.464）、10 倍の 3e-3 では 84.1\%（6.017）でした（3e-3 は \file{ch17/out/lora_r8_all_lr3e-3.txt}）。
-学習率を上げると、新しい課題はよく学べる反面、元の能力からも離れやすくなるのです。
+学習率を上げると、新しい課題はよく学べる反面、元の能力も失われやすくなるのです。
+この 3 点は、後の\figref{fig:lora-tradeoff}に、ほかの実験と並べて描きます。
 以後の実験は、すべて 1e-3 で行います。
 
 \subsection{ランク $r$ をどう選ぶか}\label{sec:lora-exp-rank}
-\skimread{押さえる結論は、「$r=1$ では 14.6\% と足りず、$r=16$ 以上は全パラメータ SFT と同じ水準で頭打ちになる。$r$ を上げるほど忘却は増える」です。}
+\skimread{押さえる結論は、「本書の設定（$\alpha=2r$、学習率は固定）では、$r=1$ は 14.6\% と足りず、$r=16$ 以上は全パラメータ SFT と同じ水準で頭打ちになり、$r$ を上げるほど忘却が増える。$\alpha=16$ に固定すると、$r=1$ でも 73.7\% に届き、$r$ を上げても忘却は増え続けない（5.46〜5.78 の幅にとどまる）。結果を大きく左右したのは、$r$ そのものより差分の大きさ（係数 $\alpha/r$）だった」です。}
 
 では、ランクはどこまで小さくできるのでしょうか。
-$r$ を 1 から 64 まで変えて、同じ実験を繰り返しました（\file{ch17/run_all.sh}）。
-結果を\figref{fig:lora-rank}に示します（$r=32$ は測っていません）。
+本書の設定（$\alpha=2r$）で $r$ を 1 から 64 まで変えて、同じ実験を繰り返しました（\file{ch17/run_all.sh} と、$r=32$ は \code{train_lora.py 32}）。
+さらに、\secref{sec:lora-alpha}の流儀 A（$\alpha=16$ に固定）でも、$r=32$ を除く同じ $r$（1, 2, 4, 8, 16, 64）で走らせました（\file{ch17/sweep_alpha.py}。$r=8$ は両者が同じ設定なので共通。$r=32$ は測っていません）。
+ほかの条件（全線形層、学習率 1e-3、600 ステップ、乱数の種 0）はすべてそろえています。
+結果を\figref{fig:lora-rank}に示します。上の段が学んだ量（対話の正答率）、下の段が忘れた量（漱石の検証損失）です。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.9\linewidth,height=4.0cm,xlabel={ランク $r$（対数目盛）},ylabel={対話の正答率 [\%]},
-  xmode=log,log basis x=2,xtick={1,2,4,8,16,64},xticklabels={1,2,4,8,16,64},ymin=0,ymax=100,
-  legend style={font=\footnotesize,at={(0.98,0.05)},anchor=south east}]
-\addplot[bookblue,thick,mark=*] table[col sep=comma,x=r,y=acc]{code/ch17/out/rank.csv};
-\addlegendentry{LoRA（全線形層）}
+\begin{axis}[name=top,width=0.9\linewidth,height=4.2cm,ylabel={対話の正答率 [\%]},
+  xmode=log,log basis x=2,xtick={1,2,4,8,16,32,64},xticklabels={},ymin=0,ymax=100,
+  legend columns=2,legend cell align=left,
+  legend style={font=\footnotesize,at={(0.5,1.04)},anchor=south,/tikz/every even column/.append style={column sep=4mm}}]
+\addplot[bookblue,thick,mark=*] table[col sep=comma,x=label,y=acc]{code/ch17/out/tradeoff_rank.csv};
+\addlegendentry{本書の設定 $\alpha=2r$（係数 2）}
+\addplot[bookorange,thick,mark=square*] table[col sep=comma,x=label,y=acc]{code/ch17/out/tradeoff_alpha16.csv};
+\addlegendentry{$\alpha=16$ に固定（係数 $16/r$）}
 \addplot[bookgray,thick,dashed,domain=1:64] {82.6};
-\addlegendentry{全パラメータ SFT（82.6\%）}
+\addlegendentry{全パラメータ SFT}
+\end{axis}
+\begin{axis}[at={(top.south)},anchor=north,yshift=-6mm,width=0.9\linewidth,height=4.2cm,
+  xlabel={ランク $r$（対数目盛）},ylabel={漱石の検証損失},
+  xmode=log,log basis x=2,xtick={1,2,4,8,16,32,64},xticklabels={1,2,4,8,16,32,64},ymin=4.7,ymax=7.0]
+\addplot[bookblue,thick,mark=*] table[col sep=comma,x=label,y=soseki]{code/ch17/out/tradeoff_rank.csv};
+\addplot[bookorange,thick,mark=square*] table[col sep=comma,x=label,y=soseki]{code/ch17/out/tradeoff_alpha16.csv};
+\addplot[bookgray,thick,dashed,domain=1:64] {6.181};
+\addplot[black!60,thick,dotted,domain=1:64] {4.877};
+\node[lbl,anchor=south west] at (axis cs:1,6.181) {全パラメータ SFT 6.181};
+\node[lbl,anchor=south east] at (axis cs:64,4.877) {基盤モデル 4.877（ここより上が忘却）};
 \end{axis}
 \end{tikzpicture}
-\caption{ランク $r$ と対話の正答率（1,000 問）。$r=1$ では 14.6\% にとどまるが、$r=4$ で 79.4\% と急に追いつき、
-$r=16$ 以上では全パラメータ SFT（破線）と同じ水準で頭打ちになる}
+\caption{ランク $r$ を変えたときの、学んだ量（上: 対話の正答率、1,000 問）と忘れた量（下: 漱石の検証損失。低いほど元の力が残っている）。
+青は本書の設定 $\alpha=2r$、橙は $\alpha=16$ に固定した場合（$r=8$ は同じ設定）。橙は $r=32$ を測っておらず（点は 6 個）、$r=16$ と $r=64$ の点を直線で結んだ。どちらも全線形層・学習率 1e-3・600 ステップ・種 1 つ。
+正答率は $r=1$ の 14.6\% から $r=2$ で 68.6\% と大きく伸び、$r=16$ 以上で全パラメータ SFT（灰の破線）と同じ水準で頭打ちになる。
+忘却は、青では $r$ とともに増えるが、橙は 5.46〜5.78 の幅にとどまり、$r$ とともに増え続けはしない（$r=1$〜4 では、むしろ青より高い）}
 \label{fig:lora-rank}
 \end{figure}
 
 \figref{fig:lora-rank}の横軸は 2 倍ごとに等間隔です。
+まず上の段の青（本書の設定）を見ます。
 $r=1$ の 14.6\% から、$r=2$ で 68.6\%、$r=4$ で 79.4\% と、最初の数段で大きく伸びます。
 その後は伸びがゆるやかになり、$r=16$ で 85.0\% と、破線の全パラメータ SFT に並びます。
-$r=64$ にしても 84.1\% で、それ以上は伸びません（この差は 1,000 問の誤差の範囲です）。
+$r=32$ で 85.0\%、$r=64$ にしても 84.1\% で、それ以上は伸びません（この差は 1,000 問の誤差の範囲です）。
 $r=64$ では、学習するパラメータは 786,432 個と、基盤モデルの約 30\% まで増えています。それでも正答率は上がりません。
-「計算の質問に『◯◯です。』で答える」という変化は、数本の方向で大部分が表せるのです（\secref{sec:lora-lowrank}の着想どおり）。
-$r=1$ では、1 本の方向に応答の書式と計算の両方を詰め込むことになり、足りませんでした。
-ただし、これは同じ 600 ステップで比べた結果です。
+「計算の質問に『◯◯です。』で答える」という変化は、各層で数本の方向があれば大部分が表せるのです（\secref{sec:lora-lowrank}の着想どおり）。
+$r=1$ では、各層の変化が 1 本の方向に限られます（16 層のそれぞれに 1 本ずつ）。
+それで応答の書式と計算の両方を学ぶには足りなかった、と考えたくなりますが、すぐ後で見るとおり、それだけでは説明できません。
+また、これは同じ 600 ステップで比べた結果です。
 $r=1$ の学習損失は終盤でも 1.0〜1.3 と高いままで（\figref{fig:lora-curves}の赤い破線）、もっと長く学習した場合のことは、この実験からは分かりません。
 
-漱石の検証損失（\file{ch17/out/rank.csv} に記録した値）も見ておきましょう。
-$r=1$ で 5.092、$r=8$ で 5.464、$r=16$ で 5.876、$r=64$ では 6.739 と、ランクが大きいほど悪化し、$r=64$ では全パラメータ SFT（6.181）より悪くなりました。
-自由度が増えるほど、新しい課題によく合わせられる反面、元の能力からも離れやすくなるのです。
-ランクは「どれだけ学ぶか」と「どれだけ忘れるか」を同時に決めるつまみだと言えます。
+次に下の段の青、漱石の検証損失です。
+$r=1$ で 5.092、$r=8$ で 5.464、$r=16$ で 5.876、$r=32$ で 6.285、$r=64$ では 6.739 と、ランクが大きいほど悪化し、$r=32$ 以上では全パラメータ SFT（6.181）より悪くなりました。
+損失の差は、確率の比として読めます。損失は正解のトークンの確率の対数の平均（の符号を変えたもの）なので、
+損失が 0.587 上がる（基盤モデル 4.877 → $r=8$ の 5.464）と、漱石の文章の次のトークンに付ける確率は、平均して（幾何平均で）$e^{0.587}\approx1.8$ 分の 1 になります。
+全パラメータ SFT の 6.181 なら $e^{1.304}\approx3.7$ 分の 1、$r=64$ の 6.739 なら $e^{1.862}\approx6.4$ 分の 1 です。
 
-一つ断っておきます。
-本書の実験は係数 $\alpha/r$ が常に 2 なので、$r$ を上げると、足し合わせる項が増えるぶん、差分そのものも大きくなりやすいのでした（\secref{sec:lora-alpha}）。
-ここで見た忘却の増加には、「方向の数が増えた」効果と「差分が大きくなった」効果の両方が混ざっています。
+では、この忘却の増加は「方向の数が増えた」からでしょうか、それとも「差分が大きくなりやすくなった」からでしょうか。
+本書の設定では係数 $\alpha/r$ が常に 2 なので、二つの効果が混ざっています（\secref{sec:lora-alpha}）。
+そこで橙の $\alpha=16$ 固定を見ます。こちらは $r$ を上げると係数が小さくなり、差分の大きさがそろいます。
+上の段の橙では、$r=1$ でも 73.7\%、$r=2$ で 78.6\%、$r=4$ 以上は 82〜84\% と、青よりずっと早く全パラメータ SFT の水準に届きます。
+$r=1$ と $r=2$ では、係数が 16 と 8 で、青（係数 2）の 8 倍と 4 倍です。差分が大きく動けるので、同じ 600 ステップでも多く学べたのです。
+つまり、青の $r=1$ が 14.6\% にとどまったのは、方向が 1 本しかないことよりも、係数が小さく学習が遅かったことが大きいのです。
+下の段の橙は、$r=1$ の 5.577 から $r=4$ の 5.776 へ少し上がり（$r=1$〜4 では、むしろ青より高い）、$r=8$ で 5.464 に下がって、その後は $r=64$ まで 5.46〜5.48 のままです。全体でも 5.46〜5.78 の幅にとどまり、青のように $r$ とともに増え続けることはありません。$r=64$ では、青の 6.739 に対して 5.469 です。
+この課題では、$r$ を上げたときの忘却の増加は、ほとんどが「差分が大きくなった」効果で、「方向の数が増えた」効果は小さかったことになります。
+
+まとめると、この実験で「$r$ が小さいと学べない」「$r$ を上げると忘れる」と見えたのは、どちらも主に、本書の設定 $\alpha=2r$ と固定した学習率のもとで差分の大きさが変わったためでした。
+この小さな課題では、結果を大きく左右したのは $r$ そのものより、係数 $\alpha/r$ と学習率で決まる差分の大きさです。
+$r$ を変えて比べるときは、係数と学習率をどうするかも一緒に決めて書く必要があります。
+ただし、どちらも種 1 つ・600 ステップの、この小さなモデルと課題での結果です。課題が難しく、表すべき変化の方向が多い場合には、$r$ そのものが足りなくなることもありえます。
 
 \subsection{どの層に付けるか}\label{sec:lora-exp-targets}
-\skimread{押さえる結論は、「同じ数のパラメータなら、1 か所に厚く付けるより、全部の線形層に薄く付けるほうがよい（\code{qkv} だけに $r=8$ で 8.6\%、全線形層に $r=2$ で 68.6\%）」です。末尾の「ここまでの道のり」は読んでください。}
+\skimread{押さえる結論は、「同じ 24,576 個でも、\code{qkv} だけに $r=8$ で付けると 8.6\%、MLP を含む全線形層に $r=2$ で付けると 68.6\%。差の多くは MLP を含むかどうかによる」です。末尾の\figref{fig:lora-tradeoff}と「ここまでの道のり」は読んでください。}
 
 もう一つの選択は、LoRA を付ける層です。
 LoRA の原論文は、注意機構の $\mQ$ と $\mV$ の重みだけに付けていました\cite{hu2022lora}。
@@ -692,15 +925,17 @@ LoRA の原論文は、注意機構の $\mQ$ と $\mV$ の重みだけに付け�
 
 \begin{table}[tbp]
 \centering
-\caption{LoRA を付ける層を変えたときの比較（$r=8$、学習率 1e-3、1,000 問）。注意機構だけより、MLP を含めたほうが正答率が高い}
+\caption{LoRA を付ける層を変えたときの比較（特に記さない限り $r=8$。最下行だけは参考の $r=2$。学習率 1e-3、1,000 問）。注意機構の \code{qkv} だけより、MLP を含めたほうが正答率が高い。
+\code{attn.proj} は注意機構の出力の層、\code{mlp.proj} は MLP の 2 層目}
 \label{tab:lora-targets}
 \small
 \begin{tabular}{lrrr}
 \toprule
 付ける層 & 学習するパラメータ & 正答率 & 漱石の損失 \\
 \midrule
-全線形層（\code{qkv}, \code{proj}, \code{fc}, \code{mlp.proj}） & 98,304 & 81.7\% & 5.464 \\
+全線形層（\code{qkv}, \code{attn.proj}, \code{fc}, \code{mlp.proj}） & 98,304 & 81.7\% & 5.464 \\
 注意機構の \code{qkv} だけ & 24,576 & 8.6\% & 5.433 \\
+注意機構の全部（\code{qkv}, \code{attn.proj}） & 36,864 & 11.2\% & 5.195 \\
 MLP だけ（\code{fc}, \code{mlp.proj}） & 61,440 & 68.1\% & 5.361 \\
 \midrule
 （参考）全線形層で $r=2$ & 24,576 & 68.6\% & 5.271 \\
@@ -711,17 +946,66 @@ MLP だけ（\code{fc}, \code{mlp.proj}） & 61,440 & 68.1\% & 5.361 \\
 \tabref{tab:lora-targets}の 2 行目に注目してください。
 原論文に近い形として、注意機構の \code{qkv} だけに付けると、正答率はわずか 8.6\% でした。
 最後の行の「全線形層で $r=2$」は、学習するパラメータ数が 2 行目とまったく同じ 24,576 個ですが、68.6\% に達しています。
-同じ数のパラメータなら、1 か所に厚く付けるより、全部の層に薄く付けるほうがよいのです。
-3 行目の MLP だけなら 68.1\% で、qkv だけよりはるかに高く、MLP の層が大事な役割を担っていることが分かります（それでも全線形層には及びません）。
+同じ 24,576 個でも、\code{qkv} の 4 層だけに $r=8$ で厚く付けるより、MLP を含む 16 層に $r=2$ で薄く付けるほうが、ずっとよく学べました。
+ただし、この 2 つは「厚さ」だけでなく、「MLP を含むかどうか」も違います。
+4 行目の MLP だけ（$r=8$）でも 68.1\% に届き、全線形層 $r=2$ の 68.6\% とほぼ同じです。
+ですから、この差の多くは MLP を含むかどうかによるもので、「薄く広く」の効果だけを取り出せてはいません。
+この課題では、MLP に付けることが効いていました（それでも、MLP だけでは全線形層 $r=8$ の 81.7\% には及びません）。
+3 行目の、\code{attn.proj} まで含めた注意機構の全部（\code{train_lora.py} の \code{attn}。36,864 個）でも、正答率は 11.2\% でした（\file{ch17/out/lora_r8_attn.txt}）。
 この結果は、「LoRA は MLP を含む全線形層に付けるのがよい」という最近の実務の知見（\secref{sec:lora-limits}）とも合っています。
 ただし、ここでも条件は「同じ 600 ステップ」です。
 \code{qkv} だけの学習損失は、終盤でも 1.2〜1.4 と高いままでした。
 言えるのは「同じステップ数では学習がずっと遅い」までで、注意機構だけでは学べない、とまでは言えません。
 （なお、原論文の GPT-3 の実験は、英語の文章理解などの課題で行われたもので、本書の課題とは性質が違います。）
 
+ここまでの実験を 1 枚にまとめたのが\figref{fig:lora-tradeoff}です。
+横軸が忘れた量（漱石の検証損失。右ほど元の力が失われている）、縦軸が学んだ量（対話の正答率）です。
+左上ほど「よく学び、あまり忘れない」設定です。
+青の線（本書の設定で $r$ を上げる）と緑の点（$r=8$ で学習率を上げる）は、どちらも右上へ進みます。よく学ぶ代わりに、よく忘れる向きです。
+一方、橙の線（$\alpha=16$ 固定で $r$ を上げる）は、漱石の損失 5.5〜5.8 の狭い幅に縦に並び、$r$ を上げても右へは進みません。
+紫の点（付ける層を減らす）は、忘却は少し小さいものの、正答率が大きく下がります。
+灰色の星の全パラメータ SFT は、$r=8$（学習率 1e-3）の LoRA よりも右にあります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.92\linewidth,height=7.2cm,xlabel={漱石の検証損失（右ほど忘れた。基盤モデルは 4.877）},ylabel={対話の正答率 [\%]},
+  xmin=4.85,xmax=6.95,ymin=0,ymax=100,
+  legend columns=2,legend cell align=left,
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,/tikz/every even column/.append style={column sep=3mm}},
+  nodes near coords,point meta=explicit symbolic,
+  every node near coord/.append style={font=\scriptsize,text=black!75}]
+\addplot[bookblue,thick,mark=*,every node near coord/.append style={anchor=north west},
+  coordinate style/.condition={\coordindex==2}{anchor=north east}]
+  table[col sep=comma,x=soseki,y=acc,meta=tag]{code/ch17/out/tradeoff_rank.csv};
+\addlegendentry{$r$ を変える（$\alpha=2r$、数字は $r$）}
+\addplot[bookorange,thick,mark=square*,every node near coord/.append style={anchor=east}]
+  table[col sep=comma,x=soseki,y=acc,meta=tag]{code/ch17/out/tradeoff_alpha16.csv};
+\addlegendentry{$r$ を変える（$\alpha=16$ 固定）}
+\addplot[only marks,bookgreen,mark=triangle*,mark size=3pt,every node near coord/.append style={anchor=south}]
+  table[col sep=comma,x=soseki,y=acc,meta=tag]{code/ch17/out/tradeoff_lr.csv};
+\addlegendentry{学習率を変える（$r=8$）}
+\addplot[only marks,bookpurple,mark=diamond*,mark size=3pt,every node near coord/.append style={anchor=west}]
+  table[col sep=comma,x=soseki,y=acc,meta=tag]{code/ch17/out/tradeoff_target.csv};
+\addlegendentry{付ける層を変える（$r=8$）}
+\addplot[only marks,bookgray,mark=star,mark size=4pt,every node near coord/.append style={anchor=south west}]
+  table[col sep=comma,x=soseki,y=acc,meta=tag]{code/ch17/out/tradeoff_full.csv};
+\addlegendentry{全パラメータ SFT}
+\draw[black!60,dotted,thick] (axis cs:4.877,0) -- (axis cs:4.877,100);
+\node[lbl,align=left,anchor=north] (crowd) at (axis cs:6.25,55) {橙の 8・16・64 と緑の 1e-3 は、\\青の 8 と重なる（5.46〜5.48、81.7〜84.1\%）};
+\draw[black!50] (crowd.north) -- (axis cs:5.49,80.5);
+\end{axis}
+\end{tikzpicture}
+\caption{学んだ量（縦軸）と忘れた量（横軸）の取り引き。この章の主な実行（乱数の種 0）を並べた。種を変えた実行と、後の節で作る \code{peft} 版・ニャ調のアダプタは含めていない（\file{ch17/fig_tradeoff.py} が \file{ch17/out/} の結果を集める）。
+固定した条件は、600 ステップ、乱数の種 0、1,000 問の評価。特に記さない限り全線形層・学習率 1e-3。点の横の文字は、その系列で変えた値（$r$、学習率、付ける層）。
+点線は基盤モデルの漱石の損失（4.877）。左上ほどよい。青（$\alpha=2r$ で $r$ を上げる）と緑（学習率を上げる）は右上へ、橙（$\alpha=16$ 固定で $r$ を上げる）は横にほとんど動かない}
+\label{fig:lora-tradeoff}
+\end{figure}
+
 この節をまとめます。
 本書のモデルでは、全線形層に $r=8$ の LoRA を付けると、3.8\% のパラメータで全パラメータ SFT にほぼ並びました。
-ランクは小さすぎると足りず、大きくすると忘却が増えます。付ける層は MLP を含む全線形層がよい結果でした。
+本書の設定（$\alpha=2r$、学習率は固定）では、ランクは小さすぎると足りず、大きくすると忘却が増えました。$\alpha=16$ に固定すると、$r=1$ でもかなり学べ、$r$ を上げても忘却は増え続けませんでした（5.46〜5.78 の幅）。
+付ける層は、MLP を含む全線形層がよい結果でした。
 
 \textbf{ここまでの道のり}：費用は更新するパラメータの数に比例する（\secref{sec:lora-cost}）→ 変化分を $\frac{\alpha}{r}\mB\mA$ に制限する（\secref{sec:lora-lowrank}, \secref{sec:lora-def}）→
 本書のモデルでは 3.8\% のパラメータで全パラメータ SFT にほぼ並んだ（この節）。残る問いは、推論のコストと用途の使い分けです。
@@ -756,27 +1040,37 @@ LoRA の学習は安くなりました。
 \code{@torch.no_grad()} は、この足し算を自動微分の記録に残さないための印です。
 
 マージの前後で、出力が変わらないことと、速さを確かめます。
-\file{ch17/merge_and_swap.py} は、まず $r=8$ のアダプタを \code{load_state_dict(..., strict=False)} で読み込みます。
+\file{ch17/merge_and_swap.py} の前半は次のとおりです。
+
+\snippet{マージの前後でロジットを比べる}{code:lora-merge-check}{ch17/merge_and_swap.py}{merge-check}
+
+1 行目の \code{base} は比較用の基盤モデル、2 行目の \code{model} は LoRA を付けたモデルです。
+3〜4 行目で、$r=8$ のアダプタを \code{load_state_dict(..., strict=False)} で読み込みます。
 \code{strict=False} は、$\mA$ と $\mB$ だけを読み込み、ほかはそのままにする指定です。
-次に、同じ入力（8 系列 × 128 トークン）について、マージ前後のロジットを比べます。
-最後に、順伝播の時間を 15 回ずつ測って、その中央値をとります。後半では、次の項のアダプタの付け替えも行います。
+5〜8 行目では、同じ入力 \code{x}（8 系列 × 128 トークン）について、マージ前のロジット \code{before} と、\code{merge_all}（全部の \code{LoRALinear} の \code{merge} を呼ぶ関数）の後のロジット \code{after} を計算します。
+\code{model(x)} はロジットと損失の組を返すので、\code{[0]} でロジットを取り出しています。
+9 行目で、両者の差の絶対値の最大を表示します。
+このあと（掲載していない部分で）、順伝播の時間を基盤・マージ後の順に 15 回ずつ測り、\code{unmerge_all} でマージを取り消してから、未マージの LoRA の時間を測ります。時間は 15 回の中央値です。
+スクリプトの後半では、次の項のアダプタの付け替えも行います。
 
 \outputfile{ch17/out/merge_and_swap.txt}
 
-1 行目の最大差 $2.84\times10^{-5}$ は、ロジットの大きさ（数〜十数）に比べて十分に小さく、
+出力の「[です調]」「[ニャ調]」で始まる 4 行と、その後の 2 行は、次の項で載せる付け替えのコードの出力なので、そこで読みます。ここでは最初の 2 項目（「マージ前後のロジットの最大差」と「順伝播の時間」）を見ます。
+
+最大差 $2.84\times10^{-5}$ は、ロジットの大きさ（数〜十数）に比べて十分に小さく、
 浮動小数点の丸め誤差の範囲です（足し算の順番が変わるので、ぴったり 0 にはなりません）。
-2 行目は、順伝播 1 回の時間の中央値です。
-マージしていない LoRA は 95.9 ms で、基盤モデルの 85.1 ms より 1 割ほど遅くなっています（$95.9\div85.1\approx1.13$）。
+「順伝播の時間」は、順伝播 1 回の時間の中央値です。
+マージしていない LoRA は 95.9 ms で、基盤モデルの 85.1 ms より 1 割強遅くなっています（$95.9\div85.1\approx1.13$）。
 掛け算の回数の増加は数 \% でした（\secref{sec:lora-def}で数えた約 5.6\%）。
 しかし、小さな行列積を層ごとに 2 回余分に呼ぶ手間があるので、時間はもう少し増えるのです。
 マージ後は 82.8 ms で、基盤モデルと同じです（2 ms ほどの差は、共有 CPU の混雑によるぶれです）。
-マージすれば、推論のコストはまったく増えないのです。
+マージすれば、推論のコストは元のモデルと同じで、追加のコストはかからないのです。
 これは、層を挟み込む「アダプタ層」方式（\secref{sec:lora-peft-family}）にはない、LoRA の大きな長所です。
 
-\subsection{アダプタの付け替え：1 つの基盤に複数の人格}\label{sec:lora-swap}
+\subsection{アダプタの付け替え：1 つの基盤で複数の振る舞いを切り替える}\label{sec:lora-swap}
 
 \secref{sec:lora-cost}の\figref{fig:lora-copies}を思い出してください。
-LoRA の真価は、1 つの基盤モデルに、用途ごとの小さなアダプタを差し替えて使えることでした。
+LoRA の大きな利点は、1 つの基盤モデルに、用途ごとの小さなアダプタを差し替えて使えることでした。
 これを試すために、応答の語尾を「◯◯だニャ。」にした 3,000 件で、もう 1 つのアダプタを学習します。
 
 \snippet{語尾の違う 2 つのアダプタを付け替える}{code:lora-swap}{ch17/merge_and_swap.py}{swap}
@@ -787,43 +1081,60 @@ LoRA の真価は、1 つの基盤モデルに、用途ごとの小さなアダ�
 5 行目でニャ調のアダプタを保存し、6 行目で「です。」調のアダプタを読み込みます。
 \code{for} 文では、同じモデル \code{model}（マージの確認に使ったものです）に、\code{load_state_dict} で 2 つのアダプタを順に読み込んでいます。
 基盤の重み（約 258 万個）は一度も読み直さず、差し替えるのは 98,304 個の $\mA$ と $\mB$ だけです。
-なお、マージ済みのモデルでは古い差分が $\mW$ に残っているので、先に \code{unmerge} してから差し替えます（コードでは直前に \code{unmerge_all} を呼んでいます。\code{unmerge} を用意したのはこのためです）。
+なお、マージ済みのモデルでは古い差分が $\mW$ に残っているので、先に \code{unmerge} してから差し替えます（コードでは、前の項の時間の測定の途中で \code{unmerge_all} を呼んでいます。\code{unmerge} を用意したのはこのためです）。
+もし \code{unmerge} を忘れて差し替えると、$\mW$ にはです調の差分 $\frac{\alpha}{r}\mB_{\text{です}}\mA_{\text{です}}$ が残ったまま、下の経路でニャ調の差分も足されます。2 つの差分が重なり、どちらのアダプタとも違うモデルになってしまいます。
+\figref{fig:lora-swap}は、この一連の操作をコマ送りで描いたものです。
 
-出力の 3〜6 行目を見ると、同じ基盤モデルが、アダプタによって「47です。」とも「47だニャ。」とも答えています。
+出力の「[です調]」「[ニャ調]」で始まる 4 行を見ると、同じ基盤モデルが、アダプタによって「47です。」とも「47だニャ。」とも答えています。
 ただし、ニャ調は「300から123」を 187 と誤答しました。
 ニャ調のアダプタは別に学習したものなので、どの問題を間違えるかも別々です。
-7 行目のとおり、語尾まで含めたニャ調の正答率は 84.0\% でした（語尾の確認が目的なので 500 問。比較用の 1,000 問ではないので ±2 ポイントほどのぶれを含みます）。
+「ニャ調アダプタの正答率」の行のとおり、語尾まで含めたニャ調の正答率は 84.0\% でした（語尾の確認が目的なので 500 問。比較用の 1,000 問ではないので ±2 ポイントほどのぶれを含みます）。
 振る舞いを切り替えても、計算の力は保たれています。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\small]
-  \node[box,minimum width=3.2cm,minimum height=1.6cm,align=center] (base) at (0,0) {基盤モデル \file{base.pt}\\（258 万、凍結）};
-  \node[greenbox,minimum width=2.6cm,align=center] (d) at (-3.6,-0.2) {です調アダプタ\\98,304 個};
-  \node[orangebox,minimum width=2.6cm,align=center] (n) at (3.6,-0.2) {ニャ調アダプタ\\98,304 個};
-  \draw[arr] (d) -- (base);
-  \draw[arr] (n) -- (base);
-  \node[tok] (o1) at (-3.6,1.1) {「47です。」};
-  \node[tok] (o2) at (3.6,1.1) {「47だニャ。」};
-  \draw[darr] (base) -- (o1);
-  \draw[darr] (base) -- (o2);
-  \node[lbl] at (0,-1.1) {どちらか一方を使う};
+\colorlet{chg}{yellow!35}
+\begin{tikzpicture}[font=\footnotesize]
+  \foreach \i/\t/\w/\wc/\ab/\abc/\m/\mc/\o/\oc in {
+    0/{(1) です調を読み込む}/{$\mW_0$}/white/です調/chg/いいえ/white/{—}/white,
+    1/{(2) マージする}/{$\mW_0+\Delta_{\text{です}}$}/chg/です調/white/はい/chg/{—}/white,
+    2/{(3) unmerge して答える}/{$\mW_0$}/chg/です調/white/いいえ/chg/{47です。}/chg,
+    3/{(4) ニャ調に差し替える}/{$\mW_0$}/white/ニャ調/chg/いいえ/white/{47だニャ。}/chg}{
+    \begin{scope}[shift={(\i*3.3,0)}]
+      \draw[black!40,rounded corners=2pt] (0,0) rectangle (2.95,3.1);
+      \node[anchor=north,font=\scriptsize\bfseries] at (1.475,3.0) {\t};
+      \node[lbl,anchor=west] at (0.05,2.2) {重み};
+      \node[draw=black!40,fill=\wc,minimum width=1.75cm,minimum height=0.45cm,inner sep=1pt] at (2.0,2.2) {\w};
+      \node[lbl,anchor=west] at (0.05,1.55) {$\mA,\mB$};
+      \node[draw=black!40,fill=\abc,minimum width=1.75cm,minimum height=0.45cm,inner sep=1pt] at (2.0,1.55) {\ab};
+      \node[lbl,anchor=west] at (0.05,0.9) {マージ};
+      \node[draw=black!40,fill=\mc,minimum width=1.75cm,minimum height=0.45cm,inner sep=1pt] at (2.0,0.9) {\m};
+      \node[lbl,anchor=west] at (0.05,0.3) {答え};
+      \node[draw=black!40,fill=\oc,minimum width=1.75cm,minimum height=0.45cm,inner sep=1pt] at (2.0,0.3) {\o};
+    \end{scope}
+  }
+  \foreach \i in {0,1,2}{\draw[arr] (\i*3.3+2.95,1.55) -- (\i*3.3+3.3,1.55);}
 \end{tikzpicture}
-\caption{アダプタの付け替え。凍結した基盤モデルは 1 つのまま、98,304 個の $\mA,\mB$ だけを差し替えると、応答の口調が切り替わる}
+\caption{アダプタの付け替えのコマ送り（\file{merge_and_swap.py} の順。模式図）。各コマで、重み（\code{base.weight}）、$\mA,\mB$ の中身、マージ済みかどうか、「12+35は？」への答えを示す。
+「マージ」の欄は、マージ済みの印 \code{merged}。黄色の欄が、前のコマから変わった所（色はです調・ニャ調の区別ではない）。基盤の重み $\mW_0$ は一度も読み直さず、差し替えるのは 98,304 個の $\mA,\mB$ だけ。
+$\Delta_{\text{です}}$ はです調の差分 $\frac{\alpha}{r}\mB\mA$。(3) の unmerge を飛ばして (4) に進むと、重みにです調の差分が残ったまま、ニャ調の差分も足される}
 \label{fig:lora-swap}
 \end{figure}
 
-\figref{fig:lora-swap}に、この使い方をまとめました。実際の LLM のサービスでも、基盤モデルを GPU に載せたまま、用途ごとにアダプタを使い分ける仕組みが使われています。
+実際の LLM のサービスでも、基盤モデルを GPU に載せたまま、用途ごとにアダプタを使い分ける仕組みが使われています。
+複数の用途の問い合わせを同じ GPU で同時にさばくときは、マージせずに、問い合わせごとに違う $\mA,\mB$ を下の経路に通します（推論エンジン vLLM（\chapref{ch:eval-serving}）の multi-LoRA などの機能）。
+重みを書き換えるマージは、同時に動いているほかの用途の答えまで変えてしまうからです。
+その分、\secref{sec:lora-merge-w}で見た、未マージの経路の遅れがかかります。
 
 この節をまとめます。
-マージすれば LoRA の推論コストは 0 になり、マージしなければアダプタを自由に差し替えられます。
+マージすれば LoRA による推論の追加コストは 0 になり、マージしなければアダプタを自由に差し替えられます。
 「学習が安い」だけでなく、「使い分けが安い」のが LoRA の強みです。
 
 %======================================================================
 \section{実務の LoRA：\code{peft}、QLoRA、そのほかの手法}\label{sec:lora-practice}
 
 ここまでで、LoRA を自分で作り、学習し、マージし、付け替えました。
-仕組みはすべて手の内にあります。
+仕組みはすべて、自分で書いたコードで確かめました。
 この節の問いは、「実際の LLM 開発では、これをどう書き、どんな変種を使うのか」です。
 最後に、LoRA の限界も確かめます。
 
@@ -831,7 +1142,7 @@ LoRA の真価は、1 つの基盤モデルに、用途ごとの小さなアダ�
 \skimread{押さえる結論は、「\code{peft} の数行で、自作版と同じ 98,304 個の LoRA が作れる。QLoRA は、凍結した重みを 4 ビットで持ってメモリを減らす」です。\chapref{ch:capstone}の前に読み直してください。}
 
 実務では、LoRA を自分で書く代わりに、Hugging Face の \code{peft} ライブラリを使うのが一般的です。
-本書では 2026 年後半の版（0.22 系）を使います。
+本書では 2026 年後半の版（0.22 系）を使います（入れ方は\appref{app:setup}の\secref{sec:setup-install}と\tabref{tab:setup-optional}）。
 \code{peft} はふつうの PyTorch のモデルにも使えるので、本書のミニGPT にそのまま付けてみます。
 
 \snippet{\code{peft} で同じ LoRA を作る}{code:lora-peft}{ch17/peft_example.py}{peft}
@@ -866,6 +1177,8 @@ LoRA で減らせるのは学習するパラメータの分だけなので、こ
 
 これを減らすのが \term{QLoRA}{quantized LoRA}です\cite{dettmers2023qlora}。
 凍結した $\mW_0$ を 1 個 4 ビットの数（NF4 という形式）に\jterm{量子化}して持ち、計算のたびに BF16 に戻して使います。
+4 ビットにした時点で情報は減っているので、BF16 に戻しても元の値にぴったりは戻らず、近い値になるだけです。
+QLoRA は、この誤差を含んだ $\mW_0$ のまま、$\mA$ と $\mB$ を学習します。
 BF16 の 16 ビットの 4 分の 1 なので、7B のモデルなら 14 GB が約 3.5 GB になります（$70\text{ 億}\times0.5$ バイト）。
 $\mA$ と $\mB$ は BF16 のまま学習します。
 QLoRA の論文は、この方法で 650 億パラメータのモデルを 48 GB の GPU 1 枚でファインチューニングできることを示しました\cite{dettmers2023qlora}。
@@ -883,27 +1196,44 @@ LoRA のように、少数のパラメータだけを学習して適応させる
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize]
-  \node[tok] (in) at (0,0) {入力トークン};
-  \node[orangebox,minimum width=2.0cm] (pt) at (0,1.0) {入力の前に足すベクトル};
-  \node[lbl,anchor=west] at (2.2,1.0) {プロンプトチューニング};
-  \node[graybox,minimum width=5.6cm,minimum height=0.7cm] (attn) at (2.0,2.2) {注意機構 \quad $\mQ\ \mK\ \mV$};
-  \node[purplebox,minimum width=1.4cm] (pk) at (-2.6,2.2) {学習する $\mK,\mV$};
-  \node[lbl] at (-2.6,2.75) {プレフィックス};
-  \node[greenbox,minimum width=0.9cm,minimum height=0.5cm,inner sep=1pt] (l1) at (4.3,2.2) {$+\mB\mA$};
-  \node[graybox,minimum width=5.6cm,minimum height=0.7cm] (mlp) at (2.0,4.0) {MLP};
-  \node[greenbox,minimum width=0.9cm,minimum height=0.5cm,inner sep=1pt] (l2) at (4.3,4.0) {$+\mB\mA$};
-  \node[lbl,text=bookgreen,anchor=west] at (4.9,3.1) {LoRA / DoRA（重みの中）};
-  \node[redbox,minimum width=2.6cm] (ad) at (2.0,5.4) {アダプタ層（小さな MLP）};
-  \node[lbl] at (-0.8,5.4) {アダプタ層};
-  \draw[arr] (in) -- (pt);
-  \draw[arr] (pt) -- (0,1.85);
-  \draw[arr] (2.0,2.55) -- (2.0,3.65);
-  \draw[arr] (2.0,4.35) -- (ad);
-  \draw[darr] (pk) -- (attn.west);
+  % 入力の列: 橙 3 個（学習するベクトル）+ 本物のトークンの埋め込み 3 個
+  \foreach \k/\t in {0/{$\vp_1$},1/{$\vp_2$},2/{$\vp_3$}}{
+    \node[draw=bookorange,fill=figorange,minimum width=0.7cm,minimum height=0.5cm,inner sep=0pt] at (0.75+\k*0.75,0) {\t};}
+  \foreach \k/\t in {0/吾,1/輩,2/は}{
+    \node[draw=black!50,fill=white,minimum width=0.7cm,minimum height=0.5cm,inner sep=0pt] at (3.0+\k*0.75,0) {\t};}
+  \node[lbl,align=center] at (2.6,-0.75) {入力の埋め込みの列。橙はプロンプトチューニングで学習するベクトル\\（本物のトークンではない。埋め込み表は凍結したまま）};
+  % 注意機構
+  \node[graybox,minimum width=4.6cm,minimum height=0.8cm] (attn) at (2.6,1.5) {注意機構（\code{qkv}・\code{attn.proj}）};
+  \node[greenbox,minimum width=0.9cm,minimum height=0.5cm,inner sep=1pt] at (5.45,1.5) {$+\mB\mA$};
+  % プレフィックス: キー・バリューの列の前に紫を並べる
+  \foreach \k in {0,1}{
+    \node[draw=bookpurple,fill=figpurple,minimum width=0.45cm,minimum height=0.45cm,inner sep=0pt] at (-2.4+\k*0.5,1.5) {};}
+  \foreach \k in {0,1,2}{
+    \node[draw=black!50,fill=figgray,minimum width=0.45cm,minimum height=0.45cm,inner sep=0pt] at (-1.4+\k*0.5,1.5) {};}
+  \node[lbl,align=center] at (-1.65,2.15) {注意が見るキー・バリューの列};
+  \node[lbl,align=center] at (-1.65,0.85) {紫: プレフィックスで学習する\\キー・バリュー（各層）};
+  \draw[arr] (-0.15,1.5) -- (attn.west);
+  % アダプタ層 1
+  \node[redbox,minimum width=2.6cm,minimum height=0.5cm] (ad1) at (2.6,2.7) {アダプタ層（小さな MLP）};
+  % MLP
+  \node[graybox,minimum width=4.6cm,minimum height=0.8cm] (mlp) at (2.6,3.9) {MLP（\code{fc}・\code{mlp.proj}）};
+  \node[greenbox,minimum width=0.9cm,minimum height=0.5cm,inner sep=1pt] at (5.45,3.9) {$+\mB\mA$};
+  % アダプタ層 2
+  \node[redbox,minimum width=2.6cm,minimum height=0.5cm] (ad2) at (2.6,5.1) {アダプタ層（小さな MLP）};
+  \node[lbl] at (2.6,5.95) {次のブロックへ};
+  % 縦の矢印（x=2.6 にそろえる）
+  \draw[arr] (2.6,0.25) -- (attn.south);
+  \draw[arr] (attn.north) -- (ad1.south);
+  \draw[arr] (ad1.north) -- (mlp.south);
+  \draw[arr] (mlp.north) -- (ad2.south);
+  \draw[arr] (ad2.north) -- (2.6,5.75);
+  \node[lbl,text=bookgreen,align=left,anchor=west] at (6.1,2.7) {LoRA（緑）:\\線形層の重みの中に\\差分を足す\\（DoRA は、これに\\列ごとの長さの\\学習が加わる）};
+  \node[lbl,text=bookaccent,align=left,anchor=west] at (6.1,5.1) {アダプタ層（赤）:\\層の間に新しい層を挟む};
 \end{tikzpicture}
-\caption{Transformer の 1 ブロックのどこに「学習する部品」を付けるか。LoRA と DoRA は既存の線形層の重みに差分を足す（緑）。
-アダプタ層は層の間に新しい小さな層を挟む（赤）。プレフィックスチューニングは注意機構に学習するキーとバリューを足し（紫）、
-プロンプトチューニングは入力の埋め込みだけを学習する（橙）}
+\caption{Transformer の 1 ブロックのどこに「学習する部品」を付けるか（模式図。残差接続とレイヤー正規化は省いた）。LoRA は既存の線形層の重みに差分を足す（緑）。DoRA は、これに重みの列ごとの長さの学習を加えたもの。
+アダプタ層は層の間に新しい小さな層を挟む（赤。ここでは注意機構の後と MLP の後の 2 か所に描いた）。
+プレフィックスチューニングは、各層の注意機構が見るキーとバリューの列の前に、学習するキーとバリューを並べる（紫）。
+プロンプトチューニングは、最初の層の入力の列の前に並べる数十個のベクトルだけを学習する（橙。図では 3 個。埋め込み表は凍結）}
 \label{fig:lora-peft-map}
 \end{figure}
 
@@ -913,28 +1243,32 @@ LoRA のように、少数のパラメータだけを学習して適応させる
 
 \begin{table}[tbp]
 \centering
-\caption{代表的な PEFT 手法の比較。「マージ」は学習後に元の重みへ書き込めるか（推論の追加コストが 0 にできるか）}
+\caption{代表的な PEFT 手法と全パラメータ更新の比較。「推論の追加コスト」は、学習後に元のモデルより余分にかかる計算。
+マージできる手法は、元の重みへ書き込めば追加コストが 0 になる。本章で自作したのは LoRA だけで、ほかは文献に基づく要約}
 \label{tab:lora-methods}
 \footnotesize
-\begin{tabular}{p{2.5cm}p{4.2cm}p{1.2cm}p{3.5cm}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.7cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{3.0cm}@{}}
 \toprule
-手法 & 学習するもの & マージ & 特徴 \\
+手法 & 学習するもの & 推論の追加コスト & 学習時のメモリ & 長所／短所 \\
 \midrule
-LoRA\cite{hu2022lora} & 線形層の差分 $\frac{\alpha}{r}\mB\mA$ & できる & 標準。推論コスト 0 \\
-QLoRA\cite{dettmers2023qlora} & LoRA と同じ（基盤は 4 ビット） & 戻して可 & 学習時のメモリが小さい \\
-DoRA\cite{liu2024dora} & 重みの長さと、向きへの LoRA & できる & 少ないランクで LoRA より良いことが多い \\
-アダプタ層\cite{houlsby2019parameter} & 層の間に挟む小さな MLP & できない & 推論で層が増える \\
-プレフィックス\cite{li2021prefix} & 各層の注意に足すキー・バリュー & できない & 文脈長を少し使う \\
-プロンプト\cite{lester2021power} & 入力の前に足す埋め込み数十個 & できない & 最小。大きなモデルで有効 \\
+全パラメータ更新（基準） & 全部の重み & なし（元と同じ形） & 16 バイト/\newline パラメータ & 長所: 大きな変化も学べる。短所: 用途ごとに丸ごと 1 コピー \\\addlinespace
+LoRA\cite{hu2022lora} & 線形層の差分 $\frac{\alpha}{r}\mB\mA$ & マージすれば 0 & 凍結分は\newline 2 バイト/\newline パラメータ & 長所: 標準。差し替えが安い。短所: 大きな変化は苦手 \\\addlinespace
+QLoRA\cite{dettmers2023qlora} & LoRA と同じ（基盤は 4 ビット） & マージには、基盤を BF16 に戻してから足す & 凍結分は約\newline 0.5 バイト/\newline パラメータ & 長所: 学習時のメモリが最小級。短所: 4 ビットの誤差を含む \\\addlinespace
+DoRA\cite{liu2024dora} & 重みの各列の長さと、向きへの LoRA & マージすれば 0 & LoRA とほぼ同じ（長さの分が増える） & 長所: 少ないランクで LoRA より良いことが多い。短所: 長さの分だけ、学習するものが LoRA より少し増える \\\addlinespace
+アダプタ層\cite{houlsby2019parameter} & 層の間に挟む小さな MLP & 挟んだ層の分（マージできない） & 小さい & 長所: 元の重みに触れず、層を挟むだけで済む。短所: 推論で層が増える \\\addlinespace
+プレフィックス\cite{li2021prefix} & 各層の注意が見るキー・バリュー & 並べた分の文脈を使う & 小さい & 長所: 重みに触れず、学習する数が少ない。短所: 性能は LoRA に届かないことが多い \\\addlinespace
+プロンプト\cite{lester2021power} & 入力の前に並べるベクトル数十個 & 並べた分の文脈を使う & 小さい & 長所: 学習する数が最も少ない。大きなモデルで有効。短所: 性能は LoRA に届かないことが多い \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\tabref{tab:lora-methods}は、1 行目に比較の基準として全パラメータ更新を置きました。各手法を、この行と列ごとに見比べてください。
+とくに「推論の追加コスト」の列で、マージできる LoRA・QLoRA・DoRA と、マージできないほかの手法が分かれます。
 \tabref{tab:lora-methods}の DoRA\cite{liu2024dora}は、LoRA の改良版です。
-重みを矢印にたとえると、その「長さ」と「向き」を分け、長さは直接、向きは LoRA で学習します。
+重み行列の各列を 1 本のベクトルと見て、その「長さ」と「向き」を分け、長さ（列ごとに 1 個の数）は直接、向きは LoRA で学習します。
 \code{peft} では \code{LoraConfig(use_dora=True)} で使えます。
 LoRA 以前からあるアダプタ層はマージできないので、推論で層が増えた分だけ遅くなります。
-プレフィックスチューニングとプロンプトチューニングは重みに触れず入力側にベクトルを足す方法で、
+プレフィックスチューニングとプロンプトチューニングは、重みに触れず、注意機構が見る列の前に学習するベクトルを並べる方法で、
 パラメータは最も少なくて済みますが、性能は LoRA に届かないことが多いです。
 現在の LLM 開発では、LoRA とその変種が PEFT の主流です。
 
@@ -942,15 +1276,36 @@ LoRA 以前からあるアダプタ層はマージできないので、推論で
 \skimread{押さえる結論は、「LoRA は少数の調整に強く、新しい知識を大量に入れるような学習には向かない。出発点は、全線形層・$r=8$〜$64$・学習率は全パラメータ更新の数倍〜10 倍」です。}
 
 \secref{sec:lora-why-lowrank}の料理人のたとえのとおり、LoRA は「少数の調整」が得意な方法です。
-新しい言語を覚えさせる、大量の専門知識を詰め込む、といった、大きな変化が要る継続事前学習のような学習では、
-全パラメータ更新に及ばないことが知られています~\cite{biderman2024lora}。
-本章の実験でも、$r$ が小さすぎると正答率がはっきり落ちました（\figref{fig:lora-rank}）。
+では、全パラメータ更新と比べてどこまで通用するのでしょうか。これには、報告によって異なる二つの立場があります（\tabref{tab:lora-debate}）。
 
-一方で、データの量が LoRA の容量に収まる範囲（事後学習の多くの場面や強化学習）では、
+\begin{table}[tbp]
+\centering
+\caption{LoRA と全パラメータ更新の比較についての二つの報告。どちらが正しいかではなく、「どんな学習で比べたか」が違う}
+\label{tab:lora-debate}
+\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{5.0cm}>{\raggedright\arraybackslash}p{5.0cm}@{}}
+\toprule
+ & Biderman ら\cite{biderman2024lora} & \textit{LoRA Without Regret}\cite{schulman2025lora} \\
+\midrule
+比べた学習 & 新しい分野の知識を大量に入れる学習（継続事前学習のような学習）を含む & 事後学習の多くの場面（教師ありファインチューニングや、\chapref{ch:rl-basics}以降で学ぶ強化学習） \\
+結論 & 新しい分野では全パラメータ更新ほど学べない（及ばない）が、元の能力を忘れる量も少ない（題名は \textit{LoRA Learns Less and Forgets Less}） & 条件をそろえれば、全パラメータ更新にほぼ並ぶ \\
+条件 & — & 全線形層に付け、学習率を全パラメータ更新の 10 倍程度にする。データの量が、$\mA,\mB$ で表せる変化に収まる範囲 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+新しい言語を覚えさせる、大量の専門知識を覚えさせる、といった、大きな変化が要る継続事前学習のような学習では、
+全パラメータ更新に及ばないことが知られています~\cite{biderman2024lora}。
+本章の実験でも、本書の設定（$\alpha=2r$）で $r$ が小さすぎると、正答率がはっきり落ちました（\figref{fig:lora-rank}）。
+
+一方で、データの量が、$\mA$ と $\mB$ のパラメータで表せる変化の範囲（ここでは LoRA の容量と呼びます）に収まる場面では、
 全線形層に付け、学習率を全パラメータ更新の 10 倍程度にすれば、全パラメータ更新にほぼ並ぶという報告もあります
 （\textit{LoRA Without Regret}~\cite{schulman2025lora}）。
+その報告が挙げるのは、事後学習の多くの場面や強化学習（\chapref{ch:rl-basics}以降で学びます）です。
+どのくらいのデータなら容量に収まるかは、$r$ やモデルの大きさ、課題によって変わり、前もって一つの数で言うことはできません。
 本章の結果（全線形層、学習率 3.3 倍で 0.9 ポイント差）も、この傾向と矛盾しません。
 3.3 倍は $10^{-3}\div(3\times10^{-4})$ のことで、10 倍の 3e-3 では 84.1\% でした（\secref{sec:lora-exp-setup}）。
+ただし、本章の 3e-3 では忘却も大きくなりました（\figref{fig:lora-tradeoff}）。
 実務のコツをまとめておきます。
 
 \begin{practice}{LoRA を使うときの出発点}
@@ -968,8 +1323,19 @@ LoRA 以前からあるアダプタ層はマージできないので、推論で
 MLP が 3 層なのは、この規模のモデルが、行列を 3 枚使う SwiGLU（\secref{sec:ma-swiglu}）を使うからです。
 注意機構で $4\times16\times(4096+4096)=524{,}288$ 個、MLP で $3\times16\times(4096+11008)=724{,}992$ 個です。
 1 ブロックの計 1,249,280 個を 32 倍して 39,976,960 個、70 億で割ると約 0.57\% になります。
-本書のモデルの 3.8\% に対して 0.6\% と割合が小さいのは、$d$ が大きいほど $r(d_{\text{in}}+d_{\text{out}})$ と $d_{\text{in}}d_{\text{out}}$ の差が開くからです。
+本書のモデルの 3.8\% と比べたくなりますが、こちらは $r=8$ での値なので、$r$ をそろえます。
+$r=16$ にそろえると、本書のモデルでは 196,608 個で 7.6\%、7B では 0.57\% です。
+1 つの層で見ると、割合は $r(d_{\text{in}}+d_{\text{out}})\div(d_{\text{in}}d_{\text{out}})=r\,(1/d_{\text{out}}+1/d_{\text{in}})$ です。
+隠れ次元が 192 から 4096 へ約 20 倍になると、$1/d$ が約 20 分の 1 になるので、同じ $r$ でも割合はおよそ 20 分の 1 になります。
 本書では CPU 2 スレッドで 2 分、7B 級では GPU 1 枚で数時間〜という違いはあっても、やっていることは同じで、違うのは行列の大きさだけです。
+
+ここで、章の初めの問い「数十億パラメータのモデルを、手元の GPU 1 枚で作り分けるには」に、数字で答えておきます。
+7B のモデルの学習中の状態（重み・勾配・AdamW。活性化は除く）は、全パラメータ更新で約 112 GB、LoRA で約 14.6 GB、
+QLoRA なら凍結した重みが約 3.5 GB になるので、約 4 GB（$3.5+0.6$）です。
+H100 の 80 GB にも全パラメータ更新は収まりませんが、LoRA なら、32 GB の RTX 5090（\chapref{ch:infra}）のようなパソコン用の GPU 1 枚にも、活性化の分を残して収まる計算です。
+QLoRA の約 4 GB なら、さらにメモリの小さな GPU でも収まります。
+活性化の大きさは系列の長さとバッチの大きさで変わるので、実際に収まるかは、その分も見積もって確かめます（\chapref{ch:gpu}）。
+用途ごとに保存するのは、80 MB のアダプタだけです。
 
 この節をまとめます。
 実務では \code{peft} の数行で LoRA が使え、QLoRA や DoRA も設定一つで選べます。
@@ -978,10 +1344,10 @@ LoRA は事後学習の「少数の調整」に強く、大きな変化が要る
 \begin{summary}
 \item 全パラメータ更新の費用（状態 16 バイト/パラメータ、用途ごとのコピー）は、更新するパラメータの数に比例する。ランク $r$ の行列は $\mB\mA$（$\mB\in\R^{d_{\text{out}}\times r}$, $\mA\in\R^{r\times d_{\text{in}}}$）と書け、必要な数は $r(d_{\text{in}}+d_{\text{out}})$ 個で済む。
 \item LoRA は凍結した $\mW_0$ に $\frac{\alpha}{r}\mB\mA$ を足して学習する。$\mB=\vzero$ から始めるので、学習の最初は元のモデルと同じに振る舞う。
-\item 本書のミニGPT では、$r=8$ の LoRA（学習するパラメータ 3.8\%、アダプタ 394 KB）で対話の正答率 81.7\% となり、全パラメータ SFT の 82.6\% にほぼ並んだ。漱石の損失の悪化（忘却）は小さかった。
-\item $r$ が小さすぎると正答率ははっきり落ち、大きくすると頭打ちのまま忘却が増える。付ける層は MLP を含む全線形層がよく、学習率は全パラメータ更新より大きくする。
+\item 本書のミニGPT では、$r=8$ の LoRA（学習するパラメータ 3.8\%、アダプタ 394 KB）で対話の正答率 81.7\% となり、全パラメータ SFT の 82.6\% にほぼ並んだ。この設定（$r=8$、学習率 1e-3）では、漱石の損失の悪化（忘却）も全パラメータ SFT より小さかった。ただし、$r$ や学習率を上げると忘却は増える。
+\item 本書の設定（$\alpha=2r$、学習率は固定）では、$r$ が小さすぎると正答率がはっきり落ち、大きくすると頭打ちのまま忘却が増えた。$\alpha=16$ に固定すると、$r=1$ でも 73.7\% に届き、$r$ を上げても忘却は増え続けなかった（5.46〜5.78 の幅にとどまった）。この課題では、$r$ そのものより、係数 $\alpha/r$ と学習率で決まる差分の大きさが結果を左右した。付ける層は MLP を含む全線形層がよく、学習率は全パラメータ更新より大きくする。
 \item 学習後に $\mW_0+\frac{\alpha}{r}\mB\mA$ をマージすれば、推論のコストは元のモデルと同じになる。アダプタを差し替えれば、1 つの基盤で複数の振る舞いを切り替えられる。
-\item 実務では \code{peft} の数行で同じことが書ける。QLoRA は基盤を 4 ビットにし、DoRA は大きさと向きを分けて学習する。
+\item 実務では \code{peft} の数行で同じことが書ける。QLoRA は基盤を 4 ビットにし、DoRA は重みの各列の長さと向きを分けて学習する。7B のモデルの学習中の状態は、全パラメータ更新の約 112 GB に対し、LoRA で約 15 GB、QLoRA で約 4 GB（活性化を除く）。
 \end{summary}
 
 \section*{次の章へ}

@@ -33,14 +33,14 @@ GPU にすれば速くなりますが、1 枚では足りません。
 実際の LLM は、数千から数万枚の GPU を同時に使って学習されています。
 たとえば Llama 3 の最大のモデル（405B パラメータ）は、最大 1 万 6 千枚の H100 という GPU で学習されました\cite{dubey2024llama3}。
 
-1 万枚の GPU がそれぞれ勝手に学習したら、1 万個の別々のモデルができてしまいます。
-全員で\textbf{一つの}モデルを育てるには、何かを分け、何かをそろえる必要があります。
+1 万枚の GPU がそれぞれ別々に学習したら、1 万個の別々のモデルができてしまいます。
+全員で\textbf{一つの}モデルを学習するには、何かを分け、何かをそろえる必要があります。
 この章では、その「分け方」と「そろえ方」を、手元の 1 台の PC の中で複数のプロセスを動かしながら確かめていきます。
 
 \section{なぜ分けるのか：速くしたい、載せたい}\label{sec:dist-why}
 
 学習を複数の装置に分けたい理由は、大きく二つあります。
-二つを区別しておくと、後半に出てくる手法の名前がすっきり整理できます。
+二つを区別しておくと、後半に出てくる手法の名前を整理しやすくなります。
 
 \textbf{一つ目の理由は「速くしたい」です。}
 \chapref{ch:gpu}で学んだように、学習の計算量は $C\approx 6ND$ FLOPs と見積もれます（$N$ はパラメータ数、$D$ はトークン数）。
@@ -59,50 +59,56 @@ H100 1 枚（SXM 版）の BF16 の公称性能は約 $10^{15}$ FLOP/s（989 TFL
 H100 のメモリは 80 GB しかありません。
 これでは、たとえ時間がいくらあっても、1 枚の GPU の上で学習を始めることすらできません。
 
-\figref{fig:dist-motives}は、二つの理由と、それぞれに対応する分け方の地図です。
+\figref{fig:dist-motives}は、二つの理由と、それぞれに対応する分け方を並べた分類図です。
 「速くしたい」には、\textbf{データを分ける}方法で答えます。
 これを\term{データ並列}{data parallel}と呼びます。
 全員が同じモデルの複製を持ち、別々のデータを担当します。
-「載せたい」には、\textbf{モデル（とその学習の状態）を分ける}方法で答えます。
-これを\term{モデル並列}{model parallel}と呼びます。
-モデル並列には、状態を分割して置く ZeRO/FSDP、行列を縦横に切るテンソル並列、層を前後に切るパイプライン並列があります。
-この章は地図の左から右へ進みます。
-まずデータ並列を手で作って確かめ（\secref{sec:dist-dp-math}〜\secref{sec:dist-torchrun}）、次にモデル並列に進みます（\secref{sec:dist-sharding}、\secref{sec:dist-mp}）。
+「載せたい」に答える方法は、二つに分かれます。
+一つ目は、データ並列のまま、学習の状態（重み・勾配・オプティマイザ状態）を全員で分けて置く方法です。
+ZeRO と FSDP がこれに当たり、\textbf{状態を分割するデータ並列}（sharded data parallel）とも呼ばれます。
+各 GPU は別々のデータを処理し、計算するときは重みを集めて完全な形で使います。分けるのは置き場所だけです。
+二つ目は、\textbf{計算そのものを分ける}方法です。
+行列を縦横に切るテンソル並列と、層を前後に切るパイプライン並列があり、これらを\term{モデル並列}{model parallel}と呼びます。
+この章は図の左から右へ進みます。
+まずデータ並列を手で作って確かめ（\secref{sec:dist-dp-math}〜\secref{sec:dist-torchrun}）、
+次に状態を分割するデータ並列（ZeRO/FSDP、\secref{sec:dist-sharding}）、最後にモデル並列に進みます（\secref{sec:dist-mp}）。
 最後に、それらをクラスタ（多数のマシンをネットワークでつないだ計算機の集まり）で動かすときの運用を見ます（\secref{sec:dist-cluster}）。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[node distance=4mm and 6mm,font=\small]
-  \node[redbox,minimum width=40mm] (fast) {困りごと 1：遅い\\{\footnotesize 計算量 $6ND$ が大きすぎる}};
-  \node[redbox,minimum width=40mm,right=22mm of fast] (fit) {困りごと 2：載らない\\{\footnotesize 状態 16 バイト/パラメータ}};
-  \node[greenbox,minimum width=40mm,below=8mm of fast] (dp) {データ並列\\{\footnotesize データを分け、勾配を平均}};
-  \node[purplebox,minimum width=40mm,below=8mm of fit] (mp) {モデル並列\\{\footnotesize モデルと状態を分ける}};
+\begin{tikzpicture}[font=\small]
+  \node[redbox,minimum width=40mm] (fast) at (1.6,3.3) {困りごと 1：遅い\\{\footnotesize 計算量 $6ND$ が大きすぎる}};
+  \node[redbox,minimum width=40mm] (fit) at (7.6,3.3) {困りごと 2：載らない\\{\footnotesize 状態 16 バイト/パラメータ}};
+  \node[greenbox,minimum width=40mm] (dp) at (1.6,1.65) {データ並列\\{\footnotesize データを分け、勾配を平均}};
+  \node[purplebox,minimum width=40mm] (mp) at (7.6,1.65) {モデル並列\\{\footnotesize 計算そのものを分ける}};
+  \node[box,minimum width=21mm] (ddp) at (0.4,0) {DDP\\{\footnotesize 状態は全員が丸ごと}};
+  \node[greenbox,minimum width=21mm] (zero) at (2.85,0) {ZeRO/FSDP\\{\footnotesize 状態を分割}};
+  \node[purplebox,minimum width=21mm] (tp) at (6.4,0) {テンソル\\{\footnotesize 行列を分割}};
+  \node[purplebox,minimum width=21mm] (pp) at (8.85,0) {パイプライン\\{\footnotesize 層を分割}};
   \draw[arr] (fast) -- (dp);
   \draw[arr] (fit) -- (mp);
-  \node[box,below=5mm of dp,minimum width=40mm] (ddp) {DDP（\secref{sec:dist-ddp}）};
-  \node[purplebox,below=5mm of mp,xshift=-24mm,minimum width=20mm] (zero) {ZeRO/FSDP\\{\footnotesize 状態を分割}};
-  \node[purplebox,right=2mm of zero,minimum width=20mm] (tp) {テンソル\\{\footnotesize 行列を分割}};
-  \node[purplebox,right=2mm of tp,minimum width=20mm] (pp) {パイプライン\\{\footnotesize 層を分割}};
-  \draw[arr] (dp) -- (ddp);
-  \draw[arr] (mp.south) -- (zero.north);
+  \draw[arr] (dp.south) -- (ddp.north);
+  \draw[arr] (dp.south) -- (zero.north);
   \draw[arr] (mp.south) -- (tp.north);
   \draw[arr] (mp.south) -- (pp.north);
-  \node[graybox,below=6mm of tp,xshift=-30mm,minimum width=80mm] (mix) {実際の大規模学習：これらを組み合わせる（\secref{sec:dist-mp}）};
-  \draw[darr] (ddp.south) -- (ddp.south|-mix.north);
-  \draw[darr] (tp.south) -- (tp.south|-mix.north);
+  \draw[arr,draw=bookaccent] (fit.south west) -- node[lbl,text=bookaccent,pos=0.1,anchor=east,xshift=-1mm]{状態を分けて載せる} (zero.north east);
+  \node[graybox,minimum width=102mm] (mix) at (4.6,-1.7) {実際の大規模学習：これらを組み合わせる（\secref{sec:dist-mp}）};
+  \foreach \n in {ddp,zero,tp,pp} \draw[darr] (\n.south) -- (\n.south|-mix.north);
 \end{tikzpicture}
-\caption{分散学習の地図。左の「速くしたい」にはデータ並列で、右の「載せたい」にはモデル並列で答える。
-この章は左から右へ進む。}
+\caption{分散学習の手法の分類図。左の「遅い」（速くしたい）にはデータ並列で答える。右の「載らない」（載せたい）には、
+状態を分割するデータ並列（ZeRO/FSDP。赤い矢印）か、計算そのものを分けるモデル並列（テンソル並列・パイプライン並列）で答える。
+実際の大規模学習は、下の段の 4 つを組み合わせる。この章は左から右へ進む。}
 \label{fig:dist-motives}
 \end{figure}
 
 \tabref{tab:dist-scale}に、本書の小さな実験と実際の LLM 開発の規模を並べました。
 桁はまったく違いますが、この章で書くコードの骨格（プロセスを集め、勾配を平均し、同じ更新をする）は、実際のクラスタでもそのまま同じです。
-違うのは、通信に使う道具（CPU の gloo か、GPU の NCCL か）と、つなぐ線の太さです。
+違うのは、通信に使うライブラリ（CPU の gloo か、GPU の NCCL か）と、回線の帯域（1 秒に送れるデータの量。\secref{sec:dist-comm}）です。
 
 \begin{table}[tbp]
 \centering
-\caption{本書の実験と実際の大規模学習の比較。プロセスの集め方・勾配の平均の仕方は同じで、規模と通信路が違う。}
+\caption{本書の実験と実際の大規模学習の比較。プロセスの集め方・勾配の平均の仕方は同じで、規模と通信路が違う。
+TCP はふつうのネットワーク通信の方式。NVLink・RDMA と、GB/s（バイト）と Gb/s（ビット。1 バイト = 8 ビット）の違いは\secref{sec:dist-comm}、文脈並列は\secref{sec:dist-mp}で説明する。}
 \label{tab:dist-scale}
 \small
 \begin{tabular}{lp{30mm}p{50mm}}
@@ -111,16 +117,17 @@ H100 のメモリは 80 GB しかありません。
 \midrule
 計算装置 & CPU のコア 1 個 = 1 プロセス & GPU 1 枚 = 1 プロセス \\
 プロセス数 & 2〜4（1 台） & 最大約 16,000（約 2,000 台 × 8 GPU） \\
-通信の道具 & gloo（CPU、TCP） & NCCL（GPU、NVLink・RDMA） \\
-通信路 & 同じ PC のメモリ & ノード内 900 GB/s、ノード間 400 Gb/s \\
-並列の種類 & データ並列（と FSDP の体験） & データ・テンソル・パイプライン・文脈並列 \\
+通信ライブラリ & gloo（CPU、TCP） & NCCL（GPU、NVLink・RDMA） \\
+通信路 & 同じ PC のメモリ & ノード内 900 GB/s（送受信の合計）、ノード間 400 Gb/s（片方向。50 GB/s） \\
+並列の種類 & データ並列（DDP と FSDP）  & データ・テンソル・パイプライン・文脈並列 \\
 起動 & \texttt{torch.}\allowbreak\texttt{multiprocessing}、\code{torchrun} & Slurm など + \code{torchrun} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 この節で分かったことをまとめます。
-分散の理由は「速くしたい」と「載せたい」の二つで、前者にはデータ並列、後者にはモデル並列で答えます。
+分散の理由は「速くしたい」と「載せたい」の二つです。
+前者にはデータ並列で答え、後者には状態を分割するデータ並列（ZeRO/FSDP）か、計算を分けるモデル並列で答えます。
 次の節では、データ並列がなぜ「正しい」のか、つまり分けても学習の結果が変わらない理由を式で確かめます。
 
 \section{データ並列の数学：勾配の平均は大きなバッチの勾配}\label{sec:dist-dp-math}
@@ -128,7 +135,7 @@ H100 のメモリは 80 GB しかありません。
 データ並列のアイデアは単純です。
 4 枚の GPU があるなら、それぞれに別々のデータを渡して、同時に勾配を計算させればよいのです。
 しかし、ここで一つ心配が生まれます。
-4 枚がそれぞれ自分のデータで勾配を計算し、それぞれ勝手に重みを更新したら、4 つの重みはばらばらになります。
+4 枚がそれぞれ自分のデータで勾配を計算し、それぞれ自分の勾配だけで重みを更新したら、4 つの重みはばらばらになります。
 どの重みを「本当のモデル」と呼べばよいのでしょうか。
 この節では、「勾配を平均してから全員で同じ更新をする」と、この心配が消えることを示します。
 
@@ -143,8 +150,9 @@ H100 のメモリは 80 GB しかありません。
 \end{equation}
 
 このバッチを、$W$ 個の装置で均等に分けます（$W$ は world size の頭文字です。あとで定義します）。
-装置 $k$ が担当する部分を $\mathcal{B}_k$ とし、その大きさを $b=B/W$ とします。
-装置 $k$ は、自分の部分だけの平均損失 $\calL_{\mathcal{B}_k}=\frac{1}{b}\sum_{i\in\mathcal{B}_k}\ell_i$ の勾配 $\vg_k$ を計算します。
+装置には 1 から $W$ までの番号 $k$ を付けます（あとで出てくるコードの「ランク」は 0 から数えるので、ランク $r$ が $\mathcal{B}_{r+1}$ を担当します）。
+装置 $k$ が担当する部分を $\mathcal{B}_k$ とし、その大きさ（1 装置あたりのバッチサイズ）を $b=B/W$ とします。
+装置 $k$ は、自分の部分だけの平均損失 $\calL_{\mathcal{B}_k}=\frac{1}{b}\sum_{i\in\mathcal{B}_k}\ell_i$ の勾配 $\vg_k$（装置 $k$ の勾配）を計算します。
 この $W$ 個の勾配を平均すると、次のように変形できます。
 \begin{align}
 \frac{1}{W}\sum_{k=1}^{W}\vg_k
@@ -170,6 +178,7 @@ H100 のメモリは 80 GB しかありません。
 \end{enumerate}
 同じ重みに同じ更新をすれば、更新後の重みも同じです。
 しかも、その更新は「バッチ $B$ 件を 1 台で学習した場合」とまったく同じです。
+「1 台で $b$ 件ずつ学習する場合」と同じなのではありません。$W$ 台で分けると、1 ステップで見るバッチは $W$ 倍の $B$ 件になります。
 \figref{fig:dist-dp}は、この流れを図にしたものです。
 左から右に、データを分ける、各自で勾配を計算する、平均する、同じ更新をする、と進みます。
 ばらばらになるのは中央の勾配の段だけで、平均の段を通ると再び一つにそろう点を見てください。
@@ -180,25 +189,29 @@ H100 のメモリは 80 GB しかありません。
   \node[tok,minimum width=26mm] (batch) at (0,0) {バッチ $\mathcal{B}$（$B$ 件）};
   \foreach \k/\y in {1/1.5,2/0.5,3/-0.5,4/-1.5} {
     \node[tok,fill=figorange!60,minimum width=12mm] (b\k) at (3.6,\y) {$\mathcal{B}_{\k}$};
-    \node[box,minimum width=17mm] (m\k) at (5.6,\y) {重み $\vtheta$};
+    \node[box,minimum width=17mm] (m\k) at (5.6,\y) {装置 \k：$\vtheta$};
     \node[redbox,minimum width=9mm] (g\k) at (7.5,\y) {$\vg_{\k}$};
     \draw[arr] (batch.east) -- (b\k.west);
     \draw[arr] (b\k) -- (m\k);
     \draw[arr] (m\k) -- (g\k);
   }
-  \node[greenbox,minimum height=34mm,minimum width=16mm] (avg) at (9.4,0) {平均\\[1mm]$\frac{1}{W}\sum_k\vg_k$};
+  \node[greenbox,minimum height=34mm,minimum width=16mm] (avg) at (9.4,0) {平均\\[1mm]$\bar{\vg}=$\\$\frac{1}{W}\sum_k\vg_k$};
   \foreach \k in {1,2,3,4} \draw[arr] (g\k.east) -- (avg.west|-g\k);
-  \node[box,minimum width=17mm,minimum height=34mm] (upd) at (11.5,0) {全員が\\同じ\\更新};
-  \draw[arr] (avg) -- (upd);
-  \node[lbl] at (3.6,2.3) {分ける};
-  \node[lbl] at (5.6,2.3) {同じ重みの複製};
-  \node[lbl] at (7.5,2.3) {ばらばら};
-  \node[lbl] at (9.4,2.3) {all-reduce};
-  \node[lbl] at (11.5,2.3) {再び同じ};
+  \foreach \k/\y in {1/1.5,2/0.5,3/-0.5,4/-1.5} {
+    \node[box,minimum width=19mm,minimum height=6mm,font=\footnotesize] (u\k) at (11.7,\y) {$\vtheta\leftarrow\vtheta-\eta\,\bar{\vg}$};
+    \draw[arr] (avg.east|-u\k) -- (u\k.west);
+  }
+  \node[lbl,font=\footnotesize] at (11.7,-2.15) {（$\eta$：学習率）};
+  \node[lbl,align=center] at (3.6,2.45) {分ける};
+  \node[lbl,align=center] at (5.6,2.45) {重み $\vtheta$ の\\同じ複製};
+  \node[lbl,align=center] at (7.5,2.45) {各自の勾配\\（ばらばら）};
+  \node[lbl,align=center] at (9.4,2.45) {平均\\（all-reduce）};
+  \node[lbl,align=center] at (11.7,2.45) {全員が同じ更新\\（再び同じ）};
 \end{tikzpicture}
-\caption{データ並列の 1 ステップ（$W=4$）。各装置は同じ重みの複製を持ち、別々のデータで勾配を計算する。
-勾配を平均（all-reduce）してから全員で同じ更新をするので、重みはいつも一致し、
-結果は $B$ 件を 1 台で学習したのと同じになる。}
+\caption{データ並列の 1 ステップ（$W=4$。SGD の更新で描いた）。4 行が装置 1〜4。各装置は同じ重みの複製を持ち、別々のデータで勾配 $\vg_k$ を計算する。
+勾配を平均してから（平均勾配 $\bar{\vg}$）、全員がそれぞれ同じ更新をするので、重みはいつも一致し、
+結果は $B$ 件を 1 台で学習したのと同じになる。緑の「平均」の箱は、全員で協力して平均を求める操作（all-reduce。\secref{sec:dist-ddp}）を表す。
+どこか 1 台の計算機が集めて計算するという意味ではない（具体的なやり方は\secref{sec:dist-comm}）。}
 \label{fig:dist-dp}
 \end{figure}
 
@@ -213,7 +226,7 @@ $\theta=0$、バッチを $y=(1,3,5,7)$ の 4 件とします。
 装置 1（$y=1,3$）の勾配は $\frac12(-1-3)=-2$、装置 2（$y=5,7$）の勾配は $\frac12(-5-7)=-6$ です。
 平均すると $\frac12(-2-6)=-4$ となり、1 台の場合と一致します。
 一方、平均せずに\textbf{和}をとると $-8$ になり、2 倍ずれます。
-和のまま更新すると、学習率を $W$ 倍にしたのと同じことになってしまいます。
+和のまま更新すると、最適化手法が SGD なら、学習率を $W$ 倍にしたのと同じことになってしまいます（本書で使う AdamW では事情が少し違います。\secref{sec:dist-ddp}のクイズで考えます）。
 
 \subsection*{ミニGPT で確かめる}
 
@@ -228,11 +241,13 @@ $\theta=0$、バッチを $y=(1,3,5,7)$ の 4 件とします。
 3 行目の \code{chunk(K)} は、8 系列を先頭から 2 系列ずつ 4 つに分けます。
 4 行目で、4 つの部分それぞれの勾配 $\vg_1,\dots,\vg_4$ を計算します。
 5 行目で平均（式\eqref{eq:dist-avg}の左辺）、6 行目でわざと誤った「和」を作ります。
-実行は \code{cd code \&\& python -m ch14.grad_average} です（この章のスクリプトは \code{-m} 付きでモジュールとして実行します）。
+実行は \texttt{cd code \&\& python -m ch14.grad\_average} です（この章のスクリプトは \code{-m} 付きでモジュールとして実行します）。
 
 \outputfile{ch14/out/grad_average.txt}
 
-2〜6 行目を見ると、部分ごとの勾配は、大バッチの勾配と大きく違います（相対差が 1.6 以上。ノルムも約 2 倍）。
+2 行目（大バッチの勾配）と 3〜6 行目（部分ごとの勾配）を比べると、部分ごとの勾配は大バッチの勾配と大きく違います。
+相対差は、大バッチの勾配との差のノルムを、大バッチの勾配のノルムで割った値です。
+これが 1.6 以上あるので、差の大きさは大バッチの勾配そのものの 1.6 倍以上です。ノルムも約 2 倍あります。
 2 系列しか見ていない勾配は、ばらつきが大きいからです。
 ところが 7 行目、4 つを平均した勾配のノルムは 0.724787 で、大バッチと一致します。
 8 行目の最大差 $9.31\times10^{-9}$ は、FP32 の丸め誤差の大きさです（足し算の順番が違うだけで生じる差です）。
@@ -240,7 +255,7 @@ $\theta=0$、バッチを $y=(1,3,5,7)$ の 4 件とします。
 
 \begin{caution}{平均の取り方を間違えない}
 式\eqref{eq:dist-avg}は「各部分が同じ件数 $b$ を持つ」ことを使いました。
-件数や（パディングを除いた）有効なトークン数が装置ごとに違うと、単純な平均は大バッチの勾配と一致しません。
+件数や、有効なトークン数（長さをそろえるために詰めた意味のないトークン、つまりパディングを除いた数）が装置ごとに違うと、単純な平均は大バッチの勾配と一致しません。
 そのときは損失の\textbf{和}と\textbf{件数}を別々に集計し、全体の和を全体の件数で割ります。
 本書のデータローダは同じ長さの窓を切り出すので、この問題は起きません。
 \end{caution}
@@ -277,20 +292,25 @@ GPU 8 枚のマシンでは、同じスクリプトから 8 つのプロセス�
 \centering
 \begin{tikzpicture}[font=\small]
   \foreach \n/\x in {0/0,1/6.6} {
-    \draw[rounded corners=3pt,draw=black!50,fill=figgray!40] (\x-0.3,-0.5) rectangle (\x+5.7,1.9);
-    \node[font=\small\bfseries,anchor=west] at (\x-0.2,1.6) {ノード \n};
+    \draw[rounded corners=3pt,draw=black!50,fill=figgray!40] (\x,0.05) rectangle (\x+6.3,2.4);
+    \node[font=\small\bfseries,anchor=west] at (\x+0.1,2.12) {ノード \n};
+    \node[lbl,text=bookgreen,anchor=east] at (\x+6.2,2.12) {NVLink（速い）};
+    \draw[line width=2pt,draw=bookgreen] (\x+0.85,1.75) -- (\x+5.5,1.75);
     \foreach \l in {0,1,2,3} {
       \pgfmathtruncatemacro{\r}{\n*4+\l}
-      \node[box,minimum width=12mm,text width=12mm,minimum height=11mm,align=center,font=\scriptsize] at (\x+0.65+\l*1.45,0.5)
+      \draw[thick,draw=bookgreen] (\x+0.85+\l*1.55,1.75) -- (\x+0.85+\l*1.55,1.45);
+      \node[box,minimum width=14mm,text width=13mm,inner xsep=0.5mm,minimum height=11mm,align=center,font=\scriptsize] at (\x+0.85+\l*1.55,0.9)
         {GPU\\ランク \r\\ローカル \l};
+      \draw[thick,draw=bookaccent] (\x+0.85+\l*1.55,0.35) -- (\x+0.85+\l*1.55,-0.6);
     }
   }
-  \draw[<->,thick,draw=bookaccent] (5.4,0.5) -- (6.3,0.5);
-  \node[lbl,text=bookaccent,align=center] at (5.85,2.25) {ノード間：InfiniBand など（遅い）};
-  \node[lbl,text=bookgreen] at (2.7,-0.8) {ノード内の GPU どうし：NVLink（速い）};
+  \draw[line width=2pt,draw=bookaccent] (0.5,-0.6) -- (12.4,-0.6);
+  \node[lbl,text=bookaccent] at (6.45,-0.95) {ノード間ネットワーク：各 GPU が自分の NIC でつながる（InfiniBand など。遅い）};
 \end{tikzpicture}
 \caption{2 ノード × 4 GPU のプロセスグループ（$W=8$）。1 GPU を 1 プロセスが担当し、
-ランクは全体の通し番号、ローカルランクはノード内の番号。ノード内とノード間では通信路の速さが大きく違う（\secref{sec:dist-comm}）。}
+ランクは全体の通し番号、ローカルランクはノード内の番号。ノードの中の GPU どうしは NVLink（緑）で、
+ノードの間は GPU ごとのネットワークカード（NIC）を通して（赤）つながる。両者の速さは大きく違う（\secref{sec:dist-comm}）。
+ネットワークの配線は 1 本の線にまとめて描いた。}
 \label{fig:dist-ranks}
 \end{figure}
 
@@ -302,42 +322,53 @@ GPU 8 枚のマシンでは、同じスクリプトから 8 つのプロセス�
 \textbf{broadcast}（放送）は 1 人のテンソルを全員に配り、最初に重みをそろえるのに使います。
 \textbf{all-reduce} は全員のテンソルを足し合わせ（reduce）、結果を全員が受け取るもので、勾配の平均に使います。
 \textbf{reduce-scatter} は足し合わせた結果を $W$ 個に切って 1 切れずつ配り、\textbf{all-gather} は 1 切れずつ持っているものを集めて全体を全員に配ります。
-図の all-reduce の行と、その下の 2 行を見比べてください。
-reduce-scatter のあとに all-gather をすると、all-reduce と同じ結果になります。
+図の 4 行のうち、2 行目と 3 行目（all-reduce と reduce-scatter）は同じ入力 $(1,2,3)$、$(4,5,6)$、$(7,8,9)$ から始まります。
+reduce-scatter の行の「後」と all-gather の行の「前」は同じ状態です。
+そして all-gather の「後」は、all-reduce の「後」と同じ $(12,15,18)$ です。
+つまり、reduce-scatter のあとに all-gather をすると、all-reduce と同じ結果になります。
 この関係は、\secref{sec:dist-comm}のリング all-reduce と、\secref{sec:dist-sharding}の FSDP で再び出てきます。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\footnotesize,x=0.9mm,y=1mm]
-  % 1 行 = 1 つの集合通信。左が前、右が後。各ランクは 2 要素のベクトル
-  \providecommand{\distcv}[4]{\node[cell,minimum width=7mm,fill=#4] at (#1,#2) {#3};}
-  \foreach \row/\name in {0/broadcast,1/all-reduce,2/reduce-scatter,3/all-gather} {
-    \node[anchor=east,font=\small] at (-2,-\row*11) {\name};
-  }
-  % 見出し
+\begin{tikzpicture}[font=\footnotesize,x=1mm,y=1mm]
+  % 1 行 = 1 つの集合通信。左が前、右が後。各ランクは 3 要素のベクトル（1 マス 1 要素）
+  \providecommand{\distcw}[4]{\node[cell,minimum width=4.6mm,minimum height=5.5mm,fill=#4] at (#1,#2) {#3};}
+  \providecommand{\distce}[2]{\node[cell,minimum width=4.6mm,minimum height=5.5mm,dashed,draw=black!35] at (#1,#2) {};}
+  % ランク r の第 j 要素のマスの中心: 前は 2.3+16r+4.6j、後は 60.3+16r+4.6j
+  \foreach \row/\name in {0/broadcast,1/all-reduce,2/reduce-scatter,3/all-gather}
+    \node[anchor=east] at (-2,-\row*9) {\name};
   \foreach \r in {0,1,2} {
-    \node[lbl] at (4+\r*17,6) {ランク \r};
-    \node[lbl] at (68+\r*17,6) {ランク \r};
+    \node[lbl] at (6.9+\r*16,5) {ランク \r};
+    \node[lbl] at (64.9+\r*16,5) {ランク \r};
   }
-  \node[lbl] at (21,10) {前};\node[lbl] at (85,10) {後};
-  \foreach \row in {0,1,2,3} \draw[arr] (53,-\row*11) -- (61,-\row*11);
-  % broadcast
-  \distcv{1}{0}{1}{figblue}\distcv{8}{0}{2}{figblue}
-  \distcv{18}{0}{}{white}\distcv{25}{0}{}{white}\distcv{35}{0}{}{white}\distcv{42}{0}{}{white}
-  \foreach \r in {0,1,2} {\distcv{65+\r*17}{0}{1}{figblue}\distcv{72+\r*17}{0}{2}{figblue}}
-  % all-reduce
-  \distcv{1}{-11}{1}{figblue}\distcv{8}{-11}{2}{figblue}\distcv{18}{-11}{3}{figorange}\distcv{25}{-11}{4}{figorange}\distcv{35}{-11}{5}{figgreen}\distcv{42}{-11}{6}{figgreen}
-  \foreach \r in {0,1,2} {\distcv{65+\r*17}{-11}{9}{figpurple}\distcv{72+\r*17}{-11}{12}{figpurple}}
-  % reduce-scatter（3 ランクで 3 要素ずつ）
-  \distcv{4}{-22}{1\,2\,3}{figblue}\distcv{21}{-22}{4\,5\,6}{figorange}\distcv{38}{-22}{7\,8\,9}{figgreen}
-  \distcv{68}{-22}{12}{figpurple}\distcv{85}{-22}{15}{figpurple}\distcv{102}{-22}{18}{figpurple}
-  % all-gather
-  \distcv{4}{-33}{12}{figpurple}\distcv{21}{-33}{15}{figpurple}\distcv{38}{-33}{18}{figpurple}
-  \foreach \r in {0,1,2} {\distcv{68+\r*17}{-33}{12\,15\,18}{figpurple}}
+  \node[lbl] at (22.9,9.5) {前};\node[lbl] at (80.9,9.5) {後};
+  \foreach \row in {0,1,2,3} \draw[arr] (49.5,-\row*9) -- (55.5,-\row*9);
+  % broadcast：ランク 0 のベクトルを全員に配る
+  \distcw{2.3}{0}{1}{figblue}\distcw{6.9}{0}{2}{figorange}\distcw{11.5}{0}{3}{figgreen}
+  \foreach \r in {1,2} {\foreach \j in {0,1,2} {\distce{2.3+\r*16+\j*4.6}{0}}}
+  \foreach \r in {0,1,2} {\distcw{60.3+\r*16}{0}{1}{figblue}\distcw{64.9+\r*16}{0}{2}{figorange}\distcw{69.5+\r*16}{0}{3}{figgreen}}
+  % all-reduce・reduce-scatter の前：同じ入力（同じ番号の要素どうしを足す。同じ色）
+  \foreach \row in {1,2} {
+    \foreach \r in {0,1,2} {
+      \pgfmathtruncatemacro{\va}{3*\r+1}\pgfmathtruncatemacro{\vb}{3*\r+2}\pgfmathtruncatemacro{\vc}{3*\r+3}
+      \distcw{2.3+\r*16}{-\row*9}{\va}{figblue}\distcw{6.9+\r*16}{-\row*9}{\vb}{figorange}\distcw{11.5+\r*16}{-\row*9}{\vc}{figgreen}
+    }
+  }
+  % all-reduce の後：全員が和 (12, 15, 18)
+  \foreach \r in {0,1,2} {\distcw{60.3+\r*16}{-9}{12}{figblue}\distcw{64.9+\r*16}{-9}{15}{figorange}\distcw{69.5+\r*16}{-9}{18}{figgreen}}
+  % reduce-scatter の後と all-gather の前：ランク r は第 r 要素の和だけを持つ
+  \foreach \y/\x in {-18/60.3,-27/2.3} {
+    \distcw{\x}{\y}{12}{figblue}\distce{\x+4.6}{\y}\distce{\x+9.2}{\y}
+    \distce{\x+16}{\y}\distcw{\x+20.6}{\y}{15}{figorange}\distce{\x+25.2}{\y}
+    \distce{\x+32}{\y}\distce{\x+36.6}{\y}\distcw{\x+41.2}{\y}{18}{figgreen}
+  }
+  % all-gather の後：全員が (12, 15, 18)
+  \foreach \r in {0,1,2} {\distcw{60.3+\r*16}{-27}{12}{figblue}\distcw{64.9+\r*16}{-27}{15}{figorange}\distcw{69.5+\r*16}{-27}{18}{figgreen}}
 \end{tikzpicture}
-\caption{4 つの集合通信（3 ランクの例）。all-reduce は全員の和を全員に配る（$1+3+5=9$、$2+4+6=12$）。
-reduce-scatter は和を切って 1 切れずつ配り（$1+4+7=12$ など）、all-gather は切れを集めて全員に配る。
-reduce-scatter のあとに all-gather をすると all-reduce と同じ結果になる。}
+\caption{4 つの集合通信（3 ランク、各ランクが 3 要素のベクトルを持つ例。1 マスが 1 要素。点線のマスは「持っていない」）。
+all-reduce は、同じ番号の要素（同じ色）どうしを全員分足し、和を全員に配る（$1+4+7=12$、$2+5+8=15$、$3+6+9=18$）。
+reduce-scatter は、同じ和を $W=3$ 個に切って、ランク $r$ に $r$ 番目の切れだけを配る。all-gather は、切れを集めて全体を全員に配る。
+reduce-scatter の後と all-gather の前は同じ状態で、all-gather の後は all-reduce の後と同じ $(12,15,18)$ になる。}
 \label{fig:dist-collectives}
 \end{figure}
 
@@ -356,9 +387,10 @@ GPU どうしでは NVIDIA の \textbf{NCCL}（「ニッケル」と読みます
 \snippet{プロセスグループを作る}{code:dist-setup}{ch14/common.py}{setup}
 
 \code{init_process_group} を呼ぶと、そのプロセスは「ランク \code{rank} として、全部で \code{world_size} 人のグループに参加する」と宣言し、全員がそろうまで待ちます。
-互いを見つけるための待ち合わせ場所が、 3〜4 行目の \code{MASTER_ADDR}（ランク 0 のマシンの住所）と \code{MASTER_PORT}（そのマシンの受付窓口の番号）です。
+全員が最初に接続して互いを見つける先を、待ち合わせ場所（rendezvous）と呼びます（コードのコメントでは「集合場所」と書いています）。
+それを決めるのが、3〜4 行目の \code{MASTER_ADDR}（ランク 0 のマシンの IP アドレス。ネットワークの上でマシンを指す番号）と \code{MASTER_PORT}（ポート番号。1 台のマシンの中で、通信の受け口を区別する番号）です。
 \code{os.environ} は\textbf{環境変数}（プログラムの外から設定できる名前付きの値）を読み書きする辞書です。
-ここでは同じ PC の中なので、住所は自分自身を表す \code{127.0.0.1} です。
+ここでは同じ PC の中なので、IP アドレスは自分自身を表す \code{127.0.0.1} です。
 5 行目で各プロセスのスレッド（1 つのプロセスの中で同時に走る計算の流れ）を 1 本にし、4 プロセスが 4 コアを 1 つずつ使うようにします。
 
 次に、前の節の手順 1〜4 をそのまま書いた、いちばん素朴なデータ並列です。
@@ -390,8 +422,8 @@ PyTorch には、これを自動でやってくれる\term{DDP}{DistributedDataP
 
 \outputfile{ch14/out/ddp_cpu4_ddp.txt}
 
-最初の 4 行では、ランク 0〜3 の重みの先頭の値が、学習前（矢印の左）はばらばらで、配った後（右）は全員がランク 0 の値 $+0.0184$ にそろっています。
-次の 4 行は損失です。
+3〜6 行目では、ランク 0〜3 の重みの先頭の値が、学習前（矢印の左）はばらばらで、配った後（右）は全員がランク 0 の値 $+0.0184$ にそろっています。
+次の 4 行（7〜10 行目）は損失です。
 「DP」は 4 プロセスの損失の平均、「1 プロセス」は 16 系列をまとめて学習した損失で、20 ステップ目まで小数第 6 位まで一致しています。
 最後の 2 行のうち、「ランク間の重みの最大差 0.0e+00」は、20 回更新したあとも 4 つの複製がビット単位で同じであることを示します（全員が同じ平均勾配を受け取るからです）。
 「1 プロセスとの重みの最大差 $1.0\times10^{-6}$」は、足し算の順番の違いによる丸め誤差が、AdamW の 20 回の更新で少し積み重なった大きさです。
@@ -404,7 +436,7 @@ PyTorch には、これを自動でやってくれる\term{DDP}{DistributedDataP
 
 SGD では、勾配が $W$ 倍になるので、学習率を $W$ 倍にしたのと同じになります（\secref{sec:dist-dp-math}の数値例）。
 AdamW では、更新量が「勾配 $\div$ 勾配の大きさの平均」の形をしているので、勾配全体を $W$ 倍しても更新はほとんど変わりません（$\epsilon$ の分だけ変わります）。
-それでも、勾配クリップ（\chapref{ch:training}）のしきい値の意味が変わるので、平均を取るのが正しい形です。
+それでも、勾配クリッピング（\chapref{ch:training}）のしきい値の意味が変わるので、平均を取るのが正しい形です。
 
 この節で分かったことをまとめます。
 データ並列は「1 GPU 1 プロセス」で動き、プロセスはランクという番号で互いを区別します。
@@ -422,11 +454,14 @@ AdamW では、更新量が「勾配 $\div$ 勾配の大きさの平均」の形
 \subsection*{リング all-reduce}
 
 いちばん素朴な all-reduce は、全員がランク 0 に送り、ランク 0 が足して送り返す方法です。
-これではランク 0 の回線だけに $W$ 人分のデータが集中して詰まります。
+これでは、ランク 0 の回線だけに、ほかの $W-1$ 人分のデータが集中して詰まります。
+テンソルの大きさを $S$ バイトとすると、ランク 0 は $(W-1)S$ を受け取り、和を $(W-1)S$ 送り返します。
 そこで、全員を輪（リング）につなぎ、\textbf{隣にだけ}少しずつ渡す方法が使われます。
 これを\term{リング all-reduce}{ring all-reduce}と呼びます~\cite{sergeev2018horovod}。
+輪の上では、ランク $r$ の「次のランク」をランク $r+1$ とします（最後のランク $W-1$ の次はランク 0 です）。
+各ランクは、次のランクにだけ送り、前のランク（ランク $r-1$。ランク 0 の前はランク $W-1$）からだけ受け取ります。
 \figref{fig:dist-ring}の左が素朴な方法、右がリングです。
-左ではランク 0 に向かう矢印が 3 本集まります。
+左ではランク 0 に向かう矢印が 3 本集まり、同じ本数の矢印が送り返されます。
 右では矢印が輪を 1 周するだけで、どのランクも送り先・受け取り元が 1 人ずつしかない点を見てください。
 
 \begin{figure}[tbp]
@@ -435,29 +470,33 @@ AdamW では、更新量が「勾配 $\div$ 勾配の大きさの平均」の形
   \begin{scope}
     \node[redbox,minimum width=13mm] (c0) at (0,0) {ランク 0};
     \foreach \r/\a in {1/90,2/210,3/330}
-      \node[box,minimum width=13mm] (c\r) at (\a:1.75) {ランク \r};
-    \foreach \r in {1,2,3} \draw[arr,draw=bookaccent,thick] (c\r) -- (c0);
-    \node[lbl,align=center] at (0,-2.55) {素朴な方法：全員がランク 0 へ送る\\ランク 0 が $(W-1)S$ を受け取る};
+      \node[box,minimum width=13mm] (c\r) at (\a:2.1) {ランク \r};
+    % 実線（送る）と破線（送り返す）を左右に曲げて分ける
+    \foreach \r in {1,2,3} {
+      \draw[arr,draw=bookaccent,thick] (c\r) to[bend left=22] (c0);
+      \draw[darr,draw=bookaccent] (c0) to[bend left=22] (c\r);
+    }
+    \node[lbl,align=center] at (0,-2.55) {素朴な方法：全員がランク 0 へ送り（実線）、\\和を送り返す（破線）};
   \end{scope}
   \begin{scope}[xshift=6.4cm]
     \foreach \r/\a in {0/90,1/0,2/270,3/180}
       \node[box,minimum width=13mm] (r\r) at (\a:1.45) {ランク \r};
     \foreach \a/\b in {0/1,1/2,2/3,3/0}
       \draw[arr,draw=bookgreen,thick] (r\a) to[bend left=30] (r\b);
-    \node[lbl,text=bookgreen] at (0,0) {右隣へ};
-    \node[lbl,align=center] at (0,-2.55) {リング：右隣へ $S/W$ ずつ $2(W-1)$ 回\\1 人が送る合計は $2\frac{W-1}{W}S$};
+    \node[lbl,text=bookgreen,align=center] at (0,0) {次の番号\\へ送る};
+    \node[lbl,align=center] at (0,-2.55) {リング：次のランクへ $S/W$ ずつ $2(W-1)$ 回\\1 人が送る合計は $2\frac{W-1}{W}S$};
   \end{scope}
 \end{tikzpicture}
-\caption{all-reduce の 2 つのやり方（$W=4$）。左：ランク 0 に集めると、ランク 0 の回線だけに $W-1$ 人分が集中する。
-右：リングでは各ランクが右隣にだけ送るので、回線の負担が全員に均等に分かれる（式\eqref{eq:dist-ring-bytes}）。}
+\caption{all-reduce の 2 つのやり方（$W=4$）。左：ランク 0 に集めると、ランク 0 の回線だけに、ほかの $W-1$ 人分の受け取りと送り返しが集中する。
+右：リングでは各ランクが次の番号のランク（ランク 3 の次は 0）にだけ送るので、回線の負担が全員に均等に分かれる（式\eqref{eq:dist-ring-bytes}）。}
 \label{fig:dist-ring}
 \end{figure}
 
 手順は 2 段階です。
-送りたいテンソルを $W$ 個の塊に分けておきます。
-\textbf{前半（reduce-scatter）}では、各ランクが 1 つの塊を右隣に送り、左隣から受け取った塊を自分の同じ番号の塊に足します。
+送りたいテンソルを $W$ 個の塊に分け、塊に 0 から $W-1$ の番号を付けておきます。
+\textbf{前半（reduce-scatter）}では、各ランクが 1 つの塊を次のランクに送り、前のランクから受け取った塊を、自分の同じ番号の塊に足します。
 これを $W-1$ 回繰り返すと、どのランクも、ある 1 つの塊について「全員分の和」を持った状態になります。
-\textbf{後半（all-gather）}では、完成した塊を右隣に回し、受け取った塊で自分のものを上書きします。
+\textbf{後半（all-gather）}では、完成した塊を次のランクに渡し、受け取った塊で自分のものを上書きします。
 これも $W-1$ 回で、全員がすべての塊の完成版を持ちます。
 \figref{fig:dist-collectives}で見た「reduce-scatter + all-gather = all-reduce」を、隣どうしの受け渡しだけで実現しているわけです。
 
@@ -465,10 +504,11 @@ AdamW では、更新量が「勾配 $\div$ 勾配の大きさの平均」の形
 
 3 行目でテンソルを $W$ 個の塊に分けます（塊は元のテンソルと記憶を共有するので、塊に足すと \code{t} も変わります）。
 8 行目の \code{send_i} と \code{recv_i} が、$s$ 回目に送る塊と受け取る塊の番号です。
-たとえばランク 0 は、1 回目（$s=0$）に塊 0 を右へ送り、左隣のランク 3 が送ってくる塊 3 を受け取ります（$-1 \bmod 4=3$）。
+4 行目の \code{right} と \code{left} が、次のランクと前のランクの番号です（輪を左から右へ回る向きに見立てた名前です）。
+たとえばランク 0 は、1 回目（$s=0$）に塊 0 を次のランク 1 へ送り、前のランク 3 が送ってくる塊 3 を受け取ります（$-1 \bmod 4=3$）。
 ランクごとに 1 つずつずれた番号を送るので、全員が同時に違う塊を扱います。
 9 行目の \code{isend} は「送り始めるが、終わるのを待たない」送信で、10 行目の \code{recv} は受け取るまで待つ受信です。
-全員が先に \code{recv} で待つと、誰も送らないので永遠に止まります（\term{デッドロック}{deadlock}）。
+全員が先に \code{recv} で待つと、誰も送らないので、全員が待ったまま先へ進めなくなります（\term{デッドロック}{deadlock}）。
 送りを待たずに受け取りに進むことで、これを防いでいます。
 12 行目が「足す」、21 行目が「上書き」です。
 \code{clone()} で送る塊の写しを作るのは、送信が終わる前に中身が書き換わらないようにするためで、11 行目の \code{req.wait()} で送信の完了を待ちます。
@@ -479,11 +519,236 @@ AdamW では、更新量が「勾配 $\div$ 勾配の大きさの平均」の形
 \outputfile{ch14/out/ring_allreduce_short.txt}
 
 各行が 1 回の受け渡しの後の状態で、縦線で区切った 4 つの組がランク 0〜3 の持つ 4 つの塊です。
+この表を、縦にランク、横に塊を並べたマス目に書き直し、受け渡しの 1 回ごとに 1 コマずつ並べたのが\figref{fig:dist-ring-frames}です。
+マス目では、前のランクは 1 つ上の行なので、受け渡しは「上の行から下の行へ、同じ列のマスを渡す」矢印になります。
 RS1（前半の 1 回目）の後、ランク 0 の塊 3 は $1000+4000=5000$ になっています。
-左隣のランク 3 から塊 3 の値 4000 を受け取って足したからです。
+前のランク 3 から塊 3 の値 4000 を受け取って足したからです（図では、いちばん下の行から上へ回り込む破線の矢印です）。
 RS3 の後には、ランク 0 の塊 1 が $100=10+20+30+40$、ランク 1 の塊 2 が $1000$ のように、
-各ランクがちょうど 1 つずつ完成した塊（全員の和）を持っています。
-後半の 3 回で完成品が回覧され、AG3 の後には全員が $(10,100,1000,10000)$ を持ちます。
+各ランクがちょうど 1 つずつ完成した塊（全員の和。図の緑のマス）を持っています。
+完成するのは、ランク $r$ では塊 $r+1$ です（ランク 3 では塊 0）。
+なぜでしょうか。塊 $c$ は、1 回目にランク $c$ から送り出され、受け取ったランクが自分の値を足して次へ送ります。
+$W-1$ 回進むと全員の値を足し終え、そのとき塊 $c$ がいるのは、出発したランク $c$ の 1 つ前（ランク $c-1$）です。
+だから、ランク $r$ の手元で完成するのは塊 $r+1$ です。
+後半の 3 回では、完成した塊が順に次のランクへ渡されます。各コマで緑のマスが 1 行に 1 つずつ増え、AG3 の後には全員が $(10,100,1000,10000)$ を持ちます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  rcell/.style={draw=black!40,fill=white,minimum width=7.6mm,minimum height=4.4mm,inner sep=0pt,font=\scriptsize},
+  rdone/.style={rcell,fill=bookgreen!30},
+  rchg/.style={line width=1.1pt,draw=bookaccent},
+  rarr/.style={->,thick,draw=bookaccent,>={Stealth[length=1.4mm]}}]
+  % コマ 0: 最初
+  \node[anchor=west,font=\scriptsize] at (-0.8,5.6) {\textbf{最初} （全員のはじめの値）};
+  \node[font=\tiny,text=bookgray] at (3.8,2.6) {塊 0};
+  \node[font=\tiny,text=bookgray] at (11.4,2.6) {塊 1};
+  \node[font=\tiny,text=bookgray] at (19.0,2.6) {塊 2};
+  \node[font=\tiny,text=bookgray] at (26.6,2.6) {塊 3};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-2.5) {ランク 0};
+  \node[rcell] at (3.8,-2.5) {1};
+  \node[rcell] at (11.4,-2.5) {10};
+  \node[rcell] at (19.0,-2.5) {100};
+  \node[rcell] at (26.6,-2.5) {1000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-9.9) {ランク 1};
+  \node[rcell] at (3.8,-9.9) {2};
+  \node[rcell] at (11.4,-9.9) {20};
+  \node[rcell] at (19.0,-9.9) {200};
+  \node[rcell] at (26.6,-9.9) {2000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-17.3) {ランク 2};
+  \node[rcell] at (3.8,-17.3) {3};
+  \node[rcell] at (11.4,-17.3) {30};
+  \node[rcell] at (19.0,-17.3) {300};
+  \node[rcell] at (26.6,-17.3) {3000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-24.7) {ランク 3};
+  \node[rcell] at (3.8,-24.7) {4};
+  \node[rcell] at (11.4,-24.7) {40};
+  \node[rcell] at (19.0,-24.7) {400};
+  \node[rcell] at (26.6,-24.7) {4000};
+  % コマ 1: RS1
+  \node[anchor=west,font=\scriptsize] at (41.2,5.6) {\textbf{RS1} 受け取って足す};
+  \node[font=\tiny,text=bookgray] at (45.8,2.6) {塊 0};
+  \node[font=\tiny,text=bookgray] at (53.4,2.6) {塊 1};
+  \node[font=\tiny,text=bookgray] at (61.0,2.6) {塊 2};
+  \node[font=\tiny,text=bookgray] at (68.6,2.6) {塊 3};
+  \node[rcell] at (45.8,-2.5) {1};
+  \node[rcell] at (53.4,-2.5) {10};
+  \node[rcell] at (61.0,-2.5) {100};
+  \node[rcell,rchg,fill=figorange] at (68.6,-2.5) {5000};
+  \draw[rarr,dashed,-] (68.6,-26.9) -- (68.6,-28.5);
+  \draw[rarr,dashed] (68.6,1.5) -- (68.6,-0.3);
+  \node[rcell,rchg,fill=figorange] at (45.8,-9.9) {3};
+  \draw[rarr] (45.8,-4.7) -- (45.8,-7.7);
+  \node[rcell] at (53.4,-9.9) {20};
+  \node[rcell] at (61.0,-9.9) {200};
+  \node[rcell] at (68.6,-9.9) {2000};
+  \node[rcell] at (45.8,-17.3) {3};
+  \node[rcell,rchg,fill=figorange] at (53.4,-17.3) {50};
+  \draw[rarr] (53.4,-12.1) -- (53.4,-15.1);
+  \node[rcell] at (61.0,-17.3) {300};
+  \node[rcell] at (68.6,-17.3) {3000};
+  \node[rcell] at (45.8,-24.7) {4};
+  \node[rcell] at (53.4,-24.7) {40};
+  \node[rcell,rchg,fill=figorange] at (61.0,-24.7) {700};
+  \draw[rarr] (61.0,-19.5) -- (61.0,-22.5);
+  \node[rcell] at (68.6,-24.7) {4000};
+  % コマ 2: RS2
+  \node[anchor=west,font=\scriptsize] at (83.2,5.6) {\textbf{RS2} 受け取って足す};
+  \node[font=\tiny,text=bookgray] at (87.8,2.6) {塊 0};
+  \node[font=\tiny,text=bookgray] at (95.4,2.6) {塊 1};
+  \node[font=\tiny,text=bookgray] at (103.0,2.6) {塊 2};
+  \node[font=\tiny,text=bookgray] at (110.6,2.6) {塊 3};
+  \node[rcell] at (87.8,-2.5) {1};
+  \node[rcell] at (95.4,-2.5) {10};
+  \node[rcell,rchg,fill=figorange] at (103.0,-2.5) {800};
+  \draw[rarr,dashed,-] (103.0,-26.9) -- (103.0,-28.5);
+  \draw[rarr,dashed] (103.0,1.5) -- (103.0,-0.3);
+  \node[rcell] at (110.6,-2.5) {5000};
+  \node[rcell] at (87.8,-9.9) {3};
+  \node[rcell] at (95.4,-9.9) {20};
+  \node[rcell] at (103.0,-9.9) {200};
+  \node[rcell,rchg,fill=figorange] at (110.6,-9.9) {7000};
+  \draw[rarr] (110.6,-4.7) -- (110.6,-7.7);
+  \node[rcell,rchg,fill=figorange] at (87.8,-17.3) {6};
+  \draw[rarr] (87.8,-12.1) -- (87.8,-15.1);
+  \node[rcell] at (95.4,-17.3) {50};
+  \node[rcell] at (103.0,-17.3) {300};
+  \node[rcell] at (110.6,-17.3) {3000};
+  \node[rcell] at (87.8,-24.7) {4};
+  \node[rcell,rchg,fill=figorange] at (95.4,-24.7) {90};
+  \draw[rarr] (95.4,-19.5) -- (95.4,-22.5);
+  \node[rcell] at (103.0,-24.7) {700};
+  \node[rcell] at (110.6,-24.7) {4000};
+  % コマ 3: RS3
+  \node[anchor=west,font=\scriptsize] at (-0.8,-31.4) {\textbf{RS3} 受け取って足す};
+  \node[font=\tiny,text=bookgray] at (3.8,-34.4) {塊 0};
+  \node[font=\tiny,text=bookgray] at (11.4,-34.4) {塊 1};
+  \node[font=\tiny,text=bookgray] at (19.0,-34.4) {塊 2};
+  \node[font=\tiny,text=bookgray] at (26.6,-34.4) {塊 3};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-39.5) {ランク 0};
+  \node[rcell] at (3.8,-39.5) {1};
+  \node[rdone,rchg] at (11.4,-39.5) {100};
+  \draw[rarr,dashed,-] (11.4,-63.9) -- (11.4,-65.5);
+  \draw[rarr,dashed] (11.4,-35.5) -- (11.4,-37.3);
+  \node[rcell] at (19.0,-39.5) {800};
+  \node[rcell] at (26.6,-39.5) {5000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-46.9) {ランク 1};
+  \node[rcell] at (3.8,-46.9) {3};
+  \node[rcell] at (11.4,-46.9) {20};
+  \node[rdone,rchg] at (19.0,-46.9) {1000};
+  \draw[rarr] (19.0,-41.7) -- (19.0,-44.7);
+  \node[rcell] at (26.6,-46.9) {7000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-54.3) {ランク 2};
+  \node[rcell] at (3.8,-54.3) {6};
+  \node[rcell] at (11.4,-54.3) {50};
+  \node[rcell] at (19.0,-54.3) {300};
+  \node[rdone,rchg] at (26.6,-54.3) {10000};
+  \draw[rarr] (26.6,-49.1) -- (26.6,-52.1);
+  \node[font=\scriptsize,anchor=east] at (-0.6,-61.7) {ランク 3};
+  \node[rdone,rchg] at (3.8,-61.7) {10};
+  \draw[rarr] (3.8,-56.5) -- (3.8,-59.5);
+  \node[rcell] at (11.4,-61.7) {90};
+  \node[rcell] at (19.0,-61.7) {700};
+  \node[rcell] at (26.6,-61.7) {4000};
+  % コマ 4: AG1
+  \node[anchor=west,font=\scriptsize] at (41.2,-31.4) {\textbf{AG1} 受け取って上書き};
+  \node[font=\tiny,text=bookgray] at (45.8,-34.4) {塊 0};
+  \node[font=\tiny,text=bookgray] at (53.4,-34.4) {塊 1};
+  \node[font=\tiny,text=bookgray] at (61.0,-34.4) {塊 2};
+  \node[font=\tiny,text=bookgray] at (68.6,-34.4) {塊 3};
+  \node[rdone,rchg] at (45.8,-39.5) {10};
+  \draw[rarr,dashed,-] (45.8,-63.9) -- (45.8,-65.5);
+  \draw[rarr,dashed] (45.8,-35.5) -- (45.8,-37.3);
+  \node[rdone] at (53.4,-39.5) {100};
+  \node[rcell] at (61.0,-39.5) {800};
+  \node[rcell] at (68.6,-39.5) {5000};
+  \node[rcell] at (45.8,-46.9) {3};
+  \node[rdone,rchg] at (53.4,-46.9) {100};
+  \draw[rarr] (53.4,-41.7) -- (53.4,-44.7);
+  \node[rdone] at (61.0,-46.9) {1000};
+  \node[rcell] at (68.6,-46.9) {7000};
+  \node[rcell] at (45.8,-54.3) {6};
+  \node[rcell] at (53.4,-54.3) {50};
+  \node[rdone,rchg] at (61.0,-54.3) {1000};
+  \draw[rarr] (61.0,-49.1) -- (61.0,-52.1);
+  \node[rdone] at (68.6,-54.3) {10000};
+  \node[rdone] at (45.8,-61.7) {10};
+  \node[rcell] at (53.4,-61.7) {90};
+  \node[rcell] at (61.0,-61.7) {700};
+  \node[rdone,rchg] at (68.6,-61.7) {10000};
+  \draw[rarr] (68.6,-56.5) -- (68.6,-59.5);
+  % コマ 5: AG2
+  \node[anchor=west,font=\scriptsize] at (83.2,-31.4) {\textbf{AG2} 受け取って上書き};
+  \node[font=\tiny,text=bookgray] at (87.8,-34.4) {塊 0};
+  \node[font=\tiny,text=bookgray] at (95.4,-34.4) {塊 1};
+  \node[font=\tiny,text=bookgray] at (103.0,-34.4) {塊 2};
+  \node[font=\tiny,text=bookgray] at (110.6,-34.4) {塊 3};
+  \node[rdone] at (87.8,-39.5) {10};
+  \node[rdone] at (95.4,-39.5) {100};
+  \node[rcell] at (103.0,-39.5) {800};
+  \node[rdone,rchg] at (110.6,-39.5) {10000};
+  \draw[rarr,dashed,-] (110.6,-63.9) -- (110.6,-65.5);
+  \draw[rarr,dashed] (110.6,-35.5) -- (110.6,-37.3);
+  \node[rdone,rchg] at (87.8,-46.9) {10};
+  \draw[rarr] (87.8,-41.7) -- (87.8,-44.7);
+  \node[rdone] at (95.4,-46.9) {100};
+  \node[rdone] at (103.0,-46.9) {1000};
+  \node[rcell] at (110.6,-46.9) {7000};
+  \node[rcell] at (87.8,-54.3) {6};
+  \node[rdone,rchg] at (95.4,-54.3) {100};
+  \draw[rarr] (95.4,-49.1) -- (95.4,-52.1);
+  \node[rdone] at (103.0,-54.3) {1000};
+  \node[rdone] at (110.6,-54.3) {10000};
+  \node[rdone] at (87.8,-61.7) {10};
+  \node[rcell] at (95.4,-61.7) {90};
+  \node[rdone,rchg] at (103.0,-61.7) {1000};
+  \draw[rarr] (103.0,-56.5) -- (103.0,-59.5);
+  \node[rdone] at (110.6,-61.7) {10000};
+  % コマ 6: AG3
+  \node[anchor=west,font=\scriptsize] at (-0.8,-68.4) {\textbf{AG3} 受け取って上書き};
+  \node[font=\tiny,text=bookgray] at (3.8,-71.4) {塊 0};
+  \node[font=\tiny,text=bookgray] at (11.4,-71.4) {塊 1};
+  \node[font=\tiny,text=bookgray] at (19.0,-71.4) {塊 2};
+  \node[font=\tiny,text=bookgray] at (26.6,-71.4) {塊 3};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-76.5) {ランク 0};
+  \node[rdone] at (3.8,-76.5) {10};
+  \node[rdone] at (11.4,-76.5) {100};
+  \node[rdone,rchg] at (19.0,-76.5) {1000};
+  \draw[rarr,dashed,-] (19.0,-100.9) -- (19.0,-102.5);
+  \draw[rarr,dashed] (19.0,-72.5) -- (19.0,-74.3);
+  \node[rdone] at (26.6,-76.5) {10000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-83.9) {ランク 1};
+  \node[rdone] at (3.8,-83.9) {10};
+  \node[rdone] at (11.4,-83.9) {100};
+  \node[rdone] at (19.0,-83.9) {1000};
+  \node[rdone,rchg] at (26.6,-83.9) {10000};
+  \draw[rarr] (26.6,-78.7) -- (26.6,-81.7);
+  \node[font=\scriptsize,anchor=east] at (-0.6,-91.3) {ランク 2};
+  \node[rdone,rchg] at (3.8,-91.3) {10};
+  \draw[rarr] (3.8,-86.1) -- (3.8,-89.1);
+  \node[rdone] at (11.4,-91.3) {100};
+  \node[rdone] at (19.0,-91.3) {1000};
+  \node[rdone] at (26.6,-91.3) {10000};
+  \node[font=\scriptsize,anchor=east] at (-0.6,-98.7) {ランク 3};
+  \node[rdone] at (3.8,-98.7) {10};
+  \node[rdone,rchg] at (11.4,-98.7) {100};
+  \draw[rarr] (11.4,-93.5) -- (11.4,-96.5);
+  \node[rdone] at (19.0,-98.7) {1000};
+  \node[rdone] at (26.6,-98.7) {10000};
+  % 凡例
+  \node[draw=black!30,rounded corners=2pt,align=left,text width=72mm,font=\scriptsize,anchor=north west] at (44,-77) {%
+    赤枠：そのコマで前のランク（1 つ上の行）から受け取ったマス（RS では足し、AG では上書きする）。\\
+    地の色：橙＝足した結果がまだ途中の和、緑＝全員分の和がそろった（完成した）塊、白＝まだ完成していないマス。\\[0.8mm]
+    \tikz[baseline=-0.6ex]\node[rcell,fill=figorange,rchg,minimum width=5mm,minimum height=3mm]{};\ 受け取って足し、まだ途中の和のマス（RS1・RS2）\\[0.8mm]
+    \tikz[baseline=-0.6ex]\node[rdone,rchg,minimum width=5mm,minimum height=3mm]{};\ 受け取って完成したマス（RS3 は足して完成、AG は上書き）\\[0.8mm]
+    \tikz[baseline=-0.6ex]\node[rdone,minimum width=5mm,minimum height=3mm]{};\ 前のコマまでに完成していた塊\\[0.8mm]
+    赤い矢印：そのコマで渡した塊（送り元 → 受け取り先）。\\
+    破線：ランク 3 から輪を回ってランク 0 へ渡す分};
+\end{tikzpicture}
+\caption{リング all-reduce のコマ送り（$W=4$）。マスの数は、実行結果 \file{ring_allreduce_short.txt} の値そのもの。縦がランク、横が塊。
+1 コマが 1 回の受け渡しで、全員が同時に 1 つずつ塊を次のランク（1 つ下の行）へ送る。
+前半（RS1〜RS3）で各ランクに完成した塊が 1 つずつでき（RS3 で緑が各行に 1 個）、後半（AG1〜AG3）で完成した塊が全員に行き渡る。}
+\label{fig:dist-ring-frames}
+\end{figure}
 最後の行（ランク 0。他のランクも同じ）で、PyTorch の \code{dist.all_reduce} と結果が一致することも確かめました（1000 要素のときの $4.8\times10^{-7}$ は、足す順番の違いによる丸め誤差です）。
 
 \subsection*{通信量と時間の見積もり}
@@ -497,10 +762,19 @@ RS3 の後には、ランク 0 の塊 1 が $100=10+20+30+40$、ランク 1 の�
 \label{eq:dist-ring-bytes}
 \end{equation}
 注目すべきは、$W$ をいくら増やしても $2S$ を超えないことです。
-ランク 0 に集める方法では、ランク 0 が $(W-1)S$ を受け取るのと対照的です。
-各ランクの回線の帯域を $\beta$（バイト/秒）とすると、リングの所要時間は送る量 $\div\,\beta$ で $2\frac{W-1}{W}\frac{S}{\beta}$ です。
+素朴な方法と、いちばん忙しい回線を通る量で比べてみます。
+$W=4$、$S=1$ GB とします。
+素朴な方法では、ランク 0 の回線を、受け取り $(W-1)S=3$ GB と送り返し 3 GB の計 6 GB が通ります。
+リングでは、どのランクの回線も、送り $2\times\frac{3}{4}\times1=1.5$ GB と受け取り 1.5 GB です。
+リングでも、全員が送る量を足し合わせると $W$ 人分（$4\times1.5=6$ GB）になり、$W$ とともに増えます。
+それでも速いのは、全員の回線が\textbf{同時に}働くからです。
+所要時間は、1 本の回線を通る量で決まります。
+各ランクの回線の帯域（1 秒に送れるバイト数）を $\beta$（バイト/秒）とすると、リングの所要時間は送る量 $\div\,\beta$ で $2\frac{W-1}{W}\frac{S}{\beta}$ です。
 $W$ が大きいと $\frac{W-1}{W}$ はほぼ 1 です（$W=8$ で 0.875、$W=64$ で 0.98）。
 そのため、所要時間は約 $2S/\beta$ で、人数によらずほぼ一定になります。
+ただし、これは全員の回線の帯域がそろっている場合の式です。
+ノード内（速い）とノード間（遅い）が混ざった輪では、全員が同時に一歩ずつ進むので、いちばん遅い区間が全体の時間を決めます。
+後の数値例で、ノード間の帯域を $\beta$ に使うのはこのためです。
 
 ただし、これは「データが大きい」ときの話です。
 通信には、データの大きさによらない固定の待ち時間（\term{レイテンシ}{latency}）もかかります。
@@ -521,15 +795,17 @@ t_{\text{all-reduce}}\approx 2(W-1)\,\alpha+2\,\frac{W-1}{W}\,\frac{S}{\beta}
 \begin{axis}[width=0.8\linewidth,height=44mm,xmode=log,ymode=log,
   xlabel={送るテンソルの大きさ（MB）},ylabel={all-reduce の時間（ms）},
   legend pos=north west,legend style={font=\footnotesize}]
+\addplot[dashed,black!45,domain=0.4:40,samples=2] {0.3725*x};
 \addplot+[mark=*,thick] table[col sep=comma,x=mbytes,y=ms,
   restrict expr to domain={\thisrow{rep}*10+\thisrow{W}}{12:12}]{code/ch14/out/allreduce.csv};
 \addplot+[mark=square*,thick] table[col sep=comma,x=mbytes,y=ms,
   restrict expr to domain={\thisrow{rep}*10+\thisrow{W}}{14:14}]{code/ch14/out/allreduce.csv};
-\legend{$W=2$,$W=4$}
+\legend{傾き 1 の目安（破線）,$W=2$,$W=4$}
 \end{axis}
 \end{tikzpicture}
 \caption{all-reduce の時間とテンソルの大きさ（CPU・gloo、同じ PC の中。3 回のうち 2 回目の測定）。
-左側の平らな部分が固定の待ち時間（式\eqref{eq:dist-alpha-beta}の第 1 項）、右側の傾き 1 の部分がデータ量に比例する時間（第 2 項）。}
+左側の平らな部分が固定の待ち時間（式\eqref{eq:dist-alpha-beta}の第 1 項）、右側の傾き 1 の部分がデータ量に比例する時間（第 2 項）。
+両対数のグラフでは、傾き 1 の直線は「時間が大きさに比例する」ことを表す。灰色の破線は傾き 1 の目安の線（$W=4$ の 40 MB の点を通るように引いた）。}
 \label{fig:dist-allreduce}
 \end{figure}
 
@@ -538,7 +814,7 @@ t_{\text{all-reduce}}\approx 2(W-1)\,\alpha+2\,\frac{W-1}{W}\,\frac{S}{\beta}
 送る回数 $2(W-1)$ は 2 回から 6 回に増えるので式では 3 倍のはずですが、実測は約 4 倍でした。CPU を奪い合う分が上乗せされたと考えられます。
 右側（4〜40 MB）では、時間が大きさにほぼ比例して増えます。
 40 MB の all-reduce は 2 プロセスで 6.6 ms、4 プロセスで 14.9 ms でした。
-式\eqref{eq:dist-ring-bytes}では、送る量は $W=2$ で $S$、$W=4$ で $1.5S$ なので、4 プロセスは 1.5 倍程度で済むはずです。
+gloo がリング方式で送ると仮定すると、式\eqref{eq:dist-ring-bytes}では、送る量は $W=2$ で $S$、$W=4$ で $1.5S$ なので、4 プロセスは 1.5 倍程度で済むはずです。
 実測が 2 倍以上になったのは、4 つのプロセスが同じ PC の同じメモリを奪い合っているからだと考えられます。
 本物のクラスタでは、GPU ごとに専用の回線があるので、この奪い合いは起きにくくなります。
 
@@ -550,7 +826,8 @@ t_{\text{all-reduce}}\approx 2(W-1)\,\alpha+2\,\frac{W-1}{W}\,\frac{S}{\beta}
 
 \snippet{計算と通信の時間を分けて測る}{code:dist-timed}{ch14/comm_bench.py}{timed-step}
 
-6 行目でランクとステップごとに別のバッチを引き、7〜11 行目の計算と 12〜15 行目の通信の時間を別々に合計します（最初の 2 ステップは準備の時間が混ざるので捨てます）。
+6 行目でランクとステップごとに別のバッチを引き、7〜11 行目と 16 行目（更新）の計算と、12〜15 行目の通信の時間を別々に合計します（最初の 2 ステップは準備の時間が混ざるので捨てます）。
+ここで「通信」と呼んだ時間には、ほかのランクの計算が終わるのを待つ時間も含まれます。all-reduce は全員がそろうまで終わらないからです。
 \figref{fig:dist-scaling}が結果です（3 回の測定はほぼ同じだったので、1 回目を示します）。
 
 \begin{figure}[tbp]
@@ -592,32 +869,93 @@ t_{\text{all-reduce}}\approx 2(W-1)\,\alpha+2\,\frac{W-1}{W}\,\frac{S}{\beta}
 通信の約 15 ms のうち、大半がこの固定費だと分かります。
 もう一つは、計算そのものも 32 ms から 54 ms に伸びたことです。
 4 つのプロセスが、同じ CPU のメモリ帯域やキャッシュを奪い合っているためだと考えられます（\chapref{ch:gpu}で見たとおり、CPU の計算はメモリ帯域に強く制約されます）。
-本物の GPU クラスタでは、各 GPU が自分のメモリと回線を持つので、計算は伸びず、うまく作れば 90\% 以上の効率が出ます。
-それでも「通信の固定費をまとめて減らす」「通信を計算の陰に隠す」工夫が要るのは同じです。
+本物の GPU クラスタでは、各 GPU が自分のメモリと回線を持つので、このような計算の伸びは起きにくくなります。
+それでも「通信の固定費をまとめて減らす」「通信を計算と同時に進めて、待ち時間を減らす」工夫が要るのは同じです。
 
-\subsection*{スケーリング効率と、通信を隠す工夫}
+\subsection*{スケーリング効率と、通信を計算と重ねる工夫}
 
 装置を $W$ 倍にしたときに速さが何倍になったかを、理想の $W$ 倍で割った値を\term{スケーリング効率}{scaling efficiency}と呼びます。
 上の実験では、4 プロセスで $1.9/4\approx 48\%$ でした。
 1 台あたりの仕事量（ここでは 8 系列）を固定して台数とともに全体を増やす測り方を\term{弱スケーリング}{weak scaling}、
 全体の仕事量（全体のバッチ）を固定して台数で分担する測り方を\term{強スケーリング}{strong scaling}と呼びます。
 上の実験は弱スケーリングです。強スケーリングでは 1 台あたりの計算が減るのに通信量は減らないので、効率が落ちやすくなります。
+なお、2 プロセスでは毎秒約 22,800 トークンで 1.46 倍、効率は約 73\% でした。
 
-DDP は、通信を計算の陰に隠す工夫を二つ持っています（\figref{fig:dist-overlap}）\cite{li2020pytorch}。
+では、1 プロセスあたりの仕事量を増やせば、効率は上がるのでしょうか。
+勾配の大きさはモデルで決まるので、系列数を増やしても通信の量は変わりません。
+増えるのは計算だけなので、1 ステップのうち通信が占める割合は下がるはずです。
+\file{ch14/sweep_scaling.py} で、1 プロセスあたりの系列数を 2, 8, 32 の 3 通り、プロセス数を 1, 2, 4 に変えて、同じ測り方で 3 回ずつ測りました。
+同期の仕方（パラメータごとの all-reduce）は\coderef{code:dist-timed}と同じです。
+\figref{fig:dist-sweep}がその結果です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.48\linewidth,height=46mm,xmode=log,log basis x=2,
+  xtick={2,8,32},xticklabels={2,8,32},xmin=1.6,xmax=48,unbounded coords=discard,ymin=0,ymax=0.6,
+  xlabel={1 プロセスあたりの系列数},ylabel={通信が占める割合},
+  title={\footnotesize (a) 1 ステップのうち通信の割合},
+  yticklabel style={/pgf/number format/fixed},
+  legend style={font=\footnotesize,at={(0.97,0.97)},anchor=north east}]
+\addplot+[mark=*,thick] table[col sep=comma,x=B,
+  y expr={ifthenelse(\thisrow{W}==2,\thisrow{comm_share},nan)}]{code/ch14/out/sweep_scaling_median.csv};
+\addplot+[mark=square*,thick] table[col sep=comma,x=B,
+  y expr={ifthenelse(\thisrow{W}==4,\thisrow{comm_share},nan)}]{code/ch14/out/sweep_scaling_median.csv};
+\legend{$W=2$,$W=4$}
+\end{axis}
+\end{tikzpicture}\hspace{2mm}%
+\begin{tikzpicture}
+\begin{axis}[width=0.48\linewidth,height=46mm,xmode=log,log basis x=2,
+  xtick={2,8,32},xticklabels={2,8,32},xmin=1.6,xmax=48,unbounded coords=discard,ymin=0,ymax=1,
+  xlabel={1 プロセスあたりの系列数},ylabel={スケーリング効率},
+  title={\footnotesize (b) スケーリング効率（$W=4$）},
+  yticklabel style={/pgf/number format/fixed},
+  legend style={font=\footnotesize,at={(0.97,0.97)},anchor=north east}]
+\addplot[only marks,mark=o,bookgray] table[col sep=comma,
+  x expr={\thisrow{B}*2^(0.13*(\thisrow{rep}+1))},y=eff,
+  restrict expr to domain={\thisrow{W}}{4:4}]{code/ch14/out/sweep_scaling.csv};
+\addplot+[mark=square*,thick,bookorange,mark options={fill=bookorange}] table[col sep=comma,x=B,
+  y expr={ifthenelse(\thisrow{W}==4,\thisrow{eff},nan)}]{code/ch14/out/sweep_scaling_median.csv};
+\legend{各回,3 回の中央値}
+\end{axis}
+\end{tikzpicture}
+\caption{1 プロセスあたりの系列数を変えたときの、通信の割合とスケーリング効率（\file{ch14/sweep_scaling.py}。CPU 4 コア・gloo。
+変えたのは系列数（2, 8, 32）とプロセス数 $W$（1, 2, 4）、固定したのはモデル（ミニGPT）と同期の仕方（パラメータごとの all-reduce）。
+(a) は 3 回の中央値。(b) の白い丸は 3 回の測定それぞれ（中央値の四角と重ならないよう、1 回目から順に少しずつ右へずらして描いた）で、ほかの処理と CPU を共有して測ったため、回ごとのばらつきが大きい。}
+\label{fig:dist-sweep}
+\end{figure}
+
+左の (a) を見てください。
+系列数を増やすと、通信が占める割合は $W=2$ でも $W=4$ でも下がりました（$W=4$ では 49\% → 31\% → 26\%）。
+予想どおり、計算が増えても通信は増えないからです。
+ところが右の (b) のスケーリング効率は、系列数を増やしてもはっきりとは上がりませんでした。
+中央値は 25\% → 37\% → 27\% で、同じ設定でも回によって 2 倍以上違います（系列数 8 では 17〜44\%）。
+理由は、計算の時間そのものがプロセス数とともに伸びたことです。
+系列数 32 の 1 回目では、1 ステップの計算が 1 プロセスで 215 ms、2 プロセスで 403 ms、4 プロセスで 514 ms でした。
+4 つのプロセスが同じ CPU のメモリ帯域を取り合うためで、系列数が多いほど伸びが大きい傾向があり、通信が減った分を打ち消してしまいます。
+この測定のときは、ほかの処理も同じ CPU で動いていたので、伸びはさらに大きくなりました。
+各 GPU が自分のメモリを持つ本物のクラスタでは、計算はこのようには伸びません。
+そこでは (a) の「仕事を増やすと通信の割合が下がる」が、そのまま効率の改善になります。
+1 GPU あたりの仕事を大きくすると効率が上がりやすいのは、このためです。
+
+DDP は、通信の待ち時間を減らす工夫を二つ持っています（\figref{fig:dist-overlap}）\cite{li2020pytorch}。
 一つ目は\term{バケット}{bucket}です。
-DDP は、パラメータごとに all-reduce を呼ぶ代わりに、勾配を約 25 MB ずつの「バケツ」にまとめて送ります。
+DDP は、パラメータごとに all-reduce を呼ぶ代わりに、勾配を約 25 MB ずつのまとまり（バケット）に詰めて、まとめて送ります。
+送る回数が減るので、式\eqref{eq:dist-alpha-beta}の固定費の項が小さくなります。
 二つ目は\textbf{計算と通信の重ね合わせ}です。
 逆伝播は出力に近い層から順に勾配を作ります。
-DDP は、あるバケツの勾配がそろった時点で、残りの層の逆伝播を待たずにそのバケツの all-reduce を始めます。
-図の下段のように、通信の大部分が逆伝播の裏で進むので、待ち時間が短くなります。
+DDP は、あるバケットの勾配がそろった時点で、残りの層の逆伝播を待たずにそのバケットの all-reduce を始めます。
+図の下段のように、通信の大部分が逆伝播と同時に進むので、待ち時間が短くなります。
 私たちの素朴版（図の上段）は、逆伝播がすべて終わってから通信を始めるので、通信の時間がまるごと上乗せされていました。
+ただし、重ね合わせが効くのは、勾配がいくつものバケットに分かれる大きなモデルです。
+本章のミニGPT の勾配は 1.5 MB しかなく、1 つのバケットに収まるので、重ね合わせはほとんど起きません。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize,x=1mm,y=1mm]
   \node[anchor=east] at (-1,8) {素朴版};
   \node[anchor=east] at (-1,0) {DDP};
-  \node[anchor=east] at (-1,-6) {（通信）};
+  \node[anchor=east,align=right] at (-1,-6) {（DDP の通信）};
   % 素朴版
   \draw[fill=figblue,draw=bookblue] (0,6) rectangle (20,10); \node at (10,8) {順伝播};
   \draw[fill=figgreen,draw=bookgreen] (20,6) rectangle (60,10); \node at (40,8) {逆伝播（層 4→1）};
@@ -627,13 +965,15 @@ DDP は、あるバケツの勾配がそろった時点で、残りの層の逆�
   \draw[fill=figblue,draw=bookblue] (0,-2) rectangle (20,2); \node at (10,0) {順伝播};
   \foreach \i/\l in {0/4,1/3,2/2,3/1} {
     \draw[fill=figgreen,draw=bookgreen] (20+\i*10,-2) rectangle (30+\i*10,2); \node at (25+\i*10,0) {層\l};
-    \draw[fill=figred,draw=bookaccent] (30+\i*10,-8) rectangle (37.5+\i*10,-4); \node at (33.75+\i*10,-6) {B\the\numexpr\i+1\relax};
+    \draw[fill=figred,draw=bookaccent] (30+\i*10,-8) rectangle (37.5+\i*10,-4); \node at (33.75+\i*10,-6) {層\l};
   }
   \draw[fill=figorange,draw=bookorange] (67.5,-2) rectangle (75.5,2); \node at (71.5,0) {更新};
   \draw[<->,thick,draw=bookaccent] (75.5,-11) -- node[below,lbl]{短くなった時間} (98,-11);
 \end{tikzpicture}
-\caption{通信を計算の陰に隠す。上段の素朴版は逆伝播が全部終わってから all-reduce するので、通信の時間が上乗せされる。
-下段の DDP は、勾配がそろったバケツ（B1〜B4）から順に送るので、通信の大部分が逆伝播と重なる。}
+\caption{通信を計算と重ねる（模式図。長さは実測ではない）。上段の素朴版は逆伝播が全部終わってから all-reduce するので、通信の時間が上乗せされる。
+下段の DDP は、勾配がそろったバケットから順に送る。赤い箱「層 $k$」は、層 $k$ の勾配を詰めたバケットの all-reduce で、
+逆伝播が層 4 から層 1 へ進むのに合わせて、層 4 の分から送り始める。通信の大部分が逆伝播と重なる。
+実際のバケットは層の境目ではなく約 25 MB ごとに区切るが、図では 1 層 = 1 バケットに単純化した。}
 \label{fig:dist-overlap}
 \end{figure}
 
@@ -647,16 +987,17 @@ H100（SXM 版）の場合、ノード内の NVLink は 1 GPU あたり 900 GB/s
 
 \begin{table}[tbp]
 \centering
-\caption{代表的な通信路の帯域（1 GPU あたり。NVIDIA の公表値~\cite{nvidia2026h100,nvidia2026dgxh100,nvidia2026gb200}による）。NVLink はバイト、NIC はビットで表記されることに注意。PCIe と NVLink は送受信の合計、NIC は片方向の値。}
+\caption{代表的な通信路の帯域（1 GPU あたり。NVIDIA の公表値~\cite{nvidia2026h100,nvidia2026dgxh100,nvidia2026gb200}による）。NVLink はバイト、NIC（ネットワークカード）はビットで表記されることに注意。PCIe と NVLink は送受信の合計、NIC は片方向の値。}
 \label{tab:dist-links}
 \small
-\begin{tabular}{llr}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l>{\raggedright\arraybackslash}p{52mm}r}
 \toprule
 通信路 & どこをつなぐか & 帯域 \\
 \midrule
-PCIe Gen5 & CPU と GPU（対比用） & 128 GB/s \\
+PCIe Gen5 & CPU と GPU（比べるための参考） & 128 GB/s \\
 NVLink 4（H100 SXM） & ノード内の GPU どうし & 900 GB/s \\
-NVLink 5（Blackwell） & ラック内の GPU どうし（72 枚） & 1.8 TB/s \\
+NVLink 5（Blackwell） & ラック（ノードを収めた棚）内の GPU（72 枚）  & 1.8 TB/s \\
 InfiniBand NDR / RoCE & ノード間（H100 世代の NIC） & 400 Gb/s（50 GB/s） \\
 ConnectX-8 & ノード間（Blackwell 世代の NIC） & 800 Gb/s（100 GB/s） \\
 \bottomrule
@@ -702,7 +1043,7 @@ DDP はバケットと重ね合わせでこれを和らげます。
 \code{RANK} & 全体での通し番号 & 0〜15 \\
 \code{LOCAL_RANK} & ノード内の番号（使う GPU の番号） & 0〜7 \\
 \code{WORLD_SIZE} & プロセスの総数 $W$ & 16 \\
-\code{MASTER_ADDR}, \code{MASTER_PORT} & 待ち合わせ場所 & 先頭ノードの住所とポート \\
+\code{MASTER_ADDR}, \code{MASTER_PORT} & 待ち合わせ場所 & 先頭ノードの IP アドレスとポート番号 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -713,17 +1054,22 @@ DDP はバケットと重ね合わせでこれを和らげます。
 1〜3 行目で、\code{torchrun} が設定した環境変数を読みます。
 GPU があれば、5〜6 行目でローカルランクの番号の GPU を自分の担当にし（1 プロセス = 1 GPU）、7 行目で NCCL を使います。
 GPU がなければ gloo を使います。
-住所は環境変数から読まれます。
+待ち合わせ場所（IP アドレスとポート番号）も、\code{init_process_group} が環境変数から読みます。
 
 \snippet{勾配累積・再開・ランク 0 での保存を含む学習ループ}{code:dist-loop}{ch14/ddp_train.py}{loop}
 
 このループには、分散ならではの注意点が四つ入っています。
 
-\textbf{(1) データをランクごとに変える}（4 行目）。
+\textbf{(1) データをランクごとに変える}（6 行目）。
 全員が同じ種で同じデータを引くと、$W$ 人が同じ勾配を計算するだけになり、分けた意味がありません。
 本書の \code{get_batch} はランダムな位置から窓を切り出すので、種をランクごとに変えれば十分です。
+種を設定する場所にも注意が要ります。
+5 行目の \code{tiny_gpt(seed=0)} は、全員の初期値をそろえるために、中で \code{torch.manual_seed(0)} を呼びます。
+ですから、ランクごとの種は、モデルを作った\textbf{後}に設定します。
+順番を逆にすると、モデルを作るときに種が 0 に戻り、全員が同じデータを引いてしまいます
+（逆の順番で 2 つのランクを動かし、毎回同じ 4 系列を引くことを確かめました）。
 データを 1 周ずつ順に読む場合は、\code{DistributedSampler} を使います。
-これは、データの番号を $W$ 等分し、ランク $k$ に $k$ 番目の分け前だけを返す道具です。
+これは、データの番号を $W$ 等分し、ランク $k$ に $k$ 番目の分担分だけを返すクラスです。
 \begin{pycode}
 sampler = DistributedSampler(dataset, num_replicas=world, rank=rank)
 loader = DataLoader(dataset, batch_size=B_LOCAL, sampler=sampler)
@@ -734,14 +1080,89 @@ for epoch in range(n_epochs):
 「ランク $k$ はシャード $k, k+W, k+2W,\dots$ を読む」のように、ファイル単位で分けるのが普通です。
 
 \textbf{(2) 勾配累積では最後だけ通信する}（18〜24 行目）。
-勾配累積（\chapref{ch:gpu}）は、小さなマイクロバッチの勾配を足し込んで、大きなバッチの代わりにする技です。
-DDP は \code{backward} のたびに all-reduce をするので、累積の途中でも毎回通信してしまいます。
-途中の通信は無駄です。最後にまとめて平均すれば同じ結果になるからです。
+勾配累積（\chapref{ch:gpu}）は、小さなバッチの勾配を何回か足し込んで、大きなバッチの代わりにする方法でした。
+1 回の順伝播・逆伝播に入れる小さなバッチを、\textbf{マイクロバッチ}（micro-batch）と呼びました。
+では、勾配累積は分散学習でも使うのでしょうか。
+答えは「はい」で、データ並列と組み合わせて使うのがふつうです。
+1 枚の GPU のメモリに収まるマイクロバッチが小さく、GPU の枚数を掛けても目標の全体のバッチに届かないとき、
+また、GPU の枚数を変えても全体のバッチを同じに保ちたいときに使います。
+
+組み合わせると、次のようになります（\figref{fig:dist-accum}）。
+各 GPU は、自分のマイクロバッチで順伝播・逆伝播をして、勾配を手元の \code{.grad} に足し込みます。
+これを累積の回数 $A$ だけ繰り返し、\textbf{最後の 1 回だけ} GPU 間で勾配の平均（all-reduce）をとります。
+途中で通信しないのは、通信を減らすためです。
+足し算は、GPU ごとに手元で足してから最後に平均しても、毎回平均してから足しても、同じ結果になります。
+それなら、通信は最後の 1 回で済ませたほうが速いわけです。
+
+ところが DDP は、\code{backward} のたびに all-reduce をします。
+そのままでは、累積の途中でも毎回通信してしまいます。
 \code{model.no_sync()} の中で呼んだ \code{backward} は通信をせず、自分の勾配に足し込むだけになります。
 最後のマイクロバッチだけ通常どおり \code{backward} し、そこで累積済みの勾配を all-reduce します。
-21 行目の \code{torch.enable_grad()} は、最後の回に「何もしない入れ物」として \code{with} に渡すためのものです（勾配の計算はもともと有効なので、何も変わりません）。
+21 行目は、最後の回だけ \code{no_sync()} を使わないための書き方です。
+\code{with A:} と書くと、その中のコードは A が決めた設定（ここでは「通信しない」）のもとで実行されます。
+最後の回は特別な設定が要らないので、何も変えない \code{torch.enable_grad()}（勾配の計算はもともと有効です）を置いて、22〜24 行目の書き方をそろえています。
+標準ライブラリの \code{contextlib.nullcontext()} を置いても同じです。
 24 行目で損失を \code{ACCUM} で割るのは、2 回分の勾配の\textbf{和}を、2 回分の\textbf{平均}にするためです（\secref{sec:dist-dp-math}の「和ではなく平均」と同じ理由です）。
-全体のバッチは、マイクロバッチ 4 系列 × 累積 2 回 × $W$ 人 = 16 系列（$W=2$）です。
+
+1 ステップで学習に使う全体のバッチ（系列数）は、GPU の数 $W$、マイクロバッチの大きさ $b_{\text{micro}}$（1 GPU が 1 回の順伝播に入れる系列数）、累積の回数 $A$ の積です。
+\begin{equation}
+B=W\times b_{\text{micro}}\times A
+\label{eq:dist-global-batch}
+\end{equation}
+\secref{sec:dist-dp-math}の 1 装置あたりのバッチ $b=B/W$ は、ここでは $b_{\text{micro}}\times A$ にあたります。
+このスクリプトでは、$W=2$、$b_{\text{micro}}=4$（\code{B_LOCAL}）、$A=2$（\code{ACCUM}）なので、全体のバッチは $2\times4\times2=16$ 系列です。
+通信は、$A$ によらず 1 ステップに 1 回です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+  % 時刻の列: コマ 1〜3 = マイクロバッチ、コマ 4 = all-reduce、コマ 5 = 更新
+  \foreach \c/\x/\t in {1/18/マイクロバッチ 1,2/42/マイクロバッチ 2,3/66/マイクロバッチ 3,4/88/平均,5/106/更新}
+    \node[font=\scriptsize\bfseries] at (\x,13) {コマ \c};
+  \foreach \c/\x/\t in {1/18/マイクロバッチ 1,2/42/マイクロバッチ 2,3/66/マイクロバッチ 3,4/88/all-reduce,5/106/更新}
+    \node[lbl,font=\scriptsize] at (\x,9.5) {\t};
+  % all-reduce: 2 つの GPU をつなぐ縦の帯（先に描き、各 GPU の平均の帯を上に重ねる）
+  \draw[draw=bookaccent,fill=figred,rounded corners=2pt] (80,5) rectangle (96,-47);
+  \node[font=\scriptsize,align=center] at (88,-21.6) {all-reduce\\（通信はこの 1 回）};
+  \foreach \g/\y/\d in {0/0/a,1/-30/b} {
+    \node[anchor=east,font=\footnotesize\bfseries] at (2,\y) {GPU \g};
+    \node[anchor=east,lbl,font=\scriptsize,align=right] at (2,\y-10) {手元の\\勾配};
+    \foreach \m/\x in {1/18,2/42,3/66} {
+      \node[box,minimum width=20mm,minimum height=10mm,font=\scriptsize,align=center] at (\x,\y) {順・逆伝播\\データ $\d_{\m}$\\（$b_{\text{micro}}$ 系列）};
+      % 勾配の入れ物: 長さ 15mm の帯を m/3 まで塗る。ラベルは帯の下に出す
+      \draw[draw=black!50] (\x-7.5,\y-12) rectangle (\x+7.5,\y-8);
+      \fill[figorange] (\x-7.5,\y-12) rectangle (\x-7.5+5*\m,\y-8);
+      \draw[draw=bookorange] (\x-7.5,\y-12) rectangle (\x-7.5+5*\m,\y-8);
+    }
+    \node[font=\tiny] at (18,\y-14.5) {1 回分 $\div A$};
+    \node[font=\tiny] at (42,\y-14.5) {2 回分の和 $\div A$};
+    \node[font=\tiny] at (66,\y-14.5) {3 回分の和 $\div A$};
+    \node[font=\scriptsize,align=center] at (88,\y) {GPU 間で\\平均をとる};
+    \draw[draw=bookgreen,fill=bookgreen!30] (88-7.5,\y-12) rectangle (88+7.5,\y-8);
+    \node[font=\tiny,align=center] at (88,\y-15) {全 6 回分の\\平均（同じ値）};
+    \node[orangebox,minimum width=12mm,minimum height=6mm,font=\scriptsize] at (106,\y) {更新};
+    \draw[draw=black!50,dashed] (106-7.5,\y-12) rectangle (106+7.5,\y-8);
+    \node[font=\tiny,align=center] at (106,\y-15) {更新後に消す\\（\code{zero_grad}）};
+  }
+  % no_sync の範囲
+  \draw[decorate,decoration={brace,amplitude=1.5mm},thick,draw=bookgray] (7,17) -- (53,17)
+    node[midway,above=1.5mm,lbl,font=\scriptsize]{\code{no_sync()} の中：通信しない};
+  \node[lbl,font=\scriptsize] at (66,19.5) {最後の回だけ通信する};
+  \draw[->,black!60] (5,-50) -- node[below,font=\scriptsize]{時間} (116,-50);
+  \node[font=\scriptsize,align=center] at (60,-59) {全体のバッチ $B=W\times b_{\text{micro}}\times A=2\times b_{\text{micro}}\times 3=6\,b_{\text{micro}}$ 系列\\（順・逆伝播の箱 6 つの合計。$b_{\text{micro}}$：1 GPU が 1 回の順伝播に入れる系列数）};
+\end{tikzpicture}
+\caption{データ並列と勾配累積の組み合わせ（$W=2$、累積の回数 $A=3$ の時空図。\coderef{code:dist-loop}は $A=2$）。
+横が時間、縦が GPU。各 GPU は別々のデータ（GPU 0 は $a_1,a_2,a_3$、GPU 1 は $b_1,b_2,b_3$。それぞれ $b_{\text{micro}}$ 系列）で順伝播・逆伝播をし、勾配を手元に足し込む（橙の帯が伸びる）。
+各回の勾配は $1/A$ 倍してから足し込む（損失を $A$ で割る。\coderef{code:dist-loop}の 24 行目）ので、コマ 3 のあとの手元の勾配は $A$ 回分の和ではなく平均になる。
+コマ 1・2 は \code{no_sync()} の中なので通信しない。コマ 3 の逆伝播のあとに 1 回だけ all-reduce をして、両方の GPU が同じ平均勾配（緑。$W\times A=6$ 回分の平均）を持ち、同じ更新をする。
+更新のあと、勾配は消す（点線の空の枠。\coderef{code:dist-loop}の 26 行目）。
+全体のバッチは $W\times b_{\text{micro}}\times A$（式\eqref{eq:dist-global-batch}）。実際の DDP は、コマ 4 の通信をコマ 3 の逆伝播と重ねて行う。}
+\label{fig:dist-accum}
+\end{figure}
+
+図のコマ 1 からコマ 3 では、GPU 0 と GPU 1 の手元の勾配は、別々のデータから作られたばらばらの値です。
+コマ 4 の all-reduce で初めて平均がとられ、両方が同じ値になります。
+これは\figref{fig:dist-dp}の「ばらばら → 平均 → 再び同じ」と同じ形で、違うのは、ばらばらの段がマイクロバッチ $A$ 個分に伸びたことだけです。
 
 \textbf{(3) 保存と表示はランク 0 だけ}（27 行目）。
 全員の重みは同じなので、保存は 1 人で足ります。
@@ -749,7 +1170,7 @@ DDP で包んだモデルの本体 \code{model.module} を保存すると、包�
 
 \textbf{(4) 再開できるようにする}（9〜15 行目）。
 チェックポイントがあれば、重み・オプティマイザの状態・ステップ番号を読み込んで続きから始めます（\chapref{ch:pretraining}の再開と同じです）。
-クラスタでは障害がよく起きるので、これが命綱になります（\secref{sec:dist-cluster}）。
+クラスタでは障害がよく起きるので、再開できることが欠かせません（\secref{sec:dist-cluster}）。
 
 最後まで回すステップ数は、2 行目で環境変数 \code{STEPS} から読みます（指定がなければ 30）。
 この CPU で 2 プロセスとして実行し、続けて \code{STEPS=40} と指定して再実行した結果です。
@@ -758,8 +1179,11 @@ DDP で包んだモデルの本体 \code{model.module} を保存すると、包�
 
 1 回目は 30 ステップで終わり、2 回目は保存された step 30 から再開しました。
 「30720 トークン」は、30 ステップ $\times$ 累積 2 回 $\times$ 4 系列 $\times$ 64 トークン $\times$ 2 プロセス $=30{,}720$ です。
-再開後の 40 ステップ目の損失 7.511 が 30 ステップ目の 6.696 より高いのは、表示しているのがランク 0 の最後のマイクロバッチ（4 系列）1 つの損失で、ばらつきが大きいからです。
-また、この簡易版は乱数の状態を保存していないので、再開後に引くデータは「止めなかった場合」とは違います。
+かかった秒数は、計算機の混み具合で大きく変わります（ほかの処理と CPU を共有して測りました）。
+再開後の 40 ステップ目の損失 7.554 が 30 ステップ目の 7.174 より高いのは、表示しているのがランク 0 の最後のマイクロバッチ（4 系列）1 つの損失で、ばらつきが大きいからです。
+また、この簡易版は種を最初に 1 回決めるだけなので、再開すると乱数が最初からやり直しになります。
+そのため、step 31〜40 では、step 1〜10 と同じバッチをもう一度引いています。
+止めなかった場合とは違うデータで、しかも同じデータを 2 回見ることになります。
 \chapref{ch:pretraining}の \code{resume_demo} のように完全に同じ続きにしたいなら、各ランクの乱数の状態も保存します。
 
 \subsection*{バッチサイズと学習率}
@@ -773,21 +1197,25 @@ DDP で包んだモデルの本体 \code{model.module} を保存すると、包�
 Llama 3 や DeepSeek-V3 は、学習の途中でバッチを大きくしていきます\cite{dubey2024llama3,liu2024deepseekv3}。
 大事なのは、\textbf{GPU の枚数を変えたら全体のバッチを確かめる}ことです。
 枚数を変えても全体のバッチを同じに保ちたいなら、勾配累積の回数で調整します。
+たとえば GPU を 16 枚から 8 枚に減らしたときは、累積の回数 $A$ を 2 倍にすれば、式\eqref{eq:dist-global-batch}の全体のバッチ $B$ は変わりません。
 
 \section*{ここまでの道のり}
 \begin{itemize}
 \item データ並列は、勾配を平均して全員で同じ更新をする方法で、大きなバッチの学習と数学的に同じでした（\secref{sec:dist-dp-math}）。
 \item 平均は all-reduce 1 回で済み、DDP がそれを自動化します。リング all-reduce の通信量は $2S$ 未満です（\secref{sec:dist-ddp}、\secref{sec:dist-comm}）。
-\item \code{torchrun} で起動し、データ・保存・勾配累積・再開に気を配れば、同じスクリプトがクラスタで動きます（\secref{sec:dist-torchrun}）。
+\item \code{torchrun} で起動し、データ・保存・勾配累積・再開に気を配れば、同じスクリプトがクラスタで動きます。勾配累積はデータ並列と組み合わせ、全体のバッチは $W\times b_{\text{micro}}\times A$ です（\secref{sec:dist-torchrun}）。
 \end{itemize}
 ただし、データ並列は\textbf{全員がモデルと学習の状態を丸ごと持つ}ことが前提で、70B の状態 1,120 GB はどの GPU にも載りません。
-ここからは、地図（\figref{fig:dist-motives}）の右側に進みます。
+ここからは、分類図（\figref{fig:dist-motives}）の「載らない」の側に進みます。
+まず、データ並列のまま状態を分ける ZeRO/FSDP を見て、次に計算そのものを分けるモデル並列を見ます。
 
 \section{モデルが載らないとき（1）：状態を分割する ZeRO と FSDP}\label{sec:dist-sharding}
 \skimread{結論は「勾配チェックポインティングは計算を約 1.33 倍にして活性化を減らす。ZeRO/FSDP は学習の状態を $W$ 等分し（7.5B・64 GPU で 120 GB → 1.9 GB）、代わりに通信が DDP の約 1.5 倍になる」です。\chapref{ch:infra}もこの結論を使います。}
 
 データ並列では、$W$ 人全員が同じ重み・勾配・オプティマイザ状態を持っていました。同じものが $W$ 個あるのはメモリの無駄です。
 この節では、まず 1 枚の中でできる節約（勾配チェックポインティング）を見て、次にこの無駄を省く ZeRO と FSDP を見ます。
+ZeRO と FSDP は\textbf{データ並列の一種}です。
+各 GPU は別々のデータを処理し、同じ 1 つのモデルを学習する点は DDP と同じで、違うのは、状態を全員で分けて置くことだけです。
 
 \subsection*{活性化を捨てる：勾配チェックポインティング}
 
@@ -795,11 +1223,52 @@ Llama 3 や DeepSeek-V3 は、学習の途中でバッチを大きくしてい�
 ミニGPT でも、バッチ 32 では活性化が状態の約 10 倍ありました。
 \term{勾配チェックポインティング}{gradient checkpointing}~\cite{chen2016training}（活性化の再計算）は、ブロックの入力だけを残してブロック内の途中結果を捨て、
 逆伝播でそのブロックに来たときに順伝播をやり直して作り直す方法です。
+名前は似ていますが、\secref{sec:dist-torchrun}や\secref{sec:dist-cluster}のチェックポイント（学習の状態をファイルに保存すること）とは別のものです。
+ここでの「チェックポイント」は、メモリに残しておくブロックの入力のことで、ファイルには何も書きません。
+\figref{fig:dist-ckpt}は、3 ブロックのモデルで、これが時間の順にどう進むかを示したものです。
 \begin{pycode}
 from torch.utils.checkpoint import checkpoint
 for block in model.blocks:      # 各ブロックの中身は逆伝播のときに再計算
     x = checkpoint(block, x, use_reentrant=False)
 \end{pycode}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,
+  kin/.style={draw=bookblue,fill=figblue,minimum width=6mm,minimum height=5mm,inner sep=0pt},
+  kmid/.style={draw=bookorange,fill=figorange,minimum width=15mm,minimum height=5mm,inner sep=0pt},
+  kgone/.style={draw=black!30,dashed,fill=white,text=black!35,minimum width=15mm,minimum height=5mm,inner sep=0pt},
+  kgonein/.style={kgone,minimum width=6mm}]
+  \foreach \b in {1,2,3} \node[font=\footnotesize] at (21.75+\b*24,6) {ブロック \b};
+  % 行 = 時刻。入力 x_b と、ブロック内の途中結果
+  \foreach \row/\lab in {0/{コマ 1：順伝播（入力だけ残す）},1/{コマ 2：逆伝播でブロック 3 を再計算},2/{コマ 3：ブロック 2 を再計算},3/{コマ 4：ブロック 1 を再計算}}
+    \node[anchor=east,font=\scriptsize] at (34,-\row*8) {\lab};
+  % コマ 1: 入力は全部残り、途中結果は全部捨てた
+  \foreach \b in {1,2,3} {\node[kin] at (14+\b*24,0) {$\vx_{\b}$};\node[kgone] at (25+\b*24,0) {捨てた};}
+  % コマ 2〜4: ブロック k を再計算し、勾配を出したら、その入力と途中結果を捨てる
+  \foreach \row/\k in {1/3,2/2,3/1} {
+    \foreach \b in {1,2,3} {
+      \pgfmathtruncatemacro{\live}{\b<\k ? 1 : 0}
+      \ifnum\b=\k
+        \node[kin] at (14+\b*24,-\row*8) {$\vx_{\b}$};
+        \node[kmid] at (25+\b*24,-\row*8) {作り直す};
+      \else\ifnum\live=1
+        \node[kin] at (14+\b*24,-\row*8) {$\vx_{\b}$};
+        \node[kgone] at (25+\b*24,-\row*8) {捨てた};
+      \else
+        \node[kgonein] at (14+\b*24,-\row*8) {};
+        \node[kgone] at (25+\b*24,-\row*8) {使用済み};
+      \fi\fi
+    }
+  }
+  \draw[->,black!60] (109,3) -- node[right,font=\scriptsize,align=left]{時\\間} (109,-27);
+\end{tikzpicture}
+\caption{勾配チェックポインティングのコマ送り（3 ブロックの模式図。上から下へ時間が進む）。
+青はメモリに残っているブロックの入力 $\vx_k$、橙はいまメモリにある途中結果（活性化）、点線は捨てた分。
+順伝播では入力だけを残し（コマ 1）、逆伝播でブロック $k$ に来たら、入力 $\vx_k$ から途中結果を作り直して勾配を求め、使い終わったら捨てる（コマ 2〜4）。
+同時にメモリにある途中結果は、いつも 1 ブロック分だけになる。}
+\label{fig:dist-ckpt}
+\end{figure}
 活性化のメモリは「ブロックの入力の分」まで減り、代わりに順伝播を 1 回分余計に計算します。1 トークンあたり順伝播 $2N$ + 逆伝播 $4N$ = $6N$ に再計算の $2N$ が加わるので、計算は約 $8N/6N\approx 1.33$ 倍です。
 
 \subsection*{状態を分割する：ZeRO}
@@ -807,8 +1276,16 @@ for block in model.blocks:      # 各ブロックの中身は逆伝播のとき�
 次に状態のコピーを省きます。
 \term{ZeRO}{Zero Redundancy Optimizer}は、「全員が同じものを持つ」無駄を、3 段階で削る方法です\cite{rajbhandari2020zero}。
 混合精度と AdamW では、1 パラメータあたり重み（BF16）2 バイト、勾配（BF16）2 バイト、オプティマイザ状態（FP32 の主重みと $m$、$v$）12 バイト、合計 16 バイトでした。
-\tabref{tab:dist-zero-stages}の 3 段階があります。
+\tabref{tab:dist-zero-stages}と\figref{fig:dist-zero-split}の 3 段階があります。
+図の各ランクの小さな表で、塗ったマスが「そのランクが持っている分」です。段が下がるごとに、点線（持たない分）の行が 1 つずつ増えていく点を見てください。
 分けて更新してよいのは、AdamW の更新がパラメータ 1 個ごとに独立だからです（各パラメータの更新に要るのは、その成分の勾配と $m$, $v$ だけです）。
+ただし、勾配全体のノルムで勾配クリッピングをするときは、ノルムを求めるために、各ランクの担当分の 2 乗和を足し合わせる小さな all-reduce が 1 回要ります。
+
+ZeRO-1 と ZeRO-2 の違いは、通信ではなく\textbf{勾配のメモリ}にあります。
+ZeRO-1 でも、更新に使う勾配は担当分だけなので、勾配の全体を all-reduce する必要はありません。
+reduce-scatter で担当分の平均を受け取り、更新後の重みを all-gather で配れば足ります（ZeRO の論文の見積もりもこの形です）。
+ただし ZeRO-1 では、逆伝播が作る勾配の全体（$2N$ バイト）を、各ランクがいったん全部置いておきます。
+ZeRO-2 は、担当外の勾配を reduce-scatter で送り終えたらすぐ捨てて、勾配のメモリも $1/W$ にします。
 
 \begin{table}[tbp]
 \centering
@@ -819,12 +1296,50 @@ for block in model.blocks:      # 各ブロックの中身は逆伝播のとき�
 \toprule
 段階 & $W$ 等分するもの & 仕組み \\
 \midrule
-ZeRO-1 & オプティマイザ状態 & 各ランクは自分の担当のパラメータだけを更新し、更新後の重みを all-gather で配る \\
-ZeRO-2 & ＋勾配 & 勾配を all-reduce の代わりに reduce-scatter し、担当分の平均だけを受け取る \\
+ZeRO-1 & オプティマイザ状態 & 勾配を reduce-scatter（または all-reduce）して担当分の平均を得て、自分の担当のパラメータだけを更新し、更新後の重みを all-gather で配る。勾配の全体はまだ各ランクが持つ \\
+ZeRO-2 & ＋勾配 & ZeRO-1 と同じ通信で、担当外の勾配は送り終えたら捨て、担当分の平均だけを持つ \\
 ZeRO-3 & ＋重み & 層を計算する直前に重みを all-gather で集め、使い終わったら捨てる \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,
+  zw/.style={draw=bookblue,fill=bookblue!45,minimum width=3.4mm,minimum height=2.8mm,inner sep=0pt},
+  zg/.style={draw=bookgreen,fill=bookgreen!45,minimum width=3.4mm,minimum height=2.8mm,inner sep=0pt},
+  zo/.style={draw=bookorange,fill=bookorange!55,minimum width=3.4mm,minimum height=2.8mm,inner sep=0pt},
+  zn/.style={draw=black!30,dashed,fill=white,minimum width=3.4mm,minimum height=2.8mm,inner sep=0pt}]
+  % 段 s（0=DDP,1..3=ZeRO-1..3）、ランク r（0..3）、行 = 重み・勾配・状態、列 = 担当の切れ c（0..3）
+  \foreach \r in {0,1,2,3} \node[font=\footnotesize] at (29.7+\r*18,6) {ランク \r};
+  \foreach \s/\name/\mem in {0/DDP/{$2N+2N+12N$},1/ZeRO-1/{$2N+2N+12N/W$},2/ZeRO-2/{$2N+(2N+12N)/W$},3/{ZeRO-3/FSDP}/{$(2N+2N+12N)/W$}} {
+    \node[anchor=east,font=\footnotesize] at (17,-\s*15-1) {\name};
+    \node[anchor=west] at (95,-\s*15-1) {\mem};
+    \foreach \r in {0,1,2,3} {
+      \foreach \c in {0,1,2,3} {
+        \pgfmathsetmacro{\xx}{24+\r*18+\c*3.8}
+        % 重み: ZeRO-3 だけ分割
+        \ifnum\s<3 \node[zw] at (\xx,-\s*15+2.6) {}; \else \ifnum\c=\r \node[zw] at (\xx,-\s*15+2.6) {}; \else \node[zn] at (\xx,-\s*15+2.6) {}; \fi\fi
+        % 勾配: ZeRO-2 から分割
+        \ifnum\s<2 \node[zg] at (\xx,-\s*15-0.6) {}; \else \ifnum\c=\r \node[zg] at (\xx,-\s*15-0.6) {}; \else \node[zn] at (\xx,-\s*15-0.6) {}; \fi\fi
+        % オプティマイザ状態: ZeRO-1 から分割
+        \ifnum\s<1 \node[zo] at (\xx,-\s*15-3.8) {}; \else \ifnum\c=\r \node[zo] at (\xx,-\s*15-3.8) {}; \else \node[zn] at (\xx,-\s*15-3.8) {}; \fi\fi
+      }
+    }
+  }
+  \node[anchor=west,font=\scriptsize] at (95,6) {1 GPU のバイト数};
+  % 凡例
+  \node[zw] at (24,-55) {}; \node[anchor=west] at (26,-55) {重み（2 バイト）};
+  \node[zg] at (50,-55) {}; \node[anchor=west] at (52,-55) {勾配（2 バイト）};
+  \node[zo] at (76,-55) {}; \node[anchor=west] at (78,-55) {オプティマイザ状態（12 バイト）};
+  \node[zn] at (24,-60) {}; \node[anchor=west] at (26,-60) {持たない（ほかのランクが担当）};
+\end{tikzpicture}
+\caption{DDP と ZeRO の各段階で、各ランクが持つもの（$W=4$ の模式図。1 パラメータあたりのバイト数は括弧の中）。
+各ランクの小さな表は、上から重み・勾配・オプティマイザ状態の 3 行で、横の 4 マスはパラメータを 4 等分した切れ。
+塗ったマスは持っている切れ、点線は持たない切れ。ZeRO-1 で状態が、ZeRO-2 で勾配も、ZeRO-3 で重みも、ランク $r$ の担当の $r$ 番目の切れだけになる。
+マスの大きさはバイト数に比例していない（状態は 1 マスが重みの 6 倍の大きさ）。}
+\label{fig:dist-zero-split}
+\end{figure}
 
 
 \figref{fig:dist-zero}は、この見積もりを \file{ch14/zero_memory.py} で計算したものです。
@@ -844,18 +1359,33 @@ $N=7.5\times10^{9}$, $W=64$ を入れた値も並べます（$2N=15$ GB、$12N/W
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[ybar,width=0.85\linewidth,height=42mm,bar width=7mm,
+\begin{axis}[ybar stacked,width=0.85\linewidth,height=46mm,bar width=9mm,
   symbolic x coords={0,1,2,3},xtick=data,
   xticklabels={DDP,ZeRO-1,ZeRO-2,{ZeRO-3/FSDP}},
   ylabel={1 GPU あたり（GB）},ymin=0,ymax=140,
-  nodes near coords,nodes near coords style={font=\footnotesize},
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,/tikz/every even column/.append style={column sep=2mm}},legend columns=3,
   restrict expr to domain={\thisrow{N}/1e9+\thisrow{W}/1000}{7.56:7.57}]
-\addplot[fill=figpurple,draw=bookpurple] table[col sep=comma,x=stage,y=gb]{code/ch14/out/zero_memory.csv};
-\draw[dashed,bookaccent,thick] (axis cs:0,80) -- (axis cs:3,80) node[above left,font=\footnotesize,text=bookaccent]{H100 のメモリ 80 GB};
+% 内訳は CSV の N・W・stage から計算する（重み 2N、勾配 2N、状態 12N を、段に応じて W で割る）
+\addplot[fill=bookblue!45,draw=bookblue] table[col sep=comma,x=stage,
+  y expr={2*\thisrow{N}/1e9*(1-(\thisrow{stage}>2)*(1-1/\thisrow{W}))}]{code/ch14/out/zero_memory.csv};
+\addplot[fill=bookgreen!45,draw=bookgreen] table[col sep=comma,x=stage,
+  y expr={2*\thisrow{N}/1e9*(1-(\thisrow{stage}>1)*(1-1/\thisrow{W}))}]{code/ch14/out/zero_memory.csv};
+\addplot[fill=bookorange!55,draw=bookorange] table[col sep=comma,x=stage,
+  y expr={12*\thisrow{N}/1e9*(1-(\thisrow{stage}>0)*(1-1/\thisrow{W}))}]{code/ch14/out/zero_memory.csv};
+% 合計の数（gb の列）は、高さがほぼ 0 の見えない段を一番上に積んで、その上に置く
+% （橙の段に付けると、DDP の「120」が棒の中に入ったため）
+\addplot[draw=none,fill=none,forget plot,
+  nodes near coords,point meta=explicit,nodes near coords style={font=\footnotesize,anchor=south},
+  nodes near coords={\pgfmathprintnumber[fixed,precision=1]{\pgfplotspointmeta}}] table[col sep=comma,x=stage,meta=gb,
+  y expr={0.001}]{code/ch14/out/zero_memory.csv};
+\legend{重み,勾配,オプティマイザ状態}
+\draw[dashed,bookaccent,thick] (axis cs:0,80) -- (axis cs:3,80);
+\node[anchor=south,font=\footnotesize,text=bookaccent] at (axis cs:1,80) {H100 のメモリ 80 GB（破線）};
 \end{axis}
 \end{tikzpicture}
-\caption{7.5B パラメータのモデルを 64 GPU で学習するときの、1 GPU あたりの学習の状態（活性化を除く）。
-ZeRO-1 でオプティマイザ状態（12 バイト分）が $1/64$ になり、ZeRO-3 では全部が $1/64$ になる。ZeRO の論文の見積もり（120 / 31.4 / 16.6 / 1.9 GB）と一致する。}
+\caption{7.5B パラメータのモデルを 64 GPU で学習するときの、1 GPU あたりの学習の状態（活性化を除く）。棒の上の数は合計（GB）。
+色は内訳で、ZeRO-1 で橙（オプティマイザ状態、12 バイト分）が $1/64$ になり、ZeRO-2 で緑（勾配）も、ZeRO-3 では青（重み）も $1/64$ になる。
+ZeRO の論文の見積もり（120 / 31.4 / 16.6 / 1.9 GB）と一致する。}
 \label{fig:dist-zero}
 \end{figure}
 
@@ -870,7 +1400,7 @@ ZeRO-1・2 では、DDP の all-reduce を reduce-scatter（勾配）と all-gat
 ZeRO-3 では、順伝播と逆伝播の両方で重みを all-gather します。
 all-gather 1 回で 1 ランクが送る量は約 $S$ なので（リングの後半と同じです）、重みの分で約 $2S$ です。
 これに勾配の reduce-scatter の約 $S$ が加わって約 $3S$ になり、DDP の $2S$ の約 1.5 倍です\cite{rajbhandari2020zero}。
-メモリを $1/W$ にする代わりに、通信を少し増やす取引です。
+メモリを $1/W$ にする代わりに、通信が少し増えるわけです。
 
 \subsection*{PyTorch の FSDP で動かす}
 
@@ -880,7 +1410,9 @@ FSDP はモデルをブロックごとの単位に分けて管理します。
 \figref{fig:dist-fsdp}の上の段のように、どの単位の重みも $W$ 個に切って、各ランクが 1 切れずつ持ちます。
 そして下の段のように、各単位の計算の直前に重みを all-gather し、終わったら捨てます。
 逆伝播では、もう一度 all-gather して勾配を計算し、reduce-scatter で担当分だけを残します。
+これを、すべてのランクが同時に、同じ順番で進めます。
 同時にメモリにある完全な重みは 1〜2 単位分だけです。
+2 単位分になるのは、実際の FSDP が、次の単位の「集める」を、いまの単位の計算と重ねて先に始めるからです（先読み、prefetch）。
 
 \begin{figure}[tbp]
 \centering
@@ -896,21 +1428,30 @@ FSDP はモデルをブロックごとの単位に分けて管理します。
   }
   \draw[black!30] (-12,4.5) -- (102,4.5);
   \node[anchor=east,font=\footnotesize] at (-1,0) {順伝播};
-  \node[anchor=east,font=\footnotesize] at (-1,-10) {逆伝播};
+  \node[anchor=east,font=\footnotesize] at (-1,-20) {逆伝播};
   \foreach \i in {1,2,3} {
     \draw[fill=figpurple,draw=bookpurple] (\i*34-34,-2) rectangle (\i*34-24,2); \node at (\i*34-29,0) {集める};
     \draw[fill=figblue,draw=bookblue] (\i*34-24,-2) rectangle (\i*34-8,2); \node at (\i*34-16,0) {計算 \i};
     \node[lbl,font=\scriptsize] at (\i*34-4,0) {捨てる};
   }
+  \draw[->,black!60] (0,-4) -- (102,-4);
+  \node[font=\scriptsize] at (51,-6.5) {時間（① 順伝播。どのランクも同時にこの順で進む）};
+  % 順伝播と逆伝播の区切り（逆伝播は順伝播がすべて終わってから。列は上のブロックの見出しと対応しない）
+  \draw[black!30] (-12,-9.5) -- (102,-9.5);
+  \node[anchor=west,font=\scriptsize,text=bookgray] at (0,-13) {① がすべて終わってから ② 逆伝播（ブロック 3 → 2 → 1 の順）};
   \foreach \i/\b in {1/3,2/2,3/1} {
-    \draw[fill=figpurple,draw=bookpurple] (\i*34-34,-12) rectangle (\i*34-24,-8); \node at (\i*34-29,-10) {集める};
-    \draw[fill=figgreen,draw=bookgreen] (\i*34-24,-12) rectangle (\i*34-10,-8); \node at (\i*34-17,-10) {勾配 \b};
-    \draw[fill=figred,draw=bookaccent] (\i*34-10,-12) rectangle (\i*34,-8); \node at (\i*34-5,-10) {RS};
+    \draw[fill=figpurple,draw=bookpurple] (\i*34-34,-22) rectangle (\i*34-24,-18); \node at (\i*34-29,-20) {集める};
+    \draw[fill=figgreen,draw=bookgreen] (\i*34-24,-22) rectangle (\i*34-10,-18); \node at (\i*34-17,-20) {勾配 \b};
+    \draw[fill=figred,draw=bookaccent] (\i*34-10,-22) rectangle (\i*34,-18); \node at (\i*34-5,-20) {RS};
   }
+  \draw[->,black!60] (0,-24) -- (102,-24);
+  \node[font=\scriptsize] at (51,-26.5) {時間（② 逆伝播。① の後に続く）};
 \end{tikzpicture}
 \caption{FSDP（ZeRO-3）の分け持ちと 1 ステップ。上：$W=2$ の分け持ち。どのブロックも、各ランクは半分（塗った部分）だけを持ち、残り（点線）は持たない。
 下：各ランクは重みの $1/W$ だけを持ち、ブロック $k$ を計算する（計算 $k$）直前に全員から集めて（「集める」= all-gather）、使い終わると捨てる。
-逆伝播では勾配を reduce-scatter（RS）して、自分の担当分の平均だけを残す。}
+逆伝播は、順伝播がすべて終わってから、ブロック 3 から 1 の順に進む（下の 2 行は別の時刻。逆伝播の行の横の位置は、上の「ブロック 1〜3」の見出しとは対応しない）。
+逆伝播でも集めてから勾配を計算し（計算後に集めた重みは捨てる）、勾配を reduce-scatter（RS）して、自分の担当分の平均だけを残す。
+模式図であり、埋め込みと出力層の単位は省いた。また、実際には次の単位の「集める」を、いまの単位の計算と重ねて進める（図では直列に描いた）。}
 \label{fig:dist-fsdp}
 \end{figure}
 
@@ -943,20 +1484,28 @@ ZeRO/FSDP は状態を分けて置きますが、計算するときは 1 つの�
 
 \subsection*{テンソル並列：行列を縦と横に切る}
 
-Transformer の MLP（\chapref{ch:transformer}）は、$\vy=\mW_2\,\gelu(\mW_1\vx)$ という 2 回の行列積でした。
+Transformer の MLP（\chapref{ch:transformer}）は、入力ベクトル $\vx$（$d$ 次元）から出力ベクトル $\vy$（$d$ 次元）を作る $\vy=\mW_2\,\gelu(\mW_1\vx)$ という 2 回の行列積でした。
+$\mW_1$ は 1 段目の重み行列、$\mW_2$ は 2 段目の重み行列です（この小節の太字の $\mW$ は重み行列で、ワールドサイズ $W$ とは別物です）。
+2 台の GPU で分けるとき、どちらの GPU も同じ入力 $\vx$ を丸ごと持っています（$\vx$ は前の層の出力で、前の層の最後の all-reduce で両方にそろっています）。
 $\mW_1\in\R^{4d\times d}$ を\textbf{行}で 2 つに切り、$\mW_1=\begin{pmatrix}\mW_1^{(1)}\\\mW_1^{(2)}\end{pmatrix}$ とします。
-すると $\mW_1\vx=\begin{pmatrix}\mW_1^{(1)}\vx\\\mW_1^{(2)}\vx\end{pmatrix}$ なので、GPU 1 は上半分 $\vh^{(1)}=\gelu(\mW_1^{(1)}\vx)$ を、GPU 2 は下半分を、相手を待たずに計算できます。
+$\mW_1^{(1)}$ は GPU 1 の受け持ち分です（上付きの $(1)$ は GPU の番号で、データの番号ではありません）。
+行で切ることは、出力の次元（$4d$）を 2 つに分けることにあたります\footnote{Megatron-LM の論文とコードは、1 データを行に並べる規約（$\vy=\vx\mA$）で書くので、同じ切り方を、1 段目は「列で切る」（\code{ColumnParallelLinear}）、2 段目は「行で切る」（\code{RowParallelLinear}）と呼びます。切っている次元（1 段目は出力の次元、2 段目は入力の次元）は同じです。}。
+すると $\mW_1\vx=\begin{pmatrix}\mW_1^{(1)}\vx\\\mW_1^{(2)}\vx\end{pmatrix}$ なので、GPU 1 は隠れベクトル $\vh$（$4d$ 次元）の上半分 $\vh^{(1)}=\gelu(\mW_1^{(1)}\vx)$ を、GPU 2 は下半分を、相手を待たずに計算できます。
 GELU は成分ごとの関数なので、半分ずつかけても結果は同じです。
-次に $\mW_2\in\R^{d\times 4d}$ を\textbf{列}で切り、$\mW_2=\bigl(\mW_2^{(1)}\ \mW_2^{(2)}\bigr)$ とします。
+次に $\mW_2\in\R^{d\times 4d}$ を\textbf{列}で切り（入力の次元 $4d$ を 2 つに分け）、$\mW_2=\bigl(\mW_2^{(1)}\ \mW_2^{(2)}\bigr)$ とします。
 行列積の定義（ブロックごとの積の和）より、
 \begin{equation}
 \vy=\mW_2\vh=\mW_2^{(1)}\vh^{(1)}+\mW_2^{(2)}\vh^{(2)}
 \label{eq:dist-tp}
 \end{equation}
 となります。
-各 GPU は自分の項を計算し、最後に \textbf{all-reduce で和をとる}だけで $\vy$ が得られます。
+各 GPU は自分の項（部分和）を計算し、最後に \textbf{all-reduce で和をとる}だけで $\vy$ が得られます。
+all-reduce の後は、両方の GPU が同じ $\vy$ を持つので、それがそのまま次の層の入力 $\vx$ になります。
 これを\term{テンソル並列}{tensor parallel}と呼びます\cite{shoeybi2019megatron}。
-注意機構も同じように、ヘッドを GPU に振り分ければ切れます。
+注意機構も同じ形で切れます。
+クエリ・キー・バリューを作る行列 $\mW_q,\mW_k,\mW_v$（\chapref{ch:attention}）をヘッド単位で GPU に振り分け（$\mW_1$ と同じく出力の次元を分ける）、
+出力の射影行列 $\mW_o$ は、$\mW_2$ と同じく入力の次元（ヘッドの出力を並べた次元）で切ります。
+ヘッドどうしは独立に計算できるので、途中で通信は要りません。
 \figref{fig:dist-tp}は MLP の切り方です。
 上の段が行列の切り口で、青が GPU 1、橙が GPU 2 の受け持ちです。
 $\mW_1$ は横に切られ（行の分割）、$\mW_2$ は縦に切られています（列の分割）。
@@ -980,28 +1529,35 @@ $\mW_1$ は横に切られ（行の分割）、$\mW_2$ は縦に切られてい�
   \node[below,lbl] at (7.6,0.7) {$\mW_2$（$d\times 4d$）：列で切る};
 \end{tikzpicture}\\[3mm]
 \begin{tikzpicture}[font=\small]
-  \node[tok] (x) at (0,0) {$\vx$};
+  \node[tok,fill=white] (x1) at (0,0.9) {$\vx$};
+  \node[tok,fill=white] (x2) at (0,-0.9) {$\vx$};
   \node[box,minimum width=20mm] (a1) at (2.6,0.9) {$\mW_1^{(1)}$ \& GELU};
   \node[orangebox,minimum width=20mm] (a2) at (2.6,-0.9) {$\mW_1^{(2)}$ \& GELU};
   \node[box,minimum width=14mm] (b1) at (5.6,0.9) {$\mW_2^{(1)}$};
   \node[orangebox,minimum width=14mm] (b2) at (5.6,-0.9) {$\mW_2^{(2)}$};
-  \node[greenbox,minimum height=24mm,minimum width=16mm] (ar) at (8.0,0) {all-reduce\\（和）};
-  \node[tok] (y) at (9.9,0) {$\vy$};
-  \draw[arr] (x) -- (a1.west); \draw[arr] (x) -- (a2.west);
+  \node[greenbox,minimum height=24mm,minimum width=16mm] (ar) at (8.7,0) {all-reduce\\（和）};
+  \node[tok,fill=white] (y1) at (10.75,0.9) {$\vy$};
+  \node[tok,fill=white] (y2) at (10.75,-0.9) {$\vy$};
+  \draw[arr] (x1) -- (a1.west); \draw[arr] (x2) -- (a2.west);
   \draw[arr] (a1) -- node[above,lbl]{$\vh^{(1)}$} (b1);
   \draw[arr] (a2) -- node[below,lbl]{$\vh^{(2)}$} (b2);
-  \draw[arr] (b1) -- (ar.west|-b1); \draw[arr] (b2) -- (ar.west|-b2);
-  \draw[arr] (ar) -- (y);
+  \draw[arr] (b1) -- node[above,lbl,font=\scriptsize]{$\mW_2^{(1)}\vh^{(1)}$} (ar.west|-b1);
+  \draw[arr] (b2) -- node[below,lbl,font=\scriptsize]{$\mW_2^{(2)}\vh^{(2)}$} (ar.west|-b2);
+  \draw[arr] (ar.east|-y1) -- (y1); \draw[arr] (ar.east|-y2) -- (y2);
   \node[lbl,text=bookblue] at (4.1,1.75) {GPU 1};
   \node[lbl,text=bookorange] at (4.1,-1.75) {GPU 2};
+  \node[lbl,align=center] at (0,0) {同じ};
+  \node[lbl,align=center] at (10.75,0) {同じ};
 \end{tikzpicture}
-\caption{MLP のテンソル並列（Megatron-LM の方式）。上：行列の切り口（青が GPU 1、橙が GPU 2 の分）。下：計算の流れ。$\mW_1$ を行で、$\mW_2$ を列で切ると、GPU どうしは途中で通信せずに計算でき、
-最後に all-reduce を 1 回するだけで出力 $\vy$ がそろう（式\eqref{eq:dist-tp}）。}
+\caption{MLP のテンソル並列（Megatron-LM の方式）。上：行列の切り口（青が GPU 1、橙が GPU 2 の分）。下：計算の流れ。
+入力 $\vx$ は両方の GPU が同じものを持つ（白い箱）。$\mW_1$ を行で、$\mW_2$ を列で切ると、GPU どうしは途中で通信せずに部分和 $\mW_2^{(i)}\vh^{(i)}$ まで計算でき、
+最後に all-reduce を 1 回して和をとると、両方の GPU が同じ出力 $\vy$ を持つ（式\eqref{eq:dist-tp}）。}
 \label{fig:dist-tp}
 \end{figure}
 
-テンソル並列は、層ごとに（順伝播と逆伝播でそれぞれ）all-reduce が入ります。
-しかも、送るのは活性化なので、その結果を待たないと次の層に進めません。
+テンソル並列では、Transformer の 1 ブロックあたり、順伝播で 2 回（注意の出口と MLP の出口）、逆伝播でも 2 回、all-reduce が入ります。
+1 回に送るのは活性化で、$(B,T,d)$ の形をした、バッチの全トークン分のベクトルです。
+DDP の勾配の all-reduce は 1 ステップに 1 回（しかも計算と重ねられる）でしたが、テンソル並列では層ごとに通信が入り、しかもその結果を待たないと次の層に進めません。
 通信が計算の途中に挟まるので、テンソル並列は\textbf{速い NVLink でつながったノードの中}（ふつう 8 GPU まで）で使います。
 
 \subsection*{パイプライン並列：層を前後に切る}
@@ -1015,42 +1571,77 @@ GPU 1 の出力（活性化）を GPU 2 に送り、GPU 2 がその続きを計�
 ただし素朴にやると、GPU 2 は GPU 1 が終わるまで何もできません。
 そこで、バッチを $M$ 個の\textbf{マイクロバッチ}に分け、流れ作業にします。
 GPU 1 が 1 個目を GPU 2 に渡したら、すぐ 2 個目に取りかかります。
-\figref{fig:dist-pp}は $P=4$、$M=4$ の例です。
-それでも、流れの最初と最後には待っている GPU（図の空白、\term{バブル}{bubble}）が残ります。
-全体の時間に対するバブルの割合は、順伝播と逆伝播を同じ速さとすると、
+ここでのマイクロバッチは、勾配累積（\secref{sec:dist-torchrun}）のマイクロバッチと同じ考え方です。
+$M$ 個のマイクロバッチの勾配を足し込んでから 1 回だけ更新するので、全体のバッチは分けない場合と同じで、$M$ を増やしても全体のバッチは増えません（全体を $M$ 個に細かく分けるだけです）。
+\figref{fig:dist-pp}の上の段は $P=4$（段の数）、$M=4$（マイクロバッチの数）の例です。
+それでも、待っている GPU（図の灰色の空白、\term{バブル}{bubble}）が残ります。
+全体の時間に対するバブルの割合は、次の式で表せます\cite{huang2019gpipe,narayanan2021efficient}。
 \begin{equation}
 \text{バブルの割合}=\frac{P-1}{M+P-1}
 \label{eq:dist-bubble}
 \end{equation}
-です\cite{huang2019gpipe,narayanan2021efficient}。
-各 GPU の仕事（F と B が $M$ 個ずつ）に対して、流れの始めと終わりに $P-1$ 区画ずつの待ちが生じるからです。
-数えてみます。
-各 GPU の行は、仕事の $2M$ 区画と待ちの $2(P-1)$ 区画で、合計 $2(M+P-1)$ 区画です。
-待ちの割合は $2(P-1)\div 2(M+P-1)=(P-1)/(M+P-1)$ になります。
+図で数えてみます。
+どの GPU の行も、仕事の $2M$ 区画（F と B が $M$ 個ずつ）と、待ちの $2(P-1)$ 区画で、合計 $2(M+P-1)$ 区画です。
+待ちの場所は GPU によって違います。
+GPU 1 は F と B の間で 6 区画待ち、GPU 4 は最初に 3 区画、最後に 3 区画待ちます。
+一般に GPU $g$ は、最初に $g-1$ 区画、F と B の間に $2(P-g)$ 区画、最後に $g-1$ 区画待ち、合計はどの GPU も $2(P-1)$ 区画です。
+だから待ちの割合は $2(P-1)\div 2(M+P-1)=(P-1)/(M+P-1)$ になります。
 図の例（$P=M=4$）では、14 区画のうち 6 区画が空白なので、$6/14=3/7\approx 43\%$ が無駄になります。
 $M=32$ なら $3/35\approx 9\%$ です。
+図は F と B を同じ幅で描きましたが、実際の逆伝播は順伝播の約 2 倍の時間がかかります。
+それでも、各段の F の時間と B の時間がそろっていれば、待ちも仕事も同じ比率で伸びるので、割合は同じ式になります。
+
 マイクロバッチを増やすほどバブルは減りますが、同時に持つ活性化が増えます。
-そこで、順伝播と逆伝播を 1 回ずつ交互に行う 1F1B という順番の工夫と組み合わせます。
-1F1B はバブルの割合を変えずに、同時に持つ活性化を減らす工夫です。
+上の段の並べ方では、どの GPU も、$M$ 個の F を全部終えるまで B を始めないので、$M$ 個分の活性化を同時に持ちます。
+そこで、\term{1F1B}{one-forward-one-backward}という順番の工夫と組み合わせます。
+各 GPU は、最初に何個か F をしたら、あとは B と F を 1 回ずつ交互に行い、B が済んだマイクロバッチの活性化から捨てていきます。
+\figref{fig:dist-pp}の下の段が 1F1B です。
+空白の区画の数はどの行も 6 のままで、バブルの割合は変わりません。
+一方、同時に持つ活性化の最大の個数（図の右の数）は、上の段の 4 個から、GPU $g$ で $P-g+1$ 個（4, 3, 2, 1 個）に減ります。
+$M=32$ なら、上の段の並べ方では 32 個分ですが、1F1B では最大でも $P=4$ 個分で済みます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=6.2mm,y=6mm,font=\scriptsize]
-  \foreach \g in {1,2,3,4} \node[anchor=east] at (-0.2,-\g+0.5) {GPU \g};
+  \providecommand{\distF}[3]{\draw[fill=figblue,draw=bookblue] (#1,#2) rectangle ++(1,1); \node at (#1+0.5,#2+0.5) {F#3};}
+  \providecommand{\distB}[3]{\draw[fill=figgreen,draw=bookgreen] (#1,#2) rectangle ++(1,1); \node at (#1+0.5,#2+0.5) {B#3};}
+  % 上の段：F を全部先に（GPipe 方式）
+  \node[anchor=west,font=\footnotesize\bfseries] at (-2.6,0.7) {(a) F を全部先にする並べ方};
+  \node[font=\scriptsize,align=center] at (15.3,0.6) {活性化の\\最大};
   \foreach \g in {1,2,3,4} {
+    \node[anchor=east] at (-0.2,-\g+0.5) {GPU \g};
+    \draw[fill=black!12,draw=black!25] (0,-\g) rectangle (14,-\g+1);
+    \node at (15.3,-\g+0.5) {4};
     \foreach \m in {1,2,3,4} {
       \pgfmathtruncatemacro{\fs}{\g+\m-2}
-      \draw[fill=figblue,draw=bookblue] (\fs,-\g) rectangle ++(1,1); \node at (\fs+0.5,-\g+0.5) {F\m};
+      \distF{\fs}{-\g}{\m}
       \pgfmathtruncatemacro{\bs}{7+(4-\g)+\m-1}
-      \draw[fill=figgreen,draw=bookgreen] (\bs,-\g) rectangle ++(1,1); \node at (\bs+0.5,-\g+0.5) {B\m};
+      \distB{\bs}{-\g}{\m}
     }
   }
-  \draw[black!40] (0,-4) rectangle (14,0);
-  \draw[->,black!60] (0,-4.4) -- node[below]{時間} (14,-4.4);
-  \node[lbl,anchor=west] at (14.2,-2) {空白 = バブル};
+  % 下の段：1F1B（開始時刻は、依存関係を守って最も早く始めた並べ方）
+  \begin{scope}[yshift=-36mm]
+  \node[anchor=west,font=\footnotesize\bfseries] at (-2.6,0.7) {(b) 1F1B};
+  \foreach \g/\a in {1/4,2/3,3/2,4/1} {
+    \node[anchor=east] at (-0.2,-\g+0.5) {GPU \g};
+    \draw[fill=black!12,draw=black!25] (0,-\g) rectangle (14,-\g+1);
+    \node at (15.3,-\g+0.5) {\a};
+  }
+  \foreach \t/\m in {0/1,1/2,2/3,3/4} {\distF{\t}{-1}{\m}}
+  \foreach \t/\m in {7/1,9/2,11/3,13/4} {\distB{\t}{-1}{\m}}
+  \foreach \t/\m in {1/1,2/2,3/3,7/4} {\distF{\t}{-2}{\m}}
+  \foreach \t/\m in {6/1,8/2,10/3,12/4} {\distB{\t}{-2}{\m}}
+  \foreach \t/\m in {2/1,3/2,6/3,8/4} {\distF{\t}{-3}{\m}}
+  \foreach \t/\m in {5/1,7/2,9/3,11/4} {\distB{\t}{-3}{\m}}
+  \foreach \t/\m in {3/1,5/2,7/3,9/4} {\distF{\t}{-4}{\m}}
+  \foreach \t/\m in {4/1,6/2,8/3,10/4} {\distB{\t}{-4}{\m}}
+  \draw[->,black!60] (0,-4.4) -- node[below]{時間（1 区画 = F か B の 1 回分）} (14,-4.4);
+  \end{scope}
 \end{tikzpicture}
-\caption{パイプライン並列（4 段、マイクロバッチ 4 個）。F$m$・B$m$ は $m$ 個目のマイクロバッチの順伝播・逆伝播。
-左上と右下の三角形の空白では GPU が待っている。その割合は $(P-1)/(M+P-1)=3/7$（式\eqref{eq:dist-bubble}）。}
+\caption{パイプライン並列（$P=4$ 段、マイクロバッチ $M=4$ 個の模式図）。F$m$・B$m$ は $m$ 個目のマイクロバッチの順伝播・逆伝播。
+灰色の空白（バブル）では GPU が待っている。(a) の空白は、左下の三角形（GPU 2〜4 の始め）、中央上の逆三角形（GPU 1〜3 の F と B の間）、右下の三角形（GPU 2〜4 の終わり）の 3 か所にある。
+どの行も空白は合計 $2(P-1)=6$ 区画で、その割合は $(P-1)/(M+P-1)=3/7$（式\eqref{eq:dist-bubble}）。
+(b) の 1F1B も空白は各行 6 区画で同じだが、右の「活性化の最大」（同時に持つマイクロバッチの活性化の個数）が減る。}
 \label{fig:dist-pp}
 \end{figure}
 
@@ -1059,35 +1650,86 @@ $M=32$ なら $3/35\approx 9\%$ です。
 実際の大規模学習では、3 つを組み合わせます。
 たとえば 8 GPU のノードの中でテンソル並列、ノードをまたいでパイプライン並列、さらにその全体の複製をデータ並列（FSDP）で並べます。
 GPU の総数は、それぞれの並列の数の積になります。
+\figref{fig:dist-3d}は、テンソル並列 2・パイプライン並列 2・データ並列 2 の小さな例（$2\times2\times2=8$ 枚）です。
+同じノードの 2 枚がテンソル並列の組で、1 つの段の行列を分け合います。
+左右の 2 つのノードがパイプラインの 2 段で、2 つ合わせて（4 枚で）モデル 1 つ分になります。
+その「モデル 1 つ分」が上下に 2 組あり、別々のデータを処理するのがデータ並列です。
+図の矢印の種類ごとに、送るものが違う点を見てください。
+TP の組は活性化を、PP の段どうしは境目の活性化を、DP の組（同じ段の同じ受け持ちの GPU どうし）は勾配を送り合います。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize]
+  \foreach \d in {0,1} {
+    \node[anchor=east,font=\footnotesize,align=right] at (-3,-\d*27) {DP の複製 \the\numexpr\d+1\relax\\（データ $\the\numexpr\d+1\relax$）};
+    \foreach \p in {0,1} {
+      \pgfmathsetmacro{\nx}{\p*62}
+      \draw[rounded corners=3pt,draw=black!50,fill=figgray!40] (\nx,-\d*27-13) rectangle (\nx+44,-\d*27+4);
+      \node[anchor=south,font=\scriptsize\bfseries] at (\nx+22,-\d*27-12.8) {ノード（段 \the\numexpr\p+1\relax）};
+      \foreach \t in {0,1} {
+        \pgfmathtruncatemacro{\g}{\d*4+\p*2+\t}
+        \node[box,minimum width=15mm,minimum height=8mm,font=\scriptsize,align=center] (g\g) at (\nx+11+\t*22,-\d*27-2) {GPU \g\\受け持ち \the\numexpr\t+1\relax};
+      }
+      \pgfmathtruncatemacro{\ga}{\d*4+\p*2}\pgfmathtruncatemacro{\gb}{\d*4+\p*2+1}
+      \draw[<->,thick,draw=bookgreen] (g\ga.east) -- (g\gb.west);
+    }
+    % 段どうしの受け渡しは、ノードの箱どうしの 1 本の両向きの矢印にまとめて描く
+    \draw[<->,thick,draw=bookorange] (44,-\d*27-4) -- node[above,font=\scriptsize,text=bookorange,align=center]{PP\\順：活性化 →\\逆：その勾配 ←} (62,-\d*27-4);
+  }
+  \foreach \g in {0,1,2,3} {
+    \pgfmathtruncatemacro{\h}{\g+4}
+    \draw[<->,thick,dashed,draw=bookpurple] (g\g.south) -- (g\h.north);
+  }
+  \node[font=\scriptsize,text=bookpurple] at (53,-44) {DP：上下の同じ受け持ちの GPU どうしで勾配の all-reduce（紫の破線）};
+  \node[font=\scriptsize,text=bookgreen] at (53,10.5) {TP：ノード内（NVLink）で活性化の all-reduce（緑）};
+  \node[font=\footnotesize] at (22,15.5) {パイプラインの段 1（前半の層）};
+  \node[font=\footnotesize] at (84,15.5) {パイプラインの段 2（後半の層）};
+\end{tikzpicture}
+\caption{3 次元の並列の小さな例（テンソル並列 2 × パイプライン並列 2 × データ並列 2 = 8 GPU。1 ノード 2 GPU の模式図）。
+緑はノードの中のテンソル並列の組、橙はパイプラインの段どうし（順伝播では段 1 から段 2 へ境目の活性化を、逆伝播では段 2 から段 1 へその勾配を送る。段の間の受け渡しを、ノードの箱どうしの 1 本の矢印にまとめて描いた）、紫の破線はデータ並列の組で、それぞれ送るものが違う。「受け持ち $k$」は、テンソル並列で 2 つに切った行列の $k$ 番目の切れを持つという意味。
+上の 4 枚（GPU 0〜3）でモデル 1 つ分、下の 4 枚がその複製。Llama 3.1 405B は同じ形で、TP 8（1 ノード 8 GPU）× PP 16 × DP 128 だった。}
+\label{fig:dist-3d}
+\end{figure}
+
 Llama 3.1 405B は、テンソル並列 8・パイプライン並列 16・データ並列 128 で、$8\times16\times128=16{,}384$ 枚の GPU を使いました\cite{dubey2024llama3}。
+図に当てはめると、1 つのノードの 8 枚がテンソル並列の組で、16 ノード（128 枚）でモデル 1 つ分になり、その複製が 128 組あるということです。
 構成は学習の段階によって変わり、これは 16,384 枚を使った段階のものです。
 長い文脈を学習する段階では、系列を GPU に分ける\textbf{文脈並列}（context parallel）も加えています。
 MoE（\chapref{ch:modern-arch}）では、エキスパートを GPU に振り分ける\textbf{エキスパート並列}も使います（トークンを担当の GPU へ送り合う通信を all-to-all と呼びます）。
 DeepSeek-V3 はテンソル並列を使わず、パイプライン並列 16・エキスパート並列 64・ZeRO-1 のデータ並列で 2,048 枚の H800（H100 の輸出向けの派生品）を使いました\cite{liu2024deepseekv3}。
-\tabref{tab:dist-compare}に、各方式が何を分け、いつ通信するかをまとめます。
+同じ時期の大規模学習でも、テンソル並列を使うかどうかのように、組み合わせ方は分かれています。
+どれを選ぶかは、モデルの形（MoE かどうか、層の大きさ）、GPU の枚数、回線の速さで変わり、決まった答えはありません。
+選ぶときの材料として、\tabref{tab:dist-compare}に、各方式が何を分け、いつ何を通信し、1 GPU のメモリがどれだけになり、何が苦手かをまとめます。
 
 \begin{table}[tbp]
 \centering
-\caption{並列化の方式の比較。「通信」は 1 ステップの中で何をいつ送るか。通信が頻繁で量の多いものほど、速い回線の内側に置く。}
+\caption{並列化の方式の比較。上の 4 行はデータ並列（各 GPU が別々のデータを処理する。ZeRO/FSDP は状態を分割するデータ並列）、中の 3 行は計算そのものを分けるモデル並列。
+「通信」は 1 ステップの中で何をいつ送るか（$S$ は勾配または重み全体の大きさ）。「1 GPU の状態」は、1 パラメータ 16 バイトの学習の状態（重み 2 + 勾配 2 + オプティマイザ状態 12。$N$ はパラメータ数）のうち 1 GPU が持つ分の目安。$W$ は GPU の数、$M$ はマイクロバッチの数（\figref{fig:dist-pp}）。
+通信が頻繁で量の多いものほど、速い回線の内側に置く。最後の行は参考（1 枚の中の工夫で、分散はしない）。}
 \label{tab:dist-compare}
-\small
-\begin{tabular}{p{22mm}p{24mm}p{40mm}p{26mm}}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{29mm}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{16mm}}
 \toprule
-方式 & 何を分けるか & 通信（いつ・何を） & 置き場所 \\
+方式 & 何を分けるか & 通信（いつ・何を） & 1 GPU の状態 & 短所・費用 & 置き場所 \\
 \midrule
-データ並列（DDP） & データ & 逆伝播中に勾配を all-reduce（$2S$） & どこでも \\
-ZeRO-1/2 & データ＋状態・勾配 & 勾配を reduce-scatter、重みを all-gather & どこでも \\
-ZeRO-3/FSDP & データ＋重みも & 層ごとに重みを all-gather（約 $3S$） & ノード間も可 \\
-テンソル並列 & 層の中の行列 & 層ごとに活性化を all-reduce（待ちあり） & ノード内（NVLink） \\
-パイプライン並列 & 層の並び & 境目の活性化を隣へ送る（バブルあり） & ノード間 \\
-エキスパート並列 & MoE のエキスパート & トークンを担当 GPU へ送り合う（all-to-all） & ノード内〜間 \\
+DDP & データ & 逆伝播中に勾配を all-reduce（約 $2S$。計算と重ねられる） & $16N$（全員が丸ごと） & 状態が 1 枚に載らないと使えない & ノード間でもよい \\
+ZeRO-1 & ＋オプティマイザ状態 & 勾配を reduce-scatter、更新後の重みを all-gather（約 $2S$） & $4N+12N/W$ & 勾配と重みは丸ごと持つ & ノード間でもよい \\
+ZeRO-2 & ＋勾配 & ZeRO-1 と同じ（約 $2S$） & $2N+14N/W$ & 重みは丸ごと持つ & ノード間でもよい \\
+ZeRO-3/\allowbreak FSDP & ＋重み & 層ごとに重みを all-gather（順・逆）、勾配を reduce-scatter（約 $3S$） & $16N/W$ & 通信が DDP の約 1.5 倍 & ノード間でもよい \\
+\midrule
+テンソル並列（$t$ 枚） & 層の中の行列 & 1 ブロックごとに活性化を all-reduce（順 2 回・逆 2 回。結果を待つ） & 約 $16N/t$ & 通信が頻繁で、遅い回線では待ちが長い & ノード内（NVLink、ふつう 8 枚まで） \\
+パイプライン並列（$P$ 段） & 層の並び & 境目の活性化を隣の段へ送る & 約 $16N/P$ & バブル $\frac{P-1}{M+P-1}$、マイクロバッチの活性化を持つ & ノード間でもよい \\
+エキスパート並列 & MoE のエキスパート & トークンを担当の GPU へ送り合う（all-to-all） & エキスパートの分が減る & MoE でしか使えない & ノード内〜間 \\
+\midrule
+勾配チェックポインティング & （分けない。活性化を捨てる） & なし & 変わらない（活性化が減る） & 計算が約 1.33 倍 & 1 枚の中 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 この節で分かったことをまとめます。
 テンソル並列は層の中の行列を切って層ごとに all-reduce し、パイプライン並列は層の並びを切って活性化を隣に渡します。
-通信の頻度と量に合わせて、テンソル並列はノードの中、パイプライン並列とデータ並列はノードの間に置くのが定石です。
+通信の頻度と量に合わせて、テンソル並列はノードの中、パイプライン並列とデータ並列（ZeRO/FSDP を含む）はノードの間に置くのが定石です。
 
 \section{クラスタで動かす：ジョブ、障害、デバッグ}\label{sec:dist-cluster}
 
@@ -1101,7 +1743,8 @@ ZeRO-3/FSDP & データ＋重みも & 層ごとに重みを all-gather（約 $3S
 研究用のクラスタでは、多くの人が GPU を共有します。
 誰がどのマシンを何時間使うかを決める係が\term{ジョブスケジューラ}{job scheduler}で、代表が \textbf{Slurm} です。
 利用者は、必要な資源と実行するコマンドを書いた\textbf{ジョブスクリプト}を \code{sbatch train.slurm} で投げます。
-\coderef{code:dist-slurm}は、2 ノード × 8 GPU で \file{ch14/ddp_train.py} を動かすジョブスクリプトです（このままは実行していません）。
+\coderef{code:dist-slurm}は、2 ノード × 8 GPU で \file{ch14/ddp_train.py} を動かすジョブスクリプトです。
+本書の環境には GPU のクラスタがないので、このままは実行していません。中で動かす \file{ddp_train.py} は、1 台の CPU で \code{torchrun --standalone} として確かめたものです（\secref{sec:dist-torchrun}）。
 
 \codefile{クラスタではこう書く：Slurm のジョブスクリプト（未実行）}{code:dist-slurm}{ch14/train.slurm}
 
@@ -1110,7 +1753,7 @@ ZeRO-3/FSDP & データ＋重みも & 層ごとに重みを all-gather（約 $3S
 8 行目は、その \code{torchrun} 1 つが使う CPU のコアの数です（データの読み込みなどに使います）。
 9 行目は最長の実行時間で、これを過ぎるとジョブは強制終了されます（だから再開できる作りが要ります）。
 10 行目は、画面に出るはずの表示を書き込むログファイルの名前です。
-13 行目で、確保したノードの一覧から先頭のノード名を取り出し、待ち合わせ場所にします。
+13 行目で、確保したノードの一覧から先頭のノード名を取り出し、待ち合わせ場所（全員が最初に接続する先）にします。
 15〜21 行目の \code{srun} が、各ノードで \code{torchrun} を 1 つずつ起動します。
 各 \code{torchrun} は 8 プロセスを作り、PyTorch の \code{c10d} という待ち合わせの方式で先頭ノードに集まって、全体で $W=16$ のグループになります。
 \figref{fig:dist-cluster}は、この流れの全体像です。
@@ -1120,14 +1763,18 @@ ZeRO-3/FSDP & データ＋重みも & 層ごとに重みを all-gather（約 $3S
 \begin{tikzpicture}[font=\small,node distance=6mm]
   \node[plainbox] (user) {利用者\\{\footnotesize \code{sbatch}}};
   \node[box,right=8mm of user] (slurm) {Slurm\\{\footnotesize 資源の割り当て}};
-  \node[graybox,right=12mm of slurm,yshift=8mm,minimum width=44mm] (n0) {ノード 0：torchrun → 8 プロセス};
-  \node[graybox,right=12mm of slurm,yshift=-8mm,minimum width=44mm] (n1) {ノード 1：torchrun → 8 プロセス};
+  \node[graybox,right=16mm of slurm,yshift=8mm,minimum width=44mm] (n0) {ノード 0：torchrun → 8 プロセス};
+  \node[graybox,right=16mm of slurm,yshift=-8mm,minimum width=44mm] (n1) {ノード 1：torchrun → 8 プロセス};
   \node[orangebox,below=12mm of slurm,minimum width=40mm] (fs) {共有ストレージ\\{\footnotesize データ・チェックポイント・ログ}};
   \draw[arr] (user) -- (slurm);
-  \draw[arr] (slurm.east) -- node[above,lbl,sloped]{srun} (n0.west);
-  \draw[arr] (slurm.east) -- (n1.west);
-  \draw[<->,thick,draw=bookaccent] (n0.south) -- node[right,lbl,text=bookaccent]{NCCL（InfiniBand/RoCE）} (n1.north);
-  \draw[darr] (n1.south) |- (fs.east);
+  \coordinate (split) at ($(slurm.east)+(9mm,0)$);
+  \draw[thick,draw=black!70] (slurm.east) -- node[above,lbl]{srun} (split);
+  \draw[arr] (split) |- (n0.west);
+  \draw[arr] (split) |- (n1.west);
+  \draw[<->,thick,draw=bookaccent] (n0.south) -- node[right,lbl,text=bookaccent,align=left]{NCCL\\（InfiniBand/RoCE）} (n1.north);
+  \draw[<->,thick,dashed,draw=black!55] (n1.south) |- (fs.east);
+  \draw[<->,thick,dashed,draw=black!55] (n0.east) -- ++(5mm,0) |- ($(fs.east)+(0,-2mm)$);
+  \node[lbl,anchor=north west,align=left] at ($(fs.east)+(1mm,-3mm)$) {読む：データ\\書く：チェックポイント・ログ};
 \end{tikzpicture}
 \caption{クラスタでの分散学習の流れ。スケジューラがノードを確保し、各ノードの \code{torchrun} がプロセスを起動する。
 プロセスどうしは NCCL で通信し、データとチェックポイントは全ノードから見える共有ストレージに置く。}
@@ -1140,10 +1787,11 @@ Kubernetes は動き続けるサービスの管理が、Slurm は「決まった
 
 \subsection*{障害は毎日起きる}
 
-1 万枚の GPU を何十日も動かすと、どこかが必ず壊れます（\tabref{tab:dist-failures}）。
+1 万枚の GPU を何十日も動かすと、どこかが必ず故障します（\tabref{tab:dist-failures}）。
 Llama 3.1 405B の学習では、54 日間に予期しない中断が 419 回、つまり平均して約 3 時間に 1 回起きました\cite{dubey2024llama3}。
 その約 78\% はハードウェアが原因と見られ、最も多いのは GPU の故障でした。
-データ並列では、1 つのプロセスが止まると all-reduce が永遠に終わらないので、\textbf{全体}が止まります。
+なお、この 54 日は論文が障害を記録した期間で、学習全体にかかった日数ではありません（\secref{sec:dist-why}の理想の約 28 日と比べる数ではありません）。
+データ並列では、1 つのプロセスが止まると、ほかのプロセスの all-reduce が終わらずに待ち続け（タイムアウトでエラーになるまで）、\textbf{全体}が止まります。
 
 \begin{table}[tbp]
 \centering
@@ -1175,6 +1823,30 @@ $\tau$ を長くすると前者は減り、後者は増えます。
 \quad\text{より}\quad \tau^{2}=2cT_{\mathrm{fail}},\quad \tau=\sqrt{2cT_{\mathrm{fail}}}
 \]
 数値で見ると、$T_{\mathrm{fail}}=3.1$ 時間 $=3.1\times60=186$ 分、$c=5$ 分なら $\sqrt{2\times 5\times 186}=\sqrt{1860}\approx 43$ 分ごとになります。
+\figref{fig:dist-young}は、この 2 つの割合とその和を、保存の間隔 $\tau$ を横軸にして描いたものです。
+保存に取られる割合（青）は $\tau$ とともに減り、失う割合（赤）は増えるので、和（黒）は下に凸の曲線になり、最小になるのが 43 分です。
+最小値の近くでは和の曲線が平らなので、間隔が 30 分でも 60 分でも、無駄の割合は大きくは変わりません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.7\linewidth,height=50mm,xmin=5,xmax=180,ymin=0,ymax=0.5,
+  xlabel={保存の間隔 $\tau$（分）},ylabel={時間のうち無駄になる割合},
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,/tikz/every even column/.append style={column sep=2mm}},legend columns=3,
+  yticklabel style={/pgf/number format/fixed}]
+\addplot[thick,bookblue,domain=5:180,samples=100] {5/x};
+\addplot[thick,bookaccent,domain=5:180,samples=2] {x/(2*186)};
+\addplot[very thick,black,domain=5:180,samples=100] {5/x+x/(2*186)};
+\addplot[only marks,mark=*,black] coordinates {(43.1,0.232)};
+\node[anchor=south west,font=\footnotesize,xshift=-2mm] at (axis cs:43.1,0.40) {$\tau=\sqrt{2cT_{\mathrm{fail}}}\approx43$ 分};
+\draw[->,black!60] (axis cs:43.1,0.40) -- (axis cs:43.1,0.25);
+\legend{保存に取られる割合 $c/\tau$,失う割合 $\tau/(2T_{\mathrm{fail}})$,和}
+\end{axis}
+\end{tikzpicture}
+\caption{保存の間隔と無駄の割合（Young の式。$c=5$ 分、$T_{\mathrm{fail}}=186$ 分の例）。
+2 つの割合の和は $\tau=\sqrt{2cT_{\mathrm{fail}}}\approx43$ 分で最小（黒い点）になる。式の近似が成り立つのは、$\tau$ が $T_{\mathrm{fail}}$ より十分短い範囲。}
+\label{fig:dist-young}
+\end{figure}
 \secref{sec:dist-torchrun}の \file{ddp_train.py} に入れた再開の仕組み（チェックポイントがあれば読み込み、続きのステップから始める）は、この運用の最小版です。
 スポット GPU（空いている間だけ安く借りられる）が途中で取り上げられる\textbf{プリエンプション}にも、同じ仕組みで備えます。
 FSDP（学習の状態を $W$ 等分して各 GPU に持たせる方法。\secref{sec:dist-sharding}）では、状態が各ランクに分かれています。
@@ -1194,13 +1866,14 @@ FSDP（学習の状態を $W$ 等分して各 GPU に持たせる方法。\secre
 \caption{分散学習でよくある症状と、最初に疑うこと。}
 \label{tab:dist-debug}
 \small
-\begin{tabular}{p{28mm}p{50mm}p{38mm}}
+\begin{tabular}{p{28mm}p{50mm}>{\raggedright\arraybackslash}p{38mm}}
 \toprule
 症状 & よくある原因 & 対処 \\
 \midrule
 止まったまま動かない & 一部のランクだけが集合通信を呼ばない（ランク 0 だけの分岐、ランクごとに違うループ回数） & 全員が同じ順で呼ぶ。NCCL のタイムアウトのログを見る \\
-ランク間で重みがずれる & 初期値をそろえていない、乱数の扱いがランクで違う & 重みのチェックサムをときどき比べる（\file{ddp_cpu.py}） \\
-GPU でしか再現しない & 規模が大きくて調べにくい & CPU（gloo）の 2 プロセスで小さく再現する \\
+ランク間で重みがずれる & 初期値をそろえていない、乱数の扱いがランクで違う & ランク間で重みの差（またはチェックサム）をときどき比べる（\file{ddp_cpu.py} はランク間の重みの最大差を表示する） \\
+全員が同じデータを引いている & ランクごとの種を設定した後に、種を設定し直す処理（モデルの初期化など）を呼んでいる & ランクごとの種はモデルを作った後に設定する（\secref{sec:dist-torchrun}の (1)）。各ランクの最初のバッチを表示して比べる \\
+大きな GPU ジョブでしか起きない（ように見える） & 規模が大きく、1 回試すのに時間がかかる & まず CPU（gloo）の 2 プロセスで小さく再現できるか試す。再現しなければ NCCL や GPU 固有の問題を疑う \\
 遅い & 通信の待ち、データ読み込み & 計算と通信を分けて測る（\coderef{code:dist-timed}） \\
 \bottomrule
 \end{tabular}
@@ -1211,11 +1884,11 @@ GPU でしか再現しない & 規模が大きくて調べにくい & CPU（gloo
 クラスタではスケジューラが資源を確保して \code{torchrun} がプロセスを起動し、障害を前提に再開できるよう設計します。
 
 \begin{summary}
-\item 分散の動機は「速くしたい」（データ並列）と「載せたい」（モデル並列）の二つです。
+\item 分散の動機は「速くしたい」と「載せたい」の二つです。前者にはデータ並列で、後者には状態を分割するデータ並列（ZeRO/FSDP）か、計算を分けるモデル並列（テンソル並列・パイプライン並列）で答えます。
 \item 各装置の勾配の平均はバッチ全体の勾配に等しく、データ並列は大バッチの学習と同じです（4 プロセスで損失が小数第 6 位まで一致）。
 \item 勾配の平均は all-reduce で行います。リング all-reduce で 1 ランクが送る量は $2S$ 未満ですが固定のレイテンシもかかるので、DDP はバケットにまとめ、逆伝播と重ねて送ります。
-\item \code{torchrun} は環境変数でランクを伝えます。データをランクごとに変え、勾配累積では \code{no_sync} を使い、保存はランク 0 だけで行います。
-\item ZeRO/FSDP は状態を $W$ 等分し（7.5B・64 GPU で 120 GB → 1.9 GB）、テンソル並列は層の中の行列を、パイプライン並列は層の並びを切ります。大規模学習ではこれらを組み合わせ、障害に備えて再開できるよう運用します。
+\item \code{torchrun} は環境変数でランクを伝えます。データをランクごとに変え（種はモデルを作った後に設定）、保存はランク 0 だけで行います。勾配累積はデータ並列と組み合わせてふつうに使い、途中は \code{no_sync} で通信せず、最後の 1 回だけ平均します。全体のバッチは $W\times b_{\text{micro}}\times A$ です。
+\item ZeRO/FSDP は状態を $W$ 等分し（7.5B・64 GPU で 120 GB → 1.9 GB）、テンソル並列は層の中の行列を、パイプライン並列は層の並びを切ります。大規模学習ではこれらを組み合わせ（GPU の数は各並列の数の積）、障害に備えて再開できるよう運用します。
 \end{summary}
 
 \section*{次の章へ}

@@ -2,16 +2,16 @@
 
 \begin{readingguide}
 \item[\rgpre] \chapref{ch:intro}を読んだら、\chapref{ch:pytorch}のコードを動かす前に、ここを一度通ってください。
-  要るのは、Python の入った PC と、インターネット接続です。学習を待つ時間が、合わせて 35〜47 分あります。
+  要るのは、Python の入った PC と、インターネット接続です。学習の待ち時間は、合わせて 35〜47 分です。
 \item[\rgmust] \secref{sec:setup-requirements}〜\secref{sec:setup-run}：PC の前で、上から順に、コマンドを 1 行ずつ実行しながら読みます。
   行ごとに書いた「成功の印」を確かめてから、次の行へ進んでください。
-\item[\rgskim] \secref{sec:setup-device}：「GPU はなくてよい。学習が遅すぎるときは、ステップ数を減らせばよい」という結論だけで足ります。
+\item[\rgskim] \secref{sec:setup-device}：「GPU はなくてよい。学習が遅すぎるときは、ステップ数を減らせばよい。\chapref{ch:gpu}の \code{torch.compile} を CPU で試すときだけ、C++ コンパイラが要る」という結論だけで足ります。
 \item[\rglater] \secref{sec:setup-repro}は、結果が本文の数値と違ったときに。\secref{sec:setup-trouble}の\tabref{tab:setup-trouble}は、エラーが出たときに症状から引きます。
   \tabref{tab:setup-deps}は、途中の章から動かしたくなったときに引きます。
 \end{readingguide}
 
 本書のコードは、すべて読者の手元で動かせます。
-この付録では、まっさらな PC から始めて、本書のモデルを自分で学習させるまでの手順をまとめます。
+この付録では、本書のファイルも、ライブラリも入っていない PC から始めて、本書のモデルを自分で学習させるまでの手順をまとめます。
 必要なのは、Python の入った普通の PC だけです。
 GPU（大量の計算を速く実行する装置。\chapref{ch:gpu}で学びます）は要りません。
 付いているかどうか分からなければ、「ない」と考えて進めてかまいません。
@@ -63,28 +63,34 @@ GPU（大量の計算を速く実行する装置。\chapref{ch:gpu}で学びま�
 CPU & 4 コア（arm64）。GPU なし \\
 メモリ & 8\,GB \\
 ディスク & 空きが 2\,GB あれば足りる（CPU 版の PyTorch が約 1\,GB、データとモデルが約 0.3\,GB） \\
-OS & Linux。macOS と Windows でも、同じ手順で動く書き方にしてある \\
+OS & Linux（arm64）。macOS と Windows でも動くように書いたが、実際に動かして確かめたのは Linux だけ。違うのは、コマンドの一部（\secref{sec:setup-install}）と、C++ コンパイラの入れ方（\secref{sec:setup-device}） \\
 Python & 3.12（3.11 以降なら動く） \\
 PyTorch & 2.15（CPU 版）。2.x なら動く \\
 NumPy & 2.5 \\
+C++ コンパイラ & g++ 16.2.0（conda-forge の配布物）。\chapref{ch:gpu}の \code{torch.compile}（CPU 版）だけが使う \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 ライブラリは、PyTorch と NumPy の二つだけで、本書のほぼすべてのコードが動きます。
 一部の節では、「実務ではこう書く」を見せるために、ほかのライブラリも使います（\tabref{tab:setup-optional}）。
+\chapref{ch:gpu}の \code{torch.compile} を CPU で試す所では、ライブラリのほかに C++ コンパイラという道具も要ります（\secref{sec:setup-device}）。
 これらは、その節を動かすときに入れれば十分です。
 
 \begin{table}[htbp]
 \centering\small
-\caption{一部の節だけで使うライブラリ。入れなくても、ほかの節のコードは動く。}
+\caption{一部の節だけで使うライブラリと道具。入れなくても、ほかの節のコードは動く。
+版は、本書で確かめたもの。「初回の取得」の印（○）がある行は、最初に動かすときに、インターネットからトークナイザやモデル、データを取ってくる。}
 \label{tab:setup-optional}
-\begin{tabular}{lll}
+\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{0.13\linewidth}>{\raggedright\arraybackslash}p{0.42\linewidth}>{\centering\arraybackslash}p{0.11\linewidth}@{}}
 \toprule
-ライブラリ & 使う章 & 用途 \\
+ライブラリ・道具 & 使う章 & 用途（確かめた版） & 初回の取得 \\
 \midrule
-\code{tiktoken} & 第 7 章 & 実際の LLM のトークナイザと比べる \\
-\code{transformers} & 第 13，16，23 章 & Hugging Face のモデルや対話テンプレートを使う \\
+\code{tiktoken} & 第 7 章 & 実際の LLM のトークナイザと比べる（0.14.0） & ○ \\\addlinespace
+\code{transformers} & 第 13、16、23 章 & Hugging Face のモデルや対話テンプレートを使う（5.24.0） & ○（第 16、23 章だけ） \\\addlinespace
+\code{trl} & 第 16 章 & TRL の \code{SFTTrainer} で SFT を書いて動かす（\file{ch16/sweep_trl_sft.py}。1.18.2。データを読む \code{datasets} も一緒に入る） & ○（数十 MB） \\\addlinespace
+\code{peft} & 第 17 章 & 実務の書き方で LoRA を作る（\file{ch17/peft_example.py}。0.22.0） & — \\\addlinespace
+C++ コンパイラ & 第 12 章 & CPU で \code{torch.compile} を動かす（g++ 16.2.0。入れ方は\secref{sec:setup-device}） & — \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -152,7 +158,7 @@ pip install torch numpy           # PyTorch と NumPy を入れる
 「入っている」という状態は、そのターミナルの窓の中だけの設定で、窓を閉じると消えるからです。
 1 行目と 3 行目は、最初の 1 回だけで済みます。作った仮想環境も、入れたライブラリも、ディスクに残るからです。
 
-Linux では、3 行目のコマンドは NVIDIA の GPU 用の部品もまとめて入れるので、数 GB のディスクを使います。
+Linux では、3 行目のコマンドが NVIDIA の GPU 用の部品もまとめて入れることがあり、そのときは数 GB のディスクを使います（入るかどうかは、CPU の種類と PyTorch の版によります）。
 GPU のない PC では、3 行目の代わりに次の 2 行を実行して CPU 版を指定すると、約 1\,GB で済みます（本書の執筆でも、こちらを使いました）。
 \code{--index-url} は、ライブラリを取りに行く先の指定です。ここでは、PyTorch の CPU 版を置いた場所を指定しています。
 
@@ -161,7 +167,16 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install numpy
 \end{textcode}
 
-\tabref{tab:setup-optional}のライブラリも入れるなら、\code{pip install tiktoken transformers} を続けて実行します。
+\tabref{tab:setup-optional}のライブラリも入れるなら、次の 1 行を続けて実行します。
+第 16 章の \code{trl} と第 17 章の \code{peft} も、ここで一緒に入ります。
+
+\begin{textcode}
+pip install tiktoken transformers trl peft
+\end{textcode}
+
+成功の印は、上と同じく \code{Successfully installed} で始まる行です。
+本書で確かめた版は、transformers 5.24.0、trl 1.18.2、peft 0.22.0 です（\tabref{tab:setup-optional}）。
+これらは、使う章だけで要るものです。あとで、その章に来てから入れてもかまいません。
 
 うまく入ったかどうかは、次の 1 行で確かめられます。
 \code{python -c} は、引用符の中の Python のコードをその場で実行する書き方で、ここでは二つのライブラリの版を表示させます。
@@ -222,10 +237,12 @@ export PYTHONPATH=$PWD            # Windows (PowerShell) は $env:PYTHONPATH = $
 
 \section{最初に 1 回だけ：データと基盤モデルを作る}\label{sec:setup-first}
 
-本書の多くの章は、同じデータと同じモデルを使い回します。
+本書の多くの章は、同じデータと同じモデルを共通に使います。
 そこで、最初に 3 本のスクリプトを順に実行して、これらを作っておきます（\figref{fig:setup-pipeline}）。
 図の青い箱が実行するスクリプト、橙と緑の箱が、それによってできるファイルです。
+灰色の箱は、最初のスクリプトが取りに行く元の文章（インターネット上の青空文庫）です。
 矢印のとおり、前のスクリプトが作ったものを次のスクリプトが使うので、順序は変えられません。
+\file{sft_chat.py} は、\file{base.pt} のほかに、\file{data/} のトークナイザも読みます（箱の中に書きました）。
 
 \begin{figure}[htbp]
 \centering
@@ -235,7 +252,7 @@ export PYTHONPATH=$PWD            # Windows (PowerShell) は $env:PYTHONPATH = $
   \node[orangebox,right=of prep,text width=30mm] (data) {\texttt{data/}\\コーパス\\トークナイザ\\トークン列};
   \node[box,below=9mm of data,text width=30mm] (pre) {\texttt{\small pretrain\_base.py}\\30〜40 分};
   \node[greenbox,left=of pre,text width=30mm] (base) {\texttt{base.pt}\\基盤モデル};
-  \node[box,below=9mm of base,text width=30mm] (sft) {\texttt{\small sft\_chat.py}\\約 2 分};
+  \node[box,below=9mm of base,text width=30mm] (sft) {\texttt{\small sft\_chat.py}\\約 2 分\\{\footnotesize（\texttt{data/} の\\トークナイザも読む）}};
   \node[greenbox,right=of sft,text width=30mm] (sftpt) {\texttt{sft.pt}\\計算アシスタント};
   \draw[arr] (web) -- (prep);
   \draw[arr] (prep) -- (data);
@@ -244,9 +261,11 @@ export PYTHONPATH=$PWD            # Windows (PowerShell) は $env:PYTHONPATH = $
   \draw[arr] (base) -- (sft);
   \draw[arr] (sft) -- (sftpt);
   \node[lbl,left=3mm of base,align=right] {第 0〜19 章\\などが使う};
-  \node[lbl,right=3mm of sftpt,align=left] {第 17 章以降の\\出発点};
+  \node[lbl,right=3mm of sftpt,align=left] {第 17 章以降の\\多くの章の出発点};
 \end{tikzpicture}
-\caption{最初に実行する 3 本のスクリプト（青）と、それが作るもの。上から順に実行する。}
+\caption{最初に実行する 3 本のスクリプト（青）と、それが作るもの（橙はデータ、緑はモデル）。灰色は取りに行く元の文章。
+矢印の順に実行する。\file{sft_chat.py} は、\file{data/} のトークナイザ（\file{bpe4096.json}）も読む。
+各モデルを使う章の詳しい一覧は\tabref{tab:setup-deps}。}
 \label{fig:setup-pipeline}
 \end{figure}
 
@@ -261,7 +280,7 @@ python scripts/sft_chat.py        # 3. 計算アシスタントへの SFT → ch
 
 \begin{enumerate}[leftmargin=2em]
 \item \file{prepare_data.py} は、夏目漱石の 14 作品を青空文庫から取得し、ルビなどの記号を取り除いて 1 本の文章にします
-  （インターネット接続が必要なのは、ここだけです）。
+  （この 3 本のうち、インターネット接続が要るのはここだけです。\tabref{tab:setup-optional}のライブラリを使う節には、初回にモデルなどを取りに行くものがあります）。
   学習に使う文章の集まりを、コーパスと呼びます。
   次に、その文章からトークナイザを学習します（\chapref{ch:tokenizer}）。トークナイザは、文章をトークンに切り分ける道具です。
   最後に、文章と計算ドリルをトークンの番号の列に直して、ファイルに書き出します（\chapref{ch:pretraining}）。
@@ -277,8 +296,8 @@ python scripts/sft_chat.py        # 3. 計算アシスタントへの SFT → ch
   最後に、モデルが書いた文章と、「計算ドリル正答率」の行が出れば成功です。
   モデルは、学習の最後にまとめて保存されます。
   途中で止めると最初からやり直しになるので、PC がスリープしないようにしておきます。
-\item \file{sft_chat.py} は、基盤モデルを、質問に答える計算アシスタントに作り変えます（\chapref{ch:posttraining}）。
-  この作り変えを、SFT（教師ありファインチューニング）と呼びます。
+\item \file{sft_chat.py} は、基盤モデルを追加で学習させて、質問に答える計算アシスタントにします（\chapref{ch:posttraining}）。
+  この追加の学習を、SFT（教師ありファインチューニング）と呼びます。
   最初に「SFT 前の正答率: 0.0\%」、最後に「SFT 後の正答率」の行が出ます。後の数字が 87\% 前後なら成功です。
 \end{enumerate}
 
@@ -331,8 +350,9 @@ python ch04/mlp_torch.py          # 「python 章のディレクトリ/スクリ
 \toprule
 ファイル & 中身 & 作る場所 & 使う章 \\
 \midrule
-\file{base.pt} & 基盤モデル & \secref{sec:setup-first} & 第 0〜19，23，25 章 \\
-\file{sft.pt} & 計算アシスタント & \secref{sec:setup-first} & 第 17〜19，22，23，25 章 \\
+\file{base.pt} & 基盤モデル & \secref{sec:setup-first} & 第 0〜19、23、25 章 \\
+\file{sft.pt} & 計算アシスタント & \secref{sec:setup-first} & 第 17〜19、22、23、25 章 \\
+\file{ch17_lora_r8_all.pt} & LoRA のアダプタ（$r=8$） & 第 17 章 & 第 25 章（比較） \\
 \file{ch22_rl.pt} & 強化学習後のアシスタント & 第 22 章 & 第 25 章（比較） \\
 \file{ch23_tool_sft.pt} & 電卓を使うエージェント & 第 23 章 & 第 24 章 \\
 \file{ch24_agentic_rl.pt} & 強化学習後のエージェント & 第 24 章 & 第 25 章 \\
@@ -340,8 +360,8 @@ python ch04/mlp_torch.py          # 「python 章のディレクトリ/スクリ
 \end{tabular}
 \end{table}
 
-\section{GPU があるとき，CPU が遅いとき}\label{sec:setup-device}
-\skimread{「GPU はなくてよい。遅すぎるときは、学習のステップ数を減らす」だけ押さえれば足ります。}
+\section{GPU があるとき、CPU が遅いとき}\label{sec:setup-device}
+\skimread{「GPU はなくてよい。遅すぎるときは、学習のステップ数を減らす。\chapref{ch:gpu}の \code{torch.compile} を CPU で試すときだけ、C++ コンパイラを入れる」だけ押さえれば足ります。}
 
 本書のコードは CPU だけで動きますが、GPU があれば、それを使うこともできます。
 共有ライブラリの関数は、どれも \code{device} という引数を持っています。
@@ -363,6 +383,25 @@ GPU が本当に必要になるのは、モデルとデータを大きくした�
 ステップ数が 1,000 ÷ 4,000 = 4 分の 1 になるので、時間も約 4 分の 1 になります（30〜40 分が、8〜10 分ほどになります）。
 モデルの性能は落ちますが、本書のコードはすべて動きます（計算の正答率などの数値は、本文より低くなります）。
 
+CPU で計算を速くする方法の一つに、\chapref{ch:gpu}で試す \code{torch.compile} があります。
+これを CPU で動かすときだけは、\term{C++ コンパイラ}{C++ compiler}という道具が要ります。
+C++ コンパイラは、C++ という言語で書いたプログラムを、CPU が直接実行できる命令の列（機械語）に直す道具です。
+CPU 用の \code{torch.compile} は、まとめた計算を C++ のプログラムとして書き出し、それをコンパイラで機械語に直してから使います（\secref{sec:gpu-speedup}）。
+だから、コンパイラが無いと動きません。
+
+入れ方は、OS とその PC での権限によって違います。
+Linux なら、OS が用意している gcc と g++（C と C++ のコンパイラ）を入れるのが手軽です。
+たとえば Ubuntu や Debian では、\code{sudo apt install build-essential} の 1 行で入ります（\code{sudo} は、管理者の権限で実行するという指定です）。
+管理者の権限が無い PC では、conda-forge という配布元の \code{gxx} を、自分のディレクトリに入れる方法があります。
+本書の執筆環境は後者で、conda-forge の g++ 16.2.0 を入れて、\chapref{ch:gpu}の測定に使いました。
+\code{g++ --version} と打って、版の番号が出れば成功です。
+macOS と Windows での入れ方は、本書では確かめていません。
+
+コンパイラが無いまま \code{torch.compile} を使うと、変換した関数を最初に呼んだところで、\code{InvalidCxxCompiler: No working C++ compiler found} という文を含むエラーが出ます（執筆環境で、コンパイラを外して確かめました）。
+\file{ch12/speedup.py} はこのエラーを受け止めて、「\code{torch.compile は使えませんでした: InductorError}」と表示し、残りの測定を続けます。
+コンパイラが無くても、\chapref{ch:gpu}のほかのコードと、ほかの章のコードは動きます。
+なお、本書の環境（この CPU）では、\code{torch.compile} で GELU の計算は速くなりませんでした（\secref{sec:gpu-speedup}）。
+
 \section{数値が本文と違うとき}\label{sec:setup-repro}
 \laterread{結果が本文の数値と違ったときに読みます。結論は「傾向が同じなら正常」です。}
 
@@ -376,14 +415,16 @@ GPU が本当に必要になるのは、モデルとデータを大きくした�
   CPU の種類やライブラリの版が違うと、この順序が変わります。
   学習では、このわずかな違いが何千ステップも積み重なるので、最後の損失が小数第 2 位くらいで変わることがあります。
 \item \textbf{乱数}。本書のスクリプトは乱数の種を固定していますが、PyTorch の版が違うと、同じ種でも違う乱数が出ることがあります。
-\item \textbf{評価のぶれ}。200 問で測った正答率は、問題の選び方だけで 2〜3 ポイント上下します（\chapref{ch:eval-serving}）。
+\item \textbf{評価のぶれ}。200 問で測った正答率は、問題の選び方だけで、標準誤差（ぶれの大きさの目安）にして 2〜3 ポイント上下します（\chapref{ch:eval-serving}）。
+  たとえば正答率 87\% なら、標準誤差は $\sqrt{0.87\times0.13/200}\approx0.024$、つまり約 2.4 ポイントです。
+  本文の値と 4〜5 ポイント違っても、まだ偶然の範囲に入ります（95\% の信頼区間は、およそ ±4.7 ポイント）。
   1 問は 1 ÷ 200 = 0.5 ポイントなので、5 問の正誤が入れ替わるだけで 0.5 × 5 = 2.5 ポイント動きます。
 \end{itemize}
 
 なお、\file{prepare_data.py} が作るデータは、どの環境でも同じになるはずです。
 コーパスの整形もトークナイザの学習も、整数と文字だけの計算で、小数の丸めが入り込まないからです。
 計算ドリルを作る乱数も、Python 標準の乱数で、種が同じなら環境によらず同じ問題が並びます。
-実際に、まっさらな仮想環境でこの付録の手順をやり直したところ、\file{data/} の 4 つのファイルは、執筆に使ったものと 1 バイトも違いませんでした。
+実際に、新しく作った空の仮想環境で、この付録の手順をやり直したところ、\file{data/} の 4 つのファイルは、執筆に使ったものと 1 バイトも違いませんでした。
 違いが生まれるのは、小数の計算を何千回も重ねる学習からです。
 
 大切なのは、数値の一致ではなく、傾向の一致です。
@@ -404,15 +445,19 @@ GPU が本当に必要になるのは、モデルとデータを大きくした�
 \midrule
 \code{python} が見つからない &
   \code{python3} と打ってみる（\secref{sec:setup-install}） \\\addlinespace
-\code{ModuleNotFoundError: No module named 'torch'} &
+\code{ModuleNotFoundError:} \code{No module named 'torch'}（または \code{'numpy'}） &
   仮想環境に入っていない。\secref{sec:setup-install}の 2 行目を実行する \\\addlinespace
+\code{ModuleNotFoundError:} \code{No module named 'trl'}（\code{'peft'}、\code{'transformers'}、\newline\code{'tiktoken'} でも同じ） &
+  その節だけで使うライブラリが入っていない。\tabref{tab:setup-optional}を見て、\code{pip install} で入れる（仮想環境に入っていても出る） \\\addlinespace
+\code{torch.compile} の所で \code{InvalidCxxCompiler}、または「\code{torch.compile は使えませんでした}」と出る &
+  C++ コンパイラが無い。\secref{sec:setup-device}のとおり入れる。入れなくても、ほかのコードは動く \\\addlinespace
 \code{ModuleNotFoundError: No module named 'llmbook'} &
   \code{PYTHONPATH} が設定されていない。\secref{sec:setup-layout}の 2 行を実行する \\\addlinespace
 \code{FileNotFoundError}（\file{base.pt}、\file{train.bin} など） &
   \secref{sec:setup-first}の 3 本をまだ実行していないか、\file{code/} の外から実行している \\\addlinespace
 \code{FileNotFoundError}（\file{ch23_tool_sft.pt} など） &
   前の章のモデルが必要。\tabref{tab:setup-deps}の「作る場所」のスクリプトを先に実行する \\\addlinespace
-コーパスの取得に失敗する &
+コーパスの取得に失敗する。第 7、16、23 章で、トークナイザやモデルの取得に失敗する &
   インターネット接続を確かめて、もう一度実行する \\\addlinespace
 学習が極端に遅い &
   ほかの重いアプリを閉じる。それでも遅ければ、\secref{sec:setup-device}のようにステップ数を減らす \\
