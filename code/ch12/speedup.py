@@ -47,7 +47,7 @@ print(f"x*2: {t_one * 1e3:.1f} ms（{gbps:.1f} GB/s, "
 try:
     compiled = torch.compile(gelu_chain)  # 7 回の演算を 1 回に融合する
     print(f"compile 後: {bench(lambda: compiled(x)) * 1e3:.1f} ms")
-except Exception as e:                    # この環境には C++ コンパイラが無い
+except Exception as e:                    # C++ コンパイラが無いと失敗する
     print("torch.compile は使えませんでした:", type(e).__name__)
 # [end: compile]
 

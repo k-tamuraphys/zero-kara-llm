@@ -1,0 +1,4 @@
+label,tag,n_train,acc,soseki
+qkv,qkv,24576,8.6,5.433
+attn,attn,36864,11.2,5.195
+mlp,mlp,61440,68.1,5.361

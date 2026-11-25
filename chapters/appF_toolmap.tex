@@ -3,7 +3,7 @@
 \begin{readingguide}
 \item[\rgpre] 3 周目に、自分の仕事で道具を選ぶときに引きます。本編を一通り読んでからで十分です。
   小節ごとの「いつ引くか」と「先に読む章」は、\tabref{tab:tm-guide}にあります。
-\item[\rgmust] \secref{sec:tm-howto}、\secref{sec:tm-map}、\secref{sec:tm-life}：最初に一度、通して読みます。レイヤーの地図と、道具を選ぶ前に確かめる三つのことです。
+\item[\rgmust] \secref{sec:tm-howto}、\secref{sec:tm-map}、\secref{sec:tm-life}：最初に一度、通して読みます。レイヤーの全体図と、道具を選ぶ前に確かめる三つのことです。
 \item[\rgskim] \secref{sec:tm-scale}：四つの表のうち、自分の規模の表を一つだけ見ます。「最初の一歩」の行から始めます。
 \item[\rglater] \secref{sec:tm-dev}、\secref{sec:tm-serve}：辞書です。道具を選ぶ場面になったときに、そのレイヤーの小節だけを引きます。
 \end{readingguide}
@@ -13,20 +13,22 @@
 では、どの道具を、何を基準に選べばよいのでしょうか。
 道具の名前を覚えても、長くは役に立ちません。
 本書が何度も参照した nanoGPT でさえ、2025 年 11 月には、説明書きに「古い」と書かれました（\tabref{tab:tm-life}）。
-そこでこの付録は、名前の一覧ではなく、選ぶときに立てる問いの地図にしました。
+そこでこの付録は、名前の一覧ではなく、レイヤー（仕事の受け持ち）ごとに「選ぶときに立てる問い」を並べました。
+題名の「地図」は、この並びのことです。レイヤーがどう並び、どこからどこへ成果が渡るかを 1 枚に描いたのが\figref{fig:tm-map}で、各レイヤーの問いは\secref{sec:tm-dev}と\secref{sec:tm-serve}にあります。
 
 \section{この付録の使い方}\label{sec:tm-howto}
 
 この付録の内容は、\textbf{2026 年 11 月時点}のものです。
-この分野の道具は、2 年ほどで入れ替わります（実例は\secref{sec:tm-life}）。
+この分野の道具は入れ替わりが速く、2025〜2026 年の 2 年だけでも、\tabref{tab:tm-life}の 9 件が止まったり、持ち主や名前を変えたりしました。
+一方で、PyTorch や Transformers のように何年も使われ続けている道具もあります。どの道具が残るかは、前もっては分かりません。
 ですから、道具の名前を覚えることは目標にしません。
 持ち帰ってほしいのは、道具が入れ替わってもほとんど変わらない、次の二つです。
 \begin{itemize}
 \item その\textbf{レイヤー}（layer。仕事の受け持ちで分けた層）が、何をするか。
-\item そのレイヤーで、\textbf{選定を分ける問い}は何か。
+\item そのレイヤーで、\textbf{選び方を決める問い}は何か。
 \end{itemize}
 
-急ぐ人は、\secref{sec:tm-map}の地図と、\secref{sec:tm-scale}の規模別の構成を先に読んでください。
+急ぐ人は、\secref{sec:tm-map}の全体図と、\secref{sec:tm-scale}の規模別の構成を先に読んでください。
 \secref{sec:tm-dev}と\secref{sec:tm-serve}は、自分に関係するレイヤーの小節だけを読めば足ります。
 関係する小節は、\tabref{tab:tm-guide}で探せます。
 真ん中の列で場面を探し、右端の章を読んでいれば、左端の節が読めます。
@@ -39,7 +41,7 @@
 \toprule
 節 & こんなときに引く & 先に読む章 \\
 \midrule
-\ref{sec:tm-map} 全体の地図 & 最初に一度 & \chapref{ch:pretraining}、\chapref{ch:posttraining}、\chapref{ch:agent} \\
+\ref{sec:tm-map} 全体図 & 最初に一度 & \chapref{ch:pretraining}、\chapref{ch:posttraining}、\chapref{ch:agent} \\
 \ref{sec:tm-data} データ & データを集めて、学習に使うとき & \chapref{ch:tokenizer}、\chapref{ch:pretraining} \\
 \ref{sec:tm-train} 学習の枠組み & 自分で学習を回すとき & \chapref{ch:pretraining}、\chapref{ch:distributed} \\
 \ref{sec:tm-post} 事後学習 & 公開モデルを調整するとき & \chapref{ch:posttraining}、\chapref{ch:lora}。強化学習は\chapref{ch:rl-llm} \\
@@ -51,7 +53,7 @@
 \ref{sec:tm-gateway} ゲートウェイ & 複数の事業者を使うとき & \chapref{ch:eval-serving} \\
 \ref{sec:tm-agent}〜\ref{sec:tm-observe} エージェント & エージェントや検索を組み込むとき & \chapref{ch:agent}。実行環境は\chapref{ch:agentic-rl}も \\
 \ref{sec:tm-scale} 規模別の構成 & 最初に一度。構成を決めるとき & 知らない名前は、各小節で引く \\
-\ref{sec:tm-life} 道具の寿命 & 最初に一度。選ぶ直前にもう一度 & なし \\
+\ref{sec:tm-life} 道具の入れ替わり & 最初に一度。選ぶ直前にもう一度 & なし \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -61,13 +63,16 @@
 表の「選ぶとき／選ばないとき」は、開発元の公式の説明と設計上の特徴に基づいて書きました。
 速さの比較は載せていないので、速さが決め手になるときは、自分の負荷で測ってください。
 
-\section{全体の地図}\label{sec:tm-map}
+\section{レイヤーの全体図}\label{sec:tm-map}
 
 道具を選ぶ前に、レイヤーの全体を見渡しておきます。
 LLM の仕事は、重みを作る\textbf{開発側}と、できた重みを利用者に使ってもらう\textbf{配信側}に分かれます。
 \figref{fig:tm-map}に、この付録で扱う 14 のレイヤーを並べました。
-左の列が開発側、右の列が配信側です。青と緑の箱を、矢印に沿って上から下へ読みます。
+左の列が開発側、右の列が配信側です。
+青（開発側）と緑（配信側）の箱は、実線の矢印に沿って上から下へ読みます。
 開発側の「事後学習」でできた重みが、破線の矢印で、配信側の「変換・圧縮」へ渡ります。
+橙の二つ（検索・記憶、実行環境）は流れの続きではありません。すぐ上のエージェントの枠組みが、仕事の途中で呼び出して結果を使う層なので、矢印は下から上を向きます。
+灰色の箱は、流れの全体を支える層で、矢印はありません。
 公開モデルを調整する人は「事後学習」から、API だけを使う人は「ゲートウェイと API の形」から下が、自分に関係するレイヤーです。
 
 \begin{figure}[tbp]
@@ -79,34 +84,35 @@ LLM の仕事は、重みを作る\textbf{開発側}と、できた重みを利�
   \node[font=\small\bfseries] at (26,0) {開発側（重みを作る）};
   \node[font=\small\bfseries] at (96,0) {配信側（重みを使ってもらう）};
   % 開発側
-  \node[box,ly] (d1) at (26,-7) {\textbf{データ}\\[-1pt]{\scriptsize 集める・整える・読み込む}};
-  \node[box,ly] (d2) at (26,-16) {\textbf{学習の枠組み}\\[-1pt]{\scriptsize 学習ループと並列化を受け持つ}};
-  \node[box,ly] (d3) at (26,-25) {\textbf{事後学習}\\[-1pt]{\scriptsize 公開モデルを目的に合わせて調整する}};
-  \node[lbl,font=\scriptsize] at (26,-31.6) {下の三つは、上の流れの全体を支える};
-  \node[graybox,ly] (d4) at (26,-37.5) {\textbf{実験管理}\\[-1pt]{\scriptsize 設定と結果を記録し、再現する}};
-  \node[graybox,ly] (d5) at (26,-46.5) {\textbf{評価}\\[-1pt]{\scriptsize 点数を測り、比べる}};
-  \node[graybox,ly] (d6) at (26,-55.5) {\textbf{計算資源}\\[-1pt]{\scriptsize GPU を確保し、ジョブを流す}};
+  \node[box,ly] (d1) at (26,-8) {\textbf{データ}\\[-1pt]{\scriptsize 集める・整える・読み込む}};
+  \node[box,ly] (d2) at (26,-20) {\textbf{学習の枠組み}\\[-1pt]{\scriptsize 学習ループと並列化を受け持つ}};
+  \node[box,ly] (d3) at (26,-32) {\textbf{事後学習}\\[-1pt]{\scriptsize 公開モデルを目的に合わせて調整する}};
+  \node[lbl,font=\scriptsize] at (26,-40.5) {下の三つは、上の流れの全体を支える};
+  \node[graybox,ly] (d4) at (26,-47) {\textbf{実験管理}\\[-1pt]{\scriptsize 設定と結果を記録し、再現する}};
+  \node[graybox,ly] (d5) at (26,-57) {\textbf{評価}\\[-1pt]{\scriptsize 点数を測り、比べる}};
+  \node[graybox,ly] (d6) at (26,-67) {\textbf{計算資源}\\[-1pt]{\scriptsize GPU を確保し、ジョブを流す}};
   \draw[arr] (d1) -- (d2); \draw[arr] (d2) -- (d3);
   % 配信側
-  \node[greenbox,lr] (s1) at (96,-7) {\textbf{変換・圧縮}\\[-1pt]{\scriptsize 重みをエンジンの形式にし、量子化する}};
-  \node[greenbox,lr] (s2) at (96,-16) {\textbf{推論エンジン}\\[-1pt]{\scriptsize 1 台の中で速く生成する}};
-  \node[greenbox,lr] (s3) at (96,-25) {\textbf{配信}\\[-1pt]{\scriptsize 複数台への振り分けと、台数の増減}};
-  \node[greenbox,lr] (s4) at (96,-34) {\textbf{ゲートウェイと API の形}\\[-1pt]{\scriptsize 呼び出しの窓口を一つにまとめる}};
-  \node[greenbox,lr] (s5) at (96,-43) {\textbf{エージェントの枠組みとプロトコル}\\[-1pt]{\scriptsize ループを回し、ツールとつなぐ}};
-  \node[orangebox,hf] (s6) at (79,-52) {\textbf{検索・記憶}\\[-1pt]{\scriptsize 資料を探して文脈に入れる}};
-  \node[orangebox,hf] (s7) at (113,-52) {\textbf{実行環境}\\[-1pt]{\scriptsize コードを隔離して動かす}};
-  \node[graybox,lr] (s8) at (96,-61) {\textbf{観測・安全}\\[-1pt]{\scriptsize 動きを記録し、入出力を検査する}};
+  \node[greenbox,lr] (s1) at (96,-8) {\textbf{変換・圧縮}\\[-1pt]{\scriptsize 重みをエンジンの形式にし、量子化する}};
+  \node[greenbox,lr] (s2) at (96,-20) {\textbf{推論エンジン}\\[-1pt]{\scriptsize 1 台の中で速く生成する}};
+  \node[greenbox,lr] (s3) at (96,-32) {\textbf{配信}\\[-1pt]{\scriptsize 複数台への振り分けと、台数の増減}};
+  \node[greenbox,lr] (s4) at (96,-44) {\textbf{ゲートウェイと API の形}\\[-1pt]{\scriptsize 呼び出しの窓口を一つにまとめる}};
+  \node[greenbox,lr] (s5) at (96,-56) {\textbf{エージェントの枠組みとプロトコル}\\[-1pt]{\scriptsize ループを回し、ツールとつなぐ}};
+  \node[orangebox,hf] (s6) at (79,-68) {\textbf{検索・記憶}\\[-1pt]{\scriptsize 資料を探して文脈に入れる}};
+  \node[orangebox,hf] (s7) at (113,-68) {\textbf{実行環境}\\[-1pt]{\scriptsize コードを隔離して動かす}};
+  \node[graybox,lr] (s8) at (96,-79) {\textbf{観測・安全}\\[-1pt]{\scriptsize 動きを記録し、入出力を検査する}};
   \draw[arr] (s1) -- (s2); \draw[arr] (s2) -- (s3); \draw[arr] (s3) -- (s4); \draw[arr] (s4) -- (s5);
-  \draw[arr] (s6.north) -- (s6.north |- s5.south);
-  \draw[arr] (s7.north) -- (s7.north |- s5.south);
-  \draw[darr] (d3.east) -- node[lbl,font=\scriptsize,right=0.5mm,pos=0.35] {重み} (s1.west);
+  \draw[arr,bookorange] (s6.north) -- (s6.north |- s5.south);
+  \draw[arr,bookorange] (s7.north) -- (s7.north |- s5.south);
+  \draw[darr] (d3.east) -- (57.5,-32) -- (57.5,-8) -- (s1.west);
+  \node[lbl,font=\scriptsize,fill=white,inner sep=0.5pt] at (57.5,-20) {重み};
 \end{tikzpicture}
-\caption{開発と配信のレイヤーの地図（2026 年 11 月時点の分け方）。矢印は、手前の層の成果を先の層が使うことを表す。
-橙はエージェントが仕事の途中で使う層、灰色は全体を支える層である。}
+\caption{開発と配信のレイヤーの全体図（2026 年 11 月時点の分け方）。青は開発側、緑は配信側の流れで、実線の矢印は、手前の層の成果を先の層が使うことを表す（上から下へ読む）。破線は、開発側でできた重みが配信側へ渡ること。
+橙はエージェントが仕事の途中で呼び出す層で、橙の矢印（下から上）は、呼び出した結果をエージェントの枠組みが使うことを表す。灰色は全体を支える層である。}
 \label{fig:tm-map}
 \end{figure}
 
-本書で作ったものは、この地図のどこに当たるのでしょうか。
+本書で作ったものは、この図のどこに当たるのでしょうか。
 \tabref{tab:tm-book}に対応をまとめます。
 右端の列は、この付録でそのレイヤーを扱う節の番号です。
 左端の列から自分が書いたものを探し、右へ読んでください。
@@ -131,7 +137,7 @@ SFT のループ & \chapref{ch:posttraining} & TRL & \ref{sec:tm-post} \\
 \code{run_agent} のループ & \chapref{ch:agent} & Claude Agent SDK、OpenAI Agents SDK、LangGraph & \ref{sec:tm-agent} \\
 電卓ツールと JSON スキーマ & \chapref{ch:agent} & MCP サーバ & \ref{sec:tm-agent} \\
 \file{rag.py} の検索 & \chapref{ch:agent} & FAISS、pgvector & \ref{sec:tm-rag} \\
-電卓の構文木検査 & \chapref{ch:agent} & コンテナ、microVM & \ref{sec:tm-sandbox} \\
+電卓の構文木検査（許す演算だけを通す） & \chapref{ch:agent} & コンテナ、microVM（実行する場所を切り離す。仕組みは違うが、モデルの出力をそのまま実行させないという目的は同じ） & \ref{sec:tm-sandbox} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -144,9 +150,9 @@ SFT のループ & \chapref{ch:posttraining} & TRL & \ref{sec:tm-post} \\
 \laterread{辞書です。\tabref{tab:tm-guide}で自分の場面を探し、その小節だけを読みます。}
 
 開発側は、重みを作って確かめるまでの六つのレイヤーです。
-どの小節にも、レイヤーの仕事と、選定を分ける問いを書きます。
+どの小節にも、レイヤーの仕事と、選び方を決める問いを書きます。
 道具が多いレイヤーには、道具の表を付けます。
-使うときは、先に「選定を分ける問い」に答えます。
+使うときは、先に「選び方を決める問い」に答えます。
 次に、答えの文に出てくる道具を、表の左端の列で探します。
 最後に、右端の「選ぶとき／選ばないとき」の列で、自分の場面に合うかを確かめます。
 
@@ -175,7 +181,7 @@ DataTrove & 抽出、フィルタ、重複除去を並列に流す。FineWeb~\ci
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{データはメモリに載りますか。}
   載るなら、そのまま読み込みます。
@@ -196,7 +202,7 @@ DataTrove & 抽出、フィルタ、重複除去を並列に流す。FineWeb~\ci
 
 \begin{table}[htbp]
 \centering\footnotesize
-\caption{学習の枠組み（2026 年 11 月時点）。上から、読んで学ぶ、数枚の GPU で学習する、数十枚以上で事前学習する、の順に並べた。}
+\caption{学習の枠組み（2026 年 11 月時点）。上から、読んで学ぶ、数枚の GPU で学習する、数十枚以上で事前学習する、の順に並べた。最後の DeepSpeed は、単独でも、Accelerate などの中から呼んでも使える。}
 \label{tab:tm-train}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.17\linewidth}>{\raggedright\arraybackslash}p{0.32\linewidth}>{\raggedright\arraybackslash}p{0.44\linewidth}@{}}
 \toprule
@@ -209,11 +215,13 @@ Transformers と Accelerate~\cite{wolf2020transformers} & モデルの定義と�
 torchtitan & PyTorch の分散の機能（FSDP など）で、大規模な事前学習を組む & 数十枚以上の GPU で事前学習するとき。開発中で、PyTorch の最新の版が要る \\
 \addlinespace[2pt]
 Megatron-LM~\cite{shoeybi2019megatron} & NVIDIA の GPU クラスタ向けの、大規模学習の実装と部品 & NVIDIA のクラスタで最大級の学習をするとき。数枚の GPU には重い \\
+\addlinespace[2pt]
+DeepSpeed & ZeRO~\cite{rajbhandari2020zero}（\chapref{ch:distributed}）で学習の状態を分割し、メモリを節約する。Accelerate、TRL、Axolotl から呼べる & すでに DeepSpeed の設定で動いている環境や、上の道具から呼ぶとき。新しく書くなら、PyTorch の FSDP2 とも比べる \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{目的は、仕組みを学ぶことですか、成果物を作ることですか。}
   学ぶなら、小さな実装を読みます。
@@ -221,9 +229,14 @@ Megatron-LM~\cite{shoeybi2019megatron} & NVIDIA の GPU クラスタ向けの、
 \item \textbf{学習ループを自分の手に残したいですか。}
   損失や更新の手順を変える研究なら、ループは自分で書きます。
   標準の学習を回すだけなら、枠組みに任せます。
-\item \textbf{GPU は何枚ですか。}
-  1 ノードなら、\chapref{ch:distributed}の DDP で足ります（Accelerate に任せられます）。
-  数十枚を超えると、複数の並列化を組み合わせる torchtitan や Megatron-LM が要ります。
+\item \textbf{GPU は何枚で、モデル（と学習の状態）は 1 枚に載りますか。}
+  学習の状態とは、重み、勾配、最適化手法の状態のことです。
+  DDP では、どの GPU もこれを丸ごと持ちます。
+  ですから、1 枚に載るなら、\chapref{ch:distributed}の DDP で足ります（Accelerate に任せられます）。
+  載らなければ、1 ノードの中でも、状態を分割するデータ並列（ZeRO/FSDP。\secref{sec:dist-sharding}）を使います。
+  たとえば 70 億パラメータのモデルの全パラメータ更新は、80\,GB の GPU 1 枚には載りません（重み・勾配・AdamW の状態だけで約 112\,GB。\chapref{ch:lora}）。
+  数十枚を超えると、複数の並列化を組み合わせる torchtitan や Megatron-LM、ZeRO を実装した DeepSpeed などが候補になります。
+  どれを土台にするかは、チームによって分かれます。
 \end{itemize}
 
 \subsection{事後学習（ファインチューニング）}\label{sec:tm-post}
@@ -254,7 +267,7 @@ Unsloth、MLX-LM & GPU 1 枚や Mac で、少ないメモリで調整する & �
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{プロンプトの改善と検索（\secref{sec:tm-rag}）では足りませんか。}
   足りるなら調整はせず、学習データの用意と評価の手間を省きます。
@@ -262,12 +275,18 @@ Unsloth、MLX-LM & GPU 1 枚や Mac で、少ないメモリで調整する & �
   持ち出せれば、推論エンジンと配信の場所を自分で選べます。
   持ち出せないと、事業者が受付を終えたときに困ります（\secref{sec:tm-life}）。
 \item \textbf{LoRA で足りますか。}
-  まず LoRA を試します。
+  多くの調整では、まず LoRA を試します。
   LoRA は、学習するパラメータがごく一部で、手軽に試せるからです（\chapref{ch:lora}）。
   評価の点数が目標に届かなければ、全パラメータを調整します。
-\item \textbf{教師ありですか、強化学習ですか。}
-  模範応答があるなら SFT です。
-  報酬しか無いなら強化学習で、環境を並列に動かす枠組み（verl~\cite{sheng2025hybridflow} など。\chapref{ch:agentic-rl}）が要ります。
+  ただし、新しい言語や大量の専門知識を覚えさせる学習では、LoRA は全パラメータ更新に及ばないという報告があります。
+  一方で、条件をそろえればほぼ並ぶという報告もあり、二つは比べた学習の種類が違います（\tabref{tab:lora-debate}）。
+  大きな変化が要る学習なら、初めから全パラメータの調整も候補にします。
+\item \textbf{手元のデータは、どんな形ですか。}
+  模範応答があるなら SFT です（\chapref{ch:posttraining}）。
+  良い応答と悪い応答の組（選好）があるなら DPO です。DPO は学習中に応答を生成せず、報酬モデルも使いません（\chapref{ch:rl-llm}の\tabref{tab:rl-settings}）。
+  応答を採点する規則（報酬）しか無いなら、GRPO などの強化学習です。
+  TRL は SFT、DPO、GRPO のどれも備えるので、小さく試すなら TRL から始められます。
+  エージェントのように環境を何歩も動かすロールアウトや、大きな規模の強化学習では、環境を並列に動かす枠組み（verl~\cite{sheng2025hybridflow} など。\chapref{ch:agentic-rl}）も使われます。
 \end{itemize}
 
 \subsection{実験管理}\label{sec:tm-track}
@@ -288,12 +307,12 @@ TensorBoard、Trackio & 手元のファイルに記録し、手元の画面で�
 \addlinespace[2pt]
 MLflow & 自前のサーバに実験を記録する & 記録を組織の外に出せないとき。サーバの面倒は自分で見る \\
 \addlinespace[2pt]
-Weights \& Biases（W\&B） & ホスト版に記録し、チームで実験を比べる & 運用を任せたいとき。自前で動かす版は、必要な部品が多く重い \\
+Weights \& Biases（W\&B） & ホスト版に記録し、チームで実験を比べる（ホスト版は 2026 年 9 月から CoreWeave Forge という名前。\tabref{tab:tm-life}） & 運用を任せたいとき。自前で動かす版は、必要な部品が多く重い \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{記録を誰と共有しますか。}
   1 人なら手元のファイルで足ります。
@@ -309,7 +328,7 @@ Weights \& Biases（W\&B） & ホスト版に記録し、チームで実験を�
 
 モデルの点数を測り、比べるレイヤーです。
 \chapref{ch:eval-serving}で評価ハーネスを自作しました。
-選定を分ける問いは、「測りたいのはモデルの一般的な力か、自分のアプリの出来か」です。
+選び方を決める問いは、「測りたいのはモデルの一般的な力か、自分のアプリの出来か」です。
 前者なら、学術的なベンチマークをまとめて回す lm-evaluation-harness や、エージェントの評価まで書ける Inspect を使います。
 後者なら、自分のタスクから問題集を作ります。
 ベンチマークの選び方は、\appref{app:benchmarks}にまとめました。
@@ -317,7 +336,7 @@ Weights \& Biases（W\&B） & ホスト版に記録し、チームで実験を�
 \subsection{計算資源}\label{sec:tm-compute}
 
 GPU を確保し、学習のジョブを順番に流すレイヤーです。
-選定を分ける問いは、「クラスタは既にあるか、何で管理されているか」です。
+選び方を決める問いは、「クラスタは既にあるか、何で管理されているか」です。
 研究用のクラスタでは、\chapref{ch:distributed}で紹介した Slurm が代表です。
 Kubernetes（多数のコンテナをまとめて管理するソフトウェア）のクラスタでは、Kueue や Volcano を足してジョブの順番待ちを扱います。
 クラウドから借りるなら、SkyPilot や dstack が、複数のクラウドから GPU を探す手間を肩代わりします。
@@ -334,7 +353,7 @@ Kubernetes（多数のコンテナをまとめて管理するソフトウェア�
 \textbf{形式は、エンジンが決めます。}
 llama.cpp で動かすなら、llama.cpp に付属の道具で、llama.cpp が読む \textbf{GGUF} 形式にします。
 vLLM で動かすなら、LLM Compressor で量子化します。
-ですから、選定を分ける問いは「どのエンジンで動かすか」です。
+ですから、選び方を決める問いは「どのエンジンで動かすか」です。
 量子化済みの重みが配られていれば、自分で変換する必要はありません。
 
 \subsection{推論エンジン}\label{sec:tm-engine}
@@ -358,7 +377,7 @@ SGLang~\cite{zheng2023sglang} & 同じく GPU サーバ向けで、備える仕�
 \addlinespace[2pt]
 llama.cpp~\cite{llamacpp2026server} & GGUF 形式を読み、CPU を含む幅広い計算機で動く & 手元の PC や、GPU の無い環境で動かすとき \\
 \addlinespace[2pt]
-Ollama、LM Studio & llama.cpp を中で使い、モデルの取得から実行までを済ませる。Ollama はコマンド、LM Studio は画面で操作する & 公開モデルをすぐ試したいとき。どちらも OpenAI 互換の窓口を持つ。Ollama は、一部の機能に対応しない \\
+Ollama、LM Studio & llama.cpp を中で使い、モデルの取得から実行までを済ませる。Ollama はコマンド、LM Studio は画面で操作する & 公開モデルをすぐ試したいとき。どちらも OpenAI 互換の窓口を持つ。Ollama の互換の窓口は一部の機能だけで、たとえば \code{tool_choice} の指定には対応しない \\
 \addlinespace[2pt]
 MLX-LM & Apple シリコンの Mac で動かす & Mac で試すとき。付属のサーバは本番向きでないと、開発元が書いている \\
 \addlinespace[2pt]
@@ -367,7 +386,7 @@ LiteRT-LM、ExecuTorch、WebLLM & スマートフォンなどの端末（前の�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{どこで動かしますか。}
   GPU サーバなら vLLM か SGLang です。
@@ -412,7 +431,7 @@ llm-d、NVIDIA Dynamo & エンジンの上の振り分けの層。キャッシ�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{エンジン 1 台では足りませんか。}
   足りるなら、このレイヤーは置きません。
@@ -428,7 +447,7 @@ llm-d、NVIDIA Dynamo & エンジンの上の振り分けの層。キャッシ�
 
 \subsection{ゲートウェイと API の形}\label{sec:tm-gateway}
 
-\chapref{ch:eval-serving}で、\code{/v1/chat/completions} の形が事実上の共通語になっていると書きました。
+\chapref{ch:eval-serving}で、\code{/v1/chat/completions} の形が、事実上の共通の形になっていると書きました。
 推論エンジンの多くと、各社の互換の窓口が、この形を受け付けます。
 しかし、各社は自社の本来の API を勧めています。
 たとえば Anthropic（Claude というモデルの開発元）は、互換の窓口を、モデルを試して比べるためのものと位置づけています。
@@ -455,7 +474,7 @@ Vercel AI Gateway、Cloudflare AI Gateway & ホスト版。記録、呼び出し
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{使う事業者は 1 社ですか。}
   1 社なら、その会社の本来の API を直接呼び、ゲートウェイは置きません。
@@ -497,7 +516,7 @@ LangGraph & 処理を、状態と点と辺のグラフで書く。途中の状�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{そもそも、エージェントが要りますか。}
   手順が決まっているなら、決まった手順のワークフロー（\chapref{ch:agent}）で書きます。
@@ -529,6 +548,8 @@ LangGraph & 処理を、状態と点と辺のグラフで書く。途中の状�
   資料が小さければ、全文をプロンプトに入れれば済みます。
   Anthropic は、20 万トークン（約 500 ページ）未満なら全文を入れるよう勧めています。
   1 ページを 200,000 ÷ 500 = 400 トークンと数えた目安です。
+  これは、使うモデルの文脈長に全文が収まり、毎回それを送る費用が許せる場合の話です。
+  同じ資料をくり返し送るなら、プロンプトキャッシュ（\chapref{ch:eval-serving}）で費用を下げられます。
 \item \textbf{厳密検索で足りませんか。}
   \textbf{厳密検索}は、すべての埋め込みと比べる総当たりで、取りこぼしがありません。
   \chapref{ch:agent}の \file{rag.py} はこの方式です。
@@ -559,14 +580,14 @@ LangGraph & 処理を、状態と点と辺のグラフで書く。途中の状�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{品番や固有名のように、文字どおりの一致が要りますか。}
   埋め込みの検索は、こうした語を取りこぼします。
   語の一致で探す方式（\textbf{BM25} が代表）と併用します。
 \item \textbf{属性（日付や部署など）で絞り込みますか。}
   近似索引は、絞り込みに弱いことがあります。
-  pgvector は索引を引いたあとで絞るので、返る件数が足りなくなることがあります。
+  pgvector は、既定では索引を引いたあとで絞るので、返る件数が足りなくなることがあります（0.8.0 からは、索引をくり返し引いて補う設定があります）。
   絞り込みが多いなら、そのための仕組みを索引に持つ専用サーバ（Qdrant や Weaviate）が候補です。
 \end{itemize}
 
@@ -598,7 +619,7 @@ microVM（Firecracker など） & 軽量な仮想マシン（1 台の中に作�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{誰が書いたコードを動かし、何を読ませますか。}
   自分の頼んだ仕事を手元で試すだけなら、コンテナが出発点です。
@@ -658,7 +679,7 @@ garak、PyRIT、promptfoo & 攻撃になる入力を自動で試し、弱点を�
 \end{tabular}
 \end{table}
 
-\paragraph{選定を分ける問い}
+\paragraph{選び方を決める問い}
 \begin{itemize}[nosep,beginpenalty=10000]
 \item \textbf{トレースをどこに置きますか。}
   トレースには、利用者の入力とモデルの応答がそのまま入ります。
@@ -735,7 +756,7 @@ garak、PyRIT、promptfoo & 攻撃になる入力を自動で試し、弱点を�
 データ & DataTrove で、抽出・フィルタ・重複除去を並列に流す \\
 学習の枠組み & torchtitan か Megatron-LM \\
 計算資源 & Slurm。Kubernetes のクラスタなら Kueue か Volcano を足す \\
-事後学習 & TRL。強化学習は verl などの専用の枠組み \\
+事後学習 & TRL（SFT、DPO、GRPO）。ロールアウトの規模が大きい強化学習には、verl などの専用の枠組みも候補 \\
 推論エンジン & 評価と、強化学習のロールアウトのために、vLLM か SGLang \\
 実験管理† & W\&B か MLflow。全員が同じ場所に記録する \\
 最初の一歩† & 小さなモデルで、データから評価までを一巡させる。通ってから GPU を増やす \\
@@ -745,7 +766,7 @@ garak、PyRIT、promptfoo & 攻撃になる入力を自動で試し、弱点を�
 
 \begin{table}[H]
 \centering\footnotesize
-\caption{規模 4：API だけを使うアプリのチーム（自分では重みを持たない）（†は本書の見立て）。}
+\caption{規模 4：API だけを使うアプリのチーム。自分では重みを持たない（†は本書の見立て）。}
 \label{tab:tm-scale4}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.19\linewidth}>{\raggedright\arraybackslash}p{0.76\linewidth}@{}}
 \toprule
@@ -761,12 +782,13 @@ garak、PyRIT、promptfoo & 攻撃になる入力を自動で試し、弱点を�
 \end{tabular}
 \end{table}
 
-\section{道具の寿命と、選ぶ前に確かめること}\label{sec:tm-life}
+\section{道具の入れ替わりと、選ぶ前に確かめること}\label{sec:tm-life}
 
 \tabref{tab:tm-life}に、2025 年から 2026 年に実際に起きた入れ替わりの例を並べます。
 表の「ホスト版」は、開発元が運用するサービスのことです（\secref{sec:tm-track}）。
 右端の「起きたこと」の列では、止まったあとの行き先が書かれているかを見てください。
-9 行のうち 4 行に、案内先か後継が書かれています。
+9 行のうち 4 行（TGI、AutoGen、AutoAWQ・AutoGPTQ、nanoGPT）に、案内先か後継が書かれています。
+W\&B は、止まったのではなく、持ち主と名前が変わった例です。
 
 \begin{table}[htbp]
 \centering\footnotesize
@@ -816,10 +838,10 @@ OpenAI の調整の窓口（事後学習） & 2026 年 11 月に確認 & 新し�
 \begin{itemize}
 \item 開発と配信は、14 のレイヤーに分けて考えられます。
   本書で作ったものは、どれも実際の道具と同じ仕事をしています（\tabref{tab:tm-book}）。
-\item 道具は、名前ではなく「選定を分ける問い」で選びます。
+\item 道具は、名前ではなく「選び方を決める問い」で選びます。
   動かす場所、使う人数、運用する人、データを外に出せるかが、多くのレイヤーに共通の問いです。
 \item 小さく始めます。
   1 台で足りるなら配信の層は、1 社ならゲートウェイは、プロンプトで足りるなら調整は要りません。
-\item 道具は 2 年ほどで入れ替わります。
+\item 道具の入れ替わりは速く、2025〜2026 年だけでも\tabref{tab:tm-life}の 9 件が止まるか、持ち主や名前を変えました。
   選ぶ前に、説明書きの冒頭、最新のリリースの日付、アーカイブと転送を確かめます。
 \end{itemize}

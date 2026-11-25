@@ -10,7 +10,7 @@
 
 ## 読む
 
-組版済みの PDF（B5、約 1,040 ページ）は、[`build/main.pdf`](build/main.pdf) です。
+組版済みの PDF（B5、約 1,330 ページ）は、[`build/main.pdf`](build/main.pdf) です。
 
 | 部 | 章 |
 |---|---|
@@ -90,8 +90,9 @@ tools/build_chapter.sh ch10_transformer   # 1 章だけ → build/ch10_transform
 分かっている問題:
 
 - 付録 B の手順は Linux で確かめました。macOS と Windows でも動く書き方にしてありますが、Windows での実行は確かめていません。
-- 第 12 章の `torch.compile` の効果は実測していません（本文にもそう書いてあります）。
-- 組版すると、行がわずかにはみ出す箇所が 24 か所あります（どれも 10 pt 未満）。
+- 第 12 章の `torch.compile` は CPU でだけ測りました（GPU では測っていません）。CPU で使うには C++ コンパイラが要ります（付録 B）。
+- 第 16 章の TRL（`SFTTrainer`）は、動作確認用の小さなモデルで流れが動くことだけを確かめました。本文のモデル（Qwen3-0.6B）そのものでは学習していません（メモリが足りないため）。
+- 組版すると、行がわずかにはみ出す箇所が 104 か所あります（どれも 10 pt 未満）。
 
 誤りや分かりにくいところを見つけたら、[Issues](https://github.com/k-tamuraphys/zero-kara-llm/issues) で知らせてください。
 

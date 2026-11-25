@@ -7,7 +7,7 @@
 \textbf{この章を終えると}:
 \begin{itemize}
 \item テンソルの「形」を読み、変え、形の違う相手との計算を \code{for} 文なしで書けます。
-\item 数式 $\mW\vx+\vb$ を多数のデータに一度に適用するコードが読め、自動微分で勾配を求められます。
+\item 入力ベクトル $\vx$ に重み行列 $\mW$ を掛けてバイアス $\vb$ を足す計算 $\mW\vx+\vb$ を、多数のデータに一度に適用するコードが読め、自動微分で勾配を求められます。
 \item softmax と交差エントロピーを自分で書き、本物のモデルの損失と一致することを確かめられます。
 \end{itemize}
 \end{chapterlead}
@@ -15,17 +15,17 @@
 \begin{readingguide}
 \item[\rgpre] この章は、通読する章ではなく、必要な節を読んで、あとは辞書として戻る章です。\chapref{ch:math}の行列積と勾配を思い出せれば読めます。
 \item[\rgmust] \secref{sec:pt-tools}と、\secref{sec:pt-tensor}〜\secref{sec:pt-autograd}：形、ブロードキャスト、行列積 \code{X @ W.T + b}、自動微分。後の章のコードは、この四つで書かれています。章末の演習問題は、初読では最初の三つで十分です。
-\item[\rgskim] \secref{sec:pt-speed}：「数を 1 個ずつ回る \code{for} 文は、配列演算より 1,000 倍以上遅い」という結論だけで先へ進めます。\secref{sec:pt-tensor}の「型と、テンソルの作り方」と、\secref{sec:pt-final}の腕試しも、札に書いた結論を押さえれば足ります。
+\item[\rgskim] \secref{sec:pt-speed}：「数百行・数百列の行列の積では、数を 1 個ずつ処理する \code{for} 文は、配列演算より 1,000 倍ほど遅い（本書の実測）」という結論だけで先へ進めます。\secref{sec:pt-tensor}の「型と、テンソルの作り方」と、\secref{sec:pt-final}の腕試しも、それぞれの冒頭の「流し読み可」の欄に書いた結論を押さえれば足ります。
 \item[\rglater] \secref{sec:pt-reshape}の最後の一覧（\tabref{tab:pt-shape-ops}）と、\secref{sec:pt-final}の前半（エラー文の読み方）：使う場面が来たら戻ります。書き方を忘れたときは、章末の早見表（\tabref{tab:pt-cheatsheet}）から引けます。
 \end{readingguide}
 
 \chapref{ch:intro}では、できあがったモデルに「どうも仕方が」の続きを予測させました。
-あの 1 回の予測の裏では、約 260 万個の数を使った計算が走っています。
+あの 1 回の予測のために、約 260 万個の数を使った計算が行われています。
 中身は、\chapref{ch:math}で学んだ内積・行列積・softmax の組み合わせです。
 この計算を、Python の \code{for} 文で数を 1 個ずつ処理して実行すると、遅すぎて使いものになりません。
-基盤モデルの学習に出てくる行列積のうち、たった 1 種類を \code{for} 文で実行するだけで、約 8 日かかります。
+基盤モデルの学習には、何種類もの行列積が出てきます。そのうち、モデルの最後でスコアを付ける行列積の 1 種類だけを \code{for} 文で実行しても、約 8 日かかります（計算は\secref{sec:pt-speed}）。
 同じ計算が、PyTorch（パイトーチ）という道具を使えば、約 8 分で終わります。
-PyTorch の中心には、数をまとめて入れておく箱である「テンソル」があります。
+PyTorch の中心には、たくさんの数を並べて、ひとまとめに扱う「テンソル」があります。
 この章の合言葉は「\textbf{形を見よ}」です。
 テンソルの計算で起きる間違いの大半は、数の並び方、つまり形の取り違えだからです。
 
@@ -35,11 +35,12 @@ PyTorch の中心には、数をまとめて入れておく箱である「テン
 本書で使う道具は三つです。
 Python は、計算の段取りを書くプログラミング言語です。
 NumPy（ナムパイ）は、数の並びをまとめて計算するためのライブラリです~\cite{harris2020numpy}。
-数を並べたものを、プログラミングでは\term{配列}{array}と呼びます。
+同じ種類の数を、すき間なく並べてまとめたものを、プログラミングでは\term{配列}{array}と呼びます。
+Python のリストとどう違うのかは、\secref{sec:pt-speed}で、メモリの中の置かれ方を比べて確かめます。
 PyTorch\cite{paszke2019pytorch} は、NumPy とよく似た書き方で配列を扱えるライブラリです。
 そのうえ、NumPy にない機能を二つ持っています。
 微分を自動で計算する機能（\secref{sec:pt-autograd}）と、GPU という計算装置で大量の計算を速く実行する機能（\chapref{ch:gpu}）です。
-どちらも学習に欠かせないので、本書の主役は PyTorch です。
+どちらも学習に欠かせないので、本書では、主に PyTorch を使います。
 
 Python（3.11 以降）の入った PC で \code{pip install torch numpy} を実行すれば、準備は終わりです。
 詳しい手順は\appref{app:setup}にまとめてあります。本書のコードは、GPU がなくても動きます。
@@ -53,7 +54,7 @@ Python（3.11 以降）の入った PC で \code{pip install torch numpy} を実
 3〜4 行目の \code{torch.tensor} は、Python のリストからテンソルを作る関数です。
 ここでは、$\vx=(1,2,3)$ と $\vy=(10,20,30)$ という二つのベクトルを作りました。
 出力の 1 行目が \code{x + y} の結果で、中身は $(1+10,\,2+20,\,3+30)$ です。
-\code{11.} のように数の後ろに付いた点は、「小数として持っている」という印です。
+\code{11.} のように数の後ろに付いた点は、整数ではなく、小数点の付いた数（小数）として記録している、という印です。
 2 行目はスカラー倍 $2\vx$、3 行目は \code{x @ y} で、内積 $1\times 10+2\times 20+3\times 30=140$ です（数 1 個でも、結果はテンソルです）。
 記号 \code{@} は、内積と行列積を表す演算子です（\secref{sec:pt-matmul}）。
 数式の $\vx+\vy$、$2\vx$、$\vx^\T\vy$ が、ほぼそのままの見た目でコードになりました。\code{for} 文は一つも書いていません。
@@ -64,7 +65,7 @@ Python（3.11 以降）の入った PC で \code{pip install torch numpy} を実
 この節では、道具をそろえ、数式に近い見た目で計算が書けることを確かめました。
 
 \section{なぜ for 文ではなく配列演算か}\label{sec:pt-speed}
-\skimread{結論は「数を 1 個ずつ回る \code{for} 文は、配列演算より 1,000 倍以上遅い。だから、数はテンソルにまとめて計算する」です。測り方と、遅くなる理由は、2 周目に読めば足ります。}
+\skimread{結論は「数百行・数百列の行列の積では、数を 1 個ずつ処理する \code{for} 文は、配列演算より 1,000 倍ほど遅い（本書の実測）。だから、数はテンソルにまとめて計算する」です。測り方と、遅くなる理由は、2 周目に読めば足ります。}
 
 前節では、内積を \code{x @ y} の 1 行で計算しました。
 しかし、すでに知っている \code{for} 文でも、同じ計算は書けます。
@@ -74,103 +75,254 @@ Python（3.11 以降）の入った PC で \code{pip install torch numpy} を実
 行列積は、$C_{ij}=\sum_{k}A_{ik}B_{kj}$ で定義される計算でした（\chapref{ch:math}）。
 この式を Python の \code{for} 文でそのまま書くと、$i$、$j$、$k$ についての 3 重の \code{for} 文になります。
 行列を「リストのリスト」で表し、いちばん内側で \code{s += A[i][k] * B[k][j]} を実行します（\file{ch02/speed.py} の関数 \code{matmul_loop}）。
-$n$ 行 $n$ 列どうしなら、この掛け算を $n\times n\times n=n^{3}$ 回実行します。$i$、$j$、$k$ が、それぞれ $n$ 通りの値を取るからです。
-$n=256$ なら、$256^{3}$ で約 1,678 万回です。
+$i$、$j$、$k$ がそれぞれ $n$ 通りの値を取るので、$n$ 行 $n$ 列どうしなら、この掛け算を $n\times n\times n=n^{3}$ 回実行します。
+$n=256$ なら、約 1,678 万回です。
 
 同じ計算は、NumPy でも PyTorch でも、\code{A @ B} の 1 行です。
 乱数で埋めた $n$ 行 $n$ 列の行列を二つ用意し、三つの方法で積を計算して、時間を測りました。
 \figref{fig:pt-speed}が結果です。
 縦軸は 1 目盛りで 10 倍になる対数目盛なので、線の上下の間隔が「何倍遅いか」を表します。
+たとえば、横の目盛り線 3 本分だけ離れていれば、$10\times 10\times 10=1{,}000$ 倍です。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[xmode=log,ymode=log,log basis x=2,width=0.72\linewidth,height=0.31\linewidth,
+\begin{axis}[xmode=log,ymode=log,log basis x=2,width=0.66\linewidth,height=0.34\linewidth,
   xlabel={行列の大きさ $n$（$n$ 行 $n$ 列どうしの積）},ylabel={時間 [ミリ秒]},
+  xmin=6,xmax=1000,ymin=0.0005,ymax=10000,
   xtick={8,16,32,64,128,256},xticklabels={8,16,32,64,128,256},
-  legend pos=north west,legend cell align=left,legend style={font=\footnotesize}]
+  ytick={0.001,0.01,0.1,1,10,100,1000},
+  legend style={at={(1.04,0.5)},anchor=west,font=\footnotesize},legend cell align=left]
 \addplot[bookaccent,mark=*,mark size=1.6pt] table[col sep=comma,x=n,y=loop_ms]{code/ch02/out/speed_matmul.csv};
 \addlegendentry{\texttt{for} 文}
 \addplot[bookgreen,mark=square*,mark size=1.6pt] table[col sep=comma,x=n,y=numpy_ms]{code/ch02/out/speed_matmul.csv};
 \addlegendentry{NumPy}
 \addplot[bookblue,mark=triangle*,mark size=2pt,dashed] table[col sep=comma,x=n,y=torch_ms]{code/ch02/out/speed_matmul.csv};
 \addlegendentry{PyTorch}
+% n=256 の 2 点の値と、その倍率（本文の数値。値は code/ch02/out/speed_1.txt）
+\node[anchor=south,font=\scriptsize] at (axis cs:256,950) {857 ミリ秒};
+\node[anchor=north west,font=\scriptsize,inner sep=1pt] at (axis cs:262,0.4) {0.65 ミリ秒};
+\draw[<->,thick,black!60] (axis cs:340,0.6507) -- (axis cs:340,857.038)
+  node[midway,right,font=\scriptsize,align=left] {1,317 倍};
 \end{axis}
 \end{tikzpicture}
-\caption{行列積にかかる時間の実測（両軸とも対数目盛）。数回測って最も速かった回の値である。条件をそろえるため、どの方法にも CPU の計算回路（コア）を 1 個だけ使わせた。}
+\caption{行列積にかかる時間の実測（両軸とも対数目盛。縦軸の目盛り線は 10 倍ごと）。
+右端の $n=256$ では、\texttt{for} 文と PyTorch の間隔が目盛り線 3 本分あまりで、1,317 倍にあたる。
+数回測って最も速かった回の値である。条件をそろえるため、どの方法にも CPU の計算回路（コア）を 1 個だけ使わせた。}
 \label{fig:pt-speed}
 \end{figure}
 
 右端の $n=256$ を見てください。
 \code{for} 文は 857 ミリ秒、PyTorch は 0.65 ミリ秒でした。
 答えは同じなのに、\code{for} 文は 1,317 倍の時間を使っています（倍率は、丸める前の測定値から求めました）。
-二つの方法の答えを比べると、差は最大でも約 $10^{-5}$ でした。小数の丸め方の違いによるもので、同じ答えとみなせます。
-NumPy と PyTorch の線は、$n$ が大きいところでほぼ重なっています。中で、同じ種類の高速なプログラムを呼んでいるからです。
-差は $n$ が大きいほど開きます（$n=8$ では 7 倍です）。モデルが扱う行列は大きいので、差が大きい側が現実です。
+\code{for} 文と PyTorch の答えを、$n=64$ の行列で比べると、差は最大でも約 $10^{-5}$ でした。
+\code{for} 文は 64 ビットの小数で、PyTorch は 32 ビットの小数（\secref{sec:pt-tensor}の \code{float32}）で計算するので、丸め方がわずかに違います。同じ答えとみなせます。
+時間は、ほかのプログラムが計算機を使うと、その分だけ長く出ます。
+そこで、数回測って、最も速かった回（じゃまが最も少なかった回）の値を採りました。
+
+NumPy と PyTorch の線は、$n$ が大きいところでほぼ重なっています。どちらも、行列の計算専用に作られたプログラムを、中で呼び出しているからです。
+$n$ が小さいところで 2 本が離れるのは、計算そのものより、関数を呼び出して計算を始めるまでの準備の時間が目立つためです。
+% [figpass] 案 3: 準備の時間を実測で確かめる（sweep_overhead.py）
+ごく小さな行列で測って、このことを確かめました（\file{ch02/sweep_overhead.py}）。
+掛け算が 1 回しかない $n=1$ でも、行列積 1 回に、NumPy は約 1.1 マイクロ秒、PyTorch は約 4.5 マイクロ秒かかりました（1 マイクロ秒は 100 万分の 1 秒）。
+掛け算が 4,096 回の $n=16$ でも、約 1.7 マイクロ秒と約 4.5 マイクロ秒で、ほとんど増えません。小さな行列では、時間の大部分が、掛け算の前の準備に使われています。
+% [/figpass]
+\code{for} 文との倍率も、$n$ が大きいほど開きます。$n=8$ では 7 倍、$n=64$ では 435 倍、$n=256$ では 1,317 倍でした。
+モデルが扱う行列は、数百行・数百列か、それ以上です。実際の学習で問題になるのは、$n$ が大きい側の倍率です。
 
 なぜ、これほど違うのでしょうか。
 $n^{3}$ 回の掛け算は、どの方法でも必要です。違うのは、\textbf{1 回あたりの速さ}です。理由は二つあります。
 
+一つ目は、\textbf{数の持ち方}です。
+3 個の数 1.0、2.0、3.0 を例に、メモリの中に何がどう置かれるかを、リストと配列で比べます（\figref{fig:pt-memory}）。
+メモリは、計算機が、計算に使う数を記録しておく場所です。
+メモリには、1 バイトごとに通し番号が付いています。この通し番号を\jterm{番地}（アドレス）と呼びます。
+
+まず、Python のリスト \code{[1.0, 2.0, 3.0]} です（図の (a)）。
+リストの本体に並んでいるのは、数そのものではありません。
+「その数は、メモリのどこにあるか」を表す\textbf{番地}が、3 個並んでいます。
+数は、1 個ずつ、番地の指す別々の場所に置かれています。
+その場所には、\textbf{数そのもの}（8 バイト）のほかに、「これは小数である」という\textbf{型の情報}などが、16 バイト分付いています。
+合わせて、数 1 個の場所は 24 バイトです。
+これは、Python の標準の実装である CPython（本書の環境は 3.12）での値で、\code{sys.getsizeof(1.0)} で確かめられます。
+リストの本体の番地も 1 個 8 バイトなので、数 1 個につき、おおよそ $8+24=32$ バイトを使います。
+
+次に、配列です（図の (b)）。
+NumPy の配列 \code{np.array([1.0, 2.0, 3.0])} では、数そのものが 8 バイトずつ、すき間なく一続きに並びます。
+全部で $3\times 8=24$ バイトです（\code{.nbytes} で確かめられます）。
+型は「全部の要素が同じ種類の小数」と最初に決めてあり、形と一緒に、全体で 1 回だけ記録します。
+数ごとの番地も、型の情報もありません。
+PyTorch のテンソルも同じです（標準の型では数 1 個が 4 バイト。\secref{sec:pt-tensor}）。
+
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize]
-  \node[anchor=west] at (-2,25) {\textbf{Python のリスト}\ \ \texttt{[1.0, 2.0, 3.0]}};
-  \foreach \i in {0,1,2}
-    \node[draw=black!45,fill=figgray,minimum width=8mm,minimum height=5.5mm,inner sep=0pt] (p\i) at (4+8*\i,17) {$\bullet$};
-  \node[lbl,anchor=west] at (25.5,17) {「置き場所」の列};
-  \node[plainbox,minimum width=14mm,font=\scriptsize] (o0) at (3,3) {型: 小数\\値: 1.0};
-  \node[plainbox,minimum width=14mm,font=\scriptsize] (o2) at (24,5.5) {型: 小数\\値: 3.0};
-  \node[plainbox,minimum width=14mm,font=\scriptsize] (o1) at (45,2) {型: 小数\\値: 2.0};
-  \draw[arr] (p0.south) -- (o0.north);
-  \draw[arr] (p1.south) to[out=-70,in=150] (o1.north west);
-  \draw[arr] (p2.south) -- (o2.north);
-  \begin{scope}[shift={(72,0)}]
-    \node[anchor=west] at (-2,25) {\textbf{配列・テンソル}};
-    \node[graybox,minimum width=30mm,font=\scriptsize] (h) at (15,17) {形: (3,)\quad 型: 小数（全要素共通）};
-    \foreach \i/\v in {0/1.0,1/2.0,2/3.0}
-      \node[draw=black!45,fill=figblue,minimum width=10mm,minimum height=5.5mm,inner sep=0pt] (c\i) at (5+10*\i,4) {\v};
-    \draw[arr] (h.south) -- (c1.north);
-  \end{scope}
+\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
+  ptslot/.style={draw=black!55,fill=figorange,minimum width=24mm,minimum height=6mm,inner sep=0pt},
+  pttype/.style={draw=black!55,fill=figgray,minimum width=22mm,minimum height=6mm,inner sep=0pt,font=\scriptsize},
+  ptval/.style={draw=black!55,fill=figblue,minimum width=22mm,minimum height=6mm,inner sep=0pt,font=\scriptsize}]
+  % (a) リスト: 番地の列 → 別々の場所にある「型の情報など」＋「数そのもの」
+  \node[anchor=west] at (0,44) {\textbf{(a) Python のリスト}\ \ \texttt{[1.0, 2.0, 3.0]}};
+  \node[anchor=east] at (29,38) {リストの本体};
+  \foreach \i/\x/\a/\v in {0/42/7120/1.0,1/66/3048/2.0,2/90/9560/3.0}{
+    \node[ptslot] (s\i) at (\x,38) {番地 \a};
+    \node[pttype] (t\i) at (\x,25) {型の情報など};
+    \node[ptval] (v\i) at (\x,19) {数そのもの\ \ \v};
+    \draw[arr] (s\i.south) -- (t\i.north);
+    \node[lbl,font=\scriptsize] at (\x,13.5) {番地 \a\ の場所};
+  }
+  \node[lbl,anchor=west,align=left] at (103,38) {番地が 3 個\\（各 8 バイト）};
+  \node[anchor=east] at (29,31.5) {手順 1: 番地をたどる};
+  \node[anchor=east] at (29,25) {手順 2: 型を調べる};
+  \node[anchor=east] at (29,19) {手順 3: 掛ける};
+  % 手順 4: 答え 6.0 のために新しく確保する場所（破線）
+  \draw[black!40] (104.5,11) -- (104.5,31);
+  \node[pttype,dashed] (t3) at (117,25) {型の情報など};
+  \node[ptval,dashed] (v3) at (117,19) {数そのもの\ \ 6.0};
+  \node[anchor=south] at (117,28.3) {手順 4: 新しい場所};
+  \node[lbl,font=\scriptsize] at (117,13.5) {新しく確保した場所};
+  \node[lbl,anchor=west,font=\scriptsize] at (30,9) {数 1 個の場所は 24 バイト（型の情報など 16 バイト ＋ 数そのもの 8 バイト）};
+  % (b) 配列: 形と型は 1 回だけ。数そのものが一続き
+  \node[anchor=west] at (0,2.5) {\textbf{(b) NumPy の配列}\ \ \texttt{np.array([1.0, 2.0, 3.0])}};
+  \node[anchor=east] at (29,-4.5) {形と型の記録};
+  \node[pttype,minimum width=72mm] (h) at (66,-4.5) {形 (3,)\quad 型 float64（全部の要素で共通）\quad 先頭の番地 2000};
+  \foreach \i/\x/\a/\v in {0/42/2000/1.0,1/66/2008/2.0,2/90/2016/3.0}{
+    \node[ptval,minimum width=24mm] (c\i) at (\x,-16) {数そのもの\ \ \v};
+    \node[lbl,font=\scriptsize] at (\x,-21.5) {番地 \a};
+  }
+  \draw[arr] (h.south -| c0.north) -- (c0.north);
+  \node[lbl,anchor=west] at (44,-10.2) {ここから一続き};
+  \node[anchor=east] at (29,-16) {手順 3: 掛ける};
+  \node[lbl,anchor=west,align=left] at (103,-16) {数が 3 個\\（各 8 バイト）};
 \end{tikzpicture}
-\caption{リストと配列の、メモリ上の姿。リスト（左）は数の「置き場所」を並べ、数の本体は別々の場所にある。
-配列（右）は、同じ型の数そのものを一続きに並べる。}
+\caption{3 個の数 1.0、2.0、3.0 の、メモリの中での置かれ方。
+(a) リストの本体には番地が並び、数は 1 個ずつ別の場所にある。(b) 配列は、数そのものが一続きに並ぶ。
+左端の「手順」は、掛け算 1 回のたびに、その段で計算機がすること。破線の箱は、手順 4 で、答え（$2.0\times 3.0=6.0$）のために新しく確保する場所である。
+バイト数は、本書の環境（CPython 3.12 と NumPy）で確かめた値で、番地の数字は、説明のための例である。箱の幅は、バイト数に比例させていない。}
 \label{fig:pt-memory}
 \end{figure}
 
-一つ目は、\textbf{数の持ち方}です（\figref{fig:pt-memory}）。
-Python のリストは、どんな種類のものでも入れられる代わりに、数そのものではなく、数の「置き場所」を並べています。
-掛け算を 1 回するたびに、置き場所をたどり、型を調べ、結果を入れる新しい場所を用意します。
-配列は、全部の要素が同じ型だと最初に決めてしまい、数そのものを一続きに並べるので、どちらの手間もありません。
+この違いが、掛け算 1 回あたりの手間の違いになります。
+リストに入った 2.0 と 3.0 を掛けるとき、計算機は、おおよそ次の四つの手順を踏みます。
+\begin{enumerate}
+\item \textbf{番地をたどる}。リストの本体から番地を読み、その場所まで数を取りに行きます。
+\item \textbf{型を調べる}。その場所にある型の情報を読み、「小数どうしの掛け算だ」と判断します。リストには整数も文字列も入れられるので、毎回調べる必要があります。
+\item \textbf{掛ける}。数そのものを取り出して、掛け算をします。
+\item \textbf{結果用の新しい場所を確保する}。答えの 6.0 を入れる 24 バイトの場所を、メモリに新しく取ります。そこに、型の情報などと、数そのものを書き込みます。
+\end{enumerate}
+本当にしたい計算は、手順 3 だけです。残りの三つは、数の持ち方から生じる手間です。
 
-二つ目は、\textbf{計算の実行のされ方}です。
-\code{A @ B} と書くと、Python は「この二つの行列の積を求めよ」という一つの命令だけを出します。
-あとの $n^{3}$ 回の掛け算は、あらかじめ機械向けに翻訳され、磨き上げられたプログラムが一気に実行します。
-100 個の荷物を 1 個ずつ伝票を書いて運ぶか、トラックに積んで 1 回で運ぶか、の違いです。
+配列では、手順 1・2・4 が要りません。
+数は一続きに並んでいるので、次の数は、番地をたどらなくても、すぐ隣（8 バイト先）にあります。手順 1 は不要です。
+型は全部の要素で同じと決まっているので、計算の前に 1 回調べれば済みます。手順 2 も不要です。
+答えを入れる配列は、計算の前に 1 回だけ、まとめて確保します。掛け算のたびに場所を取る手順 4 も不要です。
+掛け算のたびにするのは、手順 3 だけになります。
+
+二つ目は、\textbf{プログラムの実行のされ方}です。
+Python は、プログラムの命令を一つずつ取り出し、「何をする命令か」を判断してから実行します。
+\code{for} 文では、\code{s += A[i][k] * B[k][j]} の行を実行するたびに、この「取り出して判断する」手間が掛かります。
+$n=256$ なら、約 1,678 万回です。
+\code{A @ B} と書けば、Python が取り出して判断するのは、この 1 行の 1 回だけです。
+あとの $n^{3}$ 回の掛け算は、NumPy や PyTorch の中にある、行列の計算専用のプログラムがまとめて実行します。
+このプログラムは、CPU が直接実行できる命令の列にあらかじめ直してあるので、掛け算のたびに判断し直す手間がありません。
+% [figpass] 案 2: for 文と A @ B の手間を時間の順に並べた模式図
+\figref{fig:pt-steps-timeline}は、二つの理由を合わせて、計算機がする手間を、時間の順に並べた模式図です。
+\code{for} 文では、掛け算のたびに、5 種類の手間が 1 組になって並びます。
+\code{A @ B} では、判断・型・確保は最初の 1 回だけで、そのあとは掛け算が続きます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,
+  st/.style={draw=black!55,minimum width=8mm,minimum height=5.5mm,inner sep=0pt,anchor=west},
+  sj/.style={st,fill=figpurple},sa/.style={st,fill=figorange},sy/.style={st,fill=figgray},
+  sm/.style={st,fill=figblue,draw=bookblue,thick},sk/.style={st,fill=figred}]
+  % 上の段: for 文。掛け算 1 回ごとに 5 種類の手間
+  \node[anchor=east,font=\footnotesize] at (-2,12) {\texttt{for} 文};
+  \foreach \g in {0,1}{
+    \begin{scope}[shift={(40*\g,0)}]
+      \node[sj] at (0,12) {判断}; \node[sa] at (8,12) {番地}; \node[sy] at (16,12) {型};
+      \node[sm] at (24,12) {掛ける}; \node[sk] at (32,12) {確保};
+    \end{scope}}
+  \draw[decorate,decoration={brace,amplitude=3pt}] (0.3,15.6) -- (39.7,15.6)
+    node[midway,above=2pt,lbl,font=\scriptsize] {掛け算 1 回目};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (40.3,15.6) -- (79.7,15.6)
+    node[midway,above=2pt,lbl,font=\scriptsize] {掛け算 2 回目};
+  \node[anchor=west,font=\footnotesize] at (81,12) {…（$n^{3}$ 回目まで）};
+  % 下の段: A @ B。判断・型・確保は最初の 1 回だけ
+  \node[anchor=east,font=\footnotesize] at (-2,0) {\texttt{A @ B}};
+  \node[sj] at (0,0) {判断}; \node[sy] at (8,0) {型}; \node[sk] at (16,0) {確保};
+  \foreach \k in {0,...,6} \node[sm] at (24+8*\k,0) {掛ける};
+  \draw[decorate,decoration={brace,mirror,amplitude=3pt}] (0.3,-3.6) -- (23.7,-3.6)
+    node[midway,below=2pt,lbl,font=\scriptsize] {最初に 1 回だけ};
+  \draw[decorate,decoration={brace,mirror,amplitude=3pt}] (24.3,-3.6) -- (79.7,-3.6)
+    node[midway,below=2pt,lbl,font=\scriptsize] {掛け算 1 回目、2 回目、…、7 回目};
+  \node[anchor=west,font=\footnotesize] at (81,0) {…（$n^{3}$ 回目まで）};
+  \draw[arr] (0,-11) -- (80,-11) node[right,lbl] {時間};
+\end{tikzpicture}
+\caption{掛け算 1 回あたりの手間を、時間の順に並べた模式図。帯の長さはそろえて描いたもので、実際の時間の比ではない。
+「判断」は Python が命令を取り出して判断すること、「番地」「型」「掛ける」「確保」は\figref{fig:pt-memory}の手順 1〜4 である。
+同じ横幅の中で、\texttt{for} 文は掛け算を 2 回、\texttt{A @ B} は 7 回している。実際には、掛け算以外の手間のほうがずっと長いので、差は\figref{fig:pt-speed}のように 1,000 倍ほどに開く。}
+\label{fig:pt-steps-timeline}
+\end{figure}
+% [/figpass]
+
+まとめると、\code{for} 文では、掛け算 1 回ごとに、番地をたどる・型を調べる・新しい場所を確保する・命令を判断する、という手間が付きます。
+配列演算は、これらの手間を、配列全体で 1 回ずつに減らします。
 要素を一つずつ処理する \code{for} 文を、配列全体への演算に書き直すことを、\term{ベクトル化}{vectorization}と呼びます。
 
 最後に、本書の基盤モデルに実際に出てくる大きさでも測りました。
 128 行 192 列と 192 行 4,096 列の行列の積で、128 個のトークンのそれぞれに、4,096 個の候補のスコアを付ける計算です。
+基盤モデルは、学習のとき、文章を 128 トークンずつに区切って読みます（このひと区切りを、ここでは「文」と呼びます）。
+192 は、モデルの中で 1 個のトークンを表すのに使う数の個数です（\chapref{ch:math}の文脈ベクトルが、192 個の数でした）。
 掛け算の回数は $128\times 192\times 4{,}096$ で、約 1 億回です。
 結果は、\code{for} 文が 5.36 秒、PyTorch が 3.68 ミリ秒で、差は 1,455 倍でした（これも、丸める前の値の比です）。
-基盤モデルの学習では、パラメータの書き換えを 4,000 回繰り返し、1 回ごとに 32 個の文を使います。この行列積の回数は、$4{,}000\times 32=128{,}000$ 回です。
+基盤モデルの学習では、パラメータの書き換えを 4,000 回繰り返し、1 回ごとに 32 個の文を使います。文 1 個につき、この行列積を 1 回行うので、回数は $4{,}000\times 32=128{,}000$ 回です。
 \code{for} 文なら、$128{,}000\times 5.36=686{,}080$ 秒かかります。1 日は 86,400 秒なので、$686{,}080\div 86{,}400\approx 7.9$ で、\textbf{約 8 日}です。
 PyTorch なら、$128{,}000\times 3.68$ ミリ秒で約 471 秒です。60 で割ると約 7.9 分で、\textbf{約 8 分}です。
-なお、避けるべきなのは、\textbf{数の一つひとつを回る} \code{for} 文だけです。
+なお、避けるべきなのは、\textbf{数を 1 個ずつ処理する} \code{for} 文だけです。
 「書き換えを 4,000 回繰り返す」といった、回数の少ない \code{for} 文は、これからも普通に使います。
 
-この節では、同じ行列積でも、\code{for} 文と配列演算とで、速さが 1,000 倍以上違うことを実測しました。
+% [figpass] 案 1: リスト・NumPy・PyTorch の比較表
+ここまでに比べた三つの道具の違いを、\tabref{tab:pt-three-tools}にまとめます。
+
+\begin{table}[tbp]
+\centering
+\caption{Python のリスト、NumPy の配列、PyTorch のテンソルの比較。バイト数は\figref{fig:pt-memory}と\tabref{tab:pt-dtype}の値、時間は\figref{fig:pt-speed}の $n=256$ の実測（コア 1 個）である。
+NumPy と PyTorch は、標準の小数の型（数 1 個の大きさ）を除けば、数の持ち方も速さもほぼ同じで、大きな違いは、自動微分と GPU の 2 行にある。}
+\label{tab:pt-three-tools}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+ & Python のリスト & NumPy の配列 & PyTorch のテンソル \\
+\midrule
+本体に並ぶもの & 番地（数は 1 個ずつ別の場所） & 数そのもの（一続き） & 数そのもの（一続き） \\
+型の記録 & 数ごと（種類を混ぜてよい） & 全体で 1 回 & 全体で 1 回 \\
+標準の小数 & 64 ビット（Python の普通の小数） & \texttt{float64}（8 バイト） & \texttt{float32}（4 バイト） \\
+小数 1 個のメモリ & 約 32 バイト（番地 8 ＋ 数の場所 24） & 8 バイト & 4 バイト \\
+256 行 256 列の行列積 & 857 ミリ秒（3 重の \texttt{for} 文） & 0.63 ミリ秒 & 0.65 ミリ秒 \\
+自動微分 & なし & なし & あり（\secref{sec:pt-autograd}） \\
+GPU での計算 & できない & できない & できる（\chapref{ch:gpu}） \\
+本書での使い方 & \texttt{torch.tensor} に渡して、テンソルを作る材料 & PyTorch と行き来する（\texttt{torch.from\_numpy}） & 計算のほぼすべて \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% [/figpass]
+
+この節では、数百行・数百列の行列積では、\code{for} 文が配列演算より 1,000 倍ほど遅いことを実測しました（$n=256$ で 1,317 倍、基盤モデルの大きさで 1,455 倍）。
+理由は、数の持ち方と、プログラムの実行のされ方の二つでした。
 
 \section{テンソル：形と型}\label{sec:pt-tensor}
 
 配列演算が速いことは分かりました。
 では、その配列、つまり PyTorch のテンソルとは、どんなものなのでしょうか。
-\figref{fig:pt-memory}の右側のとおり、テンソルは、一続きに並んだ数と、「形」と「型」という二つの情報からできています。
+\figref{fig:pt-memory}の (b) のとおり、テンソルは、一続きに並んだ数と、「形」と「型」という二つの情報からできています。
+（正確には、数を読む順番の情報も持っています。これは、\secref{sec:pt-reshape}の転置のところで出てきます。）
 
 \subsection*{形：どの向きに、いくつ並んでいるか}
 
 \chapref{ch:math}では、数の並べ方を、スカラー・ベクトル・行列・テンソルと呼び分けました。
 PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と呼びます。違いは「形」だけです。
 数が並ぶ向きの数を\jterm{階数}と呼び（コードでは \code{.ndim}）、順に 0 階、1 階、2 階、3 階のテンソルとも言います。
+ここでの階数は、線形代数で習う「行列の階数（ランク）」とも、\chapref{ch:math}の「次元」（ベクトルに並ぶ数の個数）とも別のものです。192 次元のベクトルは、192 個の数が一つの向きに並んだもので、1 階のテンソルです。
 
 \snippet{いろいろな形のテンソル}{code:pt-dims}{ch02/shape_dtype.py}{dims}
 
@@ -181,14 +333,16 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 6 行目の \code{.shape} が、テンソルの\textbf{形}を返します。
 出力の 1 行目の \code{torch.Size([2, 3])} は、2 行 3 列という意味です。本書では、これを $(2,3)$ と書きます。
 2 行目以降は、四つのテンソルの形を、Python のタプルに直して表示したものです。
-ベクトル \code{v} の形 \code{(3,)} は、「3 個の数が 1 列に並ぶ」という意味です（カンマは、要素が 1 個のタプルの書き方です）。
+ベクトル \code{v} の形 \code{(3,)} は、「3 個の数が、一つの向きに並ぶ」という意味です（カンマは、要素が 1 個のタプルの書き方です）。
 スカラー \code{s} の形は、空のタプル \code{()} です。並ぶ向きが一つもない、ということです。
 
 この「向き」のことを\term{軸}{axis}と呼び、形の左から順に、軸 0、軸 1、軸 2 と番号を付けます（\figref{fig:pt-axes}）。
 行列では、軸 0 が縦（行の番号が増える向き）、軸 1 が横（列の番号が増える向き）です。
 形 $(2,3,4)$ のテンソルは、3 行 4 列の行列が 2 枚重なったもので、軸 0 は「何枚目か」を表します。
-行と列は、いつも形の\textbf{右端の二つ}です。軸が増えるときは左に足されるので、縦は軸 1、横は軸 2 にずれます。
+PyTorch は、表示するときも、行列積（\secref{sec:pt-matmul}）でも、形の\textbf{右端の二つ}の軸を、行と列として扱います。
+そのため、形 $(2,3,4)$ では、縦は軸 1、横は軸 2 です。図の矢印は、赤が縦、青が横、緑が重なりの向きを表します。
 逆に、形 $(3,)$ のベクトルは、軸が一つあるだけで、縦か横かの区別を持ちません。
+本書の図では、軸が一つのテンソルを、横に並べて描くことにします（形 $(1,3)$ や $(3,1)$ との違いは、\secref{sec:pt-reshape}の\figref{fig:pt-vec-shapes}で比べます）。
 出力の右端の「要素数」（\code{.numel()}）は、形に並ぶ数をすべて掛けたものです。\code{T} なら $2\times 3\times 4=24$ 個です。
 
 \begin{figure}[tbp]
@@ -200,7 +354,7 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
   \draw[arr,bookaccent] (-0.5,2) -- (-0.5,0) node[midway,left,text=bookaccent] {軸 0};
   \draw[arr,bookblue] (0,2.5) -- (3,2.5) node[midway,above,text=bookblue] {軸 1};
   \node[anchor=west,align=left] at (3.6,1) {\texttt{M}\ \ 形 $(2,3)$\\軸 0 の長さ 2\\軸 1 の長さ 3};
-  \begin{scope}[shift={(12.5,-0.9)}]
+  \begin{scope}[shift={(10.6,-0.9)}]
     \foreach \k in {1,0}{
       \begin{scope}[shift={(0.8*\k,0.8*\k)}]
         \fill[figpurple] (0,0) rectangle (4,3);
@@ -209,10 +363,11 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
     \draw[arr,bookaccent] (-0.5,3) -- (-0.5,0) node[midway,left,text=bookaccent] {軸 1};
     \draw[arr,bookblue] (0,-0.5) -- (4,-0.5) node[midway,below,text=bookblue] {軸 2};
     \draw[arr,bookgreen] (4.3,0.1) -- (5.2,1.0) node[midway,below right,text=bookgreen] {軸 0（何枚目か）};
-    \node[anchor=west,align=left] at (5.6,3.1) {\texttt{T}\ \ 形 $(2,3,4)$\\3 行 4 列が 2 枚};
+    \node[anchor=west,align=left] at (5.6,3.1) {\texttt{T}\ \ 形 $(2,3,4)$\\3 行 4 列が 2 枚\\手前が 0 枚目、\\奥が 1 枚目};
   \end{scope}
 \end{tikzpicture}
-\caption{軸と形。形は、各軸の長さを左から順に並べたものである。行列（左）は軸を二つ、3 階のテンソル（右）は軸を三つ持つ。}
+\caption{軸と形。形は、各軸の長さを左から順に並べたものである。行列（左）は軸を二つ、3 階のテンソル（右）は軸を三つ持つ。
+矢印の色は向きを表す（赤は縦、青は横、緑は重なり）。縦と横は形の右端の二つの軸なので、左では軸 0・軸 1、右では軸 1・軸 2 になる。}
 \label{fig:pt-axes}
 \end{figure}
 
@@ -223,7 +378,7 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 
 \begin{table}[tbp]
 \centering
-\caption{本書で使う主なデータ型。名前の後ろの数字は、1 個の数に使うビット数である（8 ビットが 1 バイト）。}
+\caption{本書で使う主なデータ型。名前の数字は、数 1 個のビット数（8 ビットが 1 バイト）。}
 \label{tab:pt-dtype}
 \small
 \begin{tabular}{@{}llrl@{}}
@@ -240,21 +395,22 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 \code{float32} は、32 ビット（4 バイト）で小数を表す形式で、\term{浮動小数点数}{floating-point number}と呼ばれます。
 表せる数には限りがあり、正しいのはおよそ 7 桁目までです。
 たとえば 0.1 を入れて取り出すと、\code{0.10000000149...} が返ってきます。
-モデルの学習にはこの精度で十分なので、メモリの少ない \code{float32} が標準です。
+小数の型には、1 個に 64 ビット（8 バイト）を使う \code{float64} もあります。Python の普通の小数と、NumPy の標準は、こちらです（\figref{fig:pt-memory}の配列が 1 個 8 バイトだったのは、このためです）。
+\code{float32} は、その半分のメモリで済みます。モデルの学習にはこの精度で十分なので、PyTorch では \code{float32} が標準です。
 型の違いは、エラーの原因になります。
 \code{torch.tensor([1, 2, 3])} のように整数だけで作ると \code{int64} になり、\code{float32} との行列積ができません。
 小数として使うなら、\code{[1.0, 2.0, 3.0]} と小数点を付けて書くか、\code{.float()} で変換します。
 
 大きなテンソルは、リストでは書けないので、形を指定して作ります。
 先ほどの \code{torch.zeros} のほか、\code{torch.arange(6)} は、0 から 5 までの整数を並べたテンソルを作ります。
-\code{torch.randn(2, 3)} は、標準正規分布（\chapref{ch:math}）に従う\textbf{乱数}で埋めます。学習を始めるとき、モデルのパラメータは乱数で埋めます。
-乱数は呼ぶたびに違う数になりますが、直前に \code{torch.manual_seed(0)} で\term{乱数の種}{seed}を決めると、毎回同じ数が出ます（\file{ch02/random_seed.py}）。
-コンピュータの乱数は、種を出発点にして、決まった手順で次々に作られる数だからです。出発点が同じなら、出てくる数の並びも同じになります。
+\code{torch.randn(2, 3)} は、標準正規分布（\chapref{ch:math}）に従う\textbf{乱数}で埋めます。学習を始めるとき、モデルのパラメータの大部分は、乱数で埋めます。
+乱数は呼ぶたびに違う数になりますが、直前に \code{torch.manual_seed(0)} で\term{乱数の種}{seed}を決めると、同じ環境なら、毎回同じ数が出ます（\file{ch02/random_seed.py}）。
+コンピュータの乱数は、種という 1 個の数から始めて、決まった手順で次々に作られる数だからです。種が同じなら、出てくる数の並びも同じになります。
 何度実行しても同じ結果になる性質を、\term{再現性}{reproducibility}と呼びます。本書のコードは、必ず種を固定しています。
 
-\subsection*{モデルの正体はテンソルの集まり}
+\subsection*{モデルのパラメータはテンソルの集まり}
 
-ここまでの知識で、本物のモデルの中をのぞけます。
+ここまでの知識で、本物のモデルの中身を見ることができます。
 \chapref{ch:intro}で動かした基盤モデルを読み込み、中にあるテンソルの名前・形・型を表示しました（\file{ch02/model_tensors.py}）。
 先頭の 5 個と、全体の合計は、次のとおりです。
 
@@ -262,17 +418,19 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 
 名前の意味は、まだ分からなくてかまいません（\chapref{ch:embedding}から\chapref{ch:transformer}で一つずつ作ります）。
 見てほしいのは形と型です。
-最初のテンソルは形 $(4096,192)$ の行列で、4,096 個のトークンのそれぞれに、192 個の数が割り当てられています。型はすべて \code{float32}（小数を 1 個あたり 4 バイトで持つ型）です。
+最初のテンソルは形 $(4096,192)$ の行列です。1 行が 1 個のトークンに対応し、4,096 個のトークンのそれぞれに、192 個の数が割り当てられています。型はすべて \code{float32}（小数を 1 個あたり 4 バイトで持つ型）です。
 テンソルは全部で 36 個、要素数の合計は 2,583,936 個でした。\chapref{ch:intro}で「約 260 万個のパラメータ」と呼んだものの内訳です。
 出力の最後の行のメモリは、要素数に 4 バイトを掛けたものです。$2{,}583{,}936\times 4$ は約 1,034 万バイトで、約 10.3 MB です。
-モデルとは、形の決まったテンソルの集まりで、学習とは、その中の数を少しずつ書き換えていく作業です。
+モデルのパラメータは、このように、形の決まったテンソルの集まりとして記録されています。学習とは、その中の数を少しずつ書き換えていく作業です。
+モデルには、このほかに、パラメータを使って計算する手順（プログラム）があります。こちらは\chapref{ch:transformer}までに作ります。
 
 \subsection*{要素を取り出す：インデックスとスライス}
 
 テンソルの一部を取り出すには、角括弧を使います。
 位置を番号で指定する操作を\term{インデックス}{indexing}、範囲で指定する操作を\term{スライス}{slicing}と呼びます。
 
-\snippet{インデックスとスライス}{code:pt-indexing}{ch02/indexing.py}{basic}
+% 図をはさんでコードの箱が分かれないよう、この箱だけ分割しない
+{\tcbset{codebox/.append style={unbreakable}}\snippet{インデックスとスライス}{code:pt-indexing}{ch02/indexing.py}{basic}\par}
 
 \outputfile{ch02/out/indexing_1.txt}
 
@@ -283,16 +441,18 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 1 個だけ取り出しても、結果は 0 階のテンソル \code{tensor(12)} です。Python の普通の数にするには、\code{.item()} を付けます。
 5〜7 行目が、行・列・範囲の取り出しです（\figref{fig:pt-indexing}）。
 「\code{:}」は「その軸は全部」、\code{0:2} は「0 以上 2 未満」を表します。終わりの番号は含みません。
-8 行目のように、番号を並べたテンソルを渡すと、その番号の行が順に並びます。
+8 行目のように、番号を並べたテンソルを渡すと、その番号の行が順に並びます（図の下段の左）。
+番号を 2、0 の順に渡したので、結果も行 2、行 0 の順です。
 この操作は、\chapref{ch:embedding}で「トークンの番号から、そのトークンの行を引く」ために使います。
 9 行目の \code{A > 20} は、要素ごとに「20 より大きいか」を調べた、\code{True} と \code{False} のテンソルです（型は \code{bool}）。
-これを角括弧に渡すと、\code{True} の位置の要素だけが、1 列に並んで返ります。
+角括弧に渡すと、\code{True} の位置の要素だけが、1 階のテンソルに並んで返ります（図の下段の右）。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=5.2mm,y=5.2mm,font=\footnotesize]
+\begin{tikzpicture}[x=5.2mm,y=4.8mm,font=\footnotesize]
+% 上段: 行・列・範囲（コードの 5〜7 行目）
 \foreach \p/\ttl in {0/{\texttt{A[1]}\ \ 形 $(4,)$},1/{\texttt{A[:, 2]}\ \ 形 $(3,)$},2/{\texttt{A[0:2, 1:3]}\ \ 形 $(2,2)$}}{
-  \begin{scope}[shift={(7.6*\p,0)}]
+  \begin{scope}[shift={(8.2*\p,0)}]
     \ifcase\p \fill[figorange] (0,1) rectangle (4,2);
     \or \fill[figorange] (2,0) rectangle (3,3);
     \or \fill[figorange] (1,1) rectangle (3,3);
@@ -302,26 +462,88 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
       \foreach \c in {0,1,2,3}{
         \pgfmathtruncatemacro{\v}{10*\r+\c}
         \node at (\c+0.5,\y+0.5) {\v};}
-      \node[lbl] at (-0.4,\y+0.5) {\r};}
-    \foreach \c in {0,1,2,3} \node[lbl] at (\c+0.5,3.35) {\c};
+      \node[lbl,font=\scriptsize,anchor=east] at (-0.1,\y+0.5) {行 \r};}
+    \foreach \c in {0,1,2,3} \node[lbl,font=\scriptsize] at (\c+0.5,3.4) {列\kern0pt\c};
     \node at (2,-0.6) {\ttl};
   \end{scope}}
+% 下段: 番号のテンソル（8 行目）と条件（9 行目）。矢印の左が元の A、右が結果
+\foreach \p in {0,1}{
+  \begin{scope}[shift={(14.6*\p,-5.9)}]
+    \ifcase\p \fill[figorange] (0,0) rectangle (4,1); \fill[figgreen] (0,2) rectangle (4,3);
+    \or \fill[figorange] (1,0) rectangle (4,1);
+    \fi
+    \draw[black!45,step=1] (0,0) grid (4,3);
+    \foreach \r/\y in {0/2,1/1,2/0}{
+      \foreach \c in {0,1,2,3}{
+        \pgfmathtruncatemacro{\v}{10*\r+\c}
+        \node at (\c+0.5,\y+0.5) {\v};}
+      \node[lbl,font=\scriptsize,anchor=east] at (-0.1,\y+0.5) {行 \r};}
+    \foreach \c in {0,1,2,3} \node[lbl,font=\scriptsize] at (\c+0.5,3.4) {列\kern0pt\c};
+    \draw[arr] (4.2,1.5) -- (5.3,1.5);
+  \end{scope}}
+% 8 行目の結果: 行 2、行 0 の順に並んだ 2 行 4 列
+\begin{scope}[shift={(5.5,-5.4)}]
+  \fill[figorange] (0,1) rectangle (4,2);
+  \fill[figgreen] (0,0) rectangle (4,1);
+  \draw[black!45,step=1] (0,0) grid (4,2);
+  \foreach \c in {0,1,2,3}{
+    \pgfmathtruncatemacro{\v}{20+\c}
+    \node at (\c+0.5,1.5) {\v};
+    \node at (\c+0.5,0.5) {\c};}
+  \node[lbl,font=\scriptsize,anchor=west] at (4.1,1.5) {元の行 2};
+  \node[lbl,font=\scriptsize,anchor=west] at (4.1,0.5) {元の行 0};
+\end{scope}
+\node at (4.75,-6.5) {\texttt{A[torch.tensor([2, 0])]}\ \ 形 $(2,4)$};
+% 9 行目の結果: 20 より大きい 3 個
+\begin{scope}[shift={(20.1,-4.9)}]
+  \fill[figorange] (0,0) rectangle (3,1);
+  \draw[black!45,step=1] (0,0) grid (3,1);
+  \foreach \c/\v in {0/21,1/22,2/23} \node at (\c+0.5,0.5) {\v};
+\end{scope}
+\node at (18.85,-6.5) {\texttt{A[A > 20]}\ \ 形 $(3,)$};
 \end{tikzpicture}
-\caption{インデックスとスライスで取り出される部分（色の付いたマス）。灰色の数字は、行と列の番号（0 始まり）である。}
+\caption{インデックスとスライスで取り出される部分（色の付いたマス）。灰色の字は、0 から数えた行と列の番号である。
+上段は、行・列・範囲での取り出し（\coderef{code:pt-indexing}の 5〜7 行目）。
+下段は、矢印の左が元の \texttt{A}、右が結果で、左が番号のテンソル（8 行目）、右が条件（9 行目）での取り出しである。}
 \label{fig:pt-indexing}
 \end{figure}
 
-一つ、落とし穴があります。
-番号や範囲で取り出した結果は、数のコピーではありません。元のテンソルのメモリの一部を、のぞき窓のように見せているだけです（\term{ビュー}{view}と呼びます）。
-\code{row = A[0]} として \code{row[0] = 99} と書き換えると、元の \code{A} も変わります。コピーが欲しいときは、\code{A[0].clone()} とします（8〜9 行目の取り出し方は、コピーを作ります）。
+注意が一つあります。
+番号や範囲で取り出した結果（5〜7 行目）は、数のコピーではありません。元のテンソルと同じメモリの一部を、そのまま読み書きします。
+このように、ほかのテンソルのメモリを借りているテンソルを、\term{ビュー}{view}と呼びます。
+\code{row = A[0]} として \code{row[0] = 99} と書き換えると、元の \code{A} も変わります。コピーが欲しいときは、\code{A[0].clone()} とします。
+一方、番号のテンソルや条件で取り出した結果（8〜9 行目）は、コピーです。書き換えても、元の \code{A} は変わりません。
+違いは、取り出す数が、元のメモリの中で規則正しく並んでいるかどうかです。
+行・列・範囲なら、「どこから、何個おきに読むか」を決めるだけで、元のメモリをそのまま読めます。
+番号を好きな順に並べたり、条件で選んだりすると、位置に規則がないので、新しい場所に写すしかありません。
+% [figpass] 案 10: 取り出し方ごとの、ビューかコピーか
+\tabref{tab:pt-view-copy}に、取り出し方ごとの違いをまとめます。
 
-この節では、テンソルが形と型を持つことを学びました。本物のモデルも、形の決まったテンソルの集まりでした。
+\begin{table}[tbp]
+\centering
+\caption{取り出し方と、結果がビューかコピーか。ビューを書き換えると、元のテンソルも変わる。\texttt{A} は\coderef{code:pt-indexing}の 3 行 4 列の行列である。}
+\label{tab:pt-view-copy}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}p{38mm}>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+取り出し方 & 例 & 結果 & 理由 \\
+\midrule
+番号・範囲 & \texttt{A[1]}、\texttt{A[:, 2]}、\texttt{A[0:2, 1:3]} & ビュー（元も変わる） & 「どこから、何個おきに読むか」で表せる \\
+番号のテンソル & \texttt{A[torch.tensor([2, 0])]} & コピー（元は変わらない） & 番号を好きな順に並べられ、位置に規則がない \\
+条件 & \texttt{A[A > 20]} & コピー（元は変わらない） & 選ばれる位置に規則がない \\
+コピーを作る & \texttt{A[0].clone()} & コピー（元は変わらない） & 新しい場所に写すように指定した \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% [/figpass]
+
+この節では、テンソルが形と型を持つことを学びました。本物のモデルのパラメータも、形の決まったテンソルの集まりでした。
 
 \section{形を変える}\label{sec:pt-reshape}
 
 テンソルの形を読めるようになりました。次は、形を\textbf{変える}操作です。
 モデルの中では、同じ数の集まりを、別の形として読み直す場面がたくさんあります。
-たとえば、「8 個の文 $\times$ 128 トークン」の予測を、損失の計算のために「1,024 個の予測」として 1 列に並べ直します。
+たとえば、「8 個の文 $\times$ 128 トークン」の予測を、損失の計算のために「1,024 個の予測」として一続きに並べ直します。
 形を変えるとき、中の数はどうなるのでしょうか。
 
 \snippet{reshape で形を変える}{code:pt-reshape}{ch02/reshape.py}{reshape}
@@ -331,41 +553,50 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 1 行目の \code{torch.arange(12)} は、0 から 11 までの整数を順に並べた、形 $(12,)$ のテンソルを作ります。
 2 行目の \code{x.reshape(3, 4)} は、12 個の数を 3 行 4 列に並べ直します。
 出力を見ると、0 から順に、4 個ずつ区切って行にしています。
-\figref{fig:pt-reshape}が、この操作の正体です。
-テンソルの数は、メモリの上では、形に関係なくいつも 1 列に並んでいます。
-形とは、その 1 列を\textbf{どこで区切って読むか}という約束です。
+\figref{fig:pt-reshape}が、この操作の仕組みです。
+\code{torch.arange} や \code{reshape} で作ったテンソルでは、数は、メモリの上で、形に関係なく一続きに並んでいます（\figref{fig:pt-memory}の (b) と同じです）。
+形とは、その一続きの並びを\textbf{どこで区切って読むか}という約束です。
 \code{reshape} は、数の並びには触れず、区切り方だけを取り替えます。
 区切り方を変えるだけなので、要素数は変えられません。
 12 個の数は、3 行目のように $(2,6)$ にも $(2,2,3)$ にもできますが、$(5,3)$ にはできません。$2\times 6$ も $2\times 2\times 3$ も 12 ですが、$5\times 3$ は 15 で、12 と合わないからです。
-4 行目の \code{-1} は、「この軸の長さは、残りから計算してほしい」という意味です。12 個を 4 行にするなら、列は 3 です。
+4 行目の \code{-1} は、「この軸の長さは、残りから計算して」という意味で、12 個を 4 行にするなら、列は 3 です。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=5.2mm,y=5.2mm,font=\footnotesize]
-  \fill[figgray] (0,4.6) rectangle (12,5.6);
-  \draw[black!45] (0,4.6) rectangle (12,5.6);
-  \foreach \i in {1,...,11} \draw[black!45] (\i,4.6) -- (\i,5.6);
-  \foreach \i in {0,...,11} \node at (\i+0.5,5.1) {\i};
-  \node[lbl,anchor=west] at (12.3,5.1) {メモリの上の並び（1 列）};
-  \begin{scope}[shift={(0.5,0)}]
+\begin{tikzpicture}[x=4.9mm,y=4.9mm,font=\footnotesize]
+  % 左: 4 個ずつ区切る → 形 (3,4)
+  \fill[figblue] (0,5) rectangle (4,6); \fill[figgreen] (4,5) rectangle (8,6); \fill[figorange] (8,5) rectangle (12,6);
+  \draw[black!45,step=1] (0,5) grid (12,6);
+  \foreach \i in {0,...,11} \node at (\i+0.5,5.5) {\i};
+  \foreach \x in {0,4,8,12} \draw[very thick,black!75] (\x,4.8) -- (\x,6.2);
+  \node[lbl] at (6,6.8) {4 個ずつ区切る（太線が区切り）};
+  \draw[arr] (6,4.6) -- (6,3.2);
+  \begin{scope}[shift={(4,0)}]
     \fill[figblue] (0,2) rectangle (4,3); \fill[figgreen] (0,1) rectangle (4,2); \fill[figorange] (0,0) rectangle (4,1);
     \draw[black!45,step=1] (0,0) grid (4,3);
     \foreach \r/\y in {0/2,1/1,2/0}{\foreach \c in {0,1,2,3}{
       \pgfmathtruncatemacro{\v}{4*\r+\c}\node at (\c+0.5,\y+0.5) {\v};}}
-    \node[anchor=west] at (4.2,0.4) {\texttt{x.reshape(3, 4)}};
   \end{scope}
-  \begin{scope}[shift={(11.5,1)}]
-    \fill[figblue] (0,1) rectangle (6,2); \fill[figgreen] (0,0) rectangle (6,1);
-    \draw[black!45,step=1] (0,0) grid (6,2);
-    \foreach \r/\y in {0/1,1/0}{\foreach \c in {0,...,5}{
-      \pgfmathtruncatemacro{\v}{6*\r+\c}\node at (\c+0.5,\y+0.5) {\v};}}
-    \node at (3,-0.6) {\texttt{x.reshape(2, 6)}};
+  \node at (6,-0.7) {\texttt{x.reshape(3, 4)}\ \ 形 $(3,4)$};
+  % 右: 6 個ずつ区切る → 形 (2,6)
+  \begin{scope}[shift={(13.2,0)}]
+    \fill[figblue] (0,5) rectangle (6,6); \fill[figgreen] (6,5) rectangle (12,6);
+    \draw[black!45,step=1] (0,5) grid (12,6);
+    \foreach \i in {0,...,11} \node at (\i+0.5,5.5) {\i};
+    \foreach \x in {0,6,12} \draw[very thick,black!75] (\x,4.8) -- (\x,6.2);
+    \node[lbl] at (6,6.8) {6 個ずつ区切る（太線が区切り）};
+    \draw[arr] (6,4.6) -- (6,3.2);
+    \begin{scope}[shift={(3,1)}]
+      \fill[figblue] (0,1) rectangle (6,2); \fill[figgreen] (0,0) rectangle (6,1);
+      \draw[black!45,step=1] (0,0) grid (6,2);
+      \foreach \r/\y in {0/1,1/0}{\foreach \c in {0,...,5}{
+        \pgfmathtruncatemacro{\v}{6*\r+\c}\node at (\c+0.5,\y+0.5) {\v};}}
+    \end{scope}
+    \node at (6,-0.7) {\texttt{x.reshape(2, 6)}\ \ 形 $(2,6)$};
   \end{scope}
-  \draw[arr] (2.5,4.4) -- (2.5,3.2) node[midway,right,lbl] {4 個ずつ区切る};
-  \draw[arr] (11,4.4) -- (13,3.2) node[midway,right,lbl] {\ 6 個ずつ区切る};
 \end{tikzpicture}
-\caption{形は「読み方」である。メモリの上の数の並び（上）は変わらない。
-4 個ずつ区切って読めば形 $(3,4)$、6 個ずつなら形 $(2,6)$ になる。色は行を表す。}
+\caption{形は「読み方」である。上の 2 本の帯は、同じ一続きのメモリの並び（0 から 11）で、数は動かない。
+4 個ずつ区切って読めば形 $(3,4)$（左）、6 個ずつなら形 $(2,6)$（右）になる。色は、区切ったまとまりを表し、それぞれが下の行列の 1 行になる。}
 \label{fig:pt-reshape}
 \end{figure}
 
@@ -379,7 +610,13 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 形はどちらも $(3,2)$ ですが、\textbf{中身の並びが違います}。
 転置では、元の行 $(0,1,2)$ が、そのまま縦の列になっています。区切り方ではなく、数を読む順番を変える操作です。
 \code{reshape} は、0 から順に 2 個ずつ区切り直しただけです。
-その結果、行 1 に、元は別の行にいた 2 と 3 が同居しています。
+その結果、上から 2 番目の行（行 1）に、元は別々の行にあった 2 と 3 が入っています。
+
+では、転置をすると、メモリの上の数は並べ替えられるのでしょうか。答えは「並べ替えない」です。
+テンソルは、形とは別に、「メモリの上の数を、どの順番で読むか」という情報を持っています。転置は、この情報だけを書き換えます。
+\code{A.T} は、\code{A} と同じメモリの並び 0, 1, 2, 3, 4, 5 を、0, 3, 1, 4, 2, 5 の順に読みます（図の下の段）。
+\code{A.T} も、\secref{sec:pt-tensor}で見たビューの一種です。
+つまり、「形は区切り方である」という説明がそのまま当てはまるのは、メモリの並びを先頭から順に読むテンソルだけです。転置したあとは、読む順番も見る必要があります。
 
 \begin{figure}[tbp]
 \centering
@@ -407,30 +644,82 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
   \end{scope}
   \draw[arr] (8.2,1.5) -- (4.9,1.5) node[midway,above,lbl] {転置};
   \draw[arr] (11.8,1.5) -- (15.1,1.5) node[midway,above,lbl] {reshape};
+  % 下の段: メモリの上の並び（三つとも同じ）と、読む順番
+  \fill[figblue] (7,-2.6) rectangle (10,-1.6); \fill[figorange] (10,-2.6) rectangle (13,-1.6);
+  \draw[black!45] (7,-2.6) rectangle (13,-1.6);
+  \foreach \i in {1,...,5} \draw[black!45] (7+\i,-2.6) -- (7+\i,-1.6);
+  \foreach \i in {0,...,5} \node at (7.5+\i,-2.1) {\i};
+  \node[lbl] at (10,-0.9) {メモリの上の並び（三つとも同じ）};
+  \node[lbl,align=center] at (3.5,-2.1) {読む順番\\0, 3, 1, 4, 2, 5};
+  \node[lbl,align=center] at (16.5,-2.1) {読む順番\\0, 1, 2, 3, 4, 5};
 \end{tikzpicture}
 \caption{転置（左）と reshape（右）の違い。色は、元の行列 \texttt{A} での行を表す。
-どちらも形は $(3,2)$ になるが、中身の並びは別物である。}
+どちらも形は $(3,2)$ になるが、中身の並びは別物である。
+下の段のとおり、メモリの上の並びは三つとも同じで、転置は読む順番を変え、reshape は区切り方だけを変える。}
 \label{fig:pt-transpose}
 \end{figure}
 
-「行と列を入れ替えたい」ときに \code{reshape} を使うのは、初心者に多い間違いです。形は望みどおりになり、エラーも出ませんが、中身は混ざっています。
+「行と列を入れ替えたい」ときに \code{reshape} を使うのは、初心者に多い間違いです。形は望みどおりになり、エラーも出ませんが、行と列の対応が、元の行列とは違っています。
 \textbf{軸を入れ替えるときは転置、区切り方を変えるときは reshape}、と使い分けてください。
 
-ここまでの要点は、形が、1 列に並んだ数の「読み方」だということです。
+ここまでの要点は、形が、一続きに並んだ数の「読み方」だということです。
 区切り方を変える \code{reshape} と、軸を入れ替える転置は、形が同じになっても、中身は別物です。
+
+形について、もう一つ、次の節で必要になる区別があります。
+同じ 3 個の数 10、20、30 でも、形は $(3,)$、$(1,3)$、$(3,1)$ の三通りに取れます（\figref{fig:pt-vec-shapes}）。
+形 $(3,)$ は、軸が一つだけで、縦でも横でもありません。
+形 $(1,3)$ は 1 行 3 列、形 $(3,1)$ は 3 行 1 列の行列で、どちらも軸が二つあります。
+この「1」にあたる軸を、\textbf{長さ 1 の軸}と呼びます。
+三つとも、メモリの上の並びは同じで、\code{reshape} で互いに移れます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=4.8mm,y=4.8mm,font=\footnotesize]
+  % 形 (3,): 軸は一つ
+  \fill[figgreen] (0,1) rectangle (3,2);
+  \draw[black!45,step=1] (0,1) grid (3,2);
+  \foreach \v/\x in {10/0,20/1,30/2} \node at (\x+0.5,1.5) {\v};
+  \draw[arr] (0,2.5) -- (3,2.5) node[midway,above] {軸 0（長さ 3）};
+  \node[align=center] at (1.5,-1.1) {形 $(3,)$：軸は一つ\\\texttt{[10, 20, 30]}};
+  % 形 (1,3): 1 行 3 列
+  \begin{scope}[shift={(9,0)}]
+    \fill[figgreen] (0,1) rectangle (3,2);
+    \draw[black!45,step=1] (0,1) grid (3,2);
+    \foreach \v/\x in {10/0,20/1,30/2} \node at (\x+0.5,1.5) {\v};
+    \draw[arr,bookaccent] (-0.5,2) -- (-0.5,1) node[midway,left,text=bookaccent,align=right] {軸 0\\（長さ 1）};
+    \draw[arr,bookblue] (0,2.5) -- (3,2.5) node[midway,above,text=bookblue] {軸 1（長さ 3）};
+    \node[align=center] at (1.5,-1.1) {形 $(1,3)$：1 行 3 列\\\texttt{[[10, 20, 30]]}};
+  \end{scope}
+  % 形 (3,1): 3 行 1 列
+  \begin{scope}[shift={(18.5,0)}]
+    \fill[figgreen] (0,0) rectangle (1,3);
+    \draw[black!45,step=1] (0,0) grid (1,3);
+    \foreach \v/\y in {10/2,20/1,30/0} \node at (0.5,\y+0.5) {\v};
+    \draw[arr,bookaccent] (-0.5,3) -- (-0.5,0) node[midway,left,text=bookaccent,align=right] {軸 0\\（長さ 3）};
+    \draw[arr,bookblue] (0,3.5) -- (1,3.5) node[midway,above,text=bookblue] {軸 1（長さ 1）};
+    \node[align=center] at (0.5,-1.1) {形 $(3,1)$：3 行 1 列\\\texttt{[[10], [20], [30]]}};
+  \end{scope}
+\end{tikzpicture}
+\caption{同じ 3 個の数の、三つの形。下の段は、表示したときの角括弧の付き方である。
+形 $(3,)$（左）は軸が一つで、縦・横の区別がない（本書の図では、横に並べて描く）。
+形 $(1,3)$（中央）と $(3,1)$（右）は軸が二つあり、赤い矢印が縦（軸 0）、青い矢印が横（軸 1）を表す。}
+\label{fig:pt-vec-shapes}
+\end{figure}
 
 \subsection*{軸を入れ替える・足す・取り除く操作の一覧}
 \laterread{初読では飛ばしてかまいません。\chapref{ch:attention}や\chapref{ch:transformer}のコードに \code{view} や \code{transpose} が出てきたら、\tabref{tab:pt-shape-ops}に戻ってください。飛ばしても、次の節は読めます。}
 
 3 階以上のテンソルにも、軸を入れ替える操作や、軸を足したり取り除いたりする操作があります。
 \tabref{tab:pt-shape-ops}に、本書で使うものをまとめました。いま覚える必要はありません。あとの章で出てきたら、この表に戻ってください。
-このうち \code{X[None]} は、\textbf{長さ 1 の軸}を先頭に足します。要素数も中身も変わりません。
+このうち \code{X[None]} は、\figref{fig:pt-vec-shapes}で見た長さ 1 の軸を、先頭に足します。要素数も中身も変わりません。
 \code{squeeze} はその逆で、長さ 1 の軸を取り除きます。
 長さ 1 の軸は無意味に見えますが、次節のブロードキャストで、形をそろえる重要な役を担います。
 
 \begin{table}[tbp]
 \centering
-\caption{形を変える操作。\texttt{X} は形 $(2,3,4)$ のテンソルとする。\texttt{view} は \texttt{reshape} とほぼ同じ働きで、数を動かさずに区切り方だけを変える。ただし、転置の直後には使えないことがある（\chapref{ch:attention}）。行列の \texttt{A.T} は \texttt{A.transpose(0, 1)} と同じである。}
+\caption{形を変える操作。\texttt{X} は形 $(2,3,4)$ のテンソルとする。\texttt{view} は \texttt{reshape} とほぼ同じ働きで、結果は必ず\secref{sec:pt-tensor}のビューになる。
+ただし、転置の直後のテンソルは、読む順番がメモリの並びと違うので、\texttt{view} がエラーになることがある。\texttt{reshape} なら、必要なときは数を並べ直すので、エラーにならない（\chapref{ch:attention}で使う）。
+行列の \texttt{A.T} は \texttt{A.transpose(0, 1)} と同じである。}
 \label{tab:pt-shape-ops}
 \small
 \begin{tabular}{@{}lll@{}}
@@ -439,14 +728,14 @@ PyTorch では、この四つを区別せず、すべて\textbf{テンソル}と
 \midrule
 \texttt{X.reshape(6, 4)}、\texttt{X.view(6, 4)} & 区切り方を変える & $(6,4)$ \\
 \texttt{X.transpose(1, 2)} & 軸 1 と軸 2 を入れ替える & $(2,4,3)$ \\
-\texttt{X.permute(2, 0, 1)} & 軸を「2, 0, 1」の順に並べ替える & $(4,2,3)$ \\
+\texttt{X.permute(2, 0, 1)} & 新しい軸 0・1・2 に、元の軸 2・0・1 を置く & $(4,2,3)$ \\
 \texttt{X.unsqueeze(0)}、\texttt{X[None]} & 先頭に長さ 1 の軸を足す & $(1,2,3,4)$ \\
 \texttt{X[None].squeeze(0)} & 長さ 1 の軸 0 を取り除く & $(2,3,4)$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-この節では、形を変える二つの操作、\code{reshape} と転置を学びました。残りの操作は、\tabref{tab:pt-shape-ops}から引けます。
+この節では、形を変える二つの操作、\code{reshape} と転置を学びました。\code{reshape} は区切り方を変え、転置は読む順番を変えます。残りの操作は、\tabref{tab:pt-shape-ops}から引けます。
 
 \section{まとめて計算する：集計とブロードキャスト}\label{sec:pt-broadcast}
 
@@ -466,8 +755,9 @@ $\vx=(1,2,3)$、$\vy=(4,5,6)$ なら、\code{x * y} は $(1\times 4,\,2\times 5,
 
 3 行目の \code{S.sum()} は、全要素の合計で、結果は数 1 個です。$70+80+90+50+60+40=390$ です。
 4 行目の \code{S.sum(dim=0)} は 3 個の数（科目ごとの合計）、5 行目の \code{S.sum(dim=1)} は 2 個の数（人ごとの合計）になりました。
-\code{dim}（dimension の略で、軸の番号を表します）は、何を指定しているのでしょうか（\figref{fig:pt-dim}）。
-\code{dim=0} は、「軸 0 の方向に足し合わせて、\textbf{軸 0 をつぶす}」という指定です。
+\code{dim}（dimension の略ですが、\chapref{ch:math}の「次元」ではなく、軸の番号を表します）は、何を指定しているのでしょうか（\figref{fig:pt-dim}）。
+\code{dim=0} は、「軸 0 の方向に並ぶ数を足し合わせて 1 個にまとめ、軸 0 をなくす」という指定です。
+本書では、これを「\textbf{軸 0 をつぶす}」と言うことにします。
 軸 0 は縦（人の方向）なので、2 人分が 1 個にまとまり、科目ごとの合計が残ります。
 科目 0 は $70+50=120$、科目 1 は $80+60=140$、科目 2 は $90+40=130$ です。
 形で言えば、$(2,3)$ から軸 0 の「2」が消えて、$(3,)$ になります。
@@ -479,7 +769,7 @@ $\vx=(1,2,3)$、$\vy=(4,5,6)$ なら、\code{x * y} は $(1\times 4,\,2\times 5,
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=8.5mm,y=5.8mm,font=\footnotesize]
-  \fill[figblue] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
+  \fill[figgray] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
   \foreach \v/\x/\y in {70/0/1,80/1/1,90/2/1,50/0/0,60/1/0,40/2/0} \node at (\x+0.5,\y+0.5) {\v};
   \node[lbl,anchor=east] at (-0.1,1.5) {人 0}; \node[lbl,anchor=east] at (-0.1,0.5) {人 1};
   \foreach \c in {0,1,2} \node[lbl,font=\scriptsize] at (\c+0.5,2.4) {科目 \c};
@@ -491,14 +781,17 @@ $\vx=(1,2,3)$、$\vy=(4,5,6)$ なら、\code{x * y} は $(1\times 4,\,2\times 5,
     \foreach \v/\x in {120/0,140/1,130/2} \node at (\x+0.5,0.5) {\v};
     \node[anchor=west] at (3.2,0.5) {\texttt{S.sum(dim=0)}\ \ 形 $(3,)$};
   \end{scope}
-  \draw[arr,bookgreen] (3.2,1) -- (5.6,1) node[midway,above,text=bookgreen,align=center] {軸 1（横）\\をつぶす};
-  \begin{scope}[shift={(5.8,0)}]
-    \fill[figgreen] (0,0) rectangle (1,2); \draw[black!45,step=1] (0,0) grid (1,2);
-    \node at (0.5,1.5) {240}; \node at (0.5,0.5) {150};
-    \node[anchor=west] at (1.2,1) {\texttt{S.sum(dim=1)}\ \ 形 $(2,)$};
+  \begin{scope}[shift={(5.8,0.5)}]
+    \fill[figblue] (0,0) rectangle (2,1); \draw[black!45,step=1] (0,0) grid (2,1);
+    \node at (0.5,0.5) {240}; \node at (1.5,0.5) {150};
+    \node[lbl,font=\scriptsize] at (0.5,1.4) {人 0}; \node[lbl,font=\scriptsize] at (1.5,1.4) {人 1};
+    \node[anchor=north,align=center] at (1,-0.2) {\texttt{S.sum(dim=1)}\\形 $(2,)$};
   \end{scope}
+  \draw[arr,bookblue] (3.2,1) -- (5.6,1) node[midway,above,text=bookblue,align=center] {軸 1（横）\\をつぶす};
 \end{tikzpicture}
-\caption{\texttt{dim} は「つぶす軸」を指定する。結果の形は、元の形から、指定した軸を取り除いたものになる。}
+\caption{\texttt{dim} は「つぶす軸」を指定する。結果の形は、元の形から、指定した軸を取り除いたものになる。
+結果の形 $(3,)$ と $(2,)$ は、軸が一つなので、どちらも横に並べて描いた。矢印の色は\figref{fig:pt-axes}と同じく、赤が縦、青が横で、結果のマスも矢印と同じ色で塗った。
+\texttt{keepdim=True} を付けた形 $(2,1)$ は、縦に 2 マスの列になる（\figref{fig:pt-broadcast}の 3 番目）。}
 \label{fig:pt-dim}
 \end{figure}
 
@@ -518,28 +811,43 @@ $\vx=(1,2,3)$、$\vy=(4,5,6)$ なら、\code{x * y} は $(1\times 4,\,2\times 5,
 点数の表は形 $(2,3)$、平均点は 2 個の数で、形が違います。
 同じ形どうしでしか計算できないなら、平均点を 3 回ずつ並べた $(2,3)$ の表を、わざわざ作ることになります。
 PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブロードキャスト}{broadcasting}という仕組みです。
-形の違うテンソルどうしの演算で、\textbf{小さいほうを、同じ数の繰り返しで引き伸ばしてから}計算します。
+形の違うテンソルどうしの演算で、\textbf{長さが 1 の軸（と、足りない軸）を、同じ数の繰り返しで引き伸ばしてから}計算します。
 
 \snippet{ブロードキャストの例}{code:pt-broadcast}{ch02/broadcast.py}{basic}
 
 \outputfile{ch02/out/broadcast_1.txt}
 
 四つの例を、\figref{fig:pt-broadcast}と見比べながら読みます（出力は、2 行ずつが一つの結果です）。
-3 行目の \code{S + 5} は、表と数 1 個の足し算です。5 が全部の要素に配られます。
+3 行目の \code{S + 5} は、表と数 1 個の足し算です。図の 1 番目のとおり、5 が全部の要素に足されます。
 4〜5 行目は、形 $(2,3)$ の表に、形 $(3,)$ の \code{bonus}（科目ごとの加点）を足します。
-図の左のとおり、この 1 行が下に向かって複製され、どの生徒にも同じ加点が足されます。
+図の 2 番目のとおり、この 1 行が下に向かって複製され、どの生徒にも同じ加点が足されます。
 6〜7 行目が、やりたかった計算です。
 \code{mean} は \code{keepdim=True} で作ったので、形は $(2,1)$、つまり 2 行 1 列の縦長の表です。
-図の中央のとおり、この 1 列が右に向かって複製され、各行から、その行の平均（80 と 50）が引かれます。
+図の 3 番目のとおり、この 1 列が右に向かって複製され、各行から、その行の平均（80 と 50）が引かれます。
 出力の 3 番目の表は、行ごとに足すと 0 になっています。
 8〜10 行目は、両方が引き伸ばされる例です。
-形 $(2,1)$ の縦の列と、形 $(1,3)$ の横の行を足すと、図の右のように、どちらも $(2,3)$ に広げられます。
+形 $(2,1)$ の縦の列と、形 $(1,3)$ の横の行を足すと、図の 4 番目のように、どちらも $(2,3)$ に広げられます。
 結果は、すべての組み合わせの和です。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=4.6mm,y=4.6mm,font=\scriptsize,g/.style={text=bookgray}]
+\begin{tikzpicture}[x=3.85mm,y=4.4mm,font=\tiny,g/.style={text=bookgray}]
+  % 1 番目: S + 5（数 1 個が、全部のマスに複製される）
   \begin{scope}
+    \fill[figblue] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
+    \foreach \v/\x/\y in {70/0/1,80/1/1,90/2/1,50/0/0,60/1/0,40/2/0} \node at (\x+0.5,\y+0.5) {\v};
+    \node[font=\small] at (3.5,1) {$+$};
+    \fill[figorange] (4,1) rectangle (5,2);
+    \draw[black!45,dashed,step=1] (4,0) grid (7,2);
+    \draw[black!45] (4,1) rectangle (5,2);
+    \node at (4.5,1.5) {5};
+    \foreach \x/\y in {5/1,6/1,4/0,5/0,6/0} \node[g] at (\x+0.5,\y+0.5) {5};
+    \draw[darr] (4.5,2.45) -- (6.5,2.45);
+    \draw[darr] (7.45,1.5) -- (7.45,0.5);
+    \node[font=\footnotesize,align=center] at (3.5,-1.4) {1 番目\\$(2,3)+{}$数 1 個};
+  \end{scope}
+  % 2 番目: S + bonus
+  \begin{scope}[shift={(8.6,0)}]
     \fill[figblue] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
     \foreach \v/\x/\y in {70/0/1,80/1/1,90/2/1,50/0/0,60/1/0,40/2/0} \node at (\x+0.5,\y+0.5) {\v};
     \node[font=\small] at (3.5,1) {$+$};
@@ -548,9 +856,10 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
     \draw[black!45,step=1] (4,1) grid (7,2);
     \foreach \v/\x in {0/4,10/5,20/6}{\node at (\x+0.5,1.5) {\v}; \node[g] at (\x+0.5,0.5) {\v};}
     \draw[darr] (7.45,1.5) -- (7.45,0.5);
-    \node[font=\footnotesize] at (3.5,-0.9) {$(2,3)+(3,)$};
+    \node[font=\footnotesize,align=center] at (3.5,-1.4) {2 番目\\$(2,3)+(3,)$};
   \end{scope}
-  \begin{scope}[shift={(9.7,0)}]
+  % 3 番目: S - mean
+  \begin{scope}[shift={(17.2,0)}]
     \fill[figblue] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
     \foreach \v/\x/\y in {70/0/1,80/1/1,90/2/1,50/0/0,60/1/0,40/2/0} \node at (\x+0.5,\y+0.5) {\v};
     \node[font=\small] at (3.5,1) {$-$};
@@ -560,9 +869,10 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
     \foreach \x in {4,5,6}{\ifnum\x=4 \node at (\x+0.5,1.5) {80}; \node at (\x+0.5,0.5) {50};
       \else \node[g] at (\x+0.5,1.5) {80}; \node[g] at (\x+0.5,0.5) {50}; \fi}
     \draw[darr] (4.5,2.45) -- (6.5,2.45);
-    \node[font=\footnotesize] at (3.5,-0.9) {$(2,3)-(2,1)$};
+    \node[font=\footnotesize,align=center] at (3.5,-1.4) {3 番目\\$(2,3)-(2,1)$};
   \end{scope}
-  \begin{scope}[shift={(19.4,0)}]
+  % 4 番目: col + row
+  \begin{scope}[shift={(25.8,0)}]
     \fill[figblue] (0,0) rectangle (1,2);
     \draw[black!45,dashed,step=1] (1,0) grid (3,2);
     \draw[black!45,step=1] (0,0) grid (1,2);
@@ -575,28 +885,29 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
     \draw[black!45,step=1] (4,1) grid (7,2);
     \foreach \v/\x in {10/4,20/5,30/6}{\node at (\x+0.5,1.5) {\v}; \node[g] at (\x+0.5,0.5) {\v};}
     \draw[darr] (7.45,1.5) -- (7.45,0.5);
-    \node[font=\footnotesize] at (3.5,-0.9) {$(2,1)+(1,3)$};
+    \node[font=\footnotesize,align=center] at (3.5,-1.4) {4 番目\\$(2,1)+(1,3)$};
   \end{scope}
 \end{tikzpicture}
-\caption{ブロードキャスト。実線のマスが実際に持っている数、破線のマスが、計算のために複製されたとみなされる数である。}
+\caption{ブロードキャスト。左から 1 番目〜4 番目は、\coderef{code:pt-broadcast}の 3、5、7、10 行目の計算である。
+実線のマスが実際に持っている数、破線のマス（灰色の数）が、計算のために複製されたとみなされる数である。破線の矢印は、複製する向きを表す。}
 \label{fig:pt-broadcast}
 \end{figure}
 
-どんな形の組み合わせなら、引き伸ばしてもらえるのでしょうか。規則は一つだけです。
+どんな形どうしなら、引き伸ばされるのでしょうか。規則は、次の定義にまとめられます。
 
 \begin{definition}[ブロードキャストの規則]
 二つのテンソルの形を\textbf{右端をそろえて}並べ、右の軸から順に長さを比べます。
 (1) 長さが同じなら、そのまま計算します。
 (2) どちらかの長さが 1 なら、その軸を、相手の長さになるまで複製します。
-(3) 片方に軸がなければ、そこに長さ 1 の軸があるものとみなします。
+(3) 片方に軸がなければ、そこに長さ 1 の軸があるとみなします。
 (4) 長さが異なり、どちらも 1 でなければ、エラーになります。
-結果の形は、各軸で長いほうを取ったものです。
+結果の形は、各軸で長いほうになります。
 \end{definition}
 
 \figref{fig:pt-bc-rule}は、この規則を四つの例に当てはめたものです。
 1 番目は、先ほどの \code{S + bonus} です。右端の「3 と 3」は同じなので、そのままです。
 その左は、$(2,3)$ の「2」に対して、\code{bonus} には軸がありません。長さ 1 とみなされ、2 に引き伸ばされます。
-形 $(3,)$ の \code{bonus} が「横の 1 行」としてふるまったのは、右端でそろえるからです。
+形 $(3,)$ の \code{bonus} は、縦でも横でもありません。それが「横の 1 行」（形 $(1,3)$）と同じようにふるまったのは、右端でそろえて、足りない軸を左に補うからです。
 2 番目は \code{col + row} で、どちらの軸でも、長さ 1 の側が引き伸ばされます。
 
 \begin{figure}[tbp]
@@ -604,7 +915,7 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 \begin{tikzpicture}[x=6.5mm,y=5.4mm,font=\footnotesize,
   d/.style={draw=black!40,minimum width=5.6mm,minimum height=4.5mm,inner sep=0pt},
   ok/.style={d,fill=figgreen},st/.style={d,fill=figorange},ng/.style={d,fill=figred},
-  no/.style={d,dashed,fill=figorange,text=bookgray}]
+  no/.style={d,dashed,fill=figorange,text=bookgray},nox/.style={d,dashed,text=bookgray}]
   \begin{scope}
     \node[anchor=east] at (0.5,2) {\texttt{S}}; \node[d] at (1,2) {2}; \node[ok] at (2,2) {3};
     \node[anchor=east] at (0.5,1) {\texttt{bonus}}; \node[no] at (1,1) {1}; \node[ok] at (2,1) {3};
@@ -619,7 +930,7 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
   \end{scope}
   \begin{scope}[shift={(9.2,0)}]
     \node[anchor=east] at (0.5,2) {\texttt{S}}; \node[d] at (1,2) {2}; \node[ng] at (2,2) {3};
-    \node[anchor=east] at (0.5,1) {\texttt{m}}; \node[no] at (1,1) {1}; \node[ng] at (2,1) {2};
+    \node[anchor=east] at (0.5,1) {\texttt{m}}; \node[nox] at (1,1) {1}; \node[ng] at (2,1) {2};
     \draw[black!60] (0.55,0.5) -- (2.45,0.5);
     \node[anchor=east] at (0.5,0) {結果}; \node[text=bookaccent] at (1.5,0) {エラー};
   \end{scope}
@@ -630,8 +941,8 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
     \node[anchor=east] at (0.5,0) {結果}; \node[d] at (1,0) {?}; \node[d] at (2,0) {?};
   \end{scope}
 \end{tikzpicture}
-\caption{ブロードキャストの規則の当てはめ方。形を右端でそろえて縦に並べ、右の列から順に比べる。
-緑は同じ長さ、橙は引き伸ばされる長さ 1 の軸、破線は軸がなく 1 とみなされる場所、赤は長さが合わない組である。4 番目の結果は、本文で考える。}
+\caption{ブロードキャストの規則の当てはめ方（左から 1 番目〜4 番目）。形を右端でそろえて縦に並べ、右の列から順に比べる。
+緑は同じ長さ、橙は引き伸ばされる長さ 1 の軸、破線は軸がなく 1 とみなされる場所、赤は長さが合わない組である。3 番目は右端の組でエラーになり、何も引き伸ばされないので、破線のマスを塗っていない。4 番目の結果は、本文で考える。}
 \label{fig:pt-bc-rule}
 \end{figure}
 
@@ -643,10 +954,10 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 \code{keepdim=True} で形を $(2,1)$ にしておけば、右端は「3 と 1」になり、正しく引き伸ばされます。
 これが、\code{keepdim} の役目です。
 
-\subsection*{黙って起こる間違い}
+\subsection*{エラーにならない間違い}
 
 エラーが出るのは、じつは幸運な場合です。
-困るのは、\textbf{形がたまたま合ってしまい、間違った計算が黙って進む}場合です。
+困るのは、\textbf{形がたまたま合ってしまい、エラーが出ないまま、間違った計算が進む}場合です。
 \figref{fig:pt-bc-rule}の 4 番目が、その例です。
 モデルの予測は形 $(N,1)$、正解は形 $(N,)$ で手に入ることが多く、この組み合わせは実際によく起こります。
 データ 1 個につき数を 1 個だけ予測するモデルでも、$N$ 個分の出力は「$N$ 行 1 列の行列」として返ってくるからです（理由は\secref{sec:pt-matmul}で分かります）。
@@ -659,7 +970,7 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 右端は「1 と 3」です。片方が 1 なので、3 に引き伸ばされます。
 その左は「3 と、軸なし」です。軸なしは 1 とみなされ、3 に引き伸ばされます。
 結果の形は $(3,3)$ です。
-3 個の予測と 3 個の正解の差を取るつもりなら、欲しいのは 3 個の数のはずです。実行して確かめます。
+3 個の予測と 3 個の正解の差なら、欲しいのは 3 個の数のはずです。実行して確かめます。
 
 \snippet{エラーにならない間違い}{code:pt-bug-outer}{ch02/broadcast_bug.py}{outer}
 
@@ -671,13 +982,13 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 欲しかったのは、対角線上の 3 個だけです。
 5 行目で 2 乗して平均すると、0 になるはずの誤差が 1.3333 になりました。
 図の 9 個の差を 2 乗すると、0 が 3 個、1 が 4 個、4 が 2 個です。合計は $1\times 4+4\times 2=12$ で、9 で割ると $1.3333$ です。
-エラーは出ません。学習に使えば、間違った目標に向かって、黙って学習が進みます。
+エラーは出ません。学習に使えば、間違った目標に向かって、エラーが出ないまま学習が進みます。
 直し方は、6 行目です。\code{pred.squeeze(1)} は、長さ 1 の軸 1 を取り除く操作で、形 $(3,1)$ を $(3,)$ にします。
 こうして形を $(3,)$ にそろえてから引くと、誤差は正しく 0 になります。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=6mm,y=6mm,font=\footnotesize]
+\begin{tikzpicture}[x=5.4mm,y=5.4mm,font=\footnotesize]
   \begin{scope}[shift={(0,3.4)}]
     \fill[figorange] (0,0) rectangle (3,1); \draw[black!45,step=1] (0,0) grid (3,1);
     \foreach \v/\x in {1/0,2/1,3/2} \node at (\x+0.5,0.5) {\v};
@@ -691,7 +1002,7 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
   \fill[figred] (0,0) rectangle (3,3);
   \fill[figgreen] (0,2) rectangle (1,3); \fill[figgreen] (1,1) rectangle (2,2); \fill[figgreen] (2,0) rectangle (3,1);
   \draw[black!45,step=1] (0,0) grid (3,3);
-  \foreach \v/\x/\y in {0/0/2,-1/1/2,-2/2/2,1/0/1,0/1/1,-1/2/1,2/0/0,1/1/0,0/2/0} \node at (\x+0.5,\y+0.5) {$\v$};
+  \foreach \v/\x/\y in {0/0/2,-1/1/2,-2/2/2,1/0/1,0/1/1,-1/2/1,2/0/0,1/1/0,0/2/0} \node[font=\scriptsize] at (\x+0.5,\y+0.5) {$\v$};
   \node[anchor=west,align=left] at (3.3,1.5) {\texttt{pred - target}\ \ 形 $(3,3)$\\[0.5mm]
     緑: 欲しかった 3 個（対応する相手との差）\\赤: 無関係な相手との差};
 \end{tikzpicture}
@@ -708,19 +1019,25 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 \subsection*{ここまでの道のり}
 
 \begin{itemize}
-\item 要素を 1 個ずつ回る \code{for} 文は、配列演算の 1,000 倍以上遅い。だから、テンソルにまとめて計算する。
-\item テンソルは、1 列に並んだ数と、その読み方である「形」、数の持ち方である「型」からできている。
-\item 形は \code{reshape} や転置で変えられる。形の違う相手との計算は、ブロードキャストが引き伸ばしてくれる。
+\item 数百行・数百列の行列積では、数を 1 個ずつ処理する \code{for} 文は、配列演算より 1,000 倍ほど遅い。だから、テンソルにまとめて計算する。
+\item テンソルは、一続きに並んだ数と、その読み方である「形」（と読む順番）、数の記録のしかたである「型」からできている。
+\item 形は \code{reshape} や転置で変えられる。形の違う相手との計算では、ブロードキャストが、長さ 1 の軸を引き伸ばしてくれる。
 \end{itemize}
 
-残る道具は二つです。モデルの計算の主役である\textbf{行列積}と、学習の主役である\textbf{自動微分}です。
+残る道具は二つです。モデルの計算で最も多く使う\textbf{行列積}と、学習で使う\textbf{自動微分}です。
 
 \section{行列積と「1 データ 1 行」の約束}\label{sec:pt-matmul}
 
 前節の演算は、どれも「同じ位置の要素どうし」の計算でした。
 しかし、モデルの中で最も多く使われるのは、そうではない計算、つまり行列積です。
-\chapref{ch:math}では、$\vy=\mW\vx+\vb$ という式で、ベクトルを別のベクトルに移しました。
-この式を、128 個のトークンを表す 128 個のベクトルのような、たくさんのデータに一度に適用するには、どう書けばよいのでしょうか。
+\chapref{ch:math}では、出力の重み行列 $\mW$ を文脈ベクトル $\vh$ に掛けて、スコア $\vz=\mW\vh$ を作りました。行列を掛けて、ベクトルを別のベクトルに移す計算です。
+モデルの中では、これに定数のベクトルを足した、次の形の計算をよく使います。この式は、ここで初めて出てきます。
+\[
+\vy=\mW\vx+\vb
+\]
+この章では、$\vx$ を\textbf{入力ベクトル}、$\mW$ を\textbf{重み行列}、$\vy$ を\textbf{出力ベクトル}と呼びます。
+$\vb$ は、入力が何であっても同じ値を足す、定数のベクトルです。これを\textbf{バイアス}と呼びます（バイアスが何の役に立つかは、\chapref{ch:ml}で説明します）。
+この式を、128 個のトークンのベクトルのような、たくさんのデータに一度に適用するには、どう書けばよいでしょうか。
 
 まず、書き方の確認です。行列積は、コードでは \code{A @ B} と書きます。
 形の規則は、\chapref{ch:math}で学んだとおりです。
@@ -728,18 +1045,20 @@ PyTorch（と NumPy）は、これを自動でやってくれます。\term{ブ�
 $(3,\underline{2})$ と $(\underline{2},4)$ なら、内側の 2 どうしが一致し、結果は $(3,4)$ です。
 相手はベクトルでもかまいません。形 $(3,\underline{2})$ の \code{A} と形 $(\underline{2},)$ の \code{v} なら、内側の 2 どうしが一致します。
 残る外側は 3 だけなので、\code{A @ v} は形 $(3,)$ のベクトルです。数式の $\mA\vv$ にあたります。
+形 $(2,)$ のベクトルは縦でも横でもありませんが（\figref{fig:pt-vec-shapes}）、\code{@} の右側に置くと、列ベクトルと同じように計算されます。ブロードキャストでは、横の 1 行と同じようにふるまいました。
+軸が一つのテンソルの扱いは、演算ごとに決まっています。
 一方、\code{A * B} は要素ごとの積です。\textbf{行列積は \code{@}} です（\file{ch02/matmul.py}）。
-なお、積を添字で書く \code{torch.einsum} という関数もあり、同じファイルで試せます。
+なお、同じファイルには、行列積の定義 $C_{ij}=\sum_{k}A_{ik}B_{kj}$ の添字を \texttt{"ik,kj->ij"} という文字列で書いて同じ計算をする、\code{torch.einsum} の例もあります。本書では、このあと使いません。
 
 ここで、本書全体に関わる約束を一つ説明します。
-数式では、ベクトルを縦に並んだ\textbf{列ベクトル}として扱い、行列を左から掛けて $\vy=\mW\vx+\vb$ と書きます。
-3 個の数からなる $\vx$ を、2 個の数からなる $\vy$ に移すなら、$\mW$ は 2 行 3 列です。
+数式では、ベクトルを縦に並んだ\textbf{列ベクトル}として扱い、重み行列を左から掛けて $\vy=\mW\vx+\vb$ と書きます。
+3 個の数からなる入力ベクトル $\vx$ を、2 個の数からなる出力ベクトル $\vy$ に移すなら、重み行列 $\mW$ は 2 行 3 列です。
 $\mW\vx$ の成分は、$\mW$ の行と $\vx$ の内積を、行ごとに並べたものでした。
 だから、$\mW$ の列の数は $\vx$ の長さ 3 に合わせ、行の数は $\vy$ の長さ 2 に合わせます。
 一方、コードでは、$N$ 個のデータ $\vx^{(1)},\dots,\vx^{(N)}$ を、まとめて 1 個のテンソルに入れます。
-このとき、\textbf{1 個のデータを 1 行として、縦に積む}のが、PyTorch の決まりです。
+このとき、\textbf{1 個のデータを 1 行として、縦に積む}のが、PyTorch での習慣です（PyTorch に用意された部品も、この並べ方を前提に作られています）。
 データが 4 個、それぞれが 3 個の数なら、形 $(4,3)$ の行列 $\mX$ になります。軸 0 が「何個目のデータか」を表します。
-こうしてまとめたデータの束を、\term{バッチ}{batch}と呼びます。
+こうしてまとめたデータのひとまとまりを、\term{バッチ}{batch}と呼びます。
 
 欲しいのは、$\mX$ の各行に $\mW$ を掛けた結果を、同じく行として積んだ、形 $(4,2)$ の行列 $\mY$ です。
 どんな行列積で得られるでしょうか。形から考えます。
@@ -751,70 +1070,95 @@ $\mX$ の先頭の行（1 個目のデータ）を $(1,2,3)$、$\mW$ の先頭�
 転置すると、行は列になります。$\mW$ の先頭の行は、$\mW^\T$ では先頭の列です。
 だから、$\mX\mW^\T$ の左上のマスは、$(1,2,3)$ と $(1,0,-1)$ の内積 $1+0-3=-2$ です。
 これは、数式の $\mW\vx$ の最初の成分（$\mW$ の先頭の行と $\vx$ の内積）と、同じ計算です。
-ほかのマスも同じで、$\mX\mW^\T$ の各行は、その行のデータに $\mW$ を掛けた結果になります。
-まとめると、次の対応になります（\figref{fig:pt-rows}）。
+ほかのマスも同じです。$i$ 行 $j$ 列のマスは、$\mX$ の $i$ 行目（$i$ 個目のデータ $\vx^{(i)}$）と、$\mW$ の $j$ 行目の内積で、$\mW\vx^{(i)}$ の $j$ 番目の成分と同じ計算です。
+だから、$\mX\mW^\T$ の各行は、その行のデータに $\mW$ を掛けた結果になります。
+まとめると、次の対応になります（\figref{fig:pt-rows}）。式の中の矢印は、左と右が対応することを表します。
 \begin{equation}
 \underbrace{\vy=\mW\vx+\vb}_{\text{数式：1 個のデータ（列ベクトル）}}
-\qquad\Longleftrightarrow\qquad
+\qquad\longleftrightarrow\qquad
 \underbrace{\texttt{Y = X @ W.T + b}}_{\text{コード：$N$ 個のデータ（1 データ 1 行）}}
 \label{eq:pt-rows}
 \end{equation}
 最後の \code{+ b} は、ブロードキャストです。
-形 $(4,2)$ に形 $(2,)$ を足すので、どの行にも同じ $\vb$ が足されます。
+形 $(4,2)$ に形 $(2,)$ を足すので、どの行にも同じバイアス $\vb$ が足されます。
 なお、出力が数 1 個のモデルでは、$\mW$ は 1 行 3 列です。$(4,\underline{3})$ と $(\underline{3},1)$ の積なので、$\mY$ の形は $(4,)$ ではなく $(4,1)$ になります。
 \secref{sec:pt-broadcast}で「予測は形 $(N,1)$ で手に入ることが多い」と述べたのは、このためです。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=4.3mm,y=4.3mm,font=\footnotesize]
-  \node[anchor=west] at (-0.5,6.3) {\textbf{数式}：データ 1 個は列ベクトル};
-  \begin{scope}[shift={(0,1.5)}]
-    \fill[figgreen] (0,0.5) rectangle (1,2.5);
-    \draw[black!45] (0,0.5) rectangle (1,2.5); \draw[black!45] (0,1.5) -- (1,1.5);
-    \node at (0.5,3.1) {$\vy$};
-    \node at (1.8,1.5) {$=$};
-    \fill[figorange] (2.6,0.5) rectangle (5.6,2.5); \fill[bookorange!55] (2.6,1.5) rectangle (5.6,2.5);
-    \draw[black!45] (2.6,0.5) rectangle (5.6,2.5); \draw[black!45] (2.6,1.5) -- (5.6,1.5);
-    \draw[black!45] (3.6,0.5) -- (3.6,2.5); \draw[black!45] (4.6,0.5) -- (4.6,2.5);
-    \node at (4.1,3.1) {$\mW$\ $(2,3)$};
-    \fill[figblue] (6.3,0) rectangle (7.3,3);
-    \draw[black!45] (6.3,0) rectangle (7.3,3); \draw[black!45] (6.3,1) -- (7.3,1); \draw[black!45] (6.3,2) -- (7.3,2);
-    \node at (6.8,3.6) {$\vx$};
-    \node at (8.1,1.5) {$+$};
-    \fill[figpurple] (8.9,0.5) rectangle (9.9,2.5);
-    \draw[black!45] (8.9,0.5) rectangle (9.9,2.5); \draw[black!45] (8.9,1.5) -- (9.9,1.5);
-    \node at (9.4,3.1) {$\vb$};
+\begin{tikzpicture}[x=4.6mm,y=4.6mm,font=\scriptsize]
+  % 左: 数式 y = W x + b（数はコード 2.8 の 1 個目のデータ）
+  \node[anchor=west,font=\footnotesize] at (-0.5,7.0) {\textbf{数式}：データ 1 個は列ベクトル};
+  \begin{scope}[shift={(0,2)}]
+    \fill[figgreen] (0,0) rectangle (1.4,2); \fill[bookgreen!50] (0,1) rectangle (1.4,2);
+    \draw[black!45] (0,0) rectangle (1.4,2); \draw[black!45] (0,1) -- (1.4,1);
+    \node[font=\tiny] at (0.7,1.5) {$-1.5$}; \node[font=\tiny] at (0.7,0.5) {$3.5$};
+    \node[font=\footnotesize,anchor=south,align=center] at (0.7,2.1) {出力\\$\vy$};
   \end{scope}
-  \begin{scope}[shift={(14,0)}]
-    \node[anchor=west] at (-0.5,6.3) {\textbf{コード}：データ 1 個は 1 行};
-    \fill[figgreen] (0,0.5) rectangle (2,4.5); \fill[bookgreen!50] (0,2.5) rectangle (2,3.5);
-    \draw[black!45] (0,0.5) rectangle (2,4.5); \draw[black!45] (1,0.5) -- (1,4.5);
-    \foreach \y in {1.5,2.5,3.5} \draw[black!45] (0,\y) -- (2,\y);
-    \node at (1,5.1) {\texttt{Y}\ $(4,2)$};
-    \node at (2.8,2.5) {$=$};
-    \fill[figblue] (3.6,0.5) rectangle (6.6,4.5); \fill[bookblue!45] (3.6,2.5) rectangle (6.6,3.5);
-    \draw[black!45] (3.6,0.5) rectangle (6.6,4.5); \draw[black!45] (4.6,0.5) -- (4.6,4.5); \draw[black!45] (5.6,0.5) -- (5.6,4.5);
-    \foreach \y in {1.5,2.5,3.5} \draw[black!45] (3.6,\y) -- (6.6,\y);
-    \node at (5.1,5.1) {\texttt{X}\ $(4,3)$};
-    \node at (7.3,2.5) {\texttt{@}};
-    \fill[figorange] (8,1) rectangle (10,4); \fill[bookorange!55] (8,1) rectangle (9,4);
-    \draw[black!45] (8,1) rectangle (10,4); \draw[black!45] (9,1) -- (9,4); \draw[black!45] (8,2) -- (10,2); \draw[black!45] (8,3) -- (10,3);
-    \node at (9,4.6) {\texttt{W.T}\ $(3,2)$};
-    \node at (10.8,2.5) {$+$};
-    \fill[figpurple] (11.6,2) rectangle (13.6,3);
-    \draw[black!45] (11.6,2) rectangle (13.6,3); \draw[black!45] (12.6,2) -- (12.6,3);
-    \node at (12.6,3.6) {\texttt{b}\ $(2,)$};
-    \node[lbl,anchor=west,align=left] at (-0.5,-0.8) {濃い行: 1 個のデータ $\vx^{(i)}$ と、その結果 $\vy^{(i)}$\\濃い橙: $\mW$ の 1 行は、\texttt{W.T} では 1 列になる};
+  \node[font=\footnotesize] at (2.15,3) {$=$};
+  \begin{scope}[shift={(2.9,2)}]
+    \fill[figorange] (0,0) rectangle (3,2); \fill[bookorange!55] (0,1) rectangle (3,2);
+    \draw[black!45,step=1] (0,0) grid (3,2);
+    \foreach \v/\x/\y in {1/0/1,0/1/1,-1/2/1,2/0/0,1/1/0,0/2/0} \node at (\x+0.5,\y+0.5) {$\v$};
+    \node[font=\footnotesize,anchor=south,align=center] at (1.5,2.1) {重み行列\\$\mW$\ $(2,3)$};
   \end{scope}
+  \begin{scope}[shift={(6.6,1.5)}]
+    \fill[bookblue!45] (0,0) rectangle (1,3);
+    \draw[black!45,step=1] (0,0) grid (1,3);
+    \foreach \v/\y in {1/2,2/1,3/0} \node at (0.5,\y+0.5) {$\v$};
+    \node[font=\footnotesize,anchor=south,align=center] at (0.5,3.1) {入力\\$\vx$};
+  \end{scope}
+  \node[font=\footnotesize] at (8.3,3) {$+$};
+  \begin{scope}[shift={(9.0,2)}]
+    \fill[figpurple] (0,0) rectangle (1.4,2); \fill[bookpurple!45] (0,1) rectangle (1.4,2);
+    \draw[black!45] (0,0) rectangle (1.4,2); \draw[black!45] (0,1) -- (1.4,1);
+    \node[font=\tiny] at (0.7,1.5) {$0.5$}; \node[font=\tiny] at (0.7,0.5) {$-0.5$};
+    \node[font=\footnotesize,anchor=south,align=center] at (0.7,2.1) {バイアス\\$\vb$};
+  \end{scope}
+  % 右: コード Y = X @ W.T + b（数はコード 2.8 と同じ）
+  \begin{scope}[shift={(12.2,0)}]
+    \node[anchor=west,font=\footnotesize] at (-0.5,7.0) {\textbf{コード}：データ 1 個は 1 行};
+    \begin{scope}[shift={(0,1)}]
+      \fill[figgreen] (0,0) rectangle (2.8,4); \fill[bookgreen!50] (0,3) rectangle (1.4,4);
+      \draw[black!45] (0,0) rectangle (2.8,4); \draw[black!45] (1.4,0) -- (1.4,4);
+      \foreach \y in {1,2,3} \draw[black!45] (0,\y) -- (2.8,\y);
+      \foreach \v/\w/\y in {-1.5/3.5/3,-1.5/12.5/2,-1.5/21.5/1,1.5/1.5/0}{
+        \node[font=\tiny] at (0.7,\y+0.5) {$\v$}; \node[font=\tiny] at (2.1,\y+0.5) {$\w$};}
+      \node[font=\footnotesize] at (1.4,4.6) {\texttt{Y}\ $(4,2)$};
+    \end{scope}
+    \node[font=\footnotesize] at (3.5,3) {$=$};
+    \begin{scope}[shift={(4.2,1)}]
+      \fill[figblue] (0,0) rectangle (3,4); \fill[bookblue!45] (0,3) rectangle (3,4);
+      \draw[black!45,step=1] (0,0) grid (3,4);
+      \foreach \v/\x/\y in {1/0/3,2/1/3,3/2/3,4/0/2,5/1/2,6/2/2,7/0/1,8/1/1,9/2/1,1/0/0,0/1/0,0/2/0} \node at (\x+0.5,\y+0.5) {$\v$};
+      \node[font=\footnotesize] at (1.5,4.6) {\texttt{X}\ $(4,3)$};
+    \end{scope}
+    \node[font=\footnotesize] at (7.9,3) {\texttt{@}};
+    \begin{scope}[shift={(8.6,1.5)}]
+      \fill[figorange] (0,0) rectangle (2,3); \fill[bookorange!55] (0,0) rectangle (1,3);
+      \draw[black!45,step=1] (0,0) grid (2,3);
+      \foreach \v/\x/\y in {1/0/2,0/0/1,-1/0/0,2/1/2,1/1/1,0/1/0} \node at (\x+0.5,\y+0.5) {$\v$};
+      \node[font=\footnotesize] at (1,3.6) {\texttt{W.T}\ $(3,2)$};
+    \end{scope}
+    \node[font=\footnotesize] at (11.35,3) {$+$};
+    \begin{scope}[shift={(12.1,2.5)}]
+      \fill[figpurple] (0,0) rectangle (2.8,1); \fill[bookpurple!45] (0,0) rectangle (1.4,1);
+      \draw[black!45] (0,0) rectangle (2.8,1); \draw[black!45] (1.4,0) -- (1.4,1);
+      \node[font=\tiny] at (0.7,0.5) {$0.5$}; \node[font=\tiny] at (2.1,0.5) {$-0.5$};
+      \node[font=\footnotesize] at (1.4,1.6) {\texttt{b}\ $(2,)$};
+    \end{scope}
+  \end{scope}
+  \node[lbl,anchor=west,font=\footnotesize] at (-0.5,0.1) {濃いマスの計算: $1\times 1+2\times 0+3\times(-1)=-2$、これに $0.5$ を足して $-1.5$};
 \end{tikzpicture}
-\caption{数式の書き方（左）と、コードの書き方（右）。数式ではベクトルを縦に置き、行列を左から掛ける。
-コードでは、データを 1 個 1 行として縦に積み、転置した行列を右から掛ける。}
+\caption{数式の書き方（左）と、コードの書き方（右）。数は\coderef{code:pt-rows}のもので、左は 1 個目のデータ $\vx=(1,2,3)$ の計算である。
+濃いマスは、本文で確かめた 1 マスである。$\mW$ の先頭の行 $(1,0,-1)$ は、\texttt{W.T} では先頭の列になっている。}
 \label{fig:pt-rows}
 \end{figure}
 
 両方の書き方で計算して、一致することを確かめます。
 
-\snippet{1 個ずつの計算と、まとめての計算}{code:pt-rows}{ch02/matmul.py}{rows}
+% 図をはさんでコードの箱が分かれないよう、この箱だけ分割しない
+{\tcbset{codebox/.append style={unbreakable}}\snippet{1 個ずつの計算と、まとめての計算}{code:pt-rows}{ch02/matmul.py}{rows}\par}
 
 \outputfile{ch02/out/matmul_2.txt}
 
@@ -825,6 +1169,44 @@ $\mX$ の先頭の行（1 個目のデータ）を $(1,2,3)$、$\mW$ の先頭�
 1 個目は、$\vx=(1,2,3)$ に対して $\mW\vx=(1-3,\ 2+2)=(-2,4)$、これに $\vb=(0.5,-0.5)$ を足して $(-1.5,3.5)$ です。
 10 行目が、式\eqref{eq:pt-rows}の右側です。\code{for} 文なしの 1 行で、4 個まとめて計算します。
 出力の後半の行列は、行ごとに見ると、前半の 4 行と完全に一致しています。
+
+% [figpass] 案 4: データの個数 N を変えたときの、1 個あたりの時間
+答えは同じでも、速さはどれだけ違うのでしょうか。
+\file{ch02/sweep_batch.py} で、データの個数 $N$ を 1 から 1,024 まで 6 通りに変え、データ 1 個あたりの時間を測りました（\figref{fig:pt-sweep-batch}）。
+重み行列 $\mW$ は、基盤モデルにある形 $(576,192)$ と同じ大きさにしました。
+1 個ずつの計算は、数式どおりの \code{W @ x + b} と、\code{x} を 1 行の行列にした \code{x[None] @ W.T + b} の 2 通りを測りました。
+1 個ずつの 2 本の線は、$N$ を増やしてもほぼ水平のままです（$N=1$ から 1,024 までで、下がるのは 1 割ほどです）。何個あっても、1 個ずつ計算する限り、1 個あたりの手間は変わらないからです。
+まとめて計算する線だけが、$N$ が増えるほど下がり、$N=1{,}024$ では 1 個あたり 3.5 マイクロ秒でした。数式どおりの書き方の約 34 倍、1 行の形にした 1 個ずつの約 9 倍の速さです。
+（$N=1$ でも、1 個ずつの 2 本が離れています。行列とベクトルの積と、行列どうしの積は、PyTorch の中では別の関数で計算され、この環境では速さが違いました。また、$N=1$ では、まとめての線（25.9 マイクロ秒）と 1 行の形の線（36.4 マイクロ秒）も、同じ式の計算なのに約 1.4 倍離れています。1 個ずつの側は、計算のほかに、\code{for} 文でデータを 1 個ずつ取り出し、結果を \code{torch.cat} でつなぐ手間を含むからです。）
+後の章で、データをバッチにまとめて計算するのは、このためでもあります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xmode=log,ymode=log,log basis x=2,width=0.9\linewidth,height=0.4\linewidth,
+  xlabel={データの個数 $N$},ylabel={1 個あたりの時間 [マイクロ秒]},
+  xmin=0.7,xmax=4000,ymin=2,ymax=6000,
+  xtick={1,4,16,64,256,1024},xticklabels={1,4,16,64,256,1024},
+  ytick={2,5,10,20,50,100,200,500,1000},yticklabels={2,5,10,20,50,100,200,500,1000},
+  legend style={at={(0.98,0.97)},anchor=north east,font=\footnotesize},legend cell align=left]
+\addplot[bookaccent,mark=*,mark size=1.6pt] table[col sep=comma,x=N,y=loop_us]{code/ch02/out/sweep_batch.csv};
+\addlegendentry{1 個ずつ（\texttt{W @ x + b}）}
+\addplot[bookorange,mark=diamond*,mark size=2.2pt] table[col sep=comma,x=N,y=looprow_us]{code/ch02/out/sweep_batch.csv};
+\addlegendentry{1 個ずつ（\texttt{x[None] @ W.T + b}）}
+\addplot[bookblue,mark=square*,mark size=1.6pt] table[col sep=comma,x=N,y=batch_us]{code/ch02/out/sweep_batch.csv};
+\addlegendentry{まとめて（\texttt{X @ W.T + b}）}
+% N = 1024 の値（code/ch02/out/sweep_batch.txt）
+\node[anchor=west,font=\scriptsize] at (axis cs:1200,117.1) {117};
+\node[anchor=west,font=\scriptsize] at (axis cs:1200,30.6) {31};
+\node[anchor=west,font=\scriptsize] at (axis cs:1200,3.46) {3.5};
+\end{axis}
+\end{tikzpicture}
+\caption{まとめて計算すると、データ 1 個あたりの時間が短くなる（両軸とも対数目盛）。変えたのはデータの個数 $N$（6 通り）。
+固定したもの: 重み行列 $\mW$ の形 $(576,192)$、型 \texttt{float32}、CPU のコア 1 個。各点は、30〜200 回測って最も速かった回の値で、右端の数は $N=1{,}024$ での値（マイクロ秒）である。
+1 個ずつの 2 本は $N$ によらずほぼ水平で、まとめての線だけが下がる。}
+\label{fig:pt-sweep-batch}
+\end{figure}
+% [/figpass]
 
 この約束は、PyTorch 自身も使っています。
 \secref{sec:pt-tensor}のモデルの一覧にあった形 $(576,192)$ のテンソルは、192 個の数を 576 個の数に移す行列 $\mW$ です。
@@ -842,15 +1224,14 @@ PyTorch は、$\mW$ を数式と同じ「（出力の個数, 入力の個数）�
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=4.3mm,y=4.3mm,font=\footnotesize]
+\begin{tikzpicture}[x=4.0mm,y=4.0mm,font=\footnotesize]
   \foreach \k in {2,1,0}{
     \begin{scope}[shift={(0.55*\k,0.55*\k)}]
       \fill[figblue] (0,0) rectangle (3,5);
       \draw[black!45,step=1] (0,0) grid (3,5);
     \end{scope}}
   \node at (2,6.9) {\texttt{H}\ \ $(8,5,3)$};
-  \node[lbl,anchor=east] at (-0.2,2.5) {5 行};
-  \node[lbl] at (1.5,-0.6) {3 列};
+  \node[lbl] at (1.5,-0.6) {5 行 3 列};
   \draw[arr,bookgreen] (3.25,-0.1) -- (4.35,1.0);
   \node[lbl,anchor=west,text=bookgreen] at (3.9,-0.1) {8 枚};
   \node at (5.0,3) {\texttt{@}};
@@ -858,8 +1239,7 @@ PyTorch は、$\mW$ を数式と同じ「（出力の個数, 入力の個数）�
     \fill[figorange] (0,0) rectangle (2,3);
     \draw[black!45,step=1] (0,0) grid (2,3);
     \node at (1,3.7) {\texttt{W.T}\ \ $(3,2)$};
-    \node[lbl,anchor=east] at (-0.1,1.5) {3 行};
-    \node[lbl] at (1,-0.6) {2 列};
+    \node[lbl] at (1,-0.6) {3 行 2 列};
   \end{scope}
   \node at (10.6,3) {$=$};
   \begin{scope}[shift={(12,0)}]
@@ -869,28 +1249,28 @@ PyTorch は、$\mW$ を数式と同じ「（出力の個数, 入力の個数）�
         \draw[black!45,step=1] (0,0) grid (2,5);
       \end{scope}}
     \node at (1.6,6.9) {結果\ \ $(8,5,2)$};
-    \node[lbl] at (1,-0.6) {2 列};
+    \node[lbl] at (1,-0.6) {5 行 2 列};
   \end{scope}
   \node[anchor=west,align=left] at (16.6,3.2) {形の読み方\\[0.5mm]
     $(8,\ \underline{5,\ 3})$\ \ \texttt{@}\ \ $(\underline{3,\ 2})$\ $\to$\ $(8,\ \underline{5,\ 2})$\\[0.5mm]
     下線の部分: 1 枚ごとの行列積\\左端の 8: 行列が何枚あるか};
 \end{tikzpicture}
 \caption{3 階のテンソルと行列積。\texttt{@} は、最後の二つの軸（5 行 3 列）を 1 枚の行列とみなし、8 枚のそれぞれに同じ \texttt{W.T} を掛ける。
-左端の軸の長さ 8 は、結果にそのまま残る。図では、8 枚のうち 3 枚だけを描いた。}
+左端の軸の長さ 8 は、結果にそのまま残る。8 枚のうち 3 枚だけを描き、\texttt{+ b} は省いた。灰色の字は、手前の 1 枚の大きさである。}
 \label{fig:pt-batch-matmul}
 \end{figure}
 
-この節では、行列積の形の規則と、「数式は列ベクトル、コードは 1 データ 1 行」という約束を学びました。
+この節では、行列積の形の規則と、「コードでは 1 データ 1 行」の約束を学びました。
 
-\section{自動微分のさわり}\label{sec:pt-autograd}
+\section{自動微分の使い方}\label{sec:pt-autograd}
 
 モデルの計算に必要な道具は、前節まででそろいました。残るのは、学習のための道具です。
 \secref{sec:pt-tensor}で、学習とは「テンソルの中の数を少しずつ書き換える作業」だと述べました。
 では、どの数を、どちら向きに書き換えればよいのでしょうか。
 それを教えてくれるのが、各変数での偏微分を並べた勾配でした（\chapref{ch:math}）。問題は、その求め方です。
 \chapref{ch:math}の数値微分は、変数を 1 個だけ少し動かして、関数の値がどれだけ変わるかを見る方法でした。
-変数 1 個につき関数を 2 回計算するので、変数が 260 万個あれば 520 万回です。とても使えません。
-かといって、260 万個の偏微分の式を手で導くこともできません。
+変数 1 個につき関数を 2 回計算するので、変数が 260 万個あれば 520 万回で、とても使えません。
+260 万個の偏微分の式を手で導くこともできません。
 PyTorch は、この微分を\textbf{自動で}求めてくれます。この節では、その使い方だけを学びます。
 
 小さな例で試します。
@@ -911,7 +1291,7 @@ $x_2$ で偏微分すると $\pd{f}{x_2}=3x_1$ で、$3\times 2=6$ です。勾�
 2 行目で、$f$ の式をそのまま書きます。\code{x[0]} が $x_1$、\code{x[1]} が $x_2$ です。
 出力の 1 行目では、値 10（$2^{2}+3\times 2\times 1$）の後ろに \code{grad_fn=<AddBackward0>} が付いています。
 「この値は足し算の結果として作られた」という記録です。
-PyTorch は、印の付いたテンソルを使った計算を、裏ですべて記録しています。
+PyTorch は、印の付いたテンソルを使った計算を、自動ですべて記録しています。
 
 \textbf{(3) \code{backward()} を呼ぶ}。
 4 行目の \code{f.backward()} で、PyTorch は記録を逆向きにたどり、$f$ を \code{x} の各成分で偏微分します。
@@ -920,30 +1300,123 @@ PyTorch は、印の付いたテンソルを使った計算を、裏ですべて
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize]
-  \node[box,minimum width=24mm,align=center] (x) at (0,0) {\texttt{x}\\$(2,\ 1)$};
+  \node[box,minimum width=24mm,align=center] (x) at (0,0) {\texttt{x = [2., 1.]}\\形 $(2,)$};
   \node[plainbox,minimum width=30mm,minimum height=9mm,align=center] (op) at (44,0) {$x_1^{2}+3x_1x_2$};
-  \node[greenbox,minimum width=20mm,align=center] (f) at (86,0) {\texttt{f}\\$10$};
+  \node[greenbox,minimum width=20mm,align=center] (f) at (86,0) {\texttt{f = 10.}\\数 1 個};
   \draw[arr] (x) -- (op); \draw[arr] (op) -- (f);
-  \node[lbl] at (0,9) {(1) 印を付ける};
-  \node[lbl,text=bookblue] at (58,9) {(2) 普通に計算する（手順が記録される）};
-  \node[redbox,minimum width=24mm,align=center] (g) at (0,-16) {\texttt{x.grad}\\$(7,\ 6)$};
-  \draw[darr,draw=bookaccent] (f.south) |- (g.east);
-  \node[lbl,text=bookaccent] at (48,-12.5) {(3) \texttt{f.backward()}: 記録を逆向きにたどる};
-  \node[lbl,anchor=west] at (14,-19.5) {\texttt{x} と同じ形};
+  \node[lbl] at (0,8) {(1) 印を付ける};
+  \node[lbl,text=bookblue] at (58,8) {(2) 普通に計算する（手順が記録される）};
+  \node[redbox,minimum width=24mm,align=center] (g) at (0,-14) {\texttt{x.grad = [7., 6.]}\\形 $(2,)$};
+  % 赤い破線は、f から記録（真ん中の箱）を通って x.grad へ戻る
+  \draw[darr,draw=bookaccent] (f.south) -- ++(0,-3) -| ([xshift=5mm]op.south);
+  \draw[darr,draw=bookaccent] ([xshift=-5mm]op.south) |- (g.east);
+  \node[lbl,text=bookaccent,anchor=north west] at (47,-9) {(3) \texttt{f.backward()}: 記録を逆向きにたどる};
+  \node[lbl,anchor=west] at (18,-17.3) {\texttt{x.grad} の形は、\texttt{x} と同じ $(2,)$};
 \end{tikzpicture}
 \caption{自動微分の使い方。印を付けた変数から値を計算すると、手順が記録される。
-\texttt{backward()} は、その記録を逆向きにたどって勾配を求める。}
+\texttt{backward()} は、その記録を逆向きにたどって勾配を求める。箱の中の角括弧は値、丸括弧は形である。}
 \label{fig:pt-autograd}
 \end{figure}
+
+% [figpass] 案 5: 記録の中身（計算グラフ）
+記録の中身を、計算の段ごとに描くと、\figref{fig:pt-autograd-graph}になります。
+左から右へ（黒い矢印）が普通の計算で、出力の \code{AddBackward0} は、右端の「足す」の段の記録です。
+\code{backward()} は、右から左へ、各段の偏微分を掛けながら戻ります（\chapref{ch:math}の連鎖律）。図の赤い数が、その結果です。
+$x_1$ は「2 乗」と「3 倍」の 2 か所で使われているので、2 か所から戻ってきた 4 と 3 が足されて、7 になります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
+  v/.style={box,minimum width=17mm,minimum height=9mm,align=center,inner sep=1pt},
+  g/.style={font=\footnotesize,text=bookaccent}]
+  \node[v] (x1) at (0,9) {$x_1$\\$2$};
+  \node[v] (x2) at (0,-9) {$x_2$\\$1$};
+  \node[v,fill=figgray,draw=black!55] (a) at (34,16) {2 乗\\$x_1^{2}=4$};
+  \node[v,fill=figgray,draw=black!55] (d) at (34,1) {3 倍\\$3x_1=6$};
+  \node[v,fill=figgray,draw=black!55] (e) at (68,-4) {掛ける\\$6\times x_2=6$};
+  \node[v,fill=figgreen,draw=bookgreen] (f) at (102,6) {足す\\$f=4+6=10$};
+  \draw[arr] (x1) -- (a); \draw[arr] (x1) -- (d); \draw[arr] (d) -- (e);
+  \draw[arr] (x2) -- (e); \draw[arr] (a) -- (f); \draw[arr] (e) -- (f);
+  % 赤: f をその値で偏微分した値（backward() で求まる）
+  \node[g,anchor=south] at (x1.north) {$4+3=7$};
+  \node[g,anchor=north] at (x2.south) {$6$};
+  \node[g,anchor=south] at (a.north) {$1$};
+  \node[g,anchor=south west] at ([xshift=0.5mm]d.east) {$1\times x_2=1$};
+  \node[g,anchor=north] at (e.south) {$1$};
+  \node[g,anchor=south] at (f.north) {$1$（出発点）};
+  \draw[->,thick,bookaccent,dashed] (102,-23) -- (0,-23)
+    node[pos=0.5,below,g] {\texttt{f.backward()}: 右から左へ、偏微分を掛けながら戻る};
+\end{tikzpicture}
+\caption{\coderef{code:pt-autograd}の計算の記録（計算グラフ）。箱の中の黒い数は、普通の計算の値。
+赤い数は、$f$ をその値で偏微分した値で、\texttt{backward()} が右から左へ求める。$x_1$ と $x_2$ の赤い数が \texttt{x.grad} の $(7,6)$ である。
+\texttt{x[0]} などで成分を取り出す段は省いた。}
+\label{fig:pt-autograd-graph}
+\end{figure}
+% [/figpass]
 
 微分の式は、一度も書いていません。
 計算の手順を記録し、そこから微分を機械的に求めるこの仕組みを、\term{自動微分}{automatic differentiation}と呼びます（PyTorch での名前は autograd です）。
 \chapref{ch:math}の数値微分で検算すると、$7.00000000002$ と $6.000000000004$ で、自動微分の答えと一致しました（\file{ch02/autograd.py}）。
-数値微分は、変数 2 個のために $f$ を 4 回計算しました。
-自動微分は、\code{backward()} の 1 回で、全部の変数の偏微分を求めます。変数が 260 万個になっても 1 回で、しかも近似ではありません。
-なぜそんなことができるのかは、\chapref{ch:nn}で、自分の手で作りながら解き明かします。
+数値微分は、変数の数の 2 倍だけ、$f$ を計算し直します（変数 2 個なら 4 回、260 万個なら 520 万回）。
+自動微分は、変数がいくつあっても、$f$ を 1 回計算し、その記録を逆向きに 1 回たどるだけで、たどる手間は、$f$ の計算の数倍に収まります。
+しかも、差で近似する数値微分と違って、微分の公式どおりに計算します（残るのは、\code{float32} の丸めの誤差だけです）。
 
-自動微分には、知らないと必ずつまずく決まりが三つあります。
+% [figpass] 案 7: 変数の個数 n を変えたときの、数値微分と自動微分の時間
+この違いを、\file{ch02/sweep_grad.py} で測りました（\figref{fig:pt-sweep-grad}）。
+関数は、上の $f$ を $n$ 個の変数に広げた $f(\vx)=\sum_{i=1}^{n-1}\left(x_i^{2}+3x_ix_{i+1}\right)$ です（$n=2$ なら上の $f$ と同じです）。
+変数の個数 $n$ を、10 から 10 万まで 5 通りに変えました。
+数値微分の線は、$n$ が 10 倍になるたびに、およそ 10 倍か、それ以上の時間に増え、$n=10$ 万では約 44 秒でした。
+自動微分の線は、$f$ を 1 回計算するだけの線の少し上を、ほぼ平行に進みます。どの $n$ でも、$f$ だけの約 4〜6 倍の時間で、$n=10$ 万でも約 0.8 ミリ秒でした。
+二つの方法の答えの差は、最大でも $2\times 10^{-5}$ で、同じ勾配を求めています。
+三つの求め方を、PyTorch で使う立場から\tabref{tab:pt-grad-methods}にまとめます（正確さや手間の数学としての比較は、\chapref{ch:math}の\tabref{tab:math-grad-methods}です）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xmode=log,ymode=log,width=0.9\linewidth,height=0.42\linewidth,
+  xlabel={変数の個数 $n$},ylabel={時間 [ミリ秒]},
+  xmin=6,xmax=300000,ymin=0.01,ymax=1000000,
+  xtick={10,100,1000,10000,100000},xticklabels={10,100,1000,1 万,10 万},
+  ytick={0.01,0.1,1,10,100,1000,10000,100000,1000000},
+  legend style={at={(0.02,0.97)},anchor=north west,font=\footnotesize},legend cell align=left]
+\addplot[bookaccent,mark=*,mark size=1.6pt] table[col sep=comma,x=n,y=numeric_ms]{code/ch02/out/sweep_grad.csv};
+\addlegendentry{数値微分（$f$ を $2n$ 回計算）}
+\addplot[bookblue,mark=square*,mark size=1.6pt] table[col sep=comma,x=n,y=auto_ms]{code/ch02/out/sweep_grad.csv};
+\addlegendentry{自動微分（\texttt{backward()} まで）}
+\addplot[bookgreen,mark=triangle*,mark size=2pt,dashed] table[col sep=comma,x=n,y=f_ms]{code/ch02/out/sweep_grad.csv};
+\addlegendentry{$f$ を 1 回計算するだけ}
+% n = 10 万 の値（code/ch02/out/sweep_grad.txt）
+\node[anchor=east,font=\scriptsize] at (axis cs:80000,44482) {約 44 秒};
+\node[anchor=south east,font=\scriptsize] at (axis cs:100000,0.95) {0.80 ミリ秒};
+\end{axis}
+\end{tikzpicture}
+\caption{勾配 1 回を求める時間（両軸とも対数目盛）。変えたのは変数の個数 $n$（5 通り）。
+固定したもの: 関数 $f$、型 \texttt{float64}（数値微分の丸めの誤差を小さくするため）、CPU のコア 1 個。各点は、数値微分は 1〜3 回、ほかは 50 回測って最も速かった回の値である。
+数値微分の線は $n$ とともに上がり続け、自動微分の線は、$f$ だけの線の 4〜6 倍の高さを保つ。}
+\label{fig:pt-sweep-grad}
+\end{figure}
+
+\begin{table}[tbp]
+\centering
+\caption{勾配の三つの求め方を、PyTorch で使う立場から比べたもの。やり方・手間・誤差の数学としての比較は、\chapref{ch:math}の\tabref{tab:math-grad-methods}にある。時間は、\figref{fig:pt-sweep-grad}の $n=10$ 万での実測である。}
+\label{tab:pt-grad-methods}
+\footnotesize
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{19mm}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+ & 手で式を導く & 数値微分 & 自動微分 \\
+\midrule
+PyTorch で書くこと & 導いた式を、テンソルの計算として自分で書く & 変数を 1 個ずつ前後に動かして $f$ を呼ぶループを、自分で書く & \code{requires_grad=True} を付けて $f$ を計算し、\code{backward()} を呼んで \code{.grad} を読む \\
+$f$ の計算の回数 & ―（導いた式を計算する） & 変数の個数の 2 倍 & 1 回（たどる分も合わせて、$f$ だけの 4〜6 倍の時間） \\
+$n=10$ 万での時間 & ― & 約 44 秒 & 約 0.8 ミリ秒 \\
+弱点 & 変数が多いと、式を導けない & 変数が多いと遅い & 記録のためにメモリを使う \\
+本書での使い方 & 小さな例の手計算（この節の $(7,6)$） & 自動微分の答えの検算 & 学習のすべて \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% [/figpass]
+なぜそんなことができるのかは、\chapref{ch:nn}で、自分で作りながら確かめます。
+
+自動微分には、知らないとつまずきやすい決まりが三つあります。
 
 一つ目は、\textbf{勾配は上書きではなく、足し込まれる}ことです。
 先ほどの続きで、別の関数 $g=x_1^{2}+x_2^{2}$ の勾配を求めてみます。正しい答えは $(2x_1,2x_2)=(4,2)$ です。
@@ -955,6 +1428,35 @@ PyTorch は、印の付いたテンソルを使った計算を、裏ですべて
 ところが、2 行目の \code{g.backward()} のあとの \code{x.grad} は、出力の 1 行目のとおり $(11,8)$ になります。
 \code{x.grad} に残っていた前回の $(7,6)$ に、今回の $(4,2)$ が足されたのです。$7+4=11$、$6+2=8$ です。
 4 行目の \code{x.grad.zero_()} で勾配を 0 に戻し、5〜6 行目で同じ計算をやり直すと、出力の 2 行目のとおり、正しく $(4,2)$ になります。
+% [figpass] 案 6: x.grad のコマ送り
+\figref{fig:pt-grad-frames}は、この間の \code{x.grad} の中身を、コマ送りで並べたものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
+  c/.style={draw=black!45,minimum width=8mm,minimum height=6mm,inner sep=0pt}]
+  \foreach \k/\cmd/\ga/\gb/\cl/\nt in {
+      1/{f.backward()}/7/6/figorange/{空から $(7,6)$ が入る},
+      2/{g.backward()}/11/8/figred/{$(4,2)$ が足される},
+      3/{x.grad.zero\_()}/0/0/figgray/{0 に戻る},
+      4/{g.backward()}/4/2/figgreen/{$(4,2)$ が足される}}{
+    \begin{scope}[shift={({32*(\k-1)},0)}]
+      \draw[black!30,rounded corners=2pt] (0,-11) rectangle (30,13);
+      \node[anchor=north west,font=\scriptsize] at (1,12.2) {コマ \k};
+      \node[font=\scriptsize] at (15,7.2) {\texttt{\cmd}};
+      \node[anchor=east,font=\scriptsize] at (12.2,1) {\texttt{x.grad}};
+      \node[c,fill=\cl] at (16.6,1) {\ga}; \node[c,fill=\cl] at (24.6,1) {\gb};
+      \node[lbl,font=\scriptsize] at (15,-5) {\nt};
+    \end{scope}}
+  \node[font=\scriptsize,text=bookaccent] at (47,-8.6) {正しい $(4,2)$ ではない};
+  \draw[arr] (0,-14) -- (126,-14) node[pos=0.5,below,lbl,font=\scriptsize] {実行の順};
+\end{tikzpicture}
+\caption{\texttt{x.grad} の中身の移り変わり（\coderef{code:pt-autograd}の 4 行目、\coderef{code:pt-accumulate}の 2、4、6 行目）。
+各コマは、その行を実行した直後の値で、色は、前のコマから変わったマスである。
+コマ 2 では、前の $(7,6)$ に $(4,2)$ が足されて $(11,8)$ になる。コマ 3 で 0 に戻すと、コマ 4 では正しい $(4,2)$ になる。}
+\label{fig:pt-grad-frames}
+\end{figure}
+% [/figpass]
 \code{zero_} の末尾の下線は、「新しいテンソルを作らず、その場で中身を書き換える」操作の印です。
 足し込む理由は、\chapref{ch:nn}で分かります。
 学習では \code{backward()} を何千回も呼ぶので、勾配を 0 に戻す 1 行が、\chapref{ch:ml}以降の学習のコードに必ず現れます。
@@ -963,22 +1465,24 @@ PyTorch は、印の付いたテンソルを使った計算を、裏ですべて
 字下げした範囲では、PyTorch は計算の記録を取りません。その分、メモリを使わず、速く動きます。
 学習済みのモデルで予測だけをするときに使います。記録がないので、その結果に \code{backward()} は呼べません。
 
-三つ目は、\textbf{出発点は数 1 個、勾配の形は変数と同じ}という決まりです。
-\code{backward()} を呼ぶ相手は、数 1 個のテンソルに限ります。変数はどんな形でもよく、形 $(2,3)$ の行列 \code{W} なら、勾配 \code{W.grad} も形 $(2,3)$ です。
-\code{W.grad[i, j]} は、「\code{W[i, j]} を少し増やすと、値がどれだけ増えるか」を表します。
+三つ目は、\textbf{\code{backward()} を呼ぶ相手は数 1 個、勾配の形は変数と同じ}という決まりです。
+本書では、\code{backward()} は、損失のような、数 1 個のテンソルにだけ呼びます。
+勾配は「どの変数をどちらに動かせば、その数が減るか」を表すので、減らしたい量が、数 1 個に決まっている必要があるからです。
+変数はどんな形でもよく、形 $(2,3)$ の行列 \code{W} なら、勾配 \code{W.grad} も形 $(2,3)$ です。
+\code{W.grad[i, j]} は、「\code{W[i, j]} を少しだけ増やしたとき、損失が、増やした量の何倍だけ増えるか」を表します。
 
-この節では、印を付け、普通に計算し、\code{backward()} を呼ぶという、自動微分の使い方を学びました。
+この節では、印を付けて計算し、\code{backward()} を呼ぶ、自動微分の使い方を学びました。
 
 \section{仕上げ：エラーの読み方と、本物のモデルでの腕試し}\label{sec:pt-final}
 
-道具はすべて出そろいました。最後に、二つの仕上げをします。
+道具は出そろいました。最後に、二つの仕上げをします。
 一つは、腕試しです。この章の道具だけで書いた softmax と交差エントロピーは、本物の基盤モデルに通用するでしょうか。
-その前に、もう一つの仕上げとして、形のエラーに出会ったときの直し方を見ておきます。
+その前に、もう一つの仕上げとして、形のエラーの直し方を見ておきます。
 
 \subsection*{形のエラーに出会ったら}
 \laterread{自分でコードを動かして、形のエラーが出たときに戻ってくれば足ります。あとの腕試しに出てくる \code{assert} は、「条件が成り立たなければ、その場で止まる」文だと知っていれば読めます。}
 
-\tabref{tab:pt-errors}は、よくある間違いをわざと起こし、出てきたエラー文を集めたものです（\file{ch02/shape_errors.py}）。
+\tabref{tab:pt-errors}は、よくある間違いをわざと起こし、出てきたエラー文のうち、形と型に関する 4 つを集めたものです（\file{ch02/shape_errors.py}）。
 英語の長い文に見えますが、読むべき場所は決まっています。
 \textbf{数字を探し、自分のテンソルの形と見比べる}のです。
 たとえば 1 番目の \code{(4x3 and 2x3)} は、形 $(4,3)$ と $(2,3)$ の行列積をしようとして、内側の 3 と 2 が合わなかった、という意味です。\secref{sec:pt-matmul}の \code{X @ W.T} で、転置を付け忘れるとこうなります。
@@ -1001,28 +1505,31 @@ PyTorch は、印の付いたテンソルを使った計算を、裏ですべて
 \end{tabularx}
 \end{table}
 
-\secref{sec:pt-broadcast}で見たとおり、本当に怖いのは、エラーにならない間違いでした。
+\secref{sec:pt-broadcast}で見たとおり、本当に困るのは、エラーにならない間違いでした。
 これを防ぐ道具が、Python の \code{assert} 文です。
-\code{assert 条件, メッセージ} と書くと、条件が成り立たないときに、メッセージを表示してその場でプログラムが止まります。
-関数の入口に \code{assert y.shape == (N,)} のような形の約束を書いておけば、形を取り違えた瞬間に気づけます。
+\code{assert 条件, メッセージ} と書くと、条件が成り立たないときに、メッセージを表示して、その場で止まります。
+関数の入口に \code{assert y.shape == (N,)} のような形の約束を書けば、形を取り違えた瞬間に気づけます。
 
 \subsection*{腕試し：softmax と交差エントロピーを書く}
 \skimread{結論は「この章の道具で書いた数行の関数が、本物のモデルの損失 3.416 を、表示された全桁まで再現する」です。初読では、\coderef{code:pt-softmax}と\figref{fig:pt-ce-flow}を見て、最後の出力を確かめれば足ります。\coderef{code:pt-ce-real}を 1 行ずつ追うのは、\chapref{ch:lm}を読むときでかまいません。}
 
 \chapref{ch:math}で、ロジット（確率に直す前のスコア）を確率に直す softmax と、予測の悪さを測る交差エントロピーを学びました。
 そこでは、1 個の予測を扱いました。ここでは、$N$ 個の予測をまとめて計算します。
-それぞれの予測が $V$ 個の候補にロジットを付けているので、ロジットをまとめたテンソル $z$ の形は $(N,V)$ です。
+それぞれの予測が $V$ 個の候補にロジットを付けているので、ロジットをまとめた行列 $\mZ$（コードでは \code{z}）の形は $(N,V)$ です。
+その $n$ 行 $v$ 列の成分（$n$ 番目の予測が、$v$ 番目の候補に付けたロジット）を、$z_{nv}$ と書きます。
 $n$ 番目の予測の正解の番号を $y_n$ とすると、計算したいのは次の二つです。
 \begin{equation}
-p_{nv}=\frac{e^{z_{nv}}}{\sum_{v'=1}^{V}e^{z_{nv'}}},
+p_{nv}=\frac{\exp(z_{nv})}{\sum_{j=1}^{V}\exp(z_{nj})},
 \qquad
 \calL=-\frac{1}{N}\sum_{n=1}^{N}\log p_{n,y_n}
 \label{eq:pt-ce}
 \end{equation}
-左が softmax で、各行のロジットを、0 以上で、足すと 1 になる数に直します。
+左が softmax で、\chapref{ch:math}の式を、行ごとに当てはめたものです（$j$ は、合計のために 1 から $V$ まで動かす番号です）。
+各行のロジットを、0 より大きく、足すと 1 になる数に直します。
 右が損失で、正解の候補に割り当てた確率 $p_{n,y_n}$ の対数を取り、符号を変えて平均します。
 対数を取って符号を変えるのは、\chapref{ch:math}で学んだ、予測の悪さの測り方です。
 正解に確率 1 を付ければ $-\log 1=0$ で、付けた確率が小さいほど、値は大きくなります。
+なお、式では番号を 1 から数え、コードでは 0 から数えます。
 
 \snippet{softmax と交差エントロピー}{code:pt-softmax}{ch02/softmax_ce.py}{functions}
 
@@ -1030,9 +1537,53 @@ p_{nv}=\frac{e^{z_{nv}}}{\sum_{v'=1}^{V}e^{z_{nv'}}},
 4 行目の \code{e.sum(dim=-1, keepdim=True)} は、最後の軸（候補の軸）をつぶして、行ごとの合計を求めます。
 \code{keepdim=True} なので、形は $(N,1)$ です。
 形 $(N,V)$ を形 $(N,1)$ で割るので、ブロードキャストにより、各行がその行の合計で割られます。
-なお、この素朴な書き方には弱点があります。
-ロジットが大きいと、$e^{z}$ が小数で表せる範囲を超えて、無限大（\code{inf}）になります。
-無限大を無限大で割ると、結果は \code{nan}（数ではない、という印）です（\chapref{ch:math}）。
+% [figpass] 案 8: softmax を 1 段ずつ数で追う
+\figref{fig:pt-softmax-steps}に、小さな数で、この 2 行の計算を 1 段ずつ書き込みました。破線のマスが、ブロードキャストで複製されたとみなされる合計です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=7mm,y=5.4mm,font=\scriptsize,g/.style={text=bookgray}]
+  % z
+  \fill[figblue] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
+  \foreach \v/\x/\y in {1.95/0/1,0.69/1/1,0/2/1,0/0/0,1.10/1/0,1.79/2/0} \node at (\x+0.5,\y+0.5) {\v};
+  \node[font=\footnotesize] at (1.5,2.6) {\texttt{z}\ \ 形 $(2,3)$};
+  % e
+  \begin{scope}[shift={(5,0)}]
+    \fill[figorange] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
+    \foreach \v/\x/\y in {7.0/0/1,2.0/1/1,1.0/2/1,1.0/0/0,3.0/1/0,6.0/2/0} \node at (\x+0.5,\y+0.5) {\v};
+    \node[font=\footnotesize] at (1.5,2.6) {\texttt{e}\ \ 形 $(2,3)$};
+  \end{scope}
+  % s（形 (2,1)）と、複製されたとみなされるマス
+  \begin{scope}[shift={(10,0)}]
+    \fill[figpurple] (0,0) rectangle (1,2);
+    \draw[black!45,dashed,step=1] (1,0) grid (3,2); \draw[black!45,step=1] (0,0) grid (1,2);
+    \node at (0.5,1.5) {10.0}; \node at (0.5,0.5) {10.0};
+    \foreach \x in {1,2} {\node[g] at (\x+0.5,1.5) {10.0}; \node[g] at (\x+0.5,0.5) {10.0};}
+    \node[font=\footnotesize] at (1.5,2.6) {合計\ \ 形 $(2,1)$};
+  \end{scope}
+  % p
+  \begin{scope}[shift={(15,0)}]
+    \fill[figgreen] (0,0) rectangle (3,2); \draw[black!45,step=1] (0,0) grid (3,2);
+    \foreach \v/\x/\y in {0.70/0/1,0.20/1/1,0.10/2/1,0.10/0/0,0.30/1/0,0.60/2/0} \node at (\x+0.5,\y+0.5) {\v};
+    \node[font=\footnotesize] at (1.5,2.6) {\texttt{p}\ \ 形 $(2,3)$};
+  \end{scope}
+  \foreach \x/\t/\l in {3.15/{\texttt{exp}}/{3 行目},8.15/{行の和}/{4 行目},13.15/{割る}/{4 行目}}{
+    \draw[arr] (\x,1) -- (\x+1.7,1);
+    \node[above,font=\scriptsize] at (\x+0.85,1.05) {\t};
+    \node[below,lbl,font=\scriptsize] at (\x+0.85,0.95) {\l};}
+  % 割る数のもう一方: e から p へ（e の各行を、その行の合計で割る）
+  \draw[arr] (6.5,0) -- (6.5,-0.9) -| (16.5,0);
+  \node[below,font=\scriptsize] at (11.5,-0.9) {割る: \texttt{e} の各行を、その行の合計で割る（4 行目）};
+\end{tikzpicture}
+\caption{\coderef{code:pt-softmax}の \texttt{softmax} を、2 個の予測 $\times$ 3 個の候補で 1 段ずつ計算した図。
+合計は \texttt{e.sum(dim=-1, keepdim=True)} で、形が $(2,1)$ なので、破線のマス（灰色の数）のように横に複製され、\texttt{e} の各行が、その行の合計で割られる。
+ロジットは、\texttt{p} が\figref{fig:pt-pick}の確率になるように選んだ（$\log 7\approx 1.95$ など。値は丸めてある）。}
+\label{fig:pt-softmax-steps}
+\end{figure}
+% [/figpass]
+なお、この書き方には弱点があります。
+ロジットが大きいと、$e^{z}$ が、\code{float32} で表せる最大の数（約 $3.4\times 10^{38}$）を超えて、無限大（\code{inf}）になります。\chapref{ch:math}で見たオーバーフローです。
+無限大を無限大で割ると、結果は \code{nan}（数ではない、という印）です。
 この弱点は、章末の演習で直します。
 
 \code{cross_entropy} では、まず 9 行目で、\code{z.shape} の二つの数を \code{N} と \code{V} に受け取ります。
@@ -1040,15 +1591,15 @@ p_{nv}=\frac{e^{z_{nv}}}{\sum_{v'=1}^{V}e^{z_{nv'}}},
 正解 \code{y} は、$N$ 個の番号が並んだ形 $(N,)$ のはずです。
 \code{f"..."} は、波括弧の中の値を埋め込んだ文字列で、止まったときに表示されます。
 11 行目で、先ほどの \code{softmax} を呼び、確率 \code{p} に直します。
-要は、12 行目です。\code{torch.arange(N)} は、$(0,1,\dots,N-1)$ という番号のテンソルです。
+大事なのは 12 行目です。\code{torch.arange(N)} は、$(0,1,\dots,N-1)$ という番号のテンソルです。
 角括弧に、行の番号のテンソルと、列の番号のテンソルを並べて渡すと、\textbf{同じ順番どうしを組にした位置の要素}が取り出されます（\figref{fig:pt-pick}）。
-$N=2$、\code{y} が $(0,2)$ なら、\code{p[0, 0]} と \code{p[1, 2]} の 2 個です。
-範囲を二つ並べたスライス（\figref{fig:pt-indexing}の右）が「かたまり」を取り出したのとは、動きが違います。
+$N=2$、\code{y} が \code{[0, 2]} なら、\code{p[0, 0]} と \code{p[1, 2]} の 2 個です。
+範囲を二つ並べたスライス（\figref{fig:pt-indexing}の上段の右）が「かたまり」を取り出したのとは、動きが違います。
 各行から、正解の列の確率だけを抜き出したことになります。式\eqref{eq:pt-ce}の $p_{n,y_n}$ です。
 13 行目で、対数を取り、符号を変え、平均します。式\eqref{eq:pt-ce}の $\sum$ が、\code{for} 文なしで書けました。
 \figref{fig:pt-pick}の例を、最後まで手で計算してみます。取り出した確率は 0.7 と 0.6 です。
 $-\log 0.7\approx 0.357$、$-\log 0.6\approx 0.511$ なので、損失は $(0.357+0.511)\div 2\approx 0.434$ です。
-\figref{fig:pt-ce-flow}に、形の流れをまとめました。コードを読むときは、このように、形がどう変わるかを 1 行ずつ追ってください。
+\figref{fig:pt-ce-flow}に、形の変わり方をまとめました。コードを読むときは、このように、形がどう変わるかを 1 行ずつ追ってください。
 
 \begin{figure}[tbp]
 \centering
@@ -1059,7 +1610,7 @@ $-\log 0.7\approx 0.357$、$-\log 0.6\approx 0.511$ なので、損失は $(0.35
   \foreach \c in {0,1,2} \node[lbl] at (\c+0.5,2.4) {列 \c};
   \node[lbl,anchor=east] at (-0.1,1.5) {行 0}; \node[lbl,anchor=east] at (-0.1,0.5) {行 1};
   \node[anchor=east] at (-0.9,1) {\texttt{p}\ \ 形 $(2,3)$};
-  \node[anchor=west,align=left] at (3.4,1.1) {行の番号\ \ \texttt{torch.arange(2)}\ $=(0,1)$\\列の番号\ \ \texttt{y}\ $=(0,2)$\\[0.5mm]\texttt{p[torch.arange(2), y]}\ $=(0.7,\ 0.6)$};
+  \node[anchor=west,align=left] at (3.4,1.1) {行の番号\ \ \texttt{torch.arange(2) = [0, 1]}\\列の番号\ \ \texttt{y = [0, 2]}\\[0.5mm]\texttt{p[torch.arange(2), y] = [0.7, 0.6]}};
 \end{tikzpicture}
 \caption{番号のテンソルを二つ並べたインデックス。1 個目どうし、2 個目どうしを組にした位置（行 0・列 0 と、行 1・列 2）の要素が取り出される。}
 \label{fig:pt-pick}
@@ -1070,33 +1621,33 @@ $-\log 0.7\approx 0.357$、$-\log 0.6\approx 0.511$ なので、損失は $(0.35
 \begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
   s/.style={box,minimum width=16mm,minimum height=9mm,align=center,inner sep=1pt},
   o/.style={font=\scriptsize,align=center,text=bookblue}]
-  \node[s] (z) at (0,0) {\texttt{z}\\$(N,V)$};
-  \node[s] (p) at (27,0) {\texttt{p}\\$(N,V)$};
-  \node[s,fill=figorange,draw=bookorange] (pc) at (60,0) {正解の確率\\$(N,)$};
-  \node[s,fill=figorange,draw=bookorange] (l) at (88,0) {$-\log$\\$(N,)$};
+  \node[s] (z) at (0,0) {\texttt{z}\\形 $(N,V)$};
+  \node[s] (p) at (27,0) {\texttt{p}\\形 $(N,V)$};
+  \node[s,fill=figorange,draw=bookorange] (pc) at (60,0) {正解の確率\\形 $(N,)$};
+  \node[s,fill=figorange,draw=bookorange,minimum width=23mm] (l) at (88,0) {予測ごとの損失\\形 $(N,)$};
   \node[s,fill=figred,draw=bookaccent] (m) at (113,0) {損失\\数 1 個};
   \draw[arr] (z) -- (p); \draw[arr] (p) -- (pc); \draw[arr] (pc) -- (l); \draw[arr] (l) -- (m);
   \node[o] at (13.5,8) {softmax};
-  \node[o] at (43.5,9.5) {正解の列を取り出す\\\texttt{p[arange(N), y]}};
-  \node[o] at (74,8) {\texttt{-log}};
-  \node[o] at (100.5,8) {\texttt{mean}};
-  \node[lbl,align=center] at (0,-10.5) {$(2,4096)$\\ロジット};
-  \node[lbl,align=center] at (27,-10.5) {$(2,4096)$\\各行の和は 1};
-  \node[lbl,align=center] at (60,-10.5) {$(0.0019,\ 0.5590)$\\正解の確率};
-  \node[lbl,align=center] at (88,-10.5) {$(6.25,\ 0.58)$\\予測ごとの損失};
-  \node[lbl,align=center] at (113,-10.5) {$3.416$\\平均};
+  \node[o] at (43.5,9.5) {正解の列を取り出す\\\texttt{p[torch.arange(N), y]}};
+  \node[o] at (73,8) {\texttt{-log}};
+  \node[o] at (101.5,8) {\texttt{mean}};
+  \node[lbl,align=center] at (0,-10.5) {形 $(2,4096)$\\ロジット};
+  \node[lbl,align=center] at (27,-10.5) {形 $(2,4096)$\\各行の和は 1};
+  \node[lbl,align=center] at (60,-10.5) {値 \texttt{[0.0019, 0.5590]}\\正解の確率};
+  \node[lbl,align=center] at (88,-10.5) {値 \texttt{[6.25, 0.58]}\\予測ごとの損失};
+  \node[lbl,align=center] at (113,-10.5) {値 \texttt{3.416}\\平均};
 \end{tikzpicture}
-\caption{交差エントロピーの計算での、形の流れ。下の段は、基盤モデルに「どうも仕方がない。」を与えたときの実際の値である。}
+\caption{交差エントロピーの計算での、形の変わり方。下の段は、基盤モデルに「どうも仕方がない。」を与えたときの、実際の形と値である（\coderef{code:pt-ce-real}）。値は角括弧、形は丸括弧で書いた。}
 \label{fig:pt-ce-flow}
 \end{figure}
 
 PyTorch には、同じ計算をする \code{torch.softmax} と \code{F.cross_entropy} が用意されています（\code{F} は \code{torch.nn.functional} の習慣的な別名です）。
 乱数のロジットで比べると、自作の関数の結果は、これらと 6 桁目まで一致しました（\file{ch02/softmax_ce.py}）。
 損失は、自作が 4.854022\dots、\code{F.cross_entropy} が 4.854023\dots です。
-小数の計算には丸めの誤差があるので、二つのテンソルを比べるときは、\code{==} ではなく \code{torch.allclose(a, b)} を使います。
+浮動小数点数の計算には丸めの誤差があるので、二つのテンソルを比べるときは、\code{==} ではなく \code{torch.allclose(a, b)} を使います。
 「ごく小さな差を除いて、全部の要素が等しいか」を、\code{True} か \code{False} で返す関数です。softmax どうしの比較は \code{True} でした。
 では、本物の基盤モデルで試します。
-「どうも仕方がない。」という文を与え、モデルの予測の損失を、自作の関数で計算します。
+「どうも仕方がない。」という文での予測の損失を、自作の関数で計算します。
 
 \snippet{基盤モデルの損失を、自作の関数で再現する}{code:pt-ce-real}{ch02/softmax_ce.py}{real}
 
@@ -1109,37 +1660,86 @@ PyTorch には、同じ計算をする \code{torch.softmax} と \code{F.cross_en
 出力の 1 行目のとおり、この文は「どうも」「仕方が」「ない。」の 3 トークンです。
 5 行目で、入力 \code{x} と正解 \code{y} を作ります。
 \code{ids[:-1]} は最後を除いた「どうも」「仕方が」、\code{ids[1:]} は先頭を除いた「仕方が」「ない。」です。
-モデルは、入力のどの位置でも、「そこまで読んだ次のトークン」を予測します。
-「どうも」の次は「仕方が」、「どうも仕方が」の次は「ない。」という、2 個の予測問題になります。
+モデルは、入力のどの位置でも、「そこまで読んだ次のトークン」を予測します（前のトークンも使って予測する仕組みは、\chapref{ch:attention}で作ります）。
+「どうも」の次は「仕方が」、「どうも仕方が」の次は「ない。」という、2 個の予測問題です。
 6〜7 行目で、モデルに予測させます。正解も一緒に渡すと、モデルが自分で計算した損失 \code{loss} も返ってきます。
 6 行目の \code{with torch.no_grad():} は、\secref{sec:pt-autograd}の二つ目の決まりです。予測するだけなので、計算の記録を取りません。
-モデルは、文の束を形（文の数, トークンの数）で受け取る約束なので、\code{x[None]} で形 $(1,2)$ にして渡します。
-\code{x[None]} は、先頭に長さ 1 の軸を足す書き方です（\tabref{tab:pt-shape-ops}）。形 $(2,)$ が $(1,2)$ になり、「2 トークンの文が 1 個」という束になります。
-返ってくる \code{logits} の形は $(1,2,4096)$ で、8 行目の \code{logits[0]} で 1 個目の文を取り出すと、形 $(2,4096)$ になります。
+モデルは、文をまとめたバッチを、形（文の数, トークンの数）で受け取る約束なので、\code{x[None]} で形 $(1,2)$ にして渡します。
+\code{x[None]} は、先頭に長さ 1 の軸を足す書き方です（\tabref{tab:pt-shape-ops}）。形 $(2,)$ が $(1,2)$ になり、「2 トークンの文が 1 個」というバッチになります。
+返ってくる \code{logits} の形は $(1,2,4096)$ で、8 行目の \code{logits[0]} で 1 個目の文を取り出すと、形 $(2,4096)$ です。
 
-ここからが、自作の関数の出番です。
+ここから、自作の関数を使います。
 9 行目で softmax を掛け、10 行目で、正解のトークンに割り当てられた確率を取り出します。結果は 0.0019 と 0.5590 でした。
 「どうも」のあとには、さまざまな言葉が続きうるので、次が「仕方が」である確率は 0.19\% しかありません。
 一方、「どうも仕方が」の次が「ない。」である確率は 55.9\% です。\chapref{ch:intro}と\chapref{ch:math}で見た「約 56\%」です。
 11 行目では、2 個目の予測 \code{p[1]} で確率が最大の番号を \code{argmax} で求め、文字に戻しています。確かに「ない。」です。
 
-12 行目が、この章の到達点です。
+12 行目が、この章でいちばん確かめたかったことです。
 自作の \code{cross_entropy} の値と、モデルが内部で計算した損失は、どちらも 3.416158\dots で、\textbf{表示された全桁が一致しました}。
+乱数の例のように、計算の手順が違うと 7 桁目あたりが違うこともありますが、この文では、二つの値が \code{float32} の数として同じになりました。
 260 万個のパラメータを持つモデルの「損失」は、この章で書いた数行の計算と、同じものだったのです。
 内訳は、$-\log 0.00193\approx 6.250$ と $-\log 0.5590\approx 0.582$ の平均で、$(6.250+0.582)\div 2=3.416$ です（0.0019 は、丸める前は 0.00193 です）。
-この値を、何も知らないモデルと比べます。
-何も知らないモデルは、4,096 個の候補のどれにも、同じ確率 $1/4096$ を付けます。
-そのときの損失は $-\log(1/4096)=\log 4096\approx 8.318$ でした（\chapref{ch:math}）。
-8.318 から 3.416 へ、学習によって損失が下がったことが分かります。
+この値を、4,096 個の候補のどれにも同じ確率 $1/4096$ を付ける予測と比べます。
+そのときの損失は $-\log(1/4096)=\log 4096\approx 8.318$ でした（\chapref{ch:math}）。学習を始める前のモデルは、ほぼこの予測をします。
+この文での損失 3.416 は、それよりずっと小さく、学習によって損失が下がったことが分かります。
+% [figpass] 案 9: 入力と正解のずらし方と、-log p の曲線
+\figref{fig:pt-ce-real}は、この 2 個の予測問題と、損失の値をまとめたものです。
+(a) のとおり、各位置の入力は、そこまでの全部のトークンです。
+(b) の横軸は対数目盛なので、$-\log p$ は 1 本の直線になります。$p$ が 1 に近ければ損失は 0 に近く、$p$ が 10 分の 1 になるたびに、損失は $\log 10\approx 2.30$ ずつ増えます。
+（普通の目盛りで描けば、$p$ が 0 に近づくところで急に立ち上がる曲線です。）
+平均の 3.416 を押し上げているのは、正解に確率 0.0019 しか付けなかった 1 個目の予測です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\footnotesize,
+  t/.style={tok,minimum width=17mm}]
+  \node[anchor=west] at (-32,22) {\textbf{(a)} 入力と正解（\coderef{code:pt-ce-real}の 5 行目）};
+  \node[anchor=east] at (-2,6) {入力 \texttt{x = ids[:-1]}};
+  \node[anchor=east] at (-2,-6) {正解 \texttt{y = ids[1:]}};
+  \node[t] (x0) at (10,6) {どうも}; \node[t] (x1) at (40,6) {仕方が};
+  \node[t,fill=figgreen] (y0) at (10,-6) {仕方が}; \node[t,fill=figgreen] (y1) at (40,-6) {ない。};
+  \draw[arr] (x0) -- (y0); \draw[arr] (x1) -- (y1);
+  \draw[decorate,decoration={brace,amplitude=3pt}] (1.5,10) -- (18.5,10) node[midway,above=2pt,lbl,font=\scriptsize] {位置 0 の入力};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (1.5,15.5) -- (48.5,15.5) node[midway,above=2pt,lbl,font=\scriptsize] {位置 1 の入力};
+  \node[anchor=north,align=center,font=\scriptsize] at (10,-10) {正解の確率 0.0019\\損失 6.25};
+  \node[anchor=north,align=center,font=\scriptsize] at (40,-10) {正解の確率 0.5590\\損失 0.58};
+\end{tikzpicture}
+
+\medskip
+\begin{tikzpicture}
+\begin{axis}[xmode=log,width=0.86\linewidth,height=0.4\linewidth,
+  xlabel={正解に付けた確率 $p$（対数目盛）},ylabel={損失 $-\log p$},
+  xmin=0.0001,xmax=1,ymin=0,ymax=10,
+  xtick={0.0001,0.001,0.01,0.1,1},xticklabels={0.0001,0.001,0.01,0.1,1},
+  title={\footnotesize\textbf{(b)} 正解の確率と損失},title style={at={(0,1)},anchor=south west}]
+\addplot[black!60,domain=-4:0,samples=81] ({10^x},{-ln(10^x)});
+\addplot[black!45,dashed,domain=-4:0,samples=2] ({10^x},{3.416});
+\node[anchor=south west,font=\scriptsize,text=bookgray] at (axis cs:0.07,3.416) {2 個の平均 3.416};
+\addplot[only marks,mark=*,mark size=2pt,bookaccent] coordinates {(0.00193,6.250) (0.5590,0.582)};
+\addplot[only marks,mark=square*,mark size=1.8pt,bookgray] coordinates {(0.000244,8.318)};
+\node[anchor=west,font=\scriptsize] at (axis cs:0.0003,8.318) {どの候補にも $1/4096$ を付ける予測: 8.318};
+\node[anchor=south west,font=\scriptsize,text=bookaccent] at (axis cs:0.0021,6.3) {位置 0: $p=0.0019$、損失 6.25};
+\node[anchor=east,font=\scriptsize,text=bookaccent] (q1) at (axis cs:0.12,1.0) {位置 1: $p=0.5590$、損失 0.58};
+\draw[bookaccent,thin] (q1.east) -- (axis cs:0.5,0.62);
+\end{axis}
+\end{tikzpicture}
+\caption{基盤モデルに「どうも仕方がない。」を与えたときの、2 個の予測問題（\coderef{code:pt-ce-real}の出力）。
+(a) 入力と正解は、トークンの列を 1 個ずらして作る。各位置で、モデルはそこまでの全部のトークンから次を予測する。
+(b) 線は $-\log p$（横軸が対数目盛なので直線になる）。赤い点が 2 個の予測、灰色の四角が、どの候補にも同じ確率を付ける予測、破線が 2 個の損失の平均である。}
+\label{fig:pt-ce-real}
+\end{figure}
+% [/figpass]
+なお、3.416 は、この 1 文の 2 個の予測だけの平均で、たくさんの位置で平均した値（\chapref{ch:math}の冒頭の 3.11）とは別の数です。
 さらに、\code{torch.no_grad()} を外して計算し直し、損失に \code{backward()} を呼ぶと、36 個のテンソルすべてに、同じ形の勾配が付きました（\file{ch02/softmax_ce.py}）。
-260 万個の数の一つひとつについて、「どちらに動かせば損失が減るか」が分かったのです。学習の材料は、これでそろいました。
+260 万個の数の一つひとつについて、「どちらに動かせば損失が減るか」が分かったのです。学習に必要なものは、これでそろいました。
 
 最後に、実際の LLM と規模を比べます（\tabref{tab:pt-scale}）。この章で扱ったテンソルは、大きくても数百万要素でした。
 
 \begin{table}[tbp]
 \centering
 \caption{テンソルの大きさの比較。「トークンの表」は、各トークンに $d$ 個の数を割り当てる、形 $(V,d)$ の行列である。
-GPT-2 と Llama 3.1 の値は、公開されている構成による\cite{radford2019language,dubey2024llama3}。}
+GPT-2 と Llama 3.1 の値は、公開されている構成による\cite{radford2019language,dubey2024llama3}。
+本書のミニGPT のパラメータの総数（2,583,936 個）は、本文では「約 260 万」と書いている。}
 \label{tab:pt-scale}
 \small
 \begin{tabular}{@{}lrrr@{}}
@@ -1158,7 +1758,7 @@ Llama 3.1 405B（405B は、パラメータが 4,050 億個という意味です
 メモリは、パラメータの総数に 4 バイトを掛けたものです。
 4,050 億 $\times$ 4 バイトは 1 兆 6,200 億バイトで、約 1.6 テラバイトになり、PC のメモリには載りません。
 そのため、多数の GPU にテンソルを分けて置き、1 要素を 16 ビットで持つ型を使います（\chapref{ch:gpu}）。
-しかし、違うのは\textbf{形の中の数字だけ}です。
+しかし、テンソルの道具として見れば、違うのは\textbf{形の中の数字だけ}です。
 形を確かめ、\code{@} で行列積を取り、ブロードキャストで形を合わせ、\code{backward()} で勾配を求める。この章の道具は、どの規模でもそのまま使われています。
 
 その道具を、あとから引けるように、\tabref{tab:pt-cheatsheet}にまとめました。
@@ -1194,9 +1794,9 @@ Llama 3.1 405B（405B は、パラメータが 4,050 億個という意味です
 この節では、エラー文の読み方と \code{assert} を学び、自作の softmax と交差エントロピーが、本物のモデルの損失を再現することを確かめました。
 
 \begin{summary}
-\item \textbf{配列演算}: 数を 1 個ずつ回る \code{for} 文は、配列演算より 1,000 倍以上遅い。
-\item \textbf{形と型}: テンソルは、1 列に並んだ数と、形と、型からなる。モデルは、その集まりである。
-\item \textbf{形を変える}: \code{reshape} は区切り方を変え、転置は軸を入れ替える。形が同じでも、中身は違いうる。
+\item \textbf{配列演算}: 数百行・数百列の行列積では、数を 1 個ずつ処理する \code{for} 文は、配列演算より 1,000 倍ほど遅い（本書の実測）。
+\item \textbf{形と型}: テンソルは、一続きに並んだ数と、形と、型からなる。モデルのパラメータは、その集まりである。
+\item \textbf{形を変える}: \code{reshape} は区切り方を変え、転置は軸を入れ替える（読む順番を変える）。形が同じでも、中身は違いうる。
 \item \textbf{集計とブロードキャスト}: \code{dim} は「つぶす軸」を指定する。形の違う相手とは、右端でそろえ、長さ 1 の軸を引き伸ばして計算する。
 \item \textbf{1 データ 1 行}: 数式の $\vy=\mW\vx+\vb$ は、コードでは \code{Y = X @ W.T + b} と書く。
 \item \textbf{自動微分}: 印を付けて計算し、\code{backward()} を呼ぶと、勾配が \code{.grad} に入る。
@@ -1207,7 +1807,7 @@ Llama 3.1 405B（405B は、パラメータが 4,050 億個という意味です
 
 道具はそろいました。テンソルで数式を計算でき、損失を測ることができ、その勾配も 1 行で求められます。
 しかし、この章では、モデルの数を 1 個も書き換えていません。
-基盤モデルの損失 3.416 と、260 万個の数それぞれを「どちらに動かせば損失が減るか」は、手に入りました。
+基盤モデルの、「どうも仕方がない。」での損失 3.416 と、260 万個の数それぞれを「どちらに動かせば損失が減るか」は、手に入りました。
 それなら、どれだけ動かせばよいのでしょうか。大きく動かすほど、速く損失が下がるのでしょうか。
 損失を下げていく「学習」とは、具体的に何をすることなのでしょうか。
 \chapref{ch:ml}では、最も単純なモデルを使って、損失を測り、勾配を求め、数を書き換えるという繰り返しを、自分の手で動かします。
@@ -1218,7 +1818,7 @@ Llama 3.1 405B（405B は、パラメータが 4,050 億個という意味です
 \begin{itemize}
 \item \cite{paszke2019pytorch}：PyTorch の設計を、開発者たち自身が説明した論文です。
 \item \cite{zhang2023d2l}：第 2 章が、本章と同じ範囲を、実行できるノートブックで扱っています。
-\item \cite{karpathy2022zerotohero}：動画の講義です。\code{keepdim} の落とし穴を、実演で見られます。
+\item \cite{karpathy2022zerotohero}：動画の講義です。\code{keepdim} の付け忘れで起こる間違いを、実演で見られます。
 \item \cite{baydin2018automatic}：自動微分の解説論文です。\chapref{ch:nn}のあとに読むと、よく分かります。
 \end{itemize}
 
@@ -1227,6 +1827,6 @@ Llama 3.1 405B（405B は、パラメータが 4,050 億個という意味です
 \item \textbf{形を当てる}。形 $(2,3,4)$ のテンソルに、形 $(4,)$、$(3,1)$、$(2,1,1)$、$(3,)$、$(2,4)$ のテンソルをそれぞれ足します。結果の形（またはエラー）を規則から予想し、実行して確かめてください。
 \item \textbf{割合に直す}。回数を数えた 3 行 3 列の表 \code{C} の各行を、その行の合計で割りたいとします。\code{C / C.sum(dim=1)} は、エラーにならずに間違った答えを返します。何が何で割られたかを説明し、直してください（答え合わせは \file{ch02/broadcast_bug.py}）。
 \item \textbf{自動微分の検算}。$f(\vx)=\sum_{i}x_i^{3}$ の、$\vx=(1,2,3)$ での勾配を自動微分で求め、手計算と比べてください。\code{x.grad} を 0 に戻さずにもう一度計算すると、どうなるでしょうか。
-\item \textbf{あふれない softmax}。ロジット \code{torch.tensor([[1000.0, 999.0, 998.0]])} を\coderef{code:pt-softmax}の \code{softmax} に渡すと、何が返るでしょうか。各行から最大値を引いて計算するように直し、\code{torch.softmax} と比べてください。ヒント: 行ごとの最大値は \code{z.max(dim=-1, keepdim=True).values} です。\code{nan} は「数でない値」です。
+\item \textbf{オーバーフローしない softmax}。ロジット \code{torch.tensor([[1000.0, 999.0, 998.0]])} を\coderef{code:pt-softmax}の \code{softmax} に渡すと、何が返るでしょうか。各行から最大値を引いて計算するように直し、\code{torch.softmax} と比べてください。ヒント: 行ごとの最大値は \code{z.max(dim=-1, keepdim=True).values} です。\code{nan} は「数でない値」です。
 \item \textbf{損失の勾配を観察する}。予測 1 個について、\code{cross_entropy} の値をロジットで微分してください。ロジットは形 $(1,3)$ の \code{[[2.0, 1.0, 0.0]]}、正解は \code{torch.tensor([0])} とします。勾配と softmax の出力 $\vp$ には、どんな関係があるでしょうか（\chapref{ch:ml}で導きます）。
 \end{exercises}

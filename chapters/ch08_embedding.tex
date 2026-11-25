@@ -4,7 +4,7 @@
 
 \begin{chapterlead}
 \textbf{ここまで}: \chapref{ch:lm}で、言語モデルの仕事は「次のトークンの予測」だと学びました。
-数えて作る表のモデルには、二つの壁（表が爆発する、似た文脈から学べない）がありました。
+数えて作る表のモデルには、二つの壁（文脈を長くすると表が大きくなりすぎる、似た文脈から学べない）がありました。
 \chapref{ch:tokenizer}では、文章をトークンの番号の列に直しました。\\[1mm]
 \textbf{この章の問い}: ただの番号であるトークンを、どうやってニューラルネットワークに入れるのか。
 入れたら、数える方法の壁を越えられるのか。\\[1mm]
@@ -21,8 +21,8 @@
 \item[\rgpre] \chapref{ch:tokenizer}を途中まで読んで来た人は、次の三つを知っていれば読めます。本書の語彙は 4096 個。「先生」のようによく出る並びは、まとめて 1 トークン。数字・記号・改行は、1 文字が 1 トークン。\chapref{ch:training}の用語は、出てきた所で補います。
 \item[\rgmust] \secref{sec:emb-lookup}〜\secref{sec:emb-train}：埋め込みと、最初のニューラル言語モデル。埋め込み表は、\chapref{ch:transformer}のミニGPT でも入口にそのまま置かれます。
 \item[\rgmust] \secref{sec:emb-neighbors}の前半、\secref{sec:emb-window}、\secref{sec:emb-rnn}の最初の小節：学習した埋め込みの観察、固定窓の三つの限界、RNN の考え方。\chapref{ch:attention}の注意機構は、この限界を越えるために作ります。
-\item[\rgskim] \secref{sec:emb-neighbors}の「2 次元の地図にする」：\figref{fig:emb-pca}で、数字・漢数字・人の呼び名が別々の島に分かれているのを見れば足ります。
-\item[\rgskim] \secref{sec:emb-rnn}の「RNN を作って、測る」と「RNN の改良と、「注意」の誕生」：実測と歴史です。「RNN は、古い情報ほど薄れ、順番にしか計算できない」という結論を押さえます。章末の演習は、1・2・4 が紙と鉛筆で解けます。
+\item[\rgskim] \secref{sec:emb-neighbors}の「2 次元に写して眺める」：\figref{fig:emb-pca}で、数字・漢数字・人の呼び名が、別々のかたまりに分かれているのを見れば足ります。
+\item[\rgskim] \secref{sec:emb-rnn}の「RNN を作って、測る」と「RNN の改良と、「注意」の誕生」：実測と歴史です。「RNN は、古いトークンの影響ほど小さくなり、1 トークンずつ順にしか計算できない」という結論を、\figref{fig:emb-frames}のコマ送りの図で押さえます。章末の演習は、1・2・4 が紙と鉛筆で解けます。
 \end{readingguide}
 
 \chapref{ch:tokenizer}の終わりで、文章は番号の列になりました。
@@ -36,15 +36,15 @@
 一方、ニューラルネットワークは、入力の数に重みを掛けて足す機械でした（\chapref{ch:nn}）。
 意味のない数を、そのまま掛け算に使うわけにはいきません。
 
-もう一つ、\chapref{ch:lm}からの宿題があります。
+もう一つ、\chapref{ch:lm}から持ち越した問題があります。
 数えて作る表のモデルの、二つの壁です。
-文脈を長くすると表が爆発すること（壁 1）と、似た文脈から学べないこと（壁 2）でした。
+文脈を 1 個長くするたびに、表のマス目の数が $V$ 倍に増えること（壁 1）と、似た文脈から学べないこと（壁 2）でした。
 この章では、番号をベクトルに取り替える\textbf{埋め込み}という仕組みを導入します。
 そして、埋め込みを使った最初のニューラル言語モデルを作り、二つの壁がどうなるかを実験で確かめます。
 
 結果を少しだけ先に述べます。
-この章で作るモデルは、数えて作る表の約 20 分の 1 の大きさで、損失は数える方法を下回ります。
-ところが、「\code{25+48=}」の続きには「\code{486}」と答えます。
+この章で作るモデルは、\chapref{ch:lm}と同じ作り方のバイグラム（直前の 1 個を数える表）より、低い損失に届きます。
+ところが、「\code{25+48=}」の続きを書かせると、たとえば「\code{486}」と答えます。
 なぜ足し算はできないのか。章の後半で、原因を実験で突き止めます。
 
 \section{番号をベクトルにする：埋め込み}\label{sec:emb-lookup}
@@ -70,11 +70,11 @@
 一つ目は、\textbf{大きくて無駄が多い}ことです。
 トークン 1 個に 4096 個の数を使い、そのうち 4095 個は 0 です。
 二つ目は、\textbf{どのトークンどうしも、同じだけ離れている}ことです。
-異なる二つの one-hot ベクトルは、1 の位置が違うので、内積がかならず 0 になります。
+異なる二つの one-hot ベクトルは、1 の位置が違うので、内積がかならず 0 になります（点どうしの距離も、どの組でも $\sqrt{2}$ です）。
 同じ位置の成分どうしを掛けて足すとき、両方が 1 になる位置がないからです。
 内積が 0 の二つのベクトルは、直角でした（\chapref{ch:math}）。
 「7」と「8」も、「7」と「先生」も、区別なく直角です。
-似たトークンを似たものとして扱えないのですから、壁 2 はそのまま残ります。
+one-hot ベクトルのままでは、似たトークンを似たものとして扱えないので、壁 2 は残ったままです。
 
 \subsection*{案 3：one-hot に行列を掛ける＝表を引く}
 
@@ -82,7 +82,8 @@ one-hot ベクトルをネットワークの最初の層に入れると、何が
 最初の層は、入力に重みの行列を掛けます。
 小さな例で見ます。語彙が 5 個、行列 $\mE$ が 5 行 3 列だとします（\figref{fig:emb-lookup}）。
 行列は、1 行が 1 トークンに対応する向きで持つことにします。
-3 番目のトークンの one-hot ベクトル $\vx=(0,0,1,0,0)^\T$ を横に寝かせて、$\mE$ に左から掛けます。
+3 番目のトークンの one-hot ベクトル $\vx=(0,0,1,0,0)^\T$ を転置して、横長の $\vx^\T$（1 行 5 列）にします。
+これを、5 行 3 列の $\mE$ に左から掛けます。1 行 5 列と 5 行 3 列の積なので、結果は 1 行 3 列です。
 $\mE$ の $i$ 行目を $\ve_i$ と書くと、結果は次のとおりです。
 \begin{equation}
 \vx^\T\mE = 0\cdot\ve_1 + 0\cdot\ve_2 + 1\cdot\ve_3 + 0\cdot\ve_4 + 0\cdot\ve_5 = \ve_3
@@ -103,29 +104,32 @@ $0\times0.2+0\times1.3+1\times(-0.6)+0\times0.8+0\times(-1.2)=-0.6$ で、残る
 % トークンと番号
 \node[tok] (t) at (0,-10) {先生};
 \node[lbl,anchor=north] at (0,-14) {番号 3};
-% one-hot
-\foreach \v [count=\i from 0] in {0,0,1,0,0} {
-  \ifnum\i=2 \node[cell,minimum size=5mm,fill=figred,draw=bookaccent] (oh\i) at (24,-\i*5) {\v};
-  \else \node[cell,minimum size=5mm,fill=white] (oh\i) at (24,-\i*5) {\v};\fi}
-\node[lbl,anchor=south] at (24,3) {one-hot $\vx$};
-\node at (32,-10) {$\times$};
-% 行列 E
-\foreach \a/\b/\c [count=\i from 0] in {0.2/$-$1.0/0.5, 1.3/0.4/$-$0.7, $-$0.6/0.9/0.1, 0.8/$-$0.3/1.1, $-$1.2/0.0/0.6} {
-  \ifnum\i=2
-    \embcell{44}{-\i*5}{\a}{fill=figblue,draw=bookblue}\embcell{53}{-\i*5}{\b}{fill=figblue,draw=bookblue}\embcell{62}{-\i*5}{\c}{fill=figblue,draw=bookblue}
+% one-hot を転置した横長のベクトル（1 行 5 列）。3 番目のマスを、表の 3 行目と同じ高さに置く
+\foreach \v [count=\i from 1] in {0,0,1,0,0} {
+  \ifnum\i=3 \node[cell,minimum size=5mm,fill=figred,draw=bookaccent] (oh\i) at (8+\i*5,-10) {\v};
+  \else \node[cell,minimum size=5mm,fill=white] (oh\i) at (8+\i*5,-10) {\v};\fi
+  \node[font=\scriptsize,text=bookgray] at (8+\i*5,-14.8) {\i};}
+\node[lbl,anchor=south,align=center] at (23,-6.5) {one-hot を転置した $\vx^\T$\\（1 行 5 列）};
+\node at (39.5,-10) {$\times$};
+% 行列 E（5 行 3 列）。左に行の番号
+\foreach \a/\b/\c [count=\i from 1] in {0.2/$-$1.0/0.5, 1.3/0.4/$-$0.7, $-$0.6/0.9/0.1, 0.8/$-$0.3/1.1, $-$1.2/0.0/0.6} {
+  \ifnum\i=3
+    \embcell{56}{5-\i*5}{\a}{fill=figblue,draw=bookblue}\embcell{65}{5-\i*5}{\b}{fill=figblue,draw=bookblue}\embcell{74}{5-\i*5}{\c}{fill=figblue,draw=bookblue}
   \else
-    \embcell{44}{-\i*5}{\a}{fill=white}\embcell{53}{-\i*5}{\b}{fill=white}\embcell{62}{-\i*5}{\c}{fill=white}
-  \fi}
-\node[lbl,anchor=south] at (53,3) {表 $\mE$（$V\times d = 5\times 3$）};
-\node at (72,-10) {$=$};
-\embcell{83}{-10}{$-$0.6}{fill=figblue,draw=bookblue}\embcell{92}{-10}{0.9}{fill=figblue,draw=bookblue}\embcell{101}{-10}{0.1}{fill=figblue,draw=bookblue}
-\node[lbl,anchor=south] at (92,-7) {「先生」のベクトル（$d=3$）};
+    \embcell{56}{5-\i*5}{\a}{fill=white}\embcell{65}{5-\i*5}{\b}{fill=white}\embcell{74}{5-\i*5}{\c}{fill=white}
+  \fi
+  \node[font=\scriptsize,text=bookgray,anchor=west] at (79,5-\i*5) {\i 行目};}
+\node[lbl,anchor=south] at (65,3) {表 $\mE$（$V\times d = 5\times 3$）};
+\node at (93,-10) {$=$};
+\embcell{102}{-10}{$-$0.6}{fill=figblue,draw=bookblue}\embcell{111}{-10}{0.9}{fill=figblue,draw=bookblue}\embcell{120}{-10}{0.1}{fill=figblue,draw=bookblue}
+\node[lbl,anchor=south,align=center] at (111,-6.5) {「先生」のベクトル $\ve_3$\\（1 行 3 列）};
 % 経路
-\draw[arr] (t) -- node[above,lbl,pos=0.45] {(a)} (oh2);
-\draw[darr,rounded corners=3pt] (t.south east) -- ++(4,-13) -- node[below,lbl] {(b) 番号で 3 行目を引くだけ} (53,-27) -- (53,-23);
+\draw[arr] (t) -- node[above,lbl,pos=0.4] {(a)} (oh1);
+\draw[darr,rounded corners=3pt] (t.south) ++(0,-5.5) -- (0,-29) -- node[below,lbl,pos=0.55] {(b) 番号で 3 行目を引くだけ} (46,-29) -- (46,-10) -- (51.3,-10);
 \end{tikzpicture}
 \caption{one-hot ベクトルに行列を掛けると、行列の 1 行が取り出される（語彙 5 個、3 次元の例）。
-(a) one-hot に直して掛け算をしても、(b) 番号で表の行を引いても、結果は同じである。小さな例なので、「先生」の番号を 3 とした。}
+(a) one-hot に直して、転置した $\vx^\T$ を左から掛けても、(b) 番号で表の行を引いても、結果は同じである。
+小さな例なので、「先生」の番号を 3 とし、行も上から 1、2、3 と数えた（コードでは、番号も行も 0 から数える）。}
 \label{fig:emb-lookup}
 \end{figure}
 
@@ -140,7 +144,10 @@ $0\times0.2+0\times1.3+1\times(-0.6)+0\times0.8+0\times(-1.2)=-0.6$ で、残る
 6 行目の \code{@} は行列の積で、式\eqref{eq:emb-onehot}の左辺です。7 行目は、行を取り出すだけです。
 出力の 2 行目と 3 行目は、4 個の数がすべて同じです。
 二つの結果は一致しました。
-なお、数式では行を 1 から数えますが、コードでは 0 から数えます。\code{E[692]} が、番号 692 のトークンの行です。
+\code{E[692]} が、番号 692 のトークンの行です。
+トークンの番号は 0 から始まるので、この行は上から数えると 693 番目に当たります。
+そこで、この章では、番号 $x$ のトークンの行を「$x$ 行目」と呼び、いちばん上の行を 0 行目と数えます（コードの \code{E[x]} と同じ数え方です）。
+\figref{fig:emb-lookup}と式\eqref{eq:emb-onehot}だけは、小さな例なので 1 から数えました。
 この「番号で引く表」に名前を付けます。
 
 \begin{definition}[埋め込み]\label{def:emb-embedding}
@@ -161,7 +168,8 @@ $d$ は設計者が決める数で、この章では $d=64$ を使います。
 
 \begin{table}[tbp]
 \centering
-\caption{トークンの番号をネットワークに入れる三つの方法（$V=4096$、$d=64$ の場合）。「数の個数」は、1 トークンを表すのに使う数の個数。}
+\caption{トークンの番号をネットワークに入れる三つの方法（$V=4096$、$d=64$ の場合）。「数の個数」は、1 トークンを表すのに使う数の個数。
+one-hot 表現の行は、one-hot ベクトルそのものの性質。これに学習する行列を掛けたもの（＝行を引いたもの）が、3 行目の埋め込みである。}
 \label{tab:emb-ways}
 \small
 \begin{tabular}{lccc}
@@ -183,15 +191,51 @@ PyTorch では、埋め込み表は \code{nn.Embedding} という部品になっ
 \snippet{\code{nn.Embedding} は番号を行に置き換える}{code:emb-embedding}{ch08/embedding_basics.py}{embedding}
 \outputfile{ch08/out/basics_embedding.txt}
 
+2 行目のコメントの $(B,n)$ は、まとめて渡す列の本数 $B$ と、1 本の列の長さ $n$ です（\secref{sec:emb-mlp}で使います）。
+ここでは、長さ 3 の列が 1 本です。
 形 $(1,3)$ の番号のテンソルが、形 $(1,3,4)$ になりました。
 末尾に、ベクトルの次元の軸が一つ増えます。この形の変化は、このあと何度も出てきます。
+\figref{fig:emb-shapes}の左半分が、この変化を描いたものです。
+番号 3 個が並んだ 1 行が、「3 行 4 列の数の表」に置き換わります。
+この表の行は、上から順に「先生」（番号 692）、「奥さん」（1617）、「東京」（1306）の行です。
 部品の中身は形 $(4096,4)$ の表（\code{emb.weight}）で、出力の先頭のベクトルは、その 692 行目そのものです（出力の 2〜3 行目）。
 
-学習のときの勾配も、表引きらしい流れ方をします。
+\begin{figure}[b]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+% 左: 番号 3 個（形 (1,3)）
+\foreach \id/\c [count=\i from 0] in {692/figblue,1617/figred,1306/figgreen}
+  \node[cell,minimum width=9mm,minimum height=5mm,fill=\c] at (4.5+\i*9,0) {\id};
+\node[lbl,anchor=south] at (13.5,3) {番号の列};
+\node[lbl,anchor=north] at (13.5,-3.5) {形 $(1,3)$};
+% 中: 表を引いた結果（形 (1,3,4)）
+\draw[arr] (29,0) -- node[above,lbl] {表を引く} (41,0);
+\foreach \c/\w [count=\i from 0] in {figblue/先生,figred/奥さん,figgreen/東京} {
+  \foreach \j in {0,...,3}
+    \node[cell,minimum width=5mm,minimum height=5mm,fill=\c] at (46+\j*5,5-\i*5) {};
+  \node[font=\scriptsize,text=bookgray,anchor=west] at (64,5-\i*5) {\w};}
+\node[lbl,anchor=south] at (53.5,8) {3 行 4 列（1 行が 1 トークン）};
+\node[lbl,anchor=north] at (53.5,-8.5) {形 $(1,3,4)$};
+% 右: 連結（形 (1,12)）
+\draw[arr] (75,0) -- node[above,lbl] {連結する} node[below,font=\scriptsize,text=bookgray] {（\secref{sec:emb-mlp}）} (87,0);
+\foreach \c [count=\i from 0] in {figblue,figred,figgreen}
+  \foreach \j in {0,...,3}
+    \node[cell,minimum width=3mm,minimum height=5mm,fill=\c] at (90+\i*12+\j*3,0) {};
+\node[lbl,anchor=south] at (106.5,3) {端からつないだ 12 個};
+\node[lbl,anchor=north] at (106.5,-3.5) {形 $(1,12)$};
+\end{tikzpicture}
+\caption{埋め込み表を引くと、形がどう変わるか（\coderef{code:emb-embedding}の例。$d=4$）。
+番号 1 個が、表の 1 行（4 個の数）に置き換わり、末尾に長さ 4 の軸が増える。
+右は、\secref{sec:emb-mlp}で使う連結。3 本のベクトルを、前から順に端からつないで 1 本にする。マスの中の数は省いた。}
+\label{fig:emb-shapes}
+\end{figure}
+
+学習のときの勾配も、表引きの形のとおりに、引いた行にだけ生じます。
 上の出力から仮の損失を作って逆伝播すると、勾配が 0 でなかったのは、引いた 3 行（「先生」692、「東京」1306、「奥さん」1617）だけでした（\file{ch08/embedding_basics.py} で確かめられます）。
-引かなかった行は計算に使われていないので、勾配も流れません。
-その行の数をどう動かしても損失は変わらないので、微分は 0 です。
-1 回の更新で動くのは、そのバッチに現れたトークンの行だけです。
+引かなかった行は計算に使われていないので、その行の数をどう動かしても損失は変わりません。だから微分は 0 です。
+勾配降下法の更新式（$\vtheta\leftarrow\vtheta-\eta\nabla_{\vtheta}\calL$）のとおりに動かすなら、1 回の更新で動くのは、そのバッチに現れたトークンの行だけです。
+ただし、この章の学習で使う AdamW（\secref{sec:emb-train}）は、過去の勾配の平均も使い、重みを毎回少しずつ縮める働き（重み減衰。PyTorch の既定では 0.01）も持ちます。
+そのため、現れなかった行も、わずかに動きます。
 
 じつは、表引きにはすでに出会っています。
 \chapref{ch:lm}のバイグラムモデルは、$V\times V$ のロジットの表から、入力の番号の行を引いていました。
@@ -230,7 +274,7 @@ Llama 3.1 405B & 128,256 & 16,384 & 約 21 億 \\
 \tabref{tab:emb-scale}のとおり、違いは大きさだけです。
 パラメータ数は、どれも $V\times d$ です（GPT-2 なら $50{,}257\times768=38{,}597{,}376$）。
 Llama 3.1 の語彙サイズ 128,256 は、公開されているモデルの設定の値です（BPE のトークン 128,000 個と、制御用に取ってある番号 256 個）。
-次元が大きいほど、トークンの細かな違いを書き分ける余地が増えます。
+次元 $d$ が大きいほど、1 トークンを表す数が増えるので、トークンどうしの違いを、より多くの数の組み合わせで表せます。
 
 この節のまとめです。
 番号をそのまま使うと、意味のない大小が計算に混ざります。
@@ -250,12 +294,12 @@ one-hot 表現はそれを防ぎますが、行列を掛けた結果は「行を
 モデルから見れば、「7」のあとにすべき予測と、「8」のあとにすべき予測は、よく似ています。
 それなら、二つのベクトルを近くに置いておくと好都合です。
 後ろのネットワークは、入力が少し違うだけなら、出力も少ししか変わりません（掛け算も $\tanh$ も、なめらかな計算だからです）。
-「7」で学んだことが、「8」にもほぼそのまま効きます。
+「7」で学んだことが、「8」にもほぼそのまま使えます。
 反対に、「7」と「先生」では、次に来るものがまるで違います。
 ベクトルが近いと予測を作り分けられないので、学習はこの二つを引き離します。
 
 誰も「似たトークンを近づけなさい」とは命じていません。
-あるのは、次のトークンの予測の損失を下げる、という圧力だけです。
+あるのは、次のトークンの予測の損失を下げる、という目的だけです。
 それでも、\textbf{似た使われ方をするトークンは、似たベクトルになっていく}と期待できます。
 
 \figref{fig:emb-expect}は、この期待を絵にしたものです。
@@ -281,12 +325,12 @@ one-hot 表現はそれを防ぎますが、行列を掛けた結果は「行を
 \begin{scope}[xshift=68mm]
 \draw[black!35] (0,0) rectangle (44,25);
 \node[lbl,anchor=south] at (22,25.5) {学習後（期待される姿）};
-\draw[bookblue,dashed,rounded corners=3pt] (2,10) rectangle (24,24);
+\draw[bookblue,dashed,rounded corners=3pt] (2,11) rectangle (24,24);
 \embpt{7.5}{20.3}{7}{fill=figblue}
 \embpt{18.5}{18.5}{8}{fill=figblue}
-\embpt{8.5}{13.6}{9}{fill=figblue}
+\embpt{8.5}{14.3}{9}{fill=figblue}
 \node[lbl,anchor=west] at (25,18) {数字};
-\draw[bookaccent,dashed,rounded corners=3pt] (19,1.5) rectangle (42.5,9.3);
+\draw[bookaccent,dashed,rounded corners=3pt] (19,0.6) rectangle (42.5,8.8);
 \embpt{24.5}{5.5}{先生}{fill=figred}
 \embpt{35.5}{5.5}{奥さん}{fill=figred}
 \node[lbl,anchor=east] at (18,5.5) {人の呼び名};
@@ -301,16 +345,22 @@ one-hot 表現はそれを防ぎますが、行列を掛けた結果は「行を
 これを\term{分布仮説}{distributional hypothesis}と呼びます（1950 年代のハリス~\cite{harris1954distributional}やファース~\cite{firth1957synopsis}にさかのぼります）。
 「先生」と「奥さん」は、どちらも「〜は言った」のような文脈に現れるので、意味も似ているだろう、というわけです。
 埋め込みは、この仮説を数値で実現する道具だといえます。
+ただし、範囲は少し違います。
+この章のモデルでは、埋め込みは入力の側（直前のトークンを読む所）にだけ使います。
+ですから、学習で近づくと期待できるのは、「あとに続くもの」が似ているトークンどうしです。
+分布仮説の「一緒に現れる」は、前に来るものと後に来るものの両方を指すので、それより少し広い考え方です。
 
-ベクトルの近さは、\chapref{ch:math}で学んだ\textbf{コサイン類似度}（式\eqref{eq:math-cosine}）で測ります。
-向きが同じなら 1、直角なら 0 です。
+ベクトルの近さの測り方には、点どうしの距離と、向きの近さの二通りがあります。
+本書では、\chapref{ch:math}で学んだ\textbf{コサイン類似度}（式\eqref{eq:math-cosine}）で、向きの近さを測ります。
+向きが同じなら 1、直角なら 0 です。ベクトルの長さの違いには左右されません。
+\figref{fig:emb-expect}や、あとの\figref{fig:emb-pca}は、分かりやすさのために、近さを点の位置で描いています。
 \chapref{ch:math}の\figref{fig:math-similarity}では、基盤モデルのトークンのベクトルで、「7」と「8」の類似度が 0.88 でした。
 あのベクトルが、埋め込みです。
 この章では、自分で学習させた埋め込み表で、同じことが起きるかを確かめます（\secref{sec:emb-neighbors}）。
 
 \begin{column}{word2vec：埋め込みだけを先に学習する}
 2013 年に発表された word2vec~\cite{mikolov2013efficient}は、単語の埋め込みだけを、大量の文章から高速に学習する手法です。
-「まわりの単語から中央の単語を当てる」という、言語モデルを簡単にした問題を解かせます。
+「まわりの単語から中央の単語を当てる」（逆に、中央の単語からまわりの単語を当てる方式もあります）という、言語モデルを簡単にした問題を解かせます。
 得られたベクトルでは、「王」$-$「男」$+$「女」の近くに「女王」が来る、といった関係が見つかり、広く注目されました。
 現在の LLM は、埋め込みを別に作りません。モデルの最初の層として、全体と一緒に学習します。
 この章のやり方も、それと同じです。
@@ -325,69 +375,83 @@ one-hot 表現はそれを防ぎますが、行列を掛けた結果は「行を
 番号をベクトルに取り替える準備ができました。
 この節の問いは、「埋め込みを使って、次のトークンを予測するネットワークをどう組むか」です。
 
-\subsection*{直前の $n$ 個を並べて、MLP に入れる}
+\subsection*{直前の $n$ 個を連結して、MLP に入れる}
 
 答えは、2003 年にベンジオらが提案した形~\cite{bengio2003neural}を使います。
 作りは素直です。
 \begin{enumerate}
 \item 直前の $n$ 個のトークンを、それぞれ埋め込みに取り替える。
-\item $n$ 本のベクトルをつないで、長い 1 本のベクトルにする。
+\item $n$ 本のベクトルを、前から順に端からつないで、長い 1 本のベクトルにする（\term{連結}{concatenation}）。
 \item それを、\chapref{ch:nn}の多層パーセプトロン（MLP）に入れ、$V$ 個のロジットを出す。
 \end{enumerate}
+足し合わせるのではなく連結するのは、どのトークンが何個前にあったかを残すためです。
+足してしまうと、「私は その」と「その 私は」が、同じ入力になります。
 見る範囲を「直前の $n$ 個」に固定するので、この範囲を\jterm{窓}、$n$ を\jterm{窓の幅}と呼ぶことにします。
+窓の幅は、モデルが一度に見られるトークンの数です。\chapref{ch:transformer}で出てくる「文脈長」に当たる数です。
 \chapref{ch:lm}の $n$ グラムの $n$ は、当てる 1 個も数に入れていたので、窓の幅より 1 大きくなります（バイグラムは、窓の幅 1 です）。
 \figref{fig:emb-mlp}は、$n=3$ のときの計算の流れです。
 「私は」「その」「人を」の 3 個から、次の「常」を当てようとしています。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[x=0.9mm,y=1mm]
-\foreach \w/\id/\s [count=\i from 0] in {私は/636/{t-3}, その/604/{t-2}, 人を/2850/{t-1}} {
+\begin{tikzpicture}[x=0.8mm,y=1mm]
+\foreach \w/\id/\s/\st/\cf [count=\i from 0] in {私は/636/{t-3}/box/figblue, その/604/{t-2}/redbox/figred, 人を/2850/{t-1}/greenbox/figgreen} {
   \node[tok,minimum width=11mm] (t\i) at (0,-\i*11) {\w};
   \node[lbl,anchor=east] at (-6.5,-\i*11) {\id};
-  \node[box,minimum width=15mm] (e\i) at (25,-\i*11) {$\ve_{x_{\s}}$};
+  \node[\st,minimum width=15mm] (e\i) at (25,-\i*11) {$\ve_{x_{\s}}$};
   \draw[arr] (t\i) -- node[above,lbl] {$\mE$} (e\i);
+  % 連結ベクトルの、このトークンの区画（同じ色）
+  \fill[\cf] (49,-\i*11) ++(-5.5mm,-5.5mm) rectangle ++(11mm,11mm);
+  \draw[black!35] (49,-\i*11) ++(-5.5mm,-5.5mm) rectangle ++(11mm,11mm);
 }
-\node[graybox,minimum width=11mm,minimum height=31mm] (c) at (48,-11) {$\vc$};
+\node[draw=black!55,thick,minimum width=11mm,minimum height=33mm,inner sep=0pt] (c) at (49,-11) {};
+\node[font=\small] at (49,-11) {$\vc$};
 \foreach \i in {0,1,2} \draw[arr] (e\i.east) -- (c.west|-e\i);
-\node[greenbox,minimum width=11mm,minimum height=22mm] (h) at (69,-11) {$\vh$};
-\draw[arr] (c) -- node[above,lbl] {$\mW_1$} node[below,lbl] {$\tanh$} (h);
-\node[orangebox,minimum width=11mm,minimum height=31mm] (z) at (90,-11) {$\vz$};
-\draw[arr] (h) -- node[above,lbl] {$\mW_2$} (z);
-\node[plainbox,align=left,font=\footnotesize,minimum width=17mm] (p) at (116,-11) {常\ \ 0.03\\に\ \ 0.02\\\ \ $\vdots$};
+% 矢印の上のラベルが箱に触れないように、h と z の箱を細くし、間隔を広げた
+\node[greenbox,minimum width=9mm,minimum height=22mm] (h) at (77,-11) {$\vh$};
+\draw[arr] (c) -- node[above,lbl,font=\scriptsize] {$\mW_1,\vb_1$} node[below,lbl,font=\scriptsize] {$\tanh$} (h);
+\node[orangebox,minimum width=9mm,minimum height=31mm] (z) at (103,-11) {$\vz$};
+\draw[arr] (h) -- node[above,lbl,font=\scriptsize] {$\mW_2,\vb_2$} (z);
+\node[plainbox,align=left,font=\footnotesize,minimum width=15mm] (p) at (133,-11) {常\ \ 0.03\\に\ \ 0.02\\\ \ $\vdots$};
 \draw[arr] (z) -- node[above,lbl,font=\scriptsize] {softmax} (p);
-\node[lbl] at (0,-29) {番号 $(n,)$};
-\node[lbl] at (25,-29) {$(n,d)$};
-\node[lbl] at (48,-29) {$(nd,)$};
-\node[lbl] at (69,-29) {$(d_h,)$};
-\node[lbl] at (90,-29) {$(V,)$};
-\node[lbl] at (116,-29) {確率 $(V,)$};
-\node[lbl] at (0,-34) {3};
-\node[lbl] at (25,-34) {$3\times 64$};
-\node[lbl] at (48,-34) {192};
-\node[lbl] at (69,-34) {128};
-\node[lbl] at (90,-34) {4096};
-\node[lbl] at (116,-34) {4096};
-\node[lbl,anchor=south] at (25,5) {埋め込み};
-\node[lbl,anchor=south] at (48,5) {並べる};
-\node[lbl,anchor=south] at (69,5) {隠れ層};
-\node[lbl,anchor=south] at (90,5) {ロジット};
+\node[lbl,anchor=east] at (-6,-30) {形};
+\node[lbl,anchor=east] at (-6,-35) {大きさ};
+\node[lbl] at (0,-30) {$(n,)$};
+\node[lbl] at (25,-30) {$(n,d)$};
+\node[lbl] at (49,-30) {$(nd,)$};
+\node[lbl] at (77,-30) {$(d_h,)$};
+\node[lbl] at (103,-30) {$(V,)$};
+\node[lbl] at (133,-30) {$(V,)$};
+\node[lbl] at (0,-35) {3};
+\node[lbl] at (25,-35) {$3\times 64$};
+\node[lbl] at (49,-35) {192};
+\node[lbl] at (77,-35) {128};
+\node[lbl] at (103,-35) {4096};
+\node[lbl] at (133,-35) {4096};
+\node[lbl,anchor=south] at (25,6) {埋め込み};
+\node[lbl,anchor=south] at (49,6) {連結ベクトル};
+\node[lbl,anchor=south] at (77,6) {隠れ層};
+\node[lbl,anchor=south] at (103,6) {ロジット};
 \end{tikzpicture}
-\caption{固定窓の MLP 言語モデル（$n=3$）。直前の 3 個のトークンを、同じ表 $\mE$ で埋め込みに取り替え、1 本に並べて MLP に入れる。
-下の 2 行は、各段階のテンソルの形と、この章の設定での大きさ。確率の数値は説明用。}
+\caption{固定窓の MLP 言語モデル（$n=3$）。直前の 3 個のトークンを、同じ表 $\mE$ で埋め込みに取り替え、前から順に連結して 1 本の連結ベクトル $\vc$ にし（同じ色の区画が同じトークン）、MLP に入れる。
+下の 2 行は、各段階のテンソルの形と、この章の設定での大きさ（左端は番号、右端は確率）。バイアス $\vb_1$、$\vb_2$ も矢印の上に書いた。箱の高さは、大きさに比例していない。確率の数値は説明用。}
 \label{fig:emb-mlp}
 \end{figure}
 
-式で書きます。予測したいトークンを $x_t$、その直前の $n$ 個を $x_{t-n},\dots,x_{t-1}$ とします。
+式で書きます。予測したいトークン（当てる相手）を $x_t$、その直前の $n$ 個を $x_{t-n},\dots,x_{t-1}$ とします。
+モデルが受け取るのは、この $n$ 個の全部です。
 \begin{align}
-\vc &= [\,\ve_{x_{t-n}};\ \dots;\ \ve_{x_{t-1}}\,] \in\R^{nd} && \text{（並べる）}\label{eq:emb-concat}\\
+\vc &= [\,\ve_{x_{t-n}};\ \dots;\ \ve_{x_{t-1}}\,] \in\R^{nd} && \text{（連結）}\label{eq:emb-concat}\\
 \vh &= \tanh(\mW_1\vc+\vb_1) \in\R^{d_h} && \text{（隠れ層）}\label{eq:emb-hidden}\\
 \vz &= \mW_2\vh+\vb_2 \in\R^{V} && \text{（ロジット）}\label{eq:emb-logits}\\
 p(x_t\mid x_{t-n},\dots,x_{t-1}) &= \softmax(\vz)_{x_t} && \text{（確率）}\label{eq:emb-prob}
 \end{align}
-$[\,\cdot\,;\,\cdot\,]$ は、ベクトルをつないで 1 本にする記号です。
+$[\,\cdot\,;\,\cdot\,]$ は、ベクトルを縦につないで 1 本にする記号（連結）で、$\vc$ を\jterm{連結ベクトル}と呼びます。
+式の中では、埋め込み $\ve_x$ を、ほかのベクトルと同じく列ベクトルとして扱います（$\mE$ の行を縦に立てたものです）。
+$\vh$ は隠れ層のベクトル、$\vz$ はロジットです。
 $d_h$ は隠れ層の幅で、この章では 128 にします。
-式\eqref{eq:emb-hidden}と式\eqref{eq:emb-logits}は、\chapref{ch:nn}の MLP（式\eqref{eq:nn-mlp}）そのものです。
+$\mW_1$ を 1 層目の重み、$\mW_2$ を出力層の重みと呼びます。$\vb_1$、$\vb_2$ はそれぞれのバイアスです。
+式\eqref{eq:emb-hidden}と式\eqref{eq:emb-logits}は、\chapref{ch:nn}の MLP（定義\ref{def:nn-mlp}）で、途中の層を 1 枚にし、活性化関数を $\tanh$ にしたものです。
 新しいのは、入力を作る式\eqref{eq:emb-concat}だけです。
 
 形を確かめます。
@@ -402,7 +466,7 @@ $\mW_2$ は、長さ 128 を長さ $V=4096$ に変えるので、形は $4096\ti
 \textbf{同じ表を、窓のどの位置でも使う。}\
 「先生」は、窓の 1 番目にあっても 3 番目にあっても、同じベクトル $\ve_{692}$ になります。
 ある位置で学んだトークンの性質が、ほかの位置でも使えます。
-一方、$\mW_1$ は位置ごとに別の重みを持ちます。この違いは、\secref{sec:emb-window}で効いてきます。
+一方、$\mW_1$ は位置ごとに別の重みを持ちます（どの列がどの位置に掛かるかは、\secref{sec:emb-window}の\figref{fig:emb-blocks}で図にします）。この違いが、\secref{sec:emb-window}で問題になります。
 
 \textbf{出力と損失は、\chapref{ch:lm}と同じ。}\
 出力は $V$ 個のロジットで、softmax で確率に直します。
@@ -419,6 +483,7 @@ $\mW_2$ は、長さ 128 を長さ $V=4096$ に変えるので、形は $4096\ti
 
 コードにします。まずデータです。
 訓練データの番号の列から、ランダムな位置の窓（$n$ 個）と、その次の 1 個を取り出します。
+位置は、毎回新しく乱数で選びます。同じ位置が 2 回選ばれることもあります。
 
 \snippet{窓と正解を取り出す}{code:emb-batch}{ch08/mlp_lm.py}{batch}
 \outputfile{ch08/out/mlp_data.txt}
@@ -439,18 +504,83 @@ $B=2$、$n=3$ で、3 行目の乱数 \code{i} が $[5,\ 20]$ だったとしま
 3 行目の乱数の上限が \code{len(data) - n} なのは、この位置がデータの外に出ないようにするためです。
 
 実行結果は、冒頭の文から作った入力と正解の例です（表示用のコードは省略しました）。
-窓を 1 つ右へずらすたびに、新しい問題が 1 問できます。
+\figref{fig:emb-slide}は、同じ文の上で、窓を 1 つずつ右へずらしたコマ送りの図です。
+コマを見比べると、窓（青い枠）が 1 つ右へ進むたびに、左端のトークンが窓から出て灰色になり、1 コマ前に正解だったトークンが窓の右端に入ります。
+こうして、窓を 1 つずらすたびに、新しい問題が 1 問できます。
+実行結果の 3 行は、コマ 1、2、4 に当たります（コマ 3 の「人を 常 に → 先生」は、表示を省きました）。
+学習では、文の中の問題を順に使うのではなく、この中から毎回、乱数で 1024 問を選びます。
 正解のラベルを人が付ける必要がないのは、\chapref{ch:lm}と同じです。
+なお、データの先頭の $n$ 個は、直前の $n$ 個がそろわないので、当てる相手にしません。検証損失も、検証データの $n+1$ 個目から測ります（11 万個のうちの数個なので、比べるときの影響はほとんどありません）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[font=\scriptsize,text=bookgray] at (22,6) {位置 0};
+\node[font=\scriptsize,text=bookgray] at (34,6) {位置 1};
+\node[font=\scriptsize,text=bookgray] at (46,6) {位置 2};
+\node[font=\scriptsize,text=bookgray] at (58,6) {位置 3};
+\node[font=\scriptsize,text=bookgray] at (70,6) {位置 4};
+\node[font=\scriptsize,text=bookgray] at (82,6) {位置 5};
+\node[font=\scriptsize,text=bookgray] at (94,6) {位置 6};
+\node[lbl,anchor=west] at (0,0) {コマ 1};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (22,0) {私は};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (34,0) {その};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (46,0) {人を};
+\node[orangebox,minimum height=6mm,very thick,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (58,0) {常};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (70,0) {に};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (82,0) {先生};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (94,0) {と};
+\draw[bookblue,thick,rounded corners=2pt] (16.4,-4) rectangle (51.6,4);
+\node[font=\scriptsize,text=bookgray,anchor=west] at (101,0) {実行結果の 1 行目};
+\node[lbl,anchor=west] at (0,-9) {コマ 2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (22,-9) {私は};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (34,-9) {その};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (46,-9) {人を};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (58,-9) {常};
+\node[orangebox,minimum height=6mm,very thick,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (70,-9) {に};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (82,-9) {先生};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (94,-9) {と};
+\draw[bookblue,thick,rounded corners=2pt] (28.4,-13) rectangle (63.6,-5);
+\node[font=\scriptsize,text=bookgray,anchor=west] at (101,-9) {実行結果の 2 行目};
+\node[lbl,anchor=west] at (0,-18) {コマ 3};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (22,-18) {私は};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (34,-18) {その};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (46,-18) {人を};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (58,-18) {常};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (70,-18) {に};
+\node[orangebox,minimum height=6mm,very thick,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (82,-18) {先生};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (94,-18) {と};
+\draw[bookblue,thick,rounded corners=2pt] (40.4,-22) rectangle (75.6,-14);
+\node[font=\scriptsize,text=bookgray,anchor=west] at (101,-18) {（表示は省略）};
+\node[lbl,anchor=west] at (0,-27) {コマ 4};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (22,-27) {私は};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (34,-27) {その};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (46,-27) {人を};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (58,-27) {常};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (70,-27) {に};
+\node[box,minimum height=6mm,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (82,-27) {先生};
+\node[orangebox,minimum height=6mm,very thick,minimum width=10mm,font=\footnotesize,inner sep=1pt] at (94,-27) {と};
+\draw[bookblue,thick,rounded corners=2pt] (52.4,-31) rectangle (87.6,-23);
+\node[font=\scriptsize,text=bookgray,anchor=west] at (101,-27) {実行結果の 3 行目};
+\node[box,minimum width=5mm,minimum height=3.5mm] at (24,-36.5) {};\node[lbl,anchor=west] at (27.5,-36.5) {窓の中（入力 3 個）};
+\node[orangebox,very thick,minimum width=5mm,minimum height=3.5mm] at (62,-36.5) {};\node[lbl,anchor=west] at (65.5,-36.5) {当てる相手（正解）};
+\node[graybox,draw=black!25,minimum width=5mm,minimum height=3.5mm] at (97,-36.5) {};\node[lbl,anchor=west] at (100.5,-36.5) {窓の外};
+\end{tikzpicture}
+\caption{固定窓（$n=3$）で、学習の問題を作る様子（コマ送り）。
+コマが 1 つ進むごとに、窓が 1 つ右へずれる。窓の中の 3 個が入力、その次の 1 個（橙）が正解になる。
+窓から出たトークン（灰色）は、そのコマの問題では、モデルからまったく見えない。}
+\label{fig:emb-slide}
+\end{figure}
 
 モデル本体は、式\eqref{eq:emb-concat}〜\eqref{eq:emb-logits}をそのまま書きます。
 
 \snippet{固定窓の MLP 言語モデル}{code:emb-model}{ch08/mlp_lm.py}{model}
 
 \code{emb} が埋め込み表 $\mE$、\code{fc1} が $\mW_1$ と $\vb_1$、\code{fc2} が $\mW_2$ と $\vb_2$ です（\code{nn.Linear} は、重みとバイアスを 1 組にした部品でした）。
-\code{forward} の 1 行目が表引きで、形は $(B,n)$ から $(B,n,d)$ になります（$B$ はバッチサイズ）。
-2 行目の \code{view} が「並べる」操作です。$n$ 本の $d$ 次元ベクトルを、長さ $nd$ の 1 本に並べ直します。
+11 行目（\code{forward} の 1 行目）が表引きで、形は $(B,n)$ から $(B,n,d)$ になります（$B$ はバッチサイズ）。
+12 行目の \code{view} が連結です。$n$ 本の $d$ 次元ベクトルを、前から順に端からつないで、長さ $nd$ の 1 本にします（\figref{fig:emb-shapes}の右半分）。
 引数の \code{-1} は「要素の数が合うように決めてほしい」という指定で（\chapref{ch:pytorch}）、ここでは $3\times64=192$ になります。
-残りの 2 行は、\chapref{ch:nn}の MLP と同じです。
+残りの 13〜14 行目は、\chapref{ch:nn}の MLP と同じです。
 softmax は、損失関数 \code{F.cross_entropy} の中で計算されるので、ここには書きません。
 
 モデルを作り、パラメータを数えます。
@@ -463,14 +593,22 @@ softmax は、損失関数 \code{F.cross_entropy} の中で計算されるので
 全部を足すと、$262{,}144+24{,}576+128+524{,}288+4{,}096=815{,}232$ 個で、約 82 万個です。
 内訳を見ると、埋め込み表（\code{emb}）が 26 万個、最後の層（\code{fc2}）が 52 万個で、この二つがほとんどを占めます。
 どちらも、語彙サイズ $V$ に比例する部分です。
-学習前の損失は 8.377 で、でたらめに当てるときの $\log V=8.318$ とほぼ同じです。
+学習前の損失は 8.377 で、どのトークンにも同じ確率 $1/V$ を付けたときの損失 $\log V=8.318$ とほぼ同じです。
 学習前の重みは小さな乱数なので、4096 個の確率はどれも $1/V$ に近く、損失は $-\log(1/V)=\log V$ に近くなります。
 
-ここで、壁 1（表の爆発）を振り返ります。
-数える方法で直前 3 個を見るには、$V^4\approx 2.8\times10^{14}$ マスの表が必要でした。
+ここで、壁 1（文脈を長くすると表が大きくなりすぎる）を振り返ります。
+数える方法で直前 3 個を見るとき、ありうる並びの全部にマスを用意すると、$V^4\approx 2.8\times10^{14}$ マスになります。
 直前 3 個の並び方が $V^3$ 通りあり、その一つひとつに、次の 1 個の候補が $V$ 個あるからです。
 バイグラム（直前 1 個）でも、$V^2\approx 1{,}678$ 万マスです。
 MLP 言語モデルは、直前 3 個を見て、82 万個です。
+
+ただし、マスの大部分は空のままです。
+訓練データ（約 248 万トークン）に 1 回でも現れた組は、バイグラムで約 41 万種類（全マスの 2.5\%）、直前 3 個と次の 1 個の組で約 129 万種類でした（\file{ch08/sweep_checks.py}）。
+現れた組だけを持つなら、置き場所は足ります。
+本当に困るのは、置き場所よりも、数えた回数が当てにならないことです。
+この 4 個の組（直前 3 個と次の 1 個）の 95\% は、訓練データに 1 回しか現れません（バイグラムの 2 個の組でも 60\%）。
+1 回数えただけの回数からは、次に来るトークンの確率を、ほとんど決められません。
+\chapref{ch:lm}で見た「表がほとんど埋まらない」は、このことです。
 
 \begin{quiz}
 窓の幅を $n=3$ から $n=4$ に広げると、パラメータは何個増えるでしょうか。
@@ -483,13 +621,13 @@ MLP 言語モデルは、直前 3 個を見て、82 万個です。
 壁 1 は、少なくともパラメータの数の上では、なくなりました。
 
 この節のまとめです。
-直前 $n$ 個の埋め込みを並べて MLP に入れると、次のトークンのロジットが出ます。
-パラメータ数は窓の幅にほとんどよらず、初めて見る文脈にも答えを出せます。
+直前 $n$ 個の埋め込みを連結して MLP に入れると、次のトークンのロジットが出ます。
+窓を 1 つ広げても、パラメータは約 1\% しか増えません。初めて見る文脈にも、計算で答えを出せます。
 
 \section{学習させて、バイグラムと比べる}\label{sec:emb-train}
 
 モデルの形はできました。
-この節の問いは、「このネットワークは、数えるだけのバイグラムより良い予測ができるか」です。
+この節の問いは、「このネットワークは、直前の 1 個を数えるだけのバイグラムより良い予測ができるか」です。
 漱石の小説と計算ドリルを混ぜた、本書の訓練データ（約 248 万トークン）で学習させます。
 
 \subsection*{学習ループ}
@@ -512,20 +650,26 @@ AdamW は勾配降下法の改良版で、動かす幅をパラメータごと�
 
 学習率 0.015 とバッチサイズ 1024 は、いくつか試して決めました。
 1 回の更新に 1024 個の窓を使い、3000 回更新します。
-全部で $1024\times3000=3{,}072{,}000$、約 307 万個の窓を見る計算です。
-訓練データは約 248 万トークンなので、およそ 1.2 周します（$307\div248\approx1.24$）。
+全部で $1024\times3000=3{,}072{,}000$、延べ約 307 万個の窓を見る計算です。
+訓練データ約 248 万トークンの、延べ 1.2 倍に当たります（$307\div248\approx1.24$）。
+ただし、窓の位置は毎回、重複を許して乱数で選ぶので、全部の窓をちょうど 1 回ずつ見るわけではありません。
+延べ 307 万回選んでも、一度も選ばれない窓が約 3 割あります（$e^{-1.24}\approx0.29$。\file{ch08/sweep_checks.py}）。
+\chapref{ch:training}の「エポック」（全データを 1 回ずつ使い切る単位）とは、数え方が違います。
 筆者の PC（CPU）では 2 分半ほどでした。
 
 \outputfile{ch08/out/mlp_train.txt}
 
-損失は 8.38 から順調に下がりました。
+損失は、学習前の 8.38（\coderef{code:emb-build}の出力）から順調に下がりました。
 検証データは、小説の末尾（約 6.9 万トークン）と、訓練に使っていないドリル（約 4.6 万トークン）をつないだものです。
-性質がまるで違うので、境目で二つに分けた平均も表示しています（\code{split_mean}）\footnote{訓練損失が検証損失より低いのは、過学習のためだけではありません。訓練データは、損失の低いドリルの割合が検証データより高いのです（約 45\% と 40\%）。}。
+性質がまるで違うので、境目で二つに分けた平均も表示しています（\code{split_mean}）。
+なお、バイグラムの平滑化の $\alpha$（\tabref{tab:emb-compare}）は、5 つの候補から、この検証データでの損失がいちばん低いものを選びました（\file{ch08/mlp_lm.py}）。
+設定を選ぶのに使ったデータで測った値なので、この章の検証損失は、\chapref{ch:training}の意味のテスト損失ではありません。
+0.1 に満たない差は、目安として読んでください\footnote{訓練損失が検証損失より低いのは、過学習のためだけではありません。訓練データは、損失の低いドリルの割合が検証データより高いのです（約 45\% と 40\%）。}。
 
 ドリルの損失は、最初の 375 回で 2.13 まで下がり、そのあとはほとんど動きません。
 小説の損失は、7.07 から 5.51 へ、最後までゆっくり下がり続けます。
 ドリルの損失がずっと低いのは、出てくるトークンが、数字 10 個と「\code{+}」「\code{-}」「\code{=}」、改行の 14 種類しかないからです。
-14 個からでたらめに選んでも、損失は $\log 14\approx2.64$ で済みます。
+14 種類のどれにも同じ確率を付けるだけでも、損失は $\log 14\approx2.64$ で済みます。
 
 \subsection*{基準線と比べる}
 
@@ -537,7 +681,8 @@ AdamW は勾配降下法の改良版で、動かす幅をパラメータごと�
 \begin{table}[tbp]
 \centering
 \caption{検証データでの 1 トークンあたりの損失（実測）。バイグラムは、訓練データの隣どうしの組を数えて作った（平滑化 $\alpha=0.03$）。
-「大きさ」は、表のマス目の数、またはパラメータ数。}
+「大きさ」は、表のマス目の数（空のマスを含む）、またはパラメータ数。
+下の 2 行は参考で、直前 2〜3 個を数え、短い文脈の表で補う工夫をした数え方（\file{ch08/sweep_count.py}。割引の大きさ $D$ は検証データで選んだ）。}
 \label{tab:emb-compare}
 \small
 \begin{tabular}{llrrrr}
@@ -546,7 +691,10 @@ AdamW は勾配降下法の改良版で、動かす幅をパラメータごと�
 \midrule
 一様（$\log V$） & なし & --- & 8.318 & 8.318 & 8.318 \\
 バイグラム（数える） & 直前 1 個 & 1,678 万 & 4.328 & 5.609 & 2.432 \\
-MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & \textbf{2.059} \\
+MLP 言語モデル & 直前 3 個 & 82 万 & 4.120 & 5.512 & 2.059 \\
+\midrule
+数える（割引と補間、$D=0.75$） & 直前 2 個 & --- & 4.078 & 5.317 & 2.242 \\
+数える（割引と補間、$D=0.9$） & 直前 3 個 & --- & 4.000 & 5.315 & 2.051 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -567,17 +715,18 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 \end{axis}
 \end{tikzpicture}
 \caption{MLP 言語モデルの検証損失の推移（実測）。破線は、数えて作ったバイグラムの値。
-ドリルでは学習の初めからバイグラムを下回る。小説では、終盤になってようやく下回る。}
+点は 375 回ごとの測定（0 回目の 8.38 は描いていない）。ドリルでは、最初の測定（375 回目）で、すでにバイグラムを下回る。小説では、終盤（2625 回目）になってようやく下回る。}
 \label{fig:emb-curve}
 \end{figure}
 
-読み取れることを三つ挙げます。
+読み取れることを四つ挙げます。
 
 \textbf{全体では、バイグラムを下回った。}\
 損失は 4.328 から 4.120 に下がりました。
 パープレキシティに直すと、約 76 択が約 62 択に絞られたことになります。
 パープレキシティは $e^{\text{損失}}$ で、「何択で迷っているか」を表すのでした（$e^{4.328}\approx75.8$、$e^{4.120}\approx61.6$）。
-しかも、モデルの大きさは、バイグラムの表の 20 分の 1 です（$16{,}777{,}216\div815{,}232\approx20.6$）。
+モデルの大きさは、全部のマスを用意したバイグラムの表の約 20 分の 1 です（$16{,}777{,}216\div815{,}232\approx20.6$）。
+ただし、現れた組（約 41 万）だけを持つ表と比べれば、MLP のほうが 2 倍ほど大きくなります。
 
 \textbf{ドリルで大きく下がった。}\
 内訳を見ると、ドリルが 2.43 から 2.06 へ、はっきり下がっています。
@@ -587,9 +736,20 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 \textbf{小説では、わずかな差にとどまった。}\
 小説の損失は 5.61 から 5.51 で、差は 0.1 です。
 \figref{fig:emb-curve}を見ると、小説でバイグラムを下回ったのは、学習の終盤でした。
-数えるだけのバイグラムは、訓練データを一度見ればその情報を使い切る、手強い相手です。
-ニューラルネットワークは、少しずつしか学べません。
+バイグラムは、訓練データを 1 回通して数えれば、隣どうしの組の回数が、すべて表に入ります。
+MLP は、1 回の更新で重みを少し動かすだけなので、延べ 1.2 倍のデータを見たところでは、まだ学び終えていません。
 ただし、曲線はまだ下がり続けています。もっと長く学習させれば、差は広がると見込めます（ここでは確かめていません）。
+
+\textbf{工夫した数え方には、まだ届かない。}\
+比べた相手は、\chapref{ch:lm}と同じ素朴な数え方で、見る範囲も直前の 1 個だけです。
+数える方法にも工夫があります。
+直前 2〜3 個の並びを数え、回数から一定の数 $D$ を引いて、余った確率を、短い文脈の表（直前 1 個、2 個）に回して補う方法です（補間つきの絶対割引と呼ばれます。\file{ch08/sweep_count.py}）。
+同じ訓練データと検証データで試した結果が、\tabref{tab:emb-compare}の下の 2 行です。
+直前 3 個を数える行（$D=0.9$）は、全体・小説・ドリルのどれでも、この章の MLP より低い損失になりました（ドリルは 2.051 と 2.059 で、差はわずかです）。
+直前 2 個を数える行（$D=0.75$）も、全体と小説では MLP より低くなりました。ドリルだけは 2.242 で、MLP の 2.059 より高い値です。
+ですから、この規模とこの学習量では、「ニューラルネットワークが数える方法に勝った」とは言えません。
+この章の MLP の値打ちは、損失の値そのものより、似たトークンの間で学んだことを分け合える仕組みを持つことにあります。
+埋め込みを使い、モデルを大きくして長く学習させた本書の基盤モデル（Transformer）は、小説で 4.864 まで下がります（\tabref{tab:emb-rnn}）。
 
 \begin{caution}{\chapref{ch:lm}の損失とは、直接比べられない}
 \chapref{ch:lm}のバイグラムの検証損失は 3.58 でした。この章の 4.33 より低く見えますが、単位が違います。
@@ -598,6 +758,8 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 損失を比べてよいのは、同じデータを同じ単位で測ったときだけです。
 
 単位をそろえるには、1 トークンあたりの損失を 1.75 で割ります。
+損失は 1 個ごとの $-\log$ を足したものなので、文章全体の合計を文字数で割れば、1 文字あたりになります。
+合計は「1 トークンあたりの損失 $\times$ トークン数」、文字数は「$1.75\times$ トークン数」なので、割るとトークン数が消えて、1.75 で割るのと同じになります（\chapref{ch:lm}と同じ換算です）。
 小説の損失は $5.512\div1.75\approx3.15$ で、1 文字あたり $e^{3.15}\approx23$ 択です。
 文字のバイグラムは $e^{3.58}\approx36$ 択でした（データの切り方が少し違うので、目安です）。
 \end{caution}
@@ -613,32 +775,33 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 どちらも温度 $\tau=0.8$ で、30 トークン書かせました。
 出力の中の \texttt{\textbackslash n} は、改行です。
 1 行目は、「私はその人を常に」までが与えた書き出しで、その先がモデルの書いた部分です。
-「奇麗な」「だから」のように、日本語らしい切れ端がつながっています。
+「奇麗な」「だから」のように、日本語として読める短い並びがつながっています。
 しかし、文としての意味は通りません。
-モデルが覚えているのは直前の 3 個だけなので、少し前に何を書いたかを、もう知らないのです。
+モデルに見えるのは直前の 3 個だけなので、4 個以上前に書いたトークンは、次の予測に使われません。
 
-2 行目は、「\code{25+48=}」までを与えました。
+2 行目は、改行に続けて「\code{25+48=}」を与えました。
 数字、「\code{=}」、改行が並ぶ「形」は、まねできています。
-しかし答えは「\code{25+48=486}」で、でたらめです。
+しかし答えは「\code{25+48=486}」で、正しい答えの 73 ではありません（温度 0.8 で乱数を引いた 1 回の出力なので、乱数が違えば別の数になります）。
 正答率は、次のように測ります。
-例題を 1 行見せてから問題を与え、改行が出るまで貪欲法で書かせます。書いた文字列が答えと完全に一致すれば、正解です。
+例題「\code{12+35=47}」を 1 行見せてから問題を与え、改行が出るまで貪欲法（いちばん確率の高いトークンを選ぶ）で書かせます。書いた文字列が答えと完全に一致すれば、正解です。
 200 問で測ると、正答率は 2.5\%（5 問）でした（\file{ch08/mlp_lm.py} の \code{drill_accuracy}）。
-本書の基盤モデルは、同じ 200 問で 86.5\% を出します。
+$n=3$ のモデルでは、例題は窓に入らないので、結果に影響しません。
+本書の基盤モデルは、同じ 200 問で 86.5\% を出します（訓練のドリルにそのまま出ていた 131 問を含む値です。\chapref{ch:pretraining}）。
 ただし、入力の作り方が少し違います。
-基盤モデルには例題を見せず、改行のあとに問題だけを与えて測りました。
+基盤モデルは、本書の共通の測り方（\code{llmbook} の \code{drill_accuracy}）のまま、例題を見せず、改行のあとに問題だけを与えて測りました。
 この大きな差の原因は、\secref{sec:emb-window}で調べます。
 
 この節のまとめです。
-埋め込みと MLP を組み合わせた言語モデルは、バイグラムの 20 分の 1 の大きさで、バイグラムより低い損失に届きました。
-ただし、小説での差はわずかで、計算はまったくできません。
+埋め込みと MLP を組み合わせた言語モデルは、直前の 1 個を数えるバイグラムより低い損失に届きました。
+ただし、小説での差はわずかで、工夫した数え方には届かず、計算はほとんどできません（正答率 2.5\%）。
 
 \subsection*{ここまでの道のり}
 
 ここで、いったん振り返ります。
 トークンの番号は、埋め込み表 $\mE$ を引いて、$d$ 次元のベクトルに取り替えます（\secref{sec:emb-lookup}）。
 表の中身は学習で決まり、似た使われ方のトークンは近いベクトルになると期待できます（\secref{sec:emb-meaning}）。
-直前 $n$ 個の埋め込みを並べて MLP に入れると、言語モデルになります（\secref{sec:emb-mlp}）。
-実際に学習させると、数えるだけのバイグラムを下回りました（\secref{sec:emb-train}）。
+直前 $n$ 個の埋め込みを連結して MLP に入れると、言語モデルになります（\secref{sec:emb-mlp}）。
+実際に学習させると、直前の 1 個を数えるバイグラムを下回りました（\secref{sec:emb-train}）。
 
 残っている問いは二つです。
 「期待」と書いた埋め込みの性質は、本当に現れたのでしょうか。
@@ -662,25 +825,28 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 
 \code{table} は、各行の長さを 1 にそろえた埋め込み表です。
 3 行目で、選んだトークンの行（形 $(d,)$）との積を取ると、4096 個のトークンとの類似度が並びます。
-5 行目の \code{topk} は、大きい順に取り出す関数です。先頭はかならず自分自身（類似度 1）なので、$k+1$ 個取って先頭を捨てます。
+\code{tid} は、語を 1 個のトークン番号に直す関数です（掲載は省略しました）。
+4 行目で \code{skip} の印が付いたトークンの類似度を $-1$ にします。類似度は $-1$ 以上なので、こうしておけば上位に入りません。
+5 行目の \code{topk} は、大きい順に取り出す関数です。選んだトークンが候補から外れていないかぎり、先頭は自分自身（類似度 1）なので、$k+1$ 個取って先頭を捨てます。
 
 \code{skip} は、訓練データに 50 回未満しか現れないトークンと、文字の途中で切れたトークン（1 文字に満たないバイトのかけら）の印です。
-行がほとんど学習されていないので、候補から外しました。
+前者は行がほとんど学習されておらず、後者は表示しても読めないので、候補から外しました。
 括弧の中がコサイン類似度です。
 「7」の近くには、ほかの数字が並びました。
 「三」の近くは漢数字です。
 「先生」の近くには、「Ｋ」「奥さん」「敬太郎」「代助」と、漱石の小説の登場人物が集まっています。
 「私」の近くは「自分」「僕」「彼」、「です。」の近くは丁寧な文末、「は」の近くは「が」です。
-数字、人、文末、助詞という区別を、誰も教えていません。
+数字、人の呼び名、文末、助詞という区別を、誰も教えていません。
 モデルは、次のトークンを当てる練習をしただけです。
 \secref{sec:emb-meaning}の期待どおり、似た使われ方をするトークンが、近いベクトルを持つようになりました。
 
-\begin{caution}{類似度は、数値 1 個ではなく顔ぶれで読む}
+\begin{caution}{類似度は、数値 1 個ではなく、上位に並んだトークンの種類で判断する}
 64 次元のベクトルが 4000 個もあると、乱数で作ったベクトルの中にも、たまたま向きの近いものが見つかります。
 学習前の乱数の表で同じ 8 個のトークンを調べると、いちばん近いトークンとの類似度は平均 0.42 でした（学習後は 0.59）。
 ですから、0.4 台の値が 1 個あるだけでは、偶然と区別がつきません。
 一方、「先生」の近く 5 個のうち 4 個が登場人物、というような偏りは、偶然ではまず起きません。
-数値 1 個ではなく、並んだ顔ぶれ全体で判断します。
+数値 1 個ではなく、上位に並んだトークンの種類で判断します。
+0.42 は、約 3000 個の中から、いちばん大きいものを選んだ値です。決めた 2 個の類似度とは、そのままでは比べられません（すぐあとで比べます）。
 \end{caution}
 
 ただし、うまくいった例ばかりではありません。
@@ -688,51 +854,94 @@ MLP 言語モデル & 直前 3 個 & 82 万 & \textbf{4.120} & \textbf{5.512} & 
 「東京」の近くには、納得のいくトークンが見当たりません。
 \chapref{ch:math}で見た組の類似度も測ると、「7」と「8」は 0.77、「先生」と「奥さん」は 0.52 でした（「7」と「先生」は 0.04）。
 しかし「東京」と「京都」は 0.27 で、基盤モデルの 0.57 に届きません。
+
+これらの値は、どのくらい高いのでしょうか。
+決めた 2 個の類似度は、乱数の表ならどのくらいになるかと比べます（\figref{fig:emb-sim-hist}）。
+観察する 3,068 個のトークンから 2 個を無作為に選ぶ組を 2 万組作り、類似度を測りました（\file{ch08/sweep_checks.py}）。
+学習前の乱数の表では、平均 0.00、標準偏差 0.13 で、0.29 以上になるのは 100 組に 1 組です。
+学習後の表でも、無作為な 2 個の分布はほとんど同じ形です（平均 0.01、標準偏差 0.13）。
+その中で、「7」と「8」の 0.77、「先生」と「奥さん」の 0.52 は、分布の右の端よりさらに外にあり、偶然ではまず出ない値です。
+一方、「東京」と「京都」の 0.27 は、乱数の表でも 100 組に 1〜2 組は出る程度の値で、偶然と区別できません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.78\linewidth,height=42mm,xlabel={無作為に選んだ 2 個のトークンのコサイン類似度},ylabel={組の割合},
+  xmin=-0.6,xmax=1.0,ymin=0,ymax=0.17,ytick={0,0.05,0.1,0.15},yticklabel style={/pgf/number format/fixed},
+  legend pos=north west,legend style={font=\scriptsize},label style={font=\footnotesize},tick label style={font=\scriptsize}]
+\addplot[const plot,draw=bookgray,thick,dashed] table[col sep=comma,x=x,y=before]{code/ch08/out/sim_hist.csv};
+\addlegendentry{学習前の表}
+\addplot[const plot,draw=bookblue,thick] table[col sep=comma,x=x,y=after]{code/ch08/out/sim_hist.csv};
+\addlegendentry{学習後の表}
+\draw[bookaccent,thick] (axis cs:0.77,0) -- (axis cs:0.77,0.13);
+\node[font=\scriptsize,text=bookaccent,anchor=south] at (axis cs:0.77,0.13) {「7」と「8」};
+\draw[bookaccent,thick] (axis cs:0.52,0) -- (axis cs:0.52,0.10);
+\node[font=\scriptsize,text=bookaccent,anchor=south] at (axis cs:0.52,0.10) {「先生」と「奥さん」};
+\draw[bookaccent,thick] (axis cs:0.27,0) -- (axis cs:0.27,0.07);
+\node[font=\scriptsize,text=bookaccent,anchor=west,align=left,inner sep=2pt] at (axis cs:0.27,0.05) {「東京」と\\「京都」};
+\end{axis}
+\end{tikzpicture}
+\caption{無作為に選んだ 2 個のトークンの類似度の分布（実測、2 万組。横軸は幅 0.05 の区間）。
+赤い縦線は、決めた 3 組の学習後の類似度。0.77 と 0.52 は、分布の右の端より外にある。0.27 は、乱数の表でもまれに出る値である。}
+\label{fig:emb-sim-hist}
+\end{figure}
+
 理由の一つは、データの量です。
 「7」は訓練データに約 7.6 万回現れますが、「東京」は 429 回しか現れません。
-現れる回数が少ないトークンの行は、少ししか更新されないのです。
+現れる回数が少ないトークンの行は、勾配を受け取る回数が少ないので、学習があまり進まないのです。
 
-\subsection*{2 次元の地図にする}
-\skimread{\figref{fig:emb-pca}で「数字、漢数字、人の呼び名が、別々の島に分かれた。これが壁 2 への答えである」ことだけ押さえれば、先へ進めます。}
+\subsection*{2 次元に写して眺める}
+\skimread{\figref{fig:emb-pca}で「数字、漢数字、人の呼び名が、別々のかたまりに分かれた。これが壁 2 への答えの一つである」ことだけ押さえれば、先へ進めます。}
 
 64 次元の空間は、そのままでは目に見えません。
-そこで、ベクトルのばらつきがいちばん大きい方向を 1 本選びます。
+そこで、ベクトルのばらつき（分散）がいちばん大きい方向を 1 本選びます。
+点の集まりを、ある直線の上に落としたとき、いちばん広がって見える直線の向きです。
 次に、それと直角な方向の中から、ばらつきがいちばん大きいものを選びます。
 この 2 方向の座標（第 1 主成分、第 2 主成分）だけを取り出す方法を、\term{主成分分析}{principal component analysis; PCA}と呼びます。
-数字、漢数字、人、文末、助詞の 5 種類から計 44 個のトークンを選び、2 次元に写した結果が\figref{fig:emb-pca}です。
+数字、漢数字、人の呼び名、文末、助詞の 5 種類から計 44 個のトークンを選び、2 次元に写した結果が\figref{fig:emb-pca}です。
+2 つの方向は、この 44 個のベクトルだけから決めました（4096 個全部からではありません）。
 5 種類の分類と色分けは、筆者が付けました。モデルが分けたのではありません。
 軸そのものに意味はないので、同じ色の点が固まっているかどうかを見ます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.8\linewidth,height=52mm,xmin=-5.4,xmax=3.6,ymin=-3.8,ymax=3.8,
+\begin{axis}[width=0.72\linewidth,axis equal image,xmin=-5.2,xmax=3.4,ymin=-3.6,ymax=3.6,
   xlabel={第 1 主成分},ylabel={第 2 主成分},legend pos=outer north east,legend style={font=\scriptsize},
-  only marks,mark size=1.8pt]
-\addplot[bookorange,mark=square*] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_digit.csv};
+  only marks,mark size=1.5pt,tick label style={font=\scriptsize}]
+\addplot[bookorange,mark=square,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_digit.csv};
 \addlegendentry{数字（0〜9）}
-\addplot[bookpurple,mark=diamond*,mark size=2.3pt] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_kanji.csv};
+\addplot[bookpurple,mark=diamond,mark size=2pt,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_kanji.csv};
 \addlegendentry{漢数字（一、二、…）}
-\addplot[bookaccent,mark=*] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_person.csv};
-\addlegendentry{人（先生、私、…）}
-\addplot[bookgreen,mark=triangle*,mark size=2.3pt] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_ending.csv};
+\addplot[bookaccent,mark=o,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_person.csv};
+\addlegendentry{人の呼び名（先生、私、…）}
+\addplot[bookgreen,mark=triangle,mark size=2pt,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_ending.csv};
 \addlegendentry{文末（です。…）}
-\addplot[bookblue,mark=x,mark size=2.6pt,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_particle.csv};
+\addplot[bookblue,mark=x,mark size=2pt,thick] table[col sep=comma,x=x,y=y]{code/ch08/out/pca_particle.csv};
 \addlegendentry{助詞（は、が、…）}
-\node[font=\scriptsize,anchor=south] at (axis cs:1.55,3.0) {数字};
-\node[font=\scriptsize,anchor=south] at (axis cs:-3.8,0.5) {漢数字};
-\node[font=\scriptsize,anchor=east] at (axis cs:1.3,-2.3) {人};
-\node[font=\scriptsize,anchor=west] at (axis cs:0.5,0.9) {文末と助詞};
+\addplot[only marks,mark=none,nodes near coords,point meta=explicit symbolic,
+  visualization depends on={value \thisrow{anchor}\as\labanchor},
+  every node near coord/.style={font=\scriptsize,text=black,anchor=\labanchor,inner sep=3pt},
+  skip coords between index={1}{2},skip coords between index={5}{6}]
+  table[col sep=comma,x=x,y=y,meta=label]{code/ch08/out/pca_labels.csv};
+% 「7」と「奥さん」は、近くに別の点があるので、引き出し線で外に書く（上の表では飛ばした）
+\draw[black!60,thin] (axis cs:1.324,2.135) -- (axis cs:0.35,2.35) node[anchor=east,font=\scriptsize,text=black,inner sep=1pt] {7};
+\draw[black!60,thin] (axis cs:2.498,-2.820) -- (axis cs:2.0,-3.33) node[anchor=east,font=\scriptsize,text=black,inner sep=1pt] {奥さん};
+% 「は」は点が混み合う所にあるので、引き出し線で外に書く
+\draw[black!60,thin] (axis cs:-0.357,0.721) -- (axis cs:-1.5,1.9) node[anchor=south east,font=\scriptsize,text=black,inner sep=1pt] {は};
 \end{axis}
 \end{tikzpicture}
-\caption{学習した埋め込みを、主成分分析で 2 次元に写したもの（実測）。数字、漢数字、人を表すトークンが、それぞれ固まっている。
-文末と助詞は中央で重なる。この 2 方向で表せるのは、44 個のベクトルのばらつき全体の約 3 割なので、ここで重なっていても、64 次元の中では離れていることがある。}
+\caption{学習した埋め込みを、主成分分析で 2 次元に写したもの（実測。縦と横の縮尺は同じ）。数字、漢数字、人の呼び名のトークンが、それぞれ固まっている。
+文末と助詞は中央で重なる。名前を書いたのは一部の点だけで、点が重なって見える所もある。
+2 つの方向は、選んだ 44 個だけから決めた。この 2 方向で表せるのは、44 個のベクトルのばらつき全体の約 3 割なので、ここで重なっていても、64 次元の中では離れていることがある。}
 \label{fig:emb-pca}
 \end{figure}
 
-数字、漢数字、人が、三つのはっきりした島に分かれました。
-これが、壁 2（似た文脈から学べない）に対する答えです。
-「先生」と「奥さん」が近くにあるので、「先生は」に続く言葉について学んだことが、「奥さんは」にも効きます。
+この 44 個の中では、数字、漢数字、人の呼び名が、三つのかたまりに分かれました（かたまりは、近くに集まった点のまとまりのことです）。
+ただし、方向をこの 44 個から決めたので、グループが分かれて見えやすい写し方になっています。
+より確かな証拠は、4096 個全部から探した近いトークンの一覧（\coderef{code:emb-neighbors}の実行結果）のほうです。
+これが、壁 2（似た文脈から学べない）に対する答えの一つです。
+「先生」と「奥さん」のベクトルが近いので、「先生は」に続く言葉について学んだことが、「奥さんは」にも使えます。
 数える方法では、二つは別々のマス目で、片方を何回数えても、もう片方には何も伝わりませんでした。
 
 この節のまとめです。
@@ -751,65 +960,169 @@ MLP 言語モデルは、計算ドリルをほとんど解けませんでした�
 トークンは「\code{2}」「\code{5}」「\code{+}」「\code{4}」「\code{8}」「\code{=}」の 6 個です。
 $n=3$ のモデルに見えるのは、末尾の「\code{4}」「\code{8}」「\code{=}」だけです。
 「\code{25+}」は窓の外にあるので、何に 48 を足すのかが分かりません。
-これでは、どれだけ学習しても正解は出せません。
-\secref{sec:emb-train}の正答率 2.5\% は、当然の結果でした。
+答えを書き進めると、事情はさらに悪くなります。
+\figref{fig:emb-gen}は、\secref{sec:emb-train}で実際に生成した「\code{486}」を、1 トークンずつコマ送りにしたものです。
+コマ 1 で書いた「\code{4}」は、コマ 2 では窓の右端に入り、代わりに左端の「\code{4}」（問題の 48 の十の位）が窓から出ます。
+コマ 3 では問題の「\code{8}」も出て、窓の中に問題の数字が一つも残っていません。コマ 4 では「\code{=}」も出ます。
+窓の外のトークンは、どれほど大事でも、予測にまったく使われないのです。
+これでは、どれだけ学習しても、当てずっぽう以上の正解は出せません。
+\secref{sec:emb-train}の正答率 2.5\% は、予想どおりの結果でした。
 いちばん短い「\code{5+3=}」でも 4 個あるので、当たった 5 問は、たまたま合ったものです。
 
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[font=\scriptsize,text=bookgray,anchor=south] at (44.599999999999994,4.5) {与えた問題};
+\draw[black!40] (16,4) -- (73.19999999999999,4);
+\node[font=\scriptsize,text=bookgray,anchor=south] at (85.6,4.5) {モデルが書いた部分};
+\draw[black!40] (73.39999999999999,4) -- (106.0,4);
+\node[lbl,anchor=west] at (0,0) {コマ 1};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (20.0,0) {\textbackslash n};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (28.2,0) {2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (36.4,0) {5};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (44.599999999999994,0) {+};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (52.8,0) {4};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (61.0,0) {8};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (69.19999999999999,0) {=};
+\node[plainbox,dashed,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (77.39999999999999,0) {?};
+\draw[bookblue,thick,rounded corners=2pt] (48.199999999999996,-4) rectangle (73.79999999999998,4);
+\node[font=\scriptsize,anchor=west] at (108.0,0) {→ 「\texttt{4}」を書く};
+\node[lbl,anchor=west] at (0,-9) {コマ 2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (20.0,-9) {\textbackslash n};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (28.2,-9) {2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (36.4,-9) {5};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (44.599999999999994,-9) {+};
+\node[graybox,minimum height=6mm,draw=bookaccent,dashed,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (52.8,-9) {4};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (61.0,-9) {8};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (69.19999999999999,-9) {=};
+\node[greenbox,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (77.39999999999999,-9) {4};
+\node[plainbox,dashed,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (85.6,-9) {?};
+\draw[bookblue,thick,rounded corners=2pt] (56.4,-13) rectangle (81.99999999999999,-5);
+\node[font=\scriptsize,anchor=west] at (108.0,-9) {→ 「\texttt{8}」を書く};
+\node[lbl,anchor=west] at (0,-18) {コマ 3};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (20.0,-18) {\textbackslash n};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (28.2,-18) {2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (36.4,-18) {5};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (44.599999999999994,-18) {+};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (52.8,-18) {4};
+\node[graybox,minimum height=6mm,draw=bookaccent,dashed,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (61.0,-18) {8};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (69.19999999999999,-18) {=};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (77.39999999999999,-18) {4};
+\node[greenbox,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (85.6,-18) {8};
+\node[plainbox,dashed,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (93.8,-18) {?};
+\draw[bookblue,thick,rounded corners=2pt] (64.6,-22) rectangle (90.19999999999999,-14);
+\node[font=\scriptsize,anchor=west] at (108.0,-18) {→ 「\texttt{6}」を書く};
+\node[lbl,anchor=west] at (0,-27) {コマ 4};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (20.0,-27) {\textbackslash n};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (28.2,-27) {2};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (36.4,-27) {5};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (44.599999999999994,-27) {+};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (52.8,-27) {4};
+\node[graybox,minimum height=6mm,draw=black!25,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (61.0,-27) {8};
+\node[graybox,minimum height=6mm,draw=bookaccent,dashed,text=black!40,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (69.19999999999999,-27) {=};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (77.39999999999999,-27) {4};
+\node[box,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (85.6,-27) {8};
+\node[greenbox,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (93.8,-27) {6};
+\node[plainbox,dashed,minimum height=6mm,minimum width=7.2mm,font=\footnotesize\ttfamily,inner sep=1pt] at (102.0,-27) {?};
+\draw[bookblue,thick,rounded corners=2pt] (72.8,-31) rectangle (98.39999999999999,-23);
+\node[font=\scriptsize,anchor=west] at (108.0,-27) {→ 「\texttt{\textbackslash n}」を書く};
+\node[box,minimum width=5mm,minimum height=3.5mm] at (22,-36.5) {};\node[lbl,anchor=west] at (25.5,-36.5) {窓の中};
+\node[greenbox,minimum width=5mm,minimum height=3.5mm] at (42,-36.5) {};\node[lbl,anchor=west] at (45.5,-36.5) {1 コマ前に書いた};
+\node[graybox,draw=black!25,minimum width=5mm,minimum height=3.5mm] at (74,-36.5) {};\node[lbl,anchor=west] at (77.5,-36.5) {窓の外};
+\node[graybox,draw=bookaccent,dashed,minimum width=5mm,minimum height=3.5mm] at (92,-36.5) {};\node[lbl,anchor=west] at (95.5,-36.5) {いま窓から出た};
+\end{tikzpicture}
+\caption{固定窓（$n=3$）のモデルが、「\texttt{25+48=}」の続きを 1 トークンずつ書く様子（コマ送り。書いたトークンは\secref{sec:emb-train}の生成の実際の出力）。
+1 コマ進むごとに、書いたトークンが窓の右端に入り（緑）、左端の 1 個が窓から出る（赤の破線）。
+問題の「\texttt{25+}」は最初から窓の外にあり、正しい答えは \texttt{73} である。}
+\label{fig:emb-gen}
+\end{figure}
+
 それなら、窓を広げればよさそうです。
-窓の幅 $n$ だけを 1 から 12 まで変え、ほかは同じ設定で学習し直しました（\file{ch08/window_sweep.py}）。
+窓の幅 $n$ だけを 1 から 12 までの 7 通り（1、2、3、4、6、8、12）に変え、ほかは同じ設定で学習し直しました（\file{ch08/window_sweep.py}）。
 結果が\tabref{tab:emb-window}と\figref{fig:emb-window}です。
 
 \begin{table}[tbp]
 \centering
 \caption{窓の幅 $n$ を変えたときの検証損失と、ドリルの正答率（実測。更新はどれも 3000 回）。
-「窓に入る」は、答えの 1 文字目を当てる時点で、問題文（「\code{=}」まで）がすべて窓に入っている問題の割合。}
+「窓に入る」は、答えの 1 文字目を当てる時点で、問題文（「\code{=}」まで）がすべて窓に入っている問題の割合。
+「最後まで」は、答えの最後の桁を当てる時点でも、問題文がすべて窓に入っている割合（\file{ch08/sweep_checks.py}）。
+正答率は 200 問で測ったので、1〜2 ポイントの差は誤差の範囲である。}
 \label{tab:emb-window}
 \small
-\begin{tabular}{rrrrrrr}
+\begin{tabular}{rrrrrrrr}
 \toprule
-窓の幅 $n$ & パラメータ数 & 全体 & 小説 & ドリル & 正答率 & 窓に入る \\
+窓の幅 $n$ & パラメータ数 & 全体 & 小説 & ドリル & 正答率 & 窓に入る & 最後まで \\
 \midrule
-1 & 798,848 & 4.299 & 5.558 & 2.434 & 0.0\% & 0.0\% \\
-2 & 807,040 & 4.149 & \textbf{5.431} & 2.250 & 2.0\% & 0.0\% \\
-3 & 815,232 & 4.120 & 5.512 & 2.059 & 2.5\% & 0.0\% \\
-4 & 823,424 & \textbf{4.117} & 5.610 & 1.903 & 3.5\% & 14.0\% \\
-6 & 839,808 & 4.164 & 5.795 & 1.748 & \textbf{8.0\%} & 73.5\% \\
-8 & 856,192 & 4.194 & 5.905 & \textbf{1.658} & \textbf{8.0\%} & 100.0\% \\
-12 & 888,960 & 4.307 & 6.078 & 1.683 & 7.5\% & 100.0\% \\
+1 & 798,848 & 4.299 & 5.558 & 2.434 & 0.0\% & 0.0\% & 0.0\% \\
+2 & 807,040 & 4.149 & \textbf{5.431} & 2.250 & 2.0\% & 0.0\% & 0.0\% \\
+3 & 815,232 & 4.120 & 5.512 & 2.059 & 2.5\% & 0.0\% & 0.0\% \\
+4 & 823,424 & \textbf{4.117} & 5.610 & 1.903 & 3.5\% & 14.0\% & 10.5\% \\
+6 & 839,808 & 4.164 & 5.795 & 1.748 & \textbf{8.0\%} & 73.5\% & 41.0\% \\
+8 & 856,192 & 4.194 & 5.905 & \textbf{1.658} & \textbf{8.0\%} & 100.0\% & 75.0\% \\
+12 & 888,960 & 4.307 & 6.078 & 1.683 & 7.5\% & 100.0\% & 100.0\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[tbp]
 \centering
+\pgfplotsset{embwin/.style={width=0.39\linewidth,height=42mm,xmin=0,xmax=13,xtick={1,2,3,4,6,8,12},
+  xlabel={窓の幅 $n$},title style={font=\footnotesize},label style={font=\footnotesize},
+  tick label style={font=\scriptsize},legend style={font=\tiny,row sep=-2pt}}}
 \begin{tikzpicture}
-\begin{axis}[width=0.7\linewidth,height=40mm,xlabel={窓の幅 $n$},ylabel={検証損失},
-  xmin=0,xmax=13,ymin=1.2,ymax=6.6,xtick={1,2,3,4,6,8,12},
-  legend pos=outer north east,legend style={font=\scriptsize}]
-\addplot[bookblue,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=val_novel]{code/ch08/out/window.csv};
-\addlegendentry{小説}
-\addplot[bookorange,mark=square*,mark size=1.5pt] table[col sep=comma,x=n,y=val_drill]{code/ch08/out/window.csv};
-\addlegendentry{ドリル}
+\begin{axis}[embwin,title={(a) 小説の検証損失},ymin=5.25,ymax=6.15]
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=n,y=val_novel]{code/ch08/out/window.csv};
+\addplot[bookgreen,dashed,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=n,y=val_novel]{code/ch08/out/sweep_count_best.csv};
+\addplot[bookgray,dotted,domain=0:13,samples=2] {5.609};
+% 凡例の代わりに、線の近くに名前を書く（凡例が点を隠さないように）
+\node[font=\tiny,text=bookblue,anchor=south east] at (axis cs:7.6,5.92) {MLP};
+\node[font=\tiny,text=bookgreen,anchor=west] at (axis cs:3.3,5.32) {数える（工夫あり）};
+\node[font=\tiny,text=bookgray,anchor=south east] at (axis cs:12.8,5.62) {バイグラム};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[embwin,title={(b) ドリルの検証損失},ymin=1.5,ymax=2.55,legend pos=north east]
+\addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=n,y=val_drill]{code/ch08/out/window.csv};
+\addlegendentry{MLP}
+\addplot[bookgreen,dashed,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=n,y=val_drill]{code/ch08/out/sweep_count_best.csv};
+\addlegendentry{数える（工夫あり）}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[embwin,title={(c) 窓に入る割合と正答率},ymin=-5,ymax=105,ylabel={\%}]
+\addplot[bookgray,mark=o,mark size=1.3pt] table[col sep=comma,x=n,y=first]{code/ch08/out/fit_last.csv};
+\addplot[bookpurple,dashed,mark=diamond*,mark size=1.6pt] table[col sep=comma,x=n,y=last]{code/ch08/out/fit_last.csv};
+\addplot[bookaccent,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=n,y=acc]{code/ch08/out/window.csv};
+\node[font=\tiny,text=bookgray,anchor=east,align=center] at (axis cs:5.6,85) {入る\\（1 文字目）};
+\node[font=\tiny,text=bookpurple,anchor=west,align=center] at (axis cs:8.6,55) {入る\\（最後の桁）};
+\node[font=\tiny,text=bookaccent,anchor=south] at (axis cs:9.5,12) {正答率};
 \end{axis}
 \end{tikzpicture}
-\caption{窓の幅と検証損失（実測）。ドリルの損失は窓を広げると下がるが、小説の損失は $n=2$ を底に、広げるほど上がる。}
+\caption{窓の幅 $n$ だけを変えたときの結果（実測。ほかの設定と更新の回数 3000 回は同じ）。
+(a) 小説の損失は $n=2$ を底に、窓を広げるほど上がる。工夫した数え方（直前 1〜3 個を数える。$n=2$、3 は\tabref{tab:emb-compare}の下の 2 行で、割引の大きさは $D=0.75$、0.9。$n=1$ は表にない行で、$D=0.5$）は、$n=2$、3 で MLP より低い。
+(b) ドリルの損失は、$n=8$ まで窓を広げるほど下がる（$n=12$ はわずかに上がる）。工夫した数え方は、$n=1$〜3 で MLP とほぼ同じ値。
+(c) 問題文が窓にすべて入る割合（答えの 1 文字目の時点と、答えの最後の桁の時点）と、ドリル 200 問の正答率。$n=12$ では問題文がずっと窓に入っているのに、正答率は 7.5\% にとどまる。
+「入る」の 2 本は、問題文の長さから数えた割合なので、モデルを学習していない $n=10$、11 の点もある。学習した窓の幅は、(a)(b) と正答率の 7 通り（\tabref{tab:emb-window}）だけである。}
 \label{fig:emb-window}
 \end{figure}
 
 まず、表の 1 行目を見ます。
 $n=1$ の MLP が見るのは直前の 1 個だけで、バイグラムと同じ情報です。
 それでも小説の損失は 5.558 で、バイグラムの 5.609 を下回りました。
-似たトークンの間で、学んだことを分け合えるからだと考えられます。壁 2 への答えが、数値にも現れています。
+似たトークンの間で、学んだことを分け合えるからだと考えられます。壁 2 への答えが、数値にも現れている、と読めます（ただし、差は 0.05 と小さく、1 回の実行の結果です）。
 一方、ドリルは 2.434 と 2.432 で、差がありません。ドリルの損失は、窓を広げて初めて下がります。
 
 そのドリルの損失は、窓を広げるにつれて 2.43 から 1.66 まで下がりました。
-ところが、正答率は 8\% で頭打ちです。
-$n=8$ では、すべての問題が窓にすっぽり入っています。それでも、200 問のうち 16 問しか解けません。
+ところが、正答率は 8\% で頭打ちです（\figref{fig:emb-window}(c)）。
+$n=8$ なら、答えの 1 文字目を当てる時点では、すべての問題で問題文が窓に入っています。
+ただし、\figref{fig:emb-gen}のように、答えを書き進めると窓がずれるので、2 文字目からは問題文の先頭がはみ出す問題が 4 分の 1 あります（表の「最後まで」が 75\%）。
+$n=12$ なら、答えの最後の桁を当てる時点でも、すべての問題で問題文が窓に入っています。
+それでも、200 問のうち 15 問しか解けません。
 損失が下がったのに、なぜ解けないのでしょうか。
 
 ドリルの損失は、3 種類のトークンの平均です。
 問題の部分（「\code{=}」まで。全体の 63\%）、答えの数字（26\%）、改行（11\%）です。
-問題の数字はでたらめに作られているので、どんなモデルにも当てようがありません。
+問題の数字は乱数で作られているので、どんなモデルにも当てようがありません。
 種類ごとに測り直すと（\file{ch08/drill_parts.py}）、$n=3$ から $n=8$ で、改行の損失は 1.03 から 0.06 に下がりました。
 答えが何桁で終わるかは、分かるようになったのです。
 答えの数字も 2.42 から 1.61 に下がりましたが、$e^{1.61}\approx 5$ なので、まだ数字 1 個につき約 5 択で迷っています。
@@ -818,16 +1131,49 @@ $n=8$ では、すべての問題が窓にすっぽり入っています。そ�
 しかも、小説の損失は $n=2$ がいちばん良く、窓を広げるほど悪くなりました。
 窓の外が見えないことだけが、問題ではなかったのです。
 
-\subsection*{限界 2：どの位置が大事かが、重みに焼き付けられている}
+\subsection*{限界 2：どの位置をどう扱うかが、位置ごとの重みで固定されている}
 
 式\eqref{eq:emb-hidden}を思い出します。
-$\vc$ は $n$ 本の埋め込みをつないだものなので、$\mW_1$ も、列を $d$ 本ずつに切って、$n$ 個の区画に分けられます。
+$\vc$ は $n$ 本の埋め込みを連結したものなので、$\mW_1$ も、列を $d$ 本ずつに切って、$n$ 個の区画に分けられます。
 $n=3$ なら、次のように書けます。
 \begin{equation}
 \mW_1\vc = \mU_3\ve_{x_{t-3}} + \mU_2\ve_{x_{t-2}} + \mU_1\ve_{x_{t-1}}
 \label{eq:emb-blocks}
 \end{equation}
-$\mU_k$ は、$\mW_1$ の 192 列のうち、$k$ 個前の埋め込みに掛かる 64 列です。
+$\mU_k$ は、$\mW_1$ の 192 列のうち、$k$ 個前の埋め込みに掛かる 64 列です（\figref{fig:emb-blocks}）。
+$\vc$ の上から順に、3 個前、2 個前、1 個前の埋め込みが並んでいるので、$\mW_1$ の左の 64 列が $\mU_3$、真ん中が $\mU_2$、右が $\mU_1$ です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+% 1 層目の重み W_1（128 行 192 列。1 列 = 0.25mm で描く）を、64 列ずつの区画に分ける
+\foreach \x/\c/\dc/\k [count=\i from 0] in {0/figblue/bookblue/3, 16/figred/bookaccent/2, 32/figgreen/bookgreen/1} {
+  \fill[\c] (\x,0) rectangle ++(16,-32);
+  \draw[\dc,thick] (\x,0) rectangle ++(16,-32);
+  \node[font=\small] at (\x+8,-13) {$\mU_{\k}$};
+  \node[font=\scriptsize,text=bookgray] at (\x+8,-19) {\k 個前用};
+  \node[font=\scriptsize,text=bookgray] at (\x+8,2) {64 列};}
+\node[lbl,anchor=south] at (24,4.5) {1 層目の重み $\mW_1$（128 行 192 列）};
+\node at (53,-16) {$\times$};
+% 連結ベクトル c（192 個。同じ縮尺）
+\foreach \c/\dc/\k [count=\i from 0] in {figblue/bookblue/3, figred/bookaccent/2, figgreen/bookgreen/1} {
+  \fill[\c] (58,8-\i*16) rectangle ++(5,-16);
+  \draw[\dc,thick] (58,8-\i*16) rectangle ++(5,-16);
+  \node[font=\scriptsize,anchor=west,align=left] at (64,0-\i*16) {$\ve_{x_{t-\k}}$\\（\k 個前）};}
+\node[lbl,anchor=south] at (60.5,8.5) {連結ベクトル $\vc$（192 個）};
+\node at (82,-16) {$=$};
+% 結果: 区画ごとの積の和
+\node[font=\small,anchor=west] at (86,-6) {$\textcolor{bookblue}{\mU_3\ve_{x_{t-3}}}$};
+\node[font=\small,anchor=west] at (86,-16) {$+\ \textcolor{bookaccent}{\mU_2\ve_{x_{t-2}}}$};
+\node[font=\small,anchor=west] at (86,-26) {$+\ \textcolor{bookgreen}{\mU_1\ve_{x_{t-1}}}$};
+\node[lbl,anchor=north] at (102,-31) {（どの項も 128 個の数）};
+\end{tikzpicture}
+\caption{1 層目の重み $\mW_1$ を、掛かる位置ごとの区画 $\mU_3$、$\mU_2$、$\mU_1$ に分けた図（$n=3$。縦横の長さは行と列の数に比例）。
+$\mW_1$ の左の 64 列は、連結ベクトル $\vc$ の上の 64 個（3 個前の埋め込み）にだけ掛かる。同じ色どうしが掛かり、結果はその和になる（式\eqref{eq:emb-blocks}）。
+区画の中身は学習で決まり、学習のあとは、どんな入力にも同じ区画が掛かる。}
+\label{fig:emb-blocks}
+\end{figure}
+
 
 なぜ和に分かれるのかを、小さな数で確かめます。
 1 行 4 列の行列 $(1\ \ 2\ \ 3\ \ 4)$ を、2 次元の埋め込み $(5,6)$ と $(7,8)$ をつないだ $(5,6,7,8)^\T$ に掛けます。
@@ -836,7 +1182,10 @@ $\mU_k$ は、$\mW_1$ の 192 列のうち、$k$ 個前の埋め込みに掛か�
 
 $k$ 個前のトークンには、何が来ても、いつも $\mU_k$ が掛かります。
 埋め込み表 $\mE$ は位置で共通でしたが、$\mW_1$ は位置ごとに別なのです。
-どの位置をどれだけ重く見るかは、学習で $\mU_k$ に焼き付けられます。入力に合わせて変えることはできません。
+入力ごとに変わるのは、掛けられる側の埋め込み $\ve$ で、掛ける側の $\mU_k$ は変わりません。
+「5 個前にあるトークンを、どう扱うか」は、そこに何が来ても、同じ行列 $\mU_5$ で決まります。
+「この入力では、4 個前のトークンを、ふだん 5 個前を扱うのと同じように扱おう」と、入力の内容を見て、掛ける重みを切り替える仕組みはありません。
+（後ろに $\tanh$ があるので、あるトークンの予測への影響は、ほかの位置に何があるかで多少は変わります。しかし、それは選んで切り替えているのではありません。）
 
 これが困るのは、大事な情報の位置が、入力ごとにずれるからです（\figref{fig:emb-shift}）。
 
@@ -863,7 +1212,8 @@ $k$ 個前のトークンには、何が来ても、いつも $\mU_k$ が掛か�
 \end{tikzpicture}
 \caption{二つの問題を、当てたい位置（右端の「？」）にそろえて並べたもの。
 一の位の「\texttt{5}」（赤）は、上では 5 個前、下では 4 個前にある。
-固定窓のモデルは位置ごとに別の重み $\mU_k$ を使うので、同じ役割の数字でも、位置が変わると別々に学ぶしかない。}
+固定窓のモデルは位置ごとに別の重み $\mU_k$ を使うので、同じ役割の数字でも、位置が変わると別々に学ぶしかない。
+上の $\mU_6$〜$\mU_1$ は $n=6$ のモデルの重みで、$n=3$ のモデルには $\mU_3$〜$\mU_1$ しかない。「？」は次の 1 トークン（答えの 1 文字目。上なら「\texttt{7}」）。}
 \label{fig:emb-shift}
 \end{figure}
 
@@ -877,19 +1227,28 @@ $k$ 個前のトークンには、何が来ても、いつも $\mU_k$ が掛か�
 小説でも事情は同じです。
 主語が 3 個前にあるか 7 個前にあるかは、文によって違います。
 原理的には、広い窓のモデルは、遠い位置の $\mU_k$ を 0 にすれば、狭い窓のモデルと同じ予測ができます。
-それでも損失が上がったのは、学習が足りないからだと考えられます。
-窓を広げるほど $\mU_k$ は増えますが、それぞれが学べる例は薄まります。
-同じ 3000 回の更新では、広い窓を使いこなせませんでした（学習を長くすれば下がるはずですが、ここでは確かめていません）。
+それでも検証損失が上がった理由には、ふつう二つの候補があります。
+訓練データには合っているのに検証データで悪い（過学習）か、訓練データにも合っていない（学習不足）かです。
+訓練データの小説で測り直すと、$n=8$ のモデルの損失は、先頭 20 万トークンで 5.637、末尾 20 万トークンで 5.470 でした。
+$n=3$ のモデルは 5.301 と 5.119 なので、$n=8$ は訓練データでも悪いままです（\file{ch08/sweep_checks.py}）。
+ですから、原因は過学習ではなく、学習不足です。
+窓を広げると、遠くて予測に役立ちにくい位置の入力と、それに掛かる重み $\mU_k$ が増えます。
+どの $\mU_k$ も、毎回の更新で同じ数の例を見ていますが、調整しなければならない重みが増えた分、同じ 3000 回の更新では調整しきれなかったと考えられます（学習を長くすれば下がるかどうかは、ここでは確かめていません）。
 
-\subsection*{限界 3：長さが決め打ち}
+\subsection*{限界 3：窓の幅は、モデルを作るときに決めたまま変えられない}
 
+限界 1 は「いま決めてある $n$ の外が見えない」ことでした。限界 3 は、その $n$ を、あとから変えられないことです。
 窓の幅 $n$ は、モデルを作るときに決めます。
-$n=8$ で学習したモデルに、あとから 20 個前まで見せることはできません。
-小説には、数百トークン前の出来事が効く場面がいくらでもありますが、それを覆う窓を位置ごとの重みで用意するのは、現実的ではありません。
-300 個前まで見るなら、$\mW_1$ だけで $128\times(300\times64)=2{,}457{,}600$ 個になり、いまのモデル全体の約 3 倍です。
+$n=8$ で学習したモデルに、あとから 20 個前まで見せることはできません。20 個前のトークンに掛ける重み $\mU_{20}$ が、そもそも無いからです。
+しかも、必要な長さは文によって違います。ドリルなら 13 個で足りますが、小説には、数百トークン前の出来事が関係する場面もあります。
+それでも、$n$ は一つに決めなければなりません。
+300 個前まで見る窓を作るなら、$\mW_1$ だけで $128\times(300\times64)=2{,}457{,}600$ 個になり、いまのモデル全体の約 3 倍です。
+置き場所としては足りる数です。
+しかし、\tabref{tab:emb-window}で見たとおり、窓を広げるほど学習は難しくなりました（限界 2）。
+位置ごとに別の重みを用意するやり方のまま、窓を 300 個に広げても、うまくいくとは考えにくいのです。
 
 この節のまとめです。
-固定窓のモデルには、窓の外が見えない、位置ごとに重みが決め打ち、長さが決め打ち、という三つの限界があります。
+固定窓のモデルには、窓の外が見えない、どの位置をどう扱うかが位置ごとの重みで固定されている、窓の幅をあとから変えられない、という三つの限界があります。
 窓を広げるだけでは、計算ドリルの正答率は 8\% までしか上がりませんでした。
 
 \section{可変長の文脈へ：RNN}\label{sec:emb-rnn}
@@ -897,30 +1256,53 @@ $n=8$ で学習したモデルに、あとから 20 個前まで見せること�
 固定窓の三つの限界は、どれも「過去のトークンを、位置ごとに並べて一度に入れる」ことから来ていました。
 この節の問いは、「窓の幅を決めずに、過去を好きなだけ読むモデルは作れるか」です。
 
-\subsection*{メモを書き足しながら読む}
+\subsection*{メモを更新しながら読む}
 
 人が長い文を読むとき、すべての語を目の前に並べてはいません。
 読んだ内容を頭の中にまとめ、1 語読むたびに、そのまとめを更新します。
 これをまねたのが、\term{再帰型ニューラルネットワーク}{recurrent neural network; RNN}です\footnote{言語への応用は、1990 年のエルマン（J. Elman）の研究~\cite{elman1990finding}にさかのぼります。}。
-RNN は、\term{隠れ状態}{hidden state}と呼ぶ 1 本のベクトル $\vh$ を「メモ」として持ちます。
+RNN は、\term{隠れ状態}{hidden state}と呼ぶ 1 本のベクトル $\vh$ を持ちます。
+ここでは、隠れ状態を、読んだ内容をまとめた「メモ」にたとえます。
 トークンを 1 個読むたびに、いまのメモと新しいトークンから、次のメモを作ります。
+ただし、紙のメモと違って、書き足して長くなることはありません。
+メモの大きさは 128 個の数で決まっていて、1 個読むたびに、128 個すべてが新しい値に計算し直されます。
 \begin{align}
 \vh_t &= \tanh(\mW_x\ve_{x_t}+\mW_h\vh_{t-1}+\vb), \qquad \vh_0=\vzero \label{eq:emb-rnn}\\
 \vz_t &= \mW_o\vh_t+\vb_o \label{eq:emb-rnn-out}
 \end{align}
-$\ve_{x_t}$ は $t$ 番目のトークンの埋め込み、$\vh_{t-1}$ は 1 つ前までのメモです。
-$\vz_t$ は、$t$ 番目まで読んだ時点での、次のトークンのロジットです。
-$\mW_x$ は $d_h\times d$、$\mW_h$ は $d_h\times d_h$、$\mW_o$ は $V\times d_h$ の行列で、この章では $d=64$、$d_h=128$ です。
+$\ve_{x_t}$ は $t$ 番目のトークンの埋め込み、$\vh_{t-1}$ は 1 つ前の時刻までのメモ（隠れ状態）です。
+添字の $t$ は\textbf{時刻}、つまり何番目のトークンまで読んだかを表します（\chapref{ch:nn}の $\vh_1$、$\vh_2$ は層の番号でしたが、ここでは時刻です）。
+$\vz_t$ は、$t$ 番目まで読んだ時点での、次のトークンのロジットで、確率は次のとおりです。
+\begin{equation}
+p(x_{t+1}\mid x_1,\dots,x_t)=\softmax(\vz_t)_{x_{t+1}}
+\label{eq:emb-rnn-prob}
+\end{equation}
+式\eqref{eq:emb-prob}では当てるトークンを $x_t$ と書きましたが、ここでは $x_t$ は読んだ側のトークンで、当てるのは 1 つ先の $x_{t+1}$ です。
+入力は、直前の数個ではなく、$x_1$ から $x_t$ までの全部です。
+$\mW_x$ を\jterm{入力の重み}（$d_h\times d$）、$\mW_h$ を\jterm{隠れ状態の重み}（$d_h\times d_h$）、$\mW_o$ を出力の重み（$V\times d_h$）と呼びます。$\vb$、$\vb_o$ はバイアスです。この章では $d=64$、$d_h=128$ です。
 式\eqref{eq:emb-hidden}と比べると、入力が埋め込み 1 本になり、$\mW_h\vh_{t-1}$ の項が増えています。
 この項を通して、過去の情報が先へ運ばれます（\figref{fig:emb-rnn}）。
 
-最初の 2 個ぶんを書き下します。$\vh_0=\vzero$ は、まだ何も読んでいない白紙のメモなので、$\vh_1$ では $\mW_h\vh_0$ の項が消えます。
+最初の 2 個ぶんを書き下します。$\vh_0=\vzero$ は、まだ何も読んでいないことを表す、すべて 0 のベクトルなので、$\vh_1$ では $\mW_h\vh_0$ の項が消えます。
 \[
 \vh_1 = \tanh(\mW_x\ve_{x_1}+\vb),\qquad
 \vh_2 = \tanh(\mW_x\ve_{x_2}+\mW_h\vh_1+\vb)
 \]
 $\vh_2$ の式に $x_1$ は直接は出てきませんが、$\vh_1$ を通して入っています。
 こうして $\vh_t$ は、$x_1$ から $x_t$ までのすべてに左右されます。
+
+\figref{fig:emb-rnn}は、各時刻の計算を横に並べて描いたもの（時間の方向に展開した図）です。
+ただし、$\vh_1$ から $\vh_4$ が別々に保存されているわけではありません。
+次の時刻へ持ち越されるのは、いちばん新しい $\vh_t$ の 1 本だけです。
+この動きを、固定窓と並べてコマ送りにしたのが\figref{fig:emb-frames}です（同じ「\code{25+48=}」の問題文を、1 トークンずつ読みます）。
+左の固定窓では、窓（青い枠）から出たトークンは灰色になり、完全に見えなくなります。時刻 4 で「\code{2}」が、時刻 5 で「\code{5}」が出ていきます。
+右の RNN では、帯（$\vh_t$）の長さはどのコマでも同じです。
+新しいトークンを読むたびに、そのトークンの情報が帯に入り、前からあった情報は、同じ長さの中に押し込められて薄くなります。
+時刻 6 では、「\code{2}」と「\code{5}」の情報は、まだ残ってはいるものの、ほんのわずかです。
+もう一つ、コマどうしをつなぐ縦の矢印に注目してください。
+RNN は、前のコマの $\vh_{t-1}$ ができるまで、次のコマを計算できません。
+固定窓には、この矢印がありません。学習のときは、6 つの時刻の予測を、まとめて同時に計算できます。
+
 
 \begin{figure}[tbp]
 \centering
@@ -936,20 +1318,150 @@ $\vh_2$ の式に $x_1$ は直接は出てきませんが、$\vh_1$ を通して
   \draw[arr] (h\j) -- node[above,lbl] {$\mW_h$} (h\i);
 }
 \draw[arr] (h4) -- ++(14,0) node[right,lbl] {…};
-\node[lbl,anchor=east] at (-7,14) {メモ};
+\node[lbl,anchor=east] at (-7,14) {隠れ状態};
 \node[lbl,anchor=east] at (17,0) {入力};
 \node[lbl,anchor=east] at (17,28) {予測};
 \end{tikzpicture}
-\caption{RNN を時間の方向に開いた図。隠れ状態 $\vh_t$ が、左から右へ情報を運ぶ。
-どの時刻でも、同じ重み $\mW_x$、$\mW_h$、$\mW_o$ を使い回す。}
+\caption{RNN の各時刻の計算を、横に並べて描いた図（時間の方向に展開した図）。隠れ状態 $\vh_t$ が、左から右へ情報を運ぶ。
+どの時刻でも、同じ重み（入力の重み $\mW_x$、隠れ状態の重み $\mW_h$、出力の重み $\mW_o$）を使い回す。
+バイアスと $\tanh$ は省いた。実際に手元に残るのは、最新の $\vh_t$ だけである（\figref{fig:emb-frames}）。}
 \label{fig:emb-rnn}
+\end{figure}
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\node[lbl,anchor=south,align=center] at (42.5,5) {固定窓（$n=3$）\\見えるのは直前の 3 個だけ};
+\node[lbl,anchor=south,align=center] at (94,5) {RNN\\持ち越すのは隠れ状態 $\vh_t$（128 個の数）1 本だけ};
+\node[font=\scriptsize,anchor=west,align=left] at (0,0) {時刻 $t=1$\\「\texttt{2}」を読む};
+\node[draw=bookblue,fill=bookblue!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,0) {2};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,0) {5};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,0) {+};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,0) {4};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,0) {8};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,0) {=};
+\draw[bookblue,thick,rounded corners=2pt] (23.6,-4) rectangle (30.4,4);
+\node[draw=bookblue,fill=bookblue!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in1) at (67,0) {2};
+\draw[->,thick,black!60] (70,0) -- (74.4,0);
+\fill[bookblue!75] (75.00,-3) rectangle (113.00,3);
+\node[font=\scriptsize\ttfamily,text=white] at (94.00,0) {2};
+\draw[black!60] (75,-3) rectangle (113,3);
+\node[font=\scriptsize,anchor=west] at (114,0) {$\vh_1$};
+\node[font=\scriptsize,anchor=west,align=left] at (0,-10) {時刻 $t=2$\\「\texttt{5}」を読む};
+\node[draw=bookblue,fill=bookblue!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,-10) {2};
+\node[draw=bookaccent,fill=bookaccent!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,-10) {5};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,-10) {+};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,-10) {4};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,-10) {8};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,-10) {=};
+\draw[bookblue,thick,rounded corners=2pt] (23.6,-14) rectangle (36.6,-6);
+\node[draw=bookaccent,fill=bookaccent!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in2) at (67,-10) {5};
+\draw[->,thick,black!60] (70,-10) -- (74.4,-10);
+\fill[bookblue!41] (75.00,-13) rectangle (88.48,-7);
+\node[font=\scriptsize\ttfamily,text=black!70] at (81.74,-10) {2};
+\fill[bookaccent!75] (88.48,-13) rectangle (113.00,-7);
+\node[font=\scriptsize\ttfamily,text=white] at (100.74,-10) {5};
+\draw[black!60] (75,-13) rectangle (113,-7);
+\node[font=\scriptsize,anchor=west] at (114,-10) {$\vh_2$};
+\draw[->,thick,black!60] (94,-3) -- (94,-6.8);
+\node[font=\scriptsize,anchor=west,align=left] at (0,-20) {時刻 $t=3$\\「\texttt{+}」を読む};
+\node[draw=bookblue,fill=bookblue!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,-20) {2};
+\node[draw=bookaccent,fill=bookaccent!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,-20) {5};
+\node[draw=bookgreen,fill=bookgreen!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,-20) {+};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,-20) {4};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,-20) {8};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,-20) {=};
+\draw[bookblue,thick,rounded corners=2pt] (23.6,-24) rectangle (42.8,-16);
+\node[draw=bookgreen,fill=bookgreen!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in3) at (67,-20) {+};
+\draw[->,thick,black!60] (70,-20) -- (74.4,-20);
+\fill[bookblue!23] (75.00,-23) rectangle (81.21,-17);
+\node[font=\scriptsize\ttfamily,text=black!70] at (78.10,-20) {2};
+\fill[bookaccent!41] (81.21,-23) rectangle (92.49,-17);
+\node[font=\scriptsize\ttfamily,text=black!70] at (86.85,-20) {5};
+\fill[bookgreen!75] (92.49,-23) rectangle (113.00,-17);
+\node[font=\scriptsize\ttfamily,text=white] at (102.74,-20) {+};
+\draw[black!60] (75,-23) rectangle (113,-17);
+\node[font=\scriptsize,anchor=west] at (114,-20) {$\vh_3$};
+\draw[->,thick,black!60] (94,-13) -- (94,-16.8);
+\node[font=\scriptsize,anchor=west,align=left] at (0,-30) {時刻 $t=4$\\「\texttt{4}」を読む};
+\node[draw=bookaccent,dashed,thick,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,-30) {2};
+\node[draw=bookaccent,fill=bookaccent!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,-30) {5};
+\node[draw=bookgreen,fill=bookgreen!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,-30) {+};
+\node[draw=bookorange,fill=bookorange!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,-30) {4};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,-30) {8};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,-30) {=};
+\draw[bookblue,thick,rounded corners=2pt] (29.800000000000004,-34) rectangle (49.0,-26);
+\node[draw=bookorange,fill=bookorange!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in4) at (67,-30) {4};
+\draw[->,thick,black!60] (70,-30) -- (74.4,-30);
+\fill[bookblue!12] (75.00,-33) rectangle (78.13,-27);
+\fill[bookaccent!23] (78.13,-33) rectangle (83.83,-27);
+\node[font=\scriptsize\ttfamily,text=black!70] at (80.98,-30) {5};
+\fill[bookgreen!41] (83.83,-33) rectangle (94.18,-27);
+\node[font=\scriptsize\ttfamily,text=black!70] at (89.00,-30) {+};
+\fill[bookorange!75] (94.18,-33) rectangle (113.00,-27);
+\node[font=\scriptsize\ttfamily,text=white] at (103.59,-30) {4};
+\draw[black!60] (75,-33) rectangle (113,-27);
+\node[font=\scriptsize,anchor=west] at (114,-30) {$\vh_4$};
+\draw[->,thick,black!60] (94,-23) -- (94,-26.8);
+\node[font=\scriptsize,anchor=west,align=left] at (0,-40) {時刻 $t=5$\\「\texttt{8}」を読む};
+\node[draw=black!25,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,-40) {2};
+\node[draw=bookaccent,dashed,thick,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,-40) {5};
+\node[draw=bookgreen,fill=bookgreen!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,-40) {+};
+\node[draw=bookorange,fill=bookorange!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,-40) {4};
+\node[draw=bookpurple,fill=bookpurple!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,-40) {8};
+\node[draw=black!25,dashed,text=black!25,fill=white,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,-40) {=};
+\draw[bookblue,thick,rounded corners=2pt] (36.0,-44) rectangle (55.199999999999996,-36);
+\node[draw=bookpurple,fill=bookpurple!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in5) at (67,-40) {8};
+\draw[->,thick,black!60] (70,-40) -- (74.4,-40);
+\fill[bookblue!7] (75.00,-43) rectangle (76.65,-37);
+\fill[bookaccent!12] (76.65,-43) rectangle (79.64,-37);
+\fill[bookgreen!23] (79.64,-43) rectangle (85.09,-37);
+\node[font=\scriptsize\ttfamily,text=black!70] at (82.37,-40) {+};
+\fill[bookorange!41] (85.09,-43) rectangle (94.99,-37);
+\node[font=\scriptsize\ttfamily,text=black!70] at (90.04,-40) {4};
+\fill[bookpurple!75] (94.99,-43) rectangle (113.00,-37);
+\node[font=\scriptsize\ttfamily,text=white] at (104.00,-40) {8};
+\draw[black!60] (75,-43) rectangle (113,-37);
+\node[font=\scriptsize,anchor=west] at (114,-40) {$\vh_5$};
+\draw[->,thick,black!60] (94,-33) -- (94,-36.8);
+\node[font=\scriptsize,anchor=west,align=left] at (0,-50) {時刻 $t=6$\\「\texttt{=}」を読む};
+\node[draw=black!25,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (27.0,-50) {2};
+\node[draw=black!25,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (33.2,-50) {5};
+\node[draw=bookaccent,dashed,thick,fill=black!6,text=black!35,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (39.4,-50) {+};
+\node[draw=bookorange,fill=bookorange!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (45.6,-50) {4};
+\node[draw=bookpurple,fill=bookpurple!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (51.8,-50) {8};
+\node[draw=bookgray,fill=bookgray!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] at (58.0,-50) {=};
+\draw[bookblue,thick,rounded corners=2pt] (42.2,-54) rectangle (61.4,-46);
+\node[draw=bookgray,fill=bookgray!25,thick,minimum width=5.4mm,minimum height=6mm,inner sep=0pt,font=\footnotesize\ttfamily,rounded corners=1pt] (in6) at (67,-50) {=};
+\draw[->,thick,black!60] (70,-50) -- (74.4,-50);
+\fill[bookblue!6] (75.00,-53) rectangle (75.89,-47);
+\fill[bookaccent!7] (75.89,-53) rectangle (77.49,-47);
+\fill[bookgreen!12] (77.49,-53) rectangle (80.42,-47);
+\fill[bookorange!23] (80.42,-53) rectangle (85.74,-47);
+\node[font=\scriptsize\ttfamily,text=black!70] at (83.08,-50) {4};
+\fill[bookpurple!41] (85.74,-53) rectangle (95.41,-47);
+\node[font=\scriptsize\ttfamily,text=black!70] at (90.58,-50) {8};
+\fill[bookgray!75] (95.41,-53) rectangle (113.00,-47);
+\node[font=\scriptsize\ttfamily,text=white] at (104.21,-50) {=};
+\draw[black!60] (75,-53) rectangle (113,-47);
+\node[font=\scriptsize,anchor=west] at (114,-50) {$\vh_6$};
+\draw[->,thick,black!60] (94,-43) -- (94,-46.8);
+\node[font=\scriptsize,text=bookgray,anchor=north,align=center] at (42.5,-55) {学習では、6 つの時刻の予測を\\同時に計算できる};
+\node[font=\scriptsize,text=bookgray,anchor=north,align=center] at (94,-55) {縦の矢印：前の時刻の $\vh_{t-1}$ がないと\\次を計算できないので、6 回を順に計算する};
+\end{tikzpicture}
+\caption{固定窓（左）と RNN（右）が、同じ列「\texttt{25+48=}」を 1 トークンずつ読む様子（コマ送りの模式図。上から下へ時刻が進む）。
+左：青い枠の中だけが見え、枠から出たトークン（灰色の塗り。赤の破線はそのコマで出たもの）は、まったく使われない。薄い灰色の破線の白い箱は、まだ読んでいないトークンである。
+右：隠れ状態 $\vh_t$ を、長さの決まった帯で描いた。帯の中の色の幅と濃さは、各トークンの影響の大きさを、説明のために描いたもので、実測ではない（実測の減り方は\figref{fig:emb-rnn-probe}(b)）。
+古いトークンほど、同じ長さの帯の中に押し込められて薄れる。幅が狭くて文字を書いていない区画も、色は固定窓の側（左）の同じトークンの箱と同じで、左から古い順に並ぶ（例：$\vh_6$ の左端の 3 区画は「\texttt{2}」「\texttt{5}」「\texttt{+}」）。縦の矢印は、前の時刻の $\vh_{t-1}$ がないと次を計算できないことを示す。}
+\label{fig:emb-frames}
 \end{figure}
 
 固定窓の限界と見比べます。
 重みは、どの時刻でも同じものを使い回します。「3 個前用」のような、位置ごとの重みはありません。
-列の長さは、いくつでもかまいません。
+列の長さは、計算の上では、いくつでもかまいません。パラメータを増やさずに、何個でも読めます。
 そして $\vh_t$ には、原理的には、それまでに読んだすべてのトークンが影響します。
-三つの限界は、形の上ではすべて外れました。
+三つの限界は、式の上では、どれも当てはまらなくなりました。
+ただし、読めることと、遠くの情報を実際に使えることは別です。それは、あとで測ります。
 
 \begin{quiz}
 RNN に読ませる列を、16 個から 32 個に伸ばすとします。パラメータは何個増えるでしょうか。
@@ -960,7 +1472,7 @@ RNN のパラメータは、1 個も増えません。どの時刻でも、同�
 固定窓の MLP は、窓を 1 広げるたびに 8,192 個、16 広げると $16\times8{,}192=131{,}072$ 個増えます。
 
 \subsection*{RNN を作って、測る}\label{sec:emb-rnn-impl}
-\skimread{結論だけ押さえれば先へ進めます。RNN の正答率は 4\% 止まりです（基盤モデルは 86.5\%）。弱点は、古い情報ほど薄れる、学習の信号が昔まで届かない、順番にしか計算できない、1 本のベクトルに詰め込む、の四つです。}
+\skimread{結論だけ押さえれば先へ進めます。RNN の正答率は 4\% 止まりです（基盤モデルは 86.5\%）。弱点は、古いトークンの影響ほど小さくなる、勾配が昔のトークンまで届きにくい、1 トークンずつ順にしか計算できない、すべてを 1 本のベクトルにまとめる、の四つです（\figref{fig:emb-frames}、\figref{fig:emb-bptt}）。}
 
 実装は、式\eqref{eq:emb-rnn}を \code{for} 文で回すだけです。
 
@@ -969,11 +1481,14 @@ RNN のパラメータは、1 個も増えません。どの時刻でも、同�
 \code{fx} が $\mW_x$ と $\vb$、\code{fh} が $\mW_h$、\code{out} が $\mW_o$ と $\vb_o$ です。
 \code{fh} が \code{bias=False} なのは、バイアス $\vb$ を \code{fx} がすでに持っているからです。
 \code{read} の \code{e[:, t]} は、$B$ 本の列それぞれの、$t$ 番目の埋め込みです（形 $(B,d)$）。
-\code{for} 文の中の 1 行が式\eqref{eq:emb-rnn}で、メモの書き足しです。
-各時刻のメモ（形 $(B,h)$）を $T$ 個ためておき、最後に \code{torch.stack} で形 $(B,T,h)$ に積み上げます（$T$ は列の長さ）。
+\code{for} 文の中の 1 行が式\eqref{eq:emb-rnn}で、メモ（隠れ状態）の更新です。
+コメントでは「書き足す」と書きましたが、128 個の数が、毎回すべて新しい値に入れ替わる計算です。
+コードの \code{h} は、引数では隠れ状態の幅 $d_h$（128）、\code{read} の中では隠れ状態のベクトルを指します。
+各時刻の隠れ状態（形 $(B,d_h)$）を $T$ 個ためておき、最後に \code{torch.stack} で形 $(B,T,d_h)$ に積み上げます（$T$ は列の長さ）。
 
 学習では、長さ 16 の列を 64 本ずつ読ませ、16 個の位置それぞれで次のトークンを当てさせます。損失は、その平均です（\file{ch08/rnn_lm.py}）。
 1 回の更新で当てる個数は $64\times16=1024$ 個で、MLP と同じです（筆者の PC では、学習に 3 分あまりかかりました）。
+学習率は 0.008 にしました（MLP は 0.015）。また、勾配全体の長さが 1 を超えたときは、長さを 1 に縮めてから更新しています（\code{clip_grad_norm_}。弱点 2 で述べる、勾配が膨らむ場合への備えです）。
 パラメータ数は、MLP（$n=3$）と同じ 815,232 個です。
 MLP の $\mW_1$（$128\times192$）が、$\mW_x$（$128\times64$）と $\mW_h$（$128\times128$）に、ちょうど分かれた形だからです（$8{,}192+16{,}384=24{,}576$）。
 結果を、これまでのモデルと並べます（\tabref{tab:emb-rnn}）。
@@ -982,7 +1497,7 @@ MLP の $\mW_1$（$128\times192$）が、$\mW_x$（$128\times64$）と $\mW_h$�
 \centering
 \caption{この章のモデルと、本書の基盤モデルの比較（検証損失と、ドリル 200 問の正答率。実測）。
 「うち答え」は、ドリルのうち、答えの数字だけの損失（\file{ch08/drill_parts.py}）。
-RNN は、読む長さを決めなくてよい（学習では 16 個ずつ読ませた）。
+RNN は、読む長さを決めなくてよいが、学習は 16 個ずつ読ませて行い、表の値も直前の 16 個だけを読ませて測った。
 基盤モデル（\chapref{ch:transformer}の Transformer）はパラメータが約 3 倍で、学習時間も 10 倍以上なので、公平な比較ではない。}
 \label{tab:emb-rnn}
 \small
@@ -992,145 +1507,277 @@ RNN は、読む長さを決めなくてよい（学習では 16 個ずつ読ま
 \midrule
 MLP & 直前 3 個 & 82 万 & 4.120 & 5.512 & 2.059 & 2.420 & 2.5\% \\
 MLP & 直前 8 個 & 86 万 & 4.194 & 5.905 & 1.658 & 1.614 & 8.0\% \\
-RNN & 可変 & 82 万 & 4.071 & 5.602 & 1.804 & 2.172 & 4.0\% \\
+RNN & 直前 16 個 & 82 万 & 4.071 & 5.602 & 1.804 & 2.172 & 4.0\% \\
 \midrule
 基盤モデル & 128 個まで & 258 万 & 3.432 & 4.864 & 1.310 & 0.301 & 86.5\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-RNN の全体の損失は 4.071 で、この章のモデルの中でいちばん低くなりました。
+RNN の全体の損失は 4.071 で、この章のニューラルネットワークのモデル（MLP と RNN）の中では、いちばん低くなりました。
+ただし、\tabref{tab:emb-compare}の工夫した数え方（直前 3 個を数える、4.000）には届きません。
 更新は 2000 回で、当てた個数は MLP の約 3 分の 2 です（$2000\times1024=2{,}048{,}000$ 個。MLP は $3{,}072{,}000$ 個）。
 MLP は、窓が狭いとドリルが悪く、広いと小説が悪くなりました。
-RNN は、一つのモデルで、どちらもそこそこの値を出しています。
+RNN は、一つのモデルで、どちらも中くらいの値を出しています。
 ただし、小説の損失は MLP（$n=3$）に届かず、正答率は 4\% です。
 基盤モデルとの差は、まだ大きく開いています。
 違いがはっきり出るのは、答えの数字の損失です。この章のモデルは 1.6〜2.4 ですが、基盤モデルは 0.30 で、ほとんど迷っていません。
 ドリル全体の損失の差が小さく見えるのは、当てようのない問題の部分が、どのモデルでも約 1.9〜2.1 のまま平均に入っているからです。
-RNN には、RNN の弱点があるのです。実測しながら、四つ挙げます。
+基盤モデルの「128 個まで」は、それより前は見えない、という上限です。この上限は、固定窓の窓の幅と同じく、モデルを作るときに決めます（\chapref{ch:transformer}）。
+違いは、その範囲の中で、どの位置を重く見るかを、入力の内容で決められることです（\chapref{ch:attention}）。
+
+RNN には、RNN の弱点があります。四つ挙げます。はじめの二つは、実測で確かめます。
+骨組みを先に述べます。
+弱点 1 は予測のときの話で、$\vh_t$ の中に、$k$ 個前のトークン $x_{t-k}$ の影響がどれだけ残るかです。
+弱点 2 は学習のときの話で、損失から $x_{t-k}$ のあたりの計算へ、勾配がどれだけ戻るかです。
+どちらも、同じ掛け算（$\mW_h$ と $\tanh$ の傾き）が $k$ 回重なることから起きます。
+弱点 3 と 4 は、\figref{fig:emb-frames}のコマを見比べると分かる、仕組みそのものの性質です。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
 \begin{axis}[width=0.5\linewidth,height=41mm,title={(a) 読ませる個数と損失},title style={font=\footnotesize},
-  xlabel={読ませる個数 $k$},ylabel={損失の変化（下ほど良い）},xmin=0,xmax=33,ymin=-0.75,ymax=0.15,
+  xlabel={読ませる個数 $k$},ylabel={損失の変化（下ほど良い）},xmin=0,xmax=33,ymin=-0.75,ymax=0.4,
   xtick={1,4,8,16,24,32},legend pos=north east,legend style={font=\scriptsize},
   label style={font=\footnotesize},tick label style={font=\scriptsize}]
 \addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=k,y=d_novel]{code/ch08/out/rnn_context.csv};
 \addlegendentry{小説}
 \addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=k,y=d_drill]{code/ch08/out/rnn_context.csv};
 \addlegendentry{ドリル}
+\draw[bookgray,densely dotted] (axis cs:16,-0.75) -- (axis cs:16,0.4);
+\node[font=\tiny,text=bookgray,anchor=north west,align=left] at (axis cs:16.3,-0.33) {学習した\\長さ 16};
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{semilogyaxis}[width=0.5\linewidth,height=41mm,title={(b) 昔のトークンに届く勾配},title style={font=\footnotesize},
-  xlabel={何個前のトークンか},ylabel={勾配の大きさ},xmin=0,xmax=33,ymin=1e-7,ymax=3,
+\begin{semilogyaxis}[width=0.5\linewidth,height=41mm,title={(b) 昔のトークンの埋め込みに届く勾配},title style={font=\footnotesize},
+  xlabel={何個前のトークンか},ylabel={勾配の大きさ（1 個前との比）},xmin=0,xmax=33,ymin=1e-7,ymax=3,
   xtick={1,8,16,24,32},ytick={1e-6,1e-4,1e-2,1},ymajorgrids,legend pos=north east,legend style={font=\scriptsize},
   label style={font=\footnotesize},tick label style={font=\scriptsize}]
 \addplot[bookblue,thick] table[col sep=comma,x=dist,y=novel]{code/ch08/out/rnn_grad.csv};
 \addlegendentry{小説}
 \addplot[bookorange,thick,dashed] table[col sep=comma,x=dist,y=drill]{code/ch08/out/rnn_grad.csv};
 \addlegendentry{ドリル}
+\draw[bookgray,densely dotted] (axis cs:16,1e-7) -- (axis cs:16,3);
 \end{semilogyaxis}
 \end{tikzpicture}
 \caption{学習した RNN を調べた結果（実測、\file{ch08/rnn_probe.py}）。
-(a) 直前の $k$ 個だけを読ませたときの検証損失。$k=1$ のときとの差で示す。10 個ほどで下げ止まる。
-(b) 各位置の埋め込みを少し動かしたときの、最後の予測の損失の動きやすさ（勾配の大きさ。1 個前を 1 とする。縦軸は対数）。}
+(a) 直前の $k$ 個だけを読ませたときの検証損失。$k=1$ のときとの差で示す。小説は 4 個ほど、ドリルは 12 個ほどで下げ止まる。
+(b) 最後の予測の損失を、各位置の埋め込みで微分した勾配の大きさ（1 個前を 1 とした比。縦軸は対数）。その埋め込みを少し動かしたとき、損失がどれだけ動くかを表す。
+点線は、学習で読ませた長さ（16 個）。17〜32 個前は、学習で一度も読ませていない範囲である。}
 \label{fig:emb-rnn-probe}
 \end{figure}
 
-\textbf{弱点 1：古い情報ほど薄れる。}\
-隠れ状態は、1 個読むたびに全体が書き換えられます。
-古い情報は、書き換えのたびに少しずつ薄まります。
+\textbf{弱点 1：古いトークンの影響ほど小さくなる。}\
+隠れ状態は、1 個読むたびに全体が計算し直されます。
+前の隠れ状態は、$\mW_h$ を掛けて $\tanh$ に通した形でしか、次へ残りません。
+ですから、古いトークンの影響は、計算し直すたびに小さくなっていきます（\figref{fig:emb-frames}の右で、古い色が薄くなる様子）。
+この章では、これを「古い情報が薄れる」と呼びます。
 \figref{fig:emb-rnn-probe}(a) は、同じ RNN に直前の $k$ 個だけを読ませて、損失を測ったものです。
-学習では 16 個ずつ読ませたので、17 個より前を使えないのは当然です。
-問題は、16 個の中でも、古いほうがほとんど使われていないことです。
 小説では、4 個より前を読ませても、損失は 0.015 しか下がりません（4 個で 5.616、32 個で 5.601）。
-小説には、もっと前の内容が効く場面が多いはずなのに、使えていないのです（2000 回の更新での結果です）。
+小説には、もっと前の内容が関係する場面が多いはずなのに、使えていないのです（2000 回の更新での結果です）。
 ドリルは 12 個まで下がり続けます。1 問は長くても 13 個のトークン（「\code{999+999=1998}」と改行）なので、問題の先頭までは使えているようです。
 離れたトークンどうしの関係を\term{長距離依存}{long-range dependency}と呼びます。RNN はこれが苦手です。
 
-\textbf{弱点 2：学習の信号も、昔までは届かない。}\
-\figref{fig:emb-rnn-probe}(b) は、昔のトークンの埋め込みを少し動かしたとき、最後の予測の損失がどれだけ動くか（勾配の大きさ）を測ったものです。
-小さいほど、そのトークンは予測に効いていません。
+17 個より前は、どうでしょうか。
+RNN は、計算の上では何個でも読めます。
+しかし、学習では 16 個ずつしか読ませていないので、17 個より前のトークンの情報を使う練習を、一度もしていません。
+「読める」ことと「使える」ことは別なのです。
+確かめるために、学習で読ませる長さ $T$ だけを 4、8、16 に変えて RNN を学習し直しました（\file{ch08/sweep_rnn_len.py}。1 回の更新で当てる個数は 1024 にそろえ、ほかの設定も同じです）。
+\figref{fig:emb-rnn-len}が、その結果です。
+どの $T$ でも、読ませる個数 $k$ を $T$ より増やすと、損失はほとんど動かなくなります。
+$T=4$ で学習したモデルは、8 個、64 個と長く読ませても、4 個のときと変わりません（ドリルでは、わずかに悪くなります）。
+固定窓との違いは、ここにあります。固定窓には、17 個目のトークンを入れる場所が、そもそもありません。RNN には場所はあるのに、学習した長さを超えると、その情報をうまく使えないのです。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{embrnnlen/.style={width=0.5\linewidth,height=44mm,
+  xmin=0.8,xmax=80,xtick={1,2,4,8,16,32,64},xticklabels={1,2,4,8,16,32,64},
+  xlabel={読ませる個数 $k$},title style={font=\footnotesize},label style={font=\footnotesize},
+  tick label style={font=\scriptsize},legend style={font=\tiny,row sep=-2pt},legend pos=north east}}
+\begin{tikzpicture}
+\begin{axis}[xmode=log,log basis x=2,embrnnlen,title={(a) 小説の検証損失},ymin=5.55,ymax=5.95]
+\addplot[bookgray,mark=o,mark size=1.3pt] table[col sep=comma,header=false,x index=1,y index=3]{code/ch08/out/rnn_len_T4.csv};
+\addlegendentry{$T=4$}
+\addplot[bookgreen,mark=triangle*,mark size=1.5pt] table[col sep=comma,header=false,x index=1,y index=3]{code/ch08/out/rnn_len_T8.csv};
+\addlegendentry{$T=8$}
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,header=false,x index=1,y index=3]{code/ch08/out/rnn_len_T16.csv};
+\addlegendentry{$T=16$（本文）}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[xmode=log,log basis x=2,embrnnlen,title={(b) ドリルの検証損失},ymin=1.7,ymax=2.5]
+\addplot[bookgray,mark=o,mark size=1.3pt] table[col sep=comma,header=false,x index=1,y index=4]{code/ch08/out/rnn_len_T4.csv};
+\addlegendentry{$T=4$}
+\addplot[bookgreen,mark=triangle*,mark size=1.5pt] table[col sep=comma,header=false,x index=1,y index=4]{code/ch08/out/rnn_len_T8.csv};
+\addlegendentry{$T=8$}
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,header=false,x index=1,y index=4]{code/ch08/out/rnn_len_T16.csv};
+\addlegendentry{$T=16$（本文）}
+\end{axis}
+\end{tikzpicture}
+\caption{RNN を学習させる列の長さ $T$ を変えたときの、読ませる個数 $k$ と検証損失（実測、\file{ch08/sweep_rnn_len.py}。横軸は対数）。
+$T$ のほかは同じ設定（更新 2000 回、1 回に当てる個数 1024）。$T=16$ は\tabref{tab:emb-rnn}のモデル。
+どの $T$ でも、$k$ が $T$ を超えると、損失はほとんど下がらない。}
+\label{fig:emb-rnn-len}
+\end{figure}
+
+\textbf{弱点 2：勾配も、昔のトークンまでは届きにくい。}\
+学習では、損失から勾配を逆にたどって、パラメータを直します。
+RNN の場合、その経路は、$\vh_{t-k}\to\vh_{t-k+1}\to\dots\to\vh_t$ という計算のつながりです。
+順伝播ではこれを左から右へ、逆伝播では右から左へたどります（\figref{fig:emb-bptt}）。
+\figref{fig:emb-rnn-probe}(b) は、学習の終わったモデルで、最後の予測の損失を、昔のトークンの埋め込みで微分した大きさを測ったものです。
+その埋め込みを少し動かしたとき、損失がどれだけ動くかを表します。
 小説では、8 個前で約 40 分の 1、16 個前では約 400 分の 1 に減っています（1 個前を 1 として、0.024 と 0.0024）。ドリルでは、8 個より前でさらに速く減ります。
 理由は式\eqref{eq:emb-rnn}にあります。
-$\vh_{t-1}$ の変化は、$\mW_h$ と $\tanh$ の傾き（1 以下）を掛けられて、$\vh_t$ に伝わります。
+$\vh_{t-1}$ の小さな変化は、$\mW_h$ と $\tanh$ の傾き（0 以上 1 以下）を掛けられて、$\vh_t$ に伝わります。
 $k$ 個前からだと、この掛け算が $k$ 回重なります。
-1 回ごとの倍率が 1 より小さければ、値は指数的に小さくなります（1 より大きければ、反対に膨らみます）。
+1 次元（$\mW_h$ がただの数 $w$）なら、1 回ごとの倍率は $|w|$ 以下です。
+行列のときは、ベクトルの変化の大きさが、1 回の掛け算で何倍になるかが倍率に当たります。
+この倍率が 1 より小さければ、値は指数的に小さくなります（1 より大きければ、反対に膨らみます）。
 1 次元の場合を、章末の演習で確かめます。
-小説では、8 個前から 16 個前までの 8 歩で約 10 分の 1 なので、1 歩あたり約 0.75 倍です（$0.75^8\approx0.10$）。
+小説では、8 個前から 16 個前までの 8 時刻ぶんで約 10 分の 1 なので、1 時刻あたり約 0.75 倍です（$0.75^8\approx0.10$）。
 \chapref{ch:nn}で見た勾配消失が、時間の方向に起きているのです\cite{pascanu2013difficulty}。
-学習の信号も同じ道を逆にたどるので、「昔のトークンを覚えておくと得をする」ことを、モデルは学びにくくなります。
 
-\textbf{弱点 3：1 個ずつ、順番にしか計算できない。}\
-MLP は、学習のとき、1024 個の窓を同時に計算できました。
-RNN では、$\vh_t$ を計算するのに $\vh_{t-1}$ が先に要るので、列の中を順番に進むしかありません。
-1000 トークンの文なら、1000 回の順番待ちです。
-多くの計算を同時に行う GPU（\chapref{ch:gpu}）の力を、生かせません。
+(b) で測ったのは、学習のあとのモデルです。
+学習中に、$k$ 個前のトークンの扱い方を直すための勾配も、同じ経路を逆向きに、同じ掛け算を通って戻ります。
+ですから、この比が小さいほど、学習中も「昔のトークンを使うと損失が下がる」という方向に重みを直す力が弱くなり、モデルはそれを学びにくくなります（学習中の勾配そのものは、ここでは測っていません）。
+弱点 1 は予測のときに古い情報が残らないこと、弱点 2 は、残すように学ぶための勾配が届きにくいことです。
 
-\textbf{弱点 4：すべてを 1 本のベクトルに詰め込む。}\
-過去の情報の通り道は、隠れ状態 1 本だけです。
-「\code{25+48=}」の答えを書くには、四つの数字を、順番ごと正確にメモに残す必要があります。
-文が長いほど、この細い通り道（ボトルネック）に入りきらなくなります。
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\foreach \k/\x/\g [count=\i from 0] in {3/0/0.12, 2/26/0.21, 1/52/0.40, 0/78/1} {
+  \ifnum\k=0 \def\lab{t}\else \def\lab{t-\k}\fi
+  \node[greenbox,minimum width=13mm] (h\i) at (\x,0) {$\vh_{\lab}$};
+  \node[box,minimum width=13mm] (e\i) at (\x,-16) {$\ve_{x_{\lab}}$};
+  \draw[arr] ([xshift=-2mm]e\i.north) -- ([xshift=-2mm]h\i.south);
+  \draw[->,thick,dashed,bookaccent] ([xshift=2mm]h\i.south) -- ([xshift=2mm]e\i.north);
+  \node[font=\scriptsize,text=bookaccent,anchor=north] at (\x,-20) {\g};
+  \pgfmathtruncatemacro{\kk}{\k+1}
+  \node[font=\scriptsize,text=bookgray,anchor=north] at (\x,-23.5) {$x_{t+1}$ の \kk{} 個前};}
+\node[orangebox,minimum width=14mm,align=center,font=\footnotesize] (L) at (104,0) {最後の\\予測の損失};
+\foreach \a/\b in {0/1,1/2,2/3} \draw[arr] (h\a) -- (h\b);
+\draw[arr] (h3) -- (L);
+\foreach \a/\b in {1/0,2/1,3/2}
+  \draw[->,thick,dashed,bookaccent] (h\a.north) to[bend right=35] node[above,font=\scriptsize] {$\times$倍率} (h\b.north);
+\draw[->,thick,dashed,bookaccent] (L.north) to[bend right=30] (h3.north);
+\draw[arr] (-6,-31) -- ++(8,0) node[right,lbl] {順伝播（予測の計算）};
+\draw[->,thick,dashed,bookaccent] (50,-31) -- ++(8,0) node[right,lbl] {逆伝播（勾配）};
+\end{tikzpicture}
+\caption{RNN の勾配が通る経路（直前 4 時刻ぶん）。最後の予測の損失から、隠れ状態を右から左へ 1 時刻ずつ戻り（赤の破線）、そのたびに $\mW_h$ と $\tanh$ の傾きによる倍率が掛かる。
+下の数は、各位置の埋め込みに届く勾配の大きさの実測（小説。$\ve_{x_t}$ を 1 とした比）。
+最後の予測で当てるのは $x_{t+1}$ なので、その下の「$k$ 個前」は $x_{t+1}$ から数えた位置で（$x_t$ が 1 個前）、\figref{fig:emb-rnn-probe}(b) の横軸と同じ数え方である。}
+\label{fig:emb-bptt}
+\end{figure}
+
+\textbf{弱点 3：1 トークンずつ、順にしか計算できない。}\
+MLP は、学習のとき、1 回の更新で当てる 1024 個の予測を、1 回の行列の計算でまとめて出せました。
+RNN も、64 本の列を同時に進めることはできます（コードの \code{e[:, t]} は、64 本の列の $t$ 番目をまとめたものでした）。
+しかし、1 本の列の中では、$\vh_t$ の計算に $\vh_{t-1}$ が要るので、16 個の位置を同時には計算できません。
+\figref{fig:emb-frames}の縦の矢印が、この「前のコマを待つ」関係です。
+16 回の計算を、1 回ずつ順に行うしかないのです。
+筆者の PC では、1 回の更新に、MLP は約 0.05 秒（3000 回で 144 秒）、RNN は約 0.1 秒（2000 回で 197 秒）かかりました。
+1000 トークンの列なら、1000 回の計算を順に行います。
+たくさんの計算を同時に行うこと（\jterm{並列化}）が得意な GPU（\chapref{ch:gpu}）でも、時刻の方向には並列化できないので、その力を十分には生かせません。
+
+\textbf{弱点 4：すべてを 1 本のベクトルにまとめる。}\
+過去の情報を次の時刻へ伝えるのは、隠れ状態 1 本（128 個の数）だけです。
+「\code{25+48=}」の答えを書くには、四つの数字を、順番ごと正確に隠れ状態に残す必要があります。
+文が長くなっても、隠れ状態の大きさは増えません（\figref{fig:emb-frames}の帯の長さは、どのコマでも同じです）。
+このように、通せる情報の量を制限している箇所を\term{ボトルネック}{bottleneck}と呼びます。
+RNN では、隠れ状態 1 本がボトルネックで、文が長いほど、必要な情報が入りきらなくなります。
 
 \subsection*{RNN の改良と、「注意」の誕生}
-\skimread{押さえるのは、LSTM が「メモのどこを残すかを決める仕組みを足した RNN」であることと、節の最後に出てくる問いです。}
+\skimread{押さえるのは、LSTM が「隠れ状態のどこを残すかを決める仕組みを足した RNN」であることと、節の最後に出てくる問いです。}
 
 ここからは歴史の話です。細部は覚えなくてかまいません。持ち帰ってほしいのは、最後に出てくる問い一つです。
 
 弱点 1 と 2 を和らげたのが、\term{LSTM}{long short-term memory}です\cite{hochreiter1997long}。
-LSTM は、メモのどこを書き換え、どこを残すかを決める「ゲート」を持ちます。
-残すと決めた情報は、掛け算を重ねずに先へ運ばれるので、勾配が消えにくくなります。
-2017 年ごろまで、言語を扱うニューラルネットワークの主役は LSTM でした。
+LSTM は、隠れ状態とは別にもう 1 本のベクトルを持ち、そのどこを書き換え、どこを残すかを、0 から 1 の数で決める仕組み（ゲート）を持ちます。
+残すと決めた情報には、重み行列も $\tanh$ も通さず、ゲートが出す 1 に近い数を掛けるだけで、先へ運びます。
+1 に近い数は、何回掛けてもあまり小さくならないので、勾配が消えにくくなります。
+2017 年ごろまで、言語を扱うニューラルネットワークの主流は LSTM でした。
 しかし、弱点 3 と 4 は残りました。
 
 弱点 4 が表に出たのが、ある言語の文を読んで別の言語の文を書く、機械翻訳です。
-2014 年に、一つの RNN（エンコーダ）で入力文を読み切り、最後の隠れ状態を別の RNN（デコーダ）に渡して訳文を書かせる方法が現れました\cite{sutskever2014sequence}。
-文全体を 1 本のベクトルに詰めるので、文が長いほど訳の質が落ちると指摘されました\cite{bahdanau2015neural}。
-そこでバーダナウ（D. Bahdanau）らは、デコーダが 1 語書くたびに、入力文の\textbf{すべての位置}の隠れ状態を見渡す仕組みを加えました。
+2014 年に、RNN を二つ使う方法が現れました\cite{sutskever2014sequence}（\figref{fig:emb-seq2seq}の黒い矢印）。
+一つ目の RNN は、入力文を最後まで読み、読んだ内容を隠れ状態 1 本にまとめます。この側を\term{エンコーダ}{encoder}（符号化する側）と呼びます。
+二つ目の RNN は、その最後の隠れ状態を受け取って、訳文を 1 語ずつ書きます。この側を\term{デコーダ}{decoder}（符号を元に戻して書く側）と呼びます。
+文全体を 1 本のベクトルにまとめるので、文が長いほど訳の質が落ちると指摘されました\cite{bahdanau2015neural}。
+そこでバーダナウ（D. Bahdanau）らは、デコーダが 1 語書くたびに、入力文の\textbf{すべての位置}の隠れ状態を見渡す仕組みを加えました（\figref{fig:emb-seq2seq}の赤い線）。
 いま必要な位置に大きな重みを付け、そこから情報を直接取り出します。
 この仕組みは、注意（attention）と呼ばれるようになりました。
 
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm]
+\foreach \w [count=\i from 1] in {吾輩,は,猫,で,ある} {
+  \node[tok,minimum width=10mm] (ex\i) at (\i*16,-12) {\w};
+  \node[greenbox,minimum width=10mm,minimum height=6mm] (eh\i) at (\i*16,0) {$\vh_{\i}$};
+  \draw[arr] (ex\i) -- (eh\i);}
+\foreach \a/\b in {1/2,2/3,3/4,4/5} \draw[arr] (eh\a) -- (eh\b);
+\node[lbl,anchor=east] at (7,0) {エンコーダ};
+\foreach \w [count=\i from 1] in {I,am,a,cat} {
+  \node[purplebox,minimum width=10mm,minimum height=6mm] (dh\i) at (\i*16+24,24) {$\vs_{\i}$};
+  \node[font=\small] (dw\i) at (\i*16+24,33) {\texttt{\w}};
+  \draw[arr] (dh\i) -- (dw\i);}
+\foreach \a/\b in {1/2,2/3,3/4} \draw[arr] (dh\a) -- (dh\b);
+\node[lbl,anchor=east] at (31,24) {デコーダ};
+% 注意の線は h_i から s_4 へ向かう（矢じりは s_4 の下の縁に並べる）
+\foreach \i/\wd in {1/0.4,2/0.4,3/1.6,4/0.4,5/0.4}
+  \draw[bookaccent,line width=\wd pt,-{Stealth[length=1.6mm]}] (eh\i.north) -- ([xshift={(\i-3)*1.6mm}]dh4.south);
+% 黒い矢印は、赤い線の上に、白い縁取りを付けて描く
+\draw[white,line width=2.4pt] (eh5.north) to[out=90,in=-90] (dh1.south);
+\draw[arr] (eh5.north) to[out=90,in=-90] (dh1.south);
+\node[font=\scriptsize,anchor=east,align=right] at (39,14) {$\vh_5$ だけを\\渡す（黒い矢印）};
+\node[font=\scriptsize,text=bookaccent,anchor=west] at (92,13) {注意：「\texttt{cat}」を書くとき、};
+\node[font=\scriptsize,text=bookaccent,anchor=west] at (92,9.5) {全位置の $\vh$ を見渡し、};
+\node[font=\scriptsize,text=bookaccent,anchor=west] at (92,6) {「猫」の $\vh_3$ を重く見る};
+\end{tikzpicture}
+\caption{RNN による機械翻訳（模式図）。エンコーダ（下）が入力文を読み、最後の隠れ状態 $\vh_5$ だけをデコーダ（上。隠れ状態を $\vs$ と書いた）に渡す（黒い矢印）。
+注意を加えた方法では、デコーダが 1 語書くたびに、エンコーダのすべての位置の隠れ状態を見渡し、必要な位置に大きな重みを付ける（赤い線の太さが重みの大きさ。図は 4 語目を書くときだけを描いた）。
+書いた語（\texttt{I} など）を、デコーダの次の時刻の入力にする矢印は省いた。}
+\label{fig:emb-seq2seq}
+\end{figure}
+
 注意は、RNN の弱点を補う部品として生まれました。
 ここで、一つの問いが浮かびます。
-過去の情報を取り出すのに注意が使えるなら、隠れ状態に詰め込んで運ぶ必要は、そもそもあるのでしょうか。
+過去の情報を取り出すのに注意が使えるなら、隠れ状態 1 本にまとめて運ぶ必要は、そもそもあるのでしょうか。
 \textbf{最初から、全トークンを直接見に行けばよいのでは？}
 
 この節のまとめです。
-RNN は、隠れ状態に書き足しながら読むことで、窓の幅を決めずに文脈を扱えます。
-しかし、古い情報は薄れ、計算は順番待ちになり、すべてを 1 本のベクトルに詰め込まなければなりません。
+RNN は、隠れ状態を 1 トークンずつ更新しながら読むことで、窓の幅を決めずに文脈を扱えます。
+しかし、古いトークンの影響は小さくなり、計算は 1 トークンずつ順に進めるしかなく、すべてを 1 本のベクトルにまとめなければなりません。
 この章のモデルを、\tabref{tab:emb-three}に並べました。
 
 \begin{summary}
 \item トークンの番号には大小の意味がありません。埋め込み表 $\mE$ の行を引いて、$d$ 次元のベクトルに取り替えます。これは one-hot ベクトルに行列を掛けるのと同じ計算で、表の中身は学習で決まります。
 \item 次のトークンを当てる学習だけで、似た使われ方をするトークン（数字どうし、登場人物どうし）は、近いベクトルを持つようになりました。
-\item 直前 $n$ 個の埋め込みを並べて MLP に入れると、固定窓の言語モデルになります。バイグラムの表の 20 分の 1 の大きさで、検証損失は 4.328 から 4.120 に下がりました。
-\item 固定窓には、窓の外が見えない、どの位置が大事かが重みに焼き付けられている、長さが決め打ち、という限界があります。窓を広げても、計算ドリルの正答率は 8\% 止まりでした。
-\item RNN は、過去の情報を 1 本の隠れ状態に書き足しながら読み進めます。重みを全時刻で使い回し、長さを決めずに文脈を扱えます。
-\item RNN には、古い情報ほど薄れる（長距離依存、勾配消失）、1 個ずつ順番に計算するので並列化できない、1 本のベクトルがボトルネックになる、という弱点があります。
+\item 直前 $n$ 個の埋め込みを連結して MLP に入れると、固定窓の言語モデルになります。直前 1 個を数えるバイグラムと比べて、検証損失は 4.328 から 4.120 に下がりました。ただし、直前 2〜3 個を数えて短い文脈で補う工夫をした数え方（4.000）には届きませんでした。
+\item 固定窓には、窓の外が見えない、どの位置をどう扱うかが位置ごとの重みで固定されている、窓の幅をあとから変えられない、という限界があります。窓を広げても、計算ドリルの正答率は 8\% 止まりでした。
+\item RNN は、1 本の隠れ状態を 1 トークンずつ更新しながら読み進めます。重みを全時刻で使い回し、長さを決めずに文脈を扱えます。ただし、学習で読ませた長さより前の情報は、うまく使えませんでした。
+\item RNN には、古いトークンの影響ほど小さくなる（長距離依存が苦手、時間方向の勾配消失）、1 トークンずつ順に計算するので時刻の方向に並列化できない、1 本の隠れ状態がボトルネックになる、という弱点があります。
 \item 機械翻訳では、RNN に「入力の全位置を見渡して、必要な情報を取り出す」注意が加えられました。これが次の章の出発点です。
 \end{summary}
 
 \section*{次の章へ}
 
-固定窓は、窓の外を見られず、見る位置の重みも決め打ちでした。
-RNN は、遠くまで読めるかわりに、古い情報が薄れ、順番待ちが生じました。
+固定窓は、窓の外を見られず、どの位置をどう扱うかも位置ごとの重みで固定されていました。
+RNN は、遠くまで読めるかわりに、古いトークンの影響が小さくなり、1 トークンずつ順にしか計算できませんでした。
 
 \begin{table}[tbp]
 \centering
-\caption{この章のモデルの比較。上の 3 行は、どこかの列に弱みがある。最後の行を次章で作る。}
+\caption{この章のモデルの比較。上の 3 行は、どこかの列に弱みがある。最後の行を次章で作る（最後の行の「文脈を長くすると」は、\chapref{ch:attention}で確かめる）。}
 \label{tab:emb-three}
-\small
-\begin{tabular}{llll}
+\footnotesize
+\begin{tabular}{@{}*{5}{>{\raggedright\arraybackslash}p{22.5mm}}@{}}
 \toprule
-モデル & 見える範囲 & どこを重く見るか & 計算の進め方 \\
+モデル & 見える範囲 & どこを重く見るか & 計算の進め方 & 文脈を長くすると \\
 \midrule
-数える表（バイグラム） & 直前 1 個 & 選べない & 表を引くだけ \\
-固定窓の MLP & 直前 $n$ 個だけ & 位置ごとの重みで固定 & 同時にできる \\
-RNN & 自由（古いほど薄れる） & 1 本のメモに混ぜる & 1 個ずつ順番 \\
+数える表（バイグラム） & 直前 1 個 & 選べない & 表を引くだけ & 表が $V$ 倍ずつ大きくなる \\
+固定窓の MLP & 直前 $n$ 個だけ & 位置ごとの重みで固定 & 同時にできる & 1 個ごとに重みが 8,192 個増える \\
+RNN & 自由（古いほど薄れる。学習で読ませた長さより前は、うまく使えない） & 選べない（1 本に混ぜる） & 1 トークンずつ順に & パラメータは増えない \\
 \midrule
-欲しいもの（次章） & 過去のすべてを直接 & 内容を見て決める & 同時にできる \\
+欲しいもの（次章） & 上限（作るときに決める）までのすべてを直接 & 内容を見て決める & 同時にできる & 注意の部分のパラメータは増えない \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1138,7 +1785,7 @@ RNN & 自由（古いほど薄れる） & 1 本のメモに混ぜる & 1 個ず�
 欲しいのは、\textbf{必要な過去の情報を、必要なときに、直接取りに行く}仕組みです。
 どこを見るかは、位置ではなく、内容で決めたい。しかも、全位置の計算を同時に進めたい（\tabref{tab:emb-three}のいちばん下の行）。
 \chapref{ch:attention}では、この仕組みである注意機構を、一歩ずつ組み立てます。
-\tabref{tab:emb-rnn}の基盤モデルの正答率 86.5\% は、そこから生まれます。
+\tabref{tab:emb-rnn}の基盤モデルの正答率 86.5\% は、この仕組みを使ったモデルを、もっと大きく、長く学習させて得たものです。
 
 \section*{さらに学ぶために}
 

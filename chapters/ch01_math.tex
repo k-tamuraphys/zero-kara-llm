@@ -18,8 +18,8 @@
 \begin{readingguide}
 \item[\rgpre] この章は、通読する章ではなく、辞書のように使う章です。初めて読むときは、札のない部分（必読）だけを順に読んでください。それだけで話がつながります。札の付いた小節は、先の章で必要になったときに戻れば足ります。
 \item[\rgmust] \secref{sec:math-notation}の全部と、\secref{sec:math-linalg}〜\secref{sec:math-softmax}の札のない小節：記号の読み方と、\figref{fig:math-roadmap}の矢印をたどる本筋（内積とロジット、勾配と連鎖律、条件付き確率と確率の連鎖律、最尤推定、交差エントロピー、softmax）です。\chapref{ch:ml}から\chapref{ch:transformer}までが、そのまま使います。
-\item[\rgskim] \secref{sec:math-linalg}の「線形変換」と「行列どうしの積」、\secref{sec:math-info}の「KL ダイバージェンスの三つの性質」、\secref{sec:math-softmax}の「そのまま計算すると壊れる」：見出しの下の札に書いた結論だけ押さえれば、先へ進めます。
-\item[\rglater] \secref{sec:math-linalg}の「計算の量」、\secref{sec:math-calculus}の「道が複数あるときの連鎖律」、\secref{sec:math-prob}の「ベイズの定理」と「分散・標準偏差・正規分布」：飛ばしても、この章の残りは読めます。どの章で使うかは、見出しの下の札に書いてあります。
+\item[\rgskim] \secref{sec:math-linalg}の「線形変換」と「行列どうしの積」、\secref{sec:math-info}の「KL ダイバージェンスの三つの性質」、\secref{sec:math-softmax}の「そのまま計算すると、正しい値が得られない」：見出しの下の札に書いた結論だけ押さえれば、先へ進めます。
+\item[\rglater] \secref{sec:math-linalg}の「計算の量」、\secref{sec:math-calculus}の「計算の経路が複数あるときの連鎖律」、\secref{sec:math-prob}の「ベイズの定理」と「分散・標準偏差・正規分布」：飛ばしても、この章の残りは読めます。どの章で使うかは、見出しの下の札に書いてあります。
 \end{readingguide}
 \suppressfloats[t]% 図 1.1 が、ページをまたいだ囲みの途中に割り込まないようにする
 
@@ -38,46 +38,60 @@
 
 これらはすべて、数式で答えられます。使う数学は多くありません。
 \figref{fig:math-roadmap}を見てください。
-これは、LLM が確率を出すまでの\textbf{最後の一歩}を描いた図です。
-モデル本体は、文脈「どうも仕方が」を読んで、192 個の数の組 $\vh$ を作ります。
-トークンは 4096 種類あります。$\vh$ から、1 種類に 1 個ずつ、合わせて 4096 個のスコア $\vz$ を作ります。
-次に、スコアを確率 $\vp$ に直し、確率から損失を計算します。
+これは、LLM が確率と損失を計算する、最後の部分を描いた図です。
+モデル本体は、文脈「どうも仕方が」を読んで、192 個の数の組を作ります。
+この数の組を、本書では\textbf{文脈ベクトル}と呼び、$\vh$ と書きます。文脈の内容を、192 個の数にまとめたものです。
+トークンは 4096 種類あります。文脈ベクトル $\vh$ から、1 種類に 1 個ずつ、合わせて 4096 個の\textbf{スコア} $\vz$ を作ります。
+このとき使う数の表を\textbf{出力の重み行列}と呼び、$\mW$ と書きます。
+次に、スコア $\vz$ を、次のトークンの\textbf{確率} $\vp$ に直します。
+文脈ベクトル $\vh$ から確率 $\vp$ を計算するまでの部分を、本書では\textbf{最後の一歩}と呼びます。モデルの計算のうち、出力にいちばん近い部分だからです。
+学習のときは、さらに、確率 $\vp$ から損失を計算します。
 モデル本体の中身は\chapref{ch:transformer}までかけて作ります。
-この章が扱うのは、その先の、図の右側の部分です。
+この章が扱うのは、その先の、図の文脈ベクトル $\vh$ から右の部分です。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[every node/.append style={font=\footnotesize}]
-  \node[graybox,minimum width=16mm,minimum height=10mm] (body) {モデル\\本体};
+  \node[graybox,minimum width=14mm,minimum height=11mm] (body) {モデル\\本体};
   \node[tok,below=5mm of body] (ctx) {どうも仕方が};
-  \node[box,right=8mm of body,minimum width=11mm,minimum height=10mm] (h) {$\vh$};
-  \node[orangebox,right=15mm of h,minimum width=11mm,minimum height=10mm] (z) {$\vz$};
-  \node[greenbox,right=16mm of z,minimum width=11mm,minimum height=10mm] (p) {$\vp$};
-  \node[redbox,right=19mm of p,minimum width=13mm,minimum height=10mm] (loss) {損失};
+  \node[box,right=6mm of body,minimum width=18mm,minimum height=11mm,font=\footnotesize] (h) {文脈ベクトル\\$\vh$};
+  \node[orangebox,right=18mm of h,minimum width=13mm,minimum height=11mm,font=\footnotesize] (z) {スコア\\$\vz$};
+  \node[greenbox,right=14mm of z,minimum width=13mm,minimum height=11mm,font=\footnotesize] (p) {確率\\$\vp$};
+  \node[redbox,right=17mm of p,minimum width=12mm,minimum height=11mm,font=\footnotesize] (loss) {損失};
+  \node[op,font=\scriptsize] (mul) at ($(h.east)!0.5!(z.west)$) {積};
+  \node[purplebox,minimum width=0mm,minimum height=8mm,font=\footnotesize] (W) at ($(mul)+(0,13mm)$) {出力の重み行列 $\mW$};
   \draw[arr] (ctx) -- (body);
   \draw[arr] (body) -- (h);
-  \draw[arr] (h) -- node[above,lbl]{$\vz=\mW\vh$} (z);
+  \draw[arr] (h) -- (mul);
+  \draw[arr] (mul) -- (z);
+  \draw[arr] (W) -- (mul);
   \draw[arr] (z) -- node[above,lbl]{softmax} (p);
   \draw[arr] (p) -- node[above,lbl]{$-\log p_{\text{正解}}$} (loss);
-  \node[lbl,below=0.5mm of h,align=center] (hl) {192 個\\の数};
-  \node[lbl,below=0.5mm of z,align=center] (zl) {4096 個\\のスコア};
-  \node[lbl,below=0.5mm of p,align=center] (pl) {4096 個\\の確率};
-  \node[lbl,below=0.5mm of loss,align=center] (ll) {1 個の数};
-  \node[font=\scriptsize,text=bookblue,align=center] at ($(h)!0.5!(z)+(0,-17mm)$) {線形代数\\（\secref{sec:math-linalg}）};
-  \node[font=\scriptsize,text=bookblue,align=center] at ($(z)!0.5!(p)+(0,-17mm)$) {softmax\\（\secref{sec:math-softmax}）};
-  \node[font=\scriptsize,text=bookblue,align=center] at ($(p)+(0,-17mm)$) {確率\\（\secref{sec:math-prob}）};
-  \node[font=\scriptsize,text=bookblue,align=center] at ($(p)!0.5!(loss)+(10mm,-17mm)$) {最尤推定・情報量\\（\secref{sec:math-mle}, \secref{sec:math-info}）};
-  \draw[darr,bookaccent,rounded corners=3pt] (loss.north) -- ++(0,13mm) -| node[pos=0.25,above,font=\footnotesize,text=bookaccent]
+  \node[lbl,below=0.5mm of mul] {$\vz=\mW\vh$};
+  \node[lbl,below=0.5mm of h] (hl) {192 個の数};
+  \node[lbl,below=0.5mm of z] (zl) {4096 個の数};
+  \node[lbl,below=0.5mm of p] (pl) {4096 個の確率};
+  \node[lbl,below=0.5mm of loss] (ll) {1 個の数};
+  \node[lbl,right=0.5mm of W] {4096 行 192 列};
+  \node[font=\scriptsize,text=bookblue,align=center] at ($(mul)+(0,-16mm)$) {線形代数\\（\secref{sec:math-linalg}）};
+  \node[font=\scriptsize,text=bookblue,align=center] at ($(z)!0.5!(p)+(0,-16mm)$) {softmax\\（\secref{sec:math-softmax}）};
+  \node[font=\scriptsize,text=bookblue,align=center] at ($(p)+(0,-16mm)$) {確率\\（\secref{sec:math-prob}）};
+  \node[font=\scriptsize,text=bookblue,align=center] at ($(p)!0.5!(loss)+(10mm,-16mm)$) {最尤推定・情報量\\（\secref{sec:math-mle}, \secref{sec:math-info}）};
+  \draw[darr,bookaccent,rounded corners=3pt] (loss.north) -- ++(0,17mm) -| node[pos=0.25,above,font=\footnotesize,text=bookaccent]
     {勾配：どこをどう直せば損失が減るか（微分、\secref{sec:math-calculus}）} (body.north);
+  \draw[darr,bookaccent] ($(W.north)+(0,5.5mm)$) -- (W.north);
 \end{tikzpicture}
-\caption{LLM の「最後の一歩」と、この章の地図。$\vh$ からスコア $\vz$、確率 $\vp$、損失を順に計算する（実線）。
-学習では、損失を減らす向きを微分で求めて、モデル本体と $\mW$ を直す（破線）。青字は、対応する数学を扱う節。}
+\caption{LLM が確率と損失を計算する最後の部分と、この章の各節との対応。
+文脈ベクトル $\vh$ に出力の重み行列 $\mW$ を掛けてスコア $\vz$ を作り、softmax で確率 $\vp$ に直す（ここまでが「最後の一歩」）。
+学習では、確率から損失を計算し（ここまでが実線）、損失を減らす向きを微分で求めて、モデル本体と $\mW$ の中の数を直す（赤い破線）。
+青字は、真上の計算で使う数学と、それを扱う節。}
 \label{fig:math-roadmap}
 \end{figure}
 
-図の矢印の一つひとつに、青字で示した数学の道具が対応しています。
+図の下の青字は、その真上の計算で使う数学と、それを扱う節です。
+スコアを作る計算は\textbf{線形代数}で読めます。
 確率から損失を作る理由は\textbf{最尤推定}と\textbf{情報量}が教え、損失を減らす向きは\textbf{微分}が見つけます。
-softmax だけは、地図の順番を外れて、最後の\secref{sec:math-softmax}で扱います。確率と $\log$ の準備が済んでからのほうが、説明しやすいからです。
+softmax だけは、図の左から右への順番を外れて、最後の\secref{sec:math-softmax}で扱います。確率と $\log$ の準備が済んでからのほうが、説明しやすいからです。
 
 この章では、どの道具も「LLM のどこで使うか」と結びつけて、実物の基盤モデルの数値で説明します。
 章の最後には、\figref{fig:math-roadmap}の実線の計算を自分の手でたどり、\chapref{ch:intro}の 0.559 という確率を再現します。
@@ -101,12 +115,13 @@ softmax だけは、地図の順番を外れて、最後の\secref{sec:math-soft
 例: 損失の値 3.11。
 \item[\term{ベクトル}{vector}] 数を一列に並べたものです。太字の小文字で $\vx$、$\vh$ のように書きます。
 並んでいる数の個数を\textbf{次元}と呼びます。
-例: \figref{fig:math-roadmap}の $\vh$ は 192 次元のベクトル、スコア $\vz$ は 4096 次元のベクトルです。
+例: \figref{fig:math-roadmap}の文脈ベクトル $\vh$ は 192 次元のベクトル、スコア $\vz$ は 4096 次元のベクトルです。
 \item[\term{行列}{matrix}] 数を縦横の表の形に並べたものです。太字の大文字で $\mW$、$\mA$ のように書きます。
 横の並びを\textbf{行}、縦の並びを\textbf{列}と呼びます。
-例: \figref{fig:math-roadmap}の $\mW$ は、4096 行 192 列の行列です。
+例: \figref{fig:math-roadmap}の出力の重み行列 $\mW$ は、4096 行 192 列の行列です。
 \item[\term{テンソル}{tensor}] 数を 3 方向以上に並べたものです。行列と同じく太字の大文字で書きます。
-例: 学習のときにモデルの中を流れるデータは、「32 個の文 $\times$ 各 128 トークン $\times$ トークンごとに 192 個の数」という 3 方向の並びです。
+例: 学習のときにモデルの中で受け渡されるデータは、「32 本のトークン列 $\times$ 各 128 トークン $\times$ トークンごとに 192 個の数」という 3 方向の並びです。
+なお、スカラー・ベクトル・行列も含めて、数の並び全般をテンソルと呼ぶこともあります。\chapref{ch:pytorch}以降のコードでは、この広い意味で使います。
 \end{description}
 
 \begin{figure}[tbp]
@@ -116,47 +131,54 @@ softmax だけは、地図の順番を外れて、最後の\secref{sec:math-soft
   \draw[black!45,fill=figorange] (0,1) rectangle (1,2);
   \node[align=center] at (0.5,-1.6) {スカラー $x$\\形 $()$};
   % ベクトル
-  \begin{scope}[shift={(5,0)}]
+  \begin{scope}[shift={(4.6,0)}]
     \fill[figblue] (0,0) rectangle (1,4);
-    \draw[black!45] (0,0) grid (1,4);
+    \draw[black!45,step=1] (0,0) grid (1,4);
+    \draw[decorate,decoration={brace,amplitude=3pt}] (-0.25,0) -- (-0.25,4) node[midway,left=3pt]{4 個};
     \node[align=center] at (0.5,-1.6) {ベクトル $\vx\in\R^{4}$\\形 $(4)$};
   \end{scope}
   % 行列
-  \begin{scope}[shift={(10.5,0)}]
+  \begin{scope}[shift={(9.6,0)}]
     \fill[figgreen] (0,0) rectangle (4,3);
-    \draw[black!45] (0,0) grid (4,3);
+    \draw[black!45,step=1] (0,0) grid (4,3);
     \draw[decorate,decoration={brace,amplitude=3pt}] (-0.25,0) -- (-0.25,3) node[midway,left=3pt]{3 行};
     \draw[decorate,decoration={brace,amplitude=3pt}] (0,3.25) -- (4,3.25) node[midway,above=3pt]{4 列};
     \node[align=center] at (2,-1.6) {行列 $\mW\in\R^{3\times 4}$\\形 $(3,4)$};
   \end{scope}
   % テンソル
-  \begin{scope}[shift={(19,0)}]
+  \begin{scope}[shift={(17.6,0)}]
     \foreach \k in {1,0}{
-      \begin{scope}[shift={(0.7*\k,0.7*\k)}]
+      \begin{scope}[shift={(0.8*\k,0.8*\k)}]
         \fill[figpurple] (0,0) rectangle (4,3);
-        \draw[black!45] (0,0) grid (4,3);
+        \draw[black!45,step=1] (0,0) grid (4,3);
       \end{scope}}
+    \draw[decorate,decoration={brace,amplitude=3pt}] (-0.25,0) -- (-0.25,3) node[midway,left=3pt]{3 行};
+    \draw[decorate,decoration={brace,amplitude=3pt}] (0.8,4.05) -- (4.8,4.05) node[midway,above=3pt]{4 列};
+    \draw[decorate,decoration={brace,amplitude=2pt,mirror}] (4.25,-0.15) -- (5.05,0.65) node[midway,below right=1pt]{2 枚};
     \node[align=center] at (2.4,-1.6) {テンソル $\mX\in\R^{2\times 3\times 4}$\\形 $(2,3,4)$};
   \end{scope}
 \end{tikzpicture}
 \caption{数の並べ方の 4 種類。マス一つが数一つを表す。「形」は、各方向にいくつ数が並んでいるかを示す。
-テンソルは、同じ形の行列を何枚か重ねたものと考えればよい。}
+スカラーには並ぶ方向がないので、形は空の $()$ と書く。
+右端のテンソルは、3 行 4 列の行列を 2 枚重ねたもので、形は（枚数, 行数, 列数）の順に $(2,3,4)$ と書く。}
 \label{fig:math-tensors}
 \end{figure}
 
 各方向にいくつ数が並んでいるかを、\term{形}{shape}と呼びます。
 3 行 4 列の行列の形は $(3,4)$ です。行の数を先に、列の数を後に書きます。
-上の例のテンソルの形は $(32,128,192)$ です。
+先ほどテンソルの例に挙げた、学習のときのデータの形は $(32,128,192)$ です。
 形は、コードを書くときに最も頻繁に確かめる情報になります（\chapref{ch:pytorch}）。
 
 「$\vx$ は $n$ 個の実数が並んだベクトルである」ことを、記号では $\vx\in\R^{n}$ と書きます。
 $\R$ は実数全体の集合、$\in$ は「〜に属する」という意味です。
 同じように、$m$ 行 $n$ 列の行列は $\mW\in\R^{m\times n}$ と書きます。
-\figref{fig:math-roadmap}の登場人物は、$\vh\in\R^{192}$、$\mW\in\R^{4096\times 192}$、$\vz\in\R^{4096}$ です。
+\figref{fig:math-roadmap}に出てくる記号では、文脈ベクトルが $\vh\in\R^{192}$、出力の重み行列が $\mW\in\R^{4096\times 192}$、スコアが $\vz\in\R^{4096}$ です。
 
 本書では、数式の中のベクトルは\textbf{縦に並べたもの}（列ベクトル）と約束します。
-紙面を節約するために、$\vx=(x_1,x_2,x_3)^\T$ と横に書いて右肩に $\T$ を付けます。
-$\T$ は「縦と横を入れ替える」という印です（転置といいます。\secref{sec:math-linalg}で説明します）。
+\figref{fig:math-tensors}のベクトルも、縦に描いてあります。
+本文では、紙面を節約するために、$\vx=(x_1,x_2,x_3)^\T$ と横に書いて右肩に $\T$ を付けます。
+$\T$ は「縦と横を入れ替える」という印です（転置といいます。\figref{fig:math-transpose}で説明します）。
+つまり、横に書いた三つの数を、縦に並べ直したものです。
 図の中や、確率を並べて書くときには、$\T$ を省くこともあります。
 
 \subsection*{添字}
@@ -204,16 +226,17 @@ $\sum$ の下の $i=1$ が始まり、上の $n$ が終わりを表します。
 前者を $\max$、後者を $\argmax$ と書きます。
 $\vx=(3,1,2)^\T$ なら、$\max_{i}x_i=3$、$\argmax_{i}x_i=1$ です。最大の値は 3 で、それは 1 番目にあるからです。
 
-LLM では $\argmax$ のほうをよく使います。
+LLM では、$\max$ よりも $\argmax$ のほうをよく使います。
 知りたいのは「最大の確率はいくつか」よりも、「\textbf{どのトークン}の確率が最大か」だからです。
-「どうも仕方が」の例では、$\max_k p_k=0.559$、$\argmax_k p_k$ は「ない。」の番号でした。
+ただし、文章を書くときに、確率が最大のトークンをいつも選ぶとは限りません。次のトークンの選び方は、\secref{sec:math-prob}で説明します。
+「どうも仕方が」の例で、$k$ 番目のトークンの確率を $p_k$ と書くと、$\max_k p_k=0.559$、$\argmax_k p_k$ は「ない。」の番号でした。
 最小についても同じで、$\min$ と $\argmin$ を使います。
 
 \subsection*{関数の書き方}
 
 関数は「入力を受け取って出力を返す規則」です。
 $f:\R^{n}\to\R^{m}$ と書いたら、「$f$ は $n$ 次元のベクトルを受け取り、$m$ 次元のベクトルを返す」という意味です。
-\figref{fig:math-roadmap}の $\vh$ から $\vz$ への矢印は、$\R^{192}\to\R^{4096}$ の関数です。
+\figref{fig:math-roadmap}で、文脈ベクトル $\vh$ からスコア $\vz$ を作る計算は、$\R^{192}\to\R^{4096}$ の関数です。
 
 関数が持つ、調整できる数を\term{パラメータ}{parameter}と呼びます。
 パラメータをまとめて $\vtheta$（シータ）と書き、関数を $f_\theta$ と書きます（添字の中では、太字にしません）。
@@ -233,7 +256,7 @@ $e^{x}$ のことを $\exp(x)$ とも書きます。
 たとえば $e^{2}\approx 7.389$ なので、$\log 7.389\approx 2$ です（$\approx$ は「ほぼ等しい」）。
 
 本書で単に $\log$ と書いたら、底が $e$ の対数（\textbf{自然対数}。$\ln$ とも書かれます）のことです。
-底が 2 の対数を使うときだけ、$\log_2$ と明示します。NumPy や PyTorch の \code{log} も自然対数です。
+底が 2 のときだけ、$\log_2$ と書きます。NumPy や PyTorch の \code{log} も自然対数です。
 
 \begin{figure}[tbp]
 \centering
@@ -259,9 +282,11 @@ $e^{x}$ のことを $\exp(x)$ とも書きます。
 \node[font=\scriptsize,text=bookgray,anchor=east] at (axis cs:3.0,2.3) {$x-1$};
 \addplot[only marks,mark=*,mark size=1.4pt,bookaccent] coordinates {(1,0) (2.718,1) (7.389,2)};
 \node[font=\scriptsize,anchor=north west] at (axis cs:1.05,-0.05) {$\log 1=0$};
-\node[font=\scriptsize,anchor=north west] at (axis cs:2.75,0.95) {$\log e=1$};
+\draw[black!55,thin] (axis cs:2.82,0.9) -- (axis cs:3.15,0.62);
+\node[font=\scriptsize,anchor=north west,inner sep=1pt] at (axis cs:3.15,0.62) {$\log e=1$};
 \node[font=\scriptsize,anchor=north east] at (axis cs:8.4,1.75) {$\log 7.39\approx 2$};
-\node[font=\scriptsize,anchor=west,text=bookaccent,align=left] at (axis cs:1.6,-2.1) {$0<x<1$ では負\\（確率の対数は負）};
+\node[font=\scriptsize,anchor=west,text=bookaccent,align=left] (neg) at (axis cs:1.6,-2.1) {$0<x<1$ では負\\（確率の対数は負）};
+\draw[bookaccent,thin] (neg.west) -- (axis cs:0.3,-0.2);
 \end{axis}
 \end{tikzpicture}
 \caption{指数関数と対数関数。二つは互いに逆の操作で、(a) の縦軸と横軸を入れ替えると (b) になる。
@@ -269,16 +294,16 @@ $e^{x}$ のことを $\exp(x)$ とも書きます。
 \label{fig:math-exp-log}
 \end{figure}
 
-\figref{fig:math-exp-log}で、二つの関数の形を確かめてください。あとで効いてくる性質は三つあります。
-第一に、$e^{x}$ は\textbf{どんな $x$ に対しても正}です。第二に、どちらも\textbf{右上がり}で、大小の順序を変えません。
+\figref{fig:math-exp-log}で、二つの関数の形を確かめてください。あとで使う性質は三つあります。
+第一に、$e^{x}$ は\textbf{どんな $x$ に対しても正}です。第二に、どちらも\textbf{右上がり}です。つまり、$x$ が大きいほど値も大きい\textbf{増加関数}で、大小の順序を変えません。
 第三に、$0<x<1$ のとき $\log x$ は\textbf{負}です。確率は 0 と 1 の間の数なので、確率の対数は負（または 0）になります。
 
 計算で使う規則を\tabref{tab:math-explog}にまとめます。いちばん大事なのは 2 行目です。
-\textbf{対数は、掛け算を足し算に変えます}。確率はよく掛け合わせるので、機械学習のあらゆる場所に $\log$ が現れます。
+\textbf{対数は、掛け算を足し算に変えます}。確率はよく掛け合わせるので、$\log$ は機械学習でよく使います。
 
 \begin{table}[tbp]
 \centering
-\caption{指数関数と対数関数の規則（$a,b>0$）。右の列は数値での確認。$\log 2\approx 0.693$、$\log 3\approx 1.099$ を使った。}
+\caption{指数関数と対数関数の規則。1 行目はどんな実数 $a,b$ でも、2〜4 行目は $a,b>0$ のときに成り立つ（$c$ は実数）。右の列は数値での確認。$\log 2\approx 0.693$、$\log 3\approx 1.099$ を使った。}
 \label{tab:math-explog}
 \small
 \begin{tabular}{@{}lll@{}}
@@ -299,19 +324,19 @@ $\log a^{c}=c\log a$ & べき乗は、対数の定数倍になる & $\log 2^{12}
 
 これで、数式の「文字の種類」が読めるようになりました。
 太字は数の並び、細字と添字はその中の一つ、$\sum$ は \code{for} 文です。
-本書で使う記号の一覧は、\appref{app:notation}にまとめてあります。
+本書で使う記号の一覧は、\appref{app:notation}にあります。
 
 \section{線形代数の見方：内積と行列}\label{sec:math-linalg}
 
-記号が読めるようになったので、\figref{fig:math-roadmap}の最初の矢印 $\vz=\mW\vh$ に進みます。
-192 個の数 $\vh$ から、4096 個のスコア $\vz$ を作る計算です。
+記号が読めるようになったので、\figref{fig:math-roadmap}の最初の計算 $\vz=\mW\vh$ に進みます。
+文脈ベクトル $\vh$（192 個の数）に出力の重み行列 $\mW$ を掛けて、4096 個のスコア $\vz$ を作る計算です。
 この式は、何を計算しているのでしょうか。なぜその結果を「スコア」と呼べるのでしょうか。
 答えの鍵は\textbf{内積}にあります。
 
-\subsection*{内積：二つのベクトルの「向きの近さ」を測る}
+\subsection*{内積とコサイン類似度：二つのベクトルの「向きの近さ」を測る}
 
 LLM の中では、トークンも文脈も、すべてベクトルで表されます。
-すると、「二つのベクトルは似ているか」を一つの数で答える道具が欲しくなります。それが内積です。
+すると、「二つのベクトルは似ているか」を一つの数で答える道具が欲しくなります。その土台が、内積です。
 
 小さな例から始めます。$\va=(3,4)^\T$ と $\vb=(4,3)^\T$ について、同じ位置の成分どうしを掛けて、全部足すと、$3\times 4+4\times 3=24$ です。
 この計算を\term{内積}{inner product}と呼び、$\va^\T\vb$ と書きます。
@@ -331,10 +356,11 @@ $\va^\T\vb$ という書き方の理由は、行列の積を説明したあと�
 \end{equation}
 $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
 三平方の定理で求めた、矢印の長さそのものです。
+正確には L2 ノルムという名前です（ノルムには、ほかの種類もあります）。
 
 では、内積の値 24 は何を意味するのでしょうか。
 実は、内積には図形としての意味があります。
-二つのベクトルのなす角を $\phi$（ファイ）とすると、次の式が成り立ちます。
+二つのベクトルのなす角を $\phi$（ファイ）とすると、次の式が成り立ちます（どちらのベクトルも、長さは 0 でないとします）。
 \begin{equation}
 \va^\T\vb=\norm{\va}\,\norm{\vb}\cos\phi
 \label{eq:math-inner-cos}
@@ -368,31 +394,33 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
   \draw[->,black!60] (0,0) -- (0,5.4);
   \foreach \t in {1,...,5}{\node[font=\tiny,text=bookgray] at (\t,-0.35) {\t};\node[font=\tiny,text=bookgray] at (-0.3,\t) {\t};}
   \draw[->,very thick,bookblue] (0,0) -- (3,4) node[above]{$\va=(3,4)^\T$};
-  \draw[->,very thick,bookaccent] (0,0) -- (4,3) node[right]{$\vb$};
+  \draw[->,very thick,bookaccent] (0,0) -- (4,3) node[right]{$\vb=(4,3)^\T$};
   \draw[bookgray] (36.87:1.6) arc (36.87:53.13:1.6);
   \draw[bookgray,dashed] (3,4) -- (4,3);
-  \node[font=\scriptsize,text=bookgray,anchor=west] at (3.62,3.85) {$\va-\vb$};
+  \node[font=\scriptsize,text=bookgray,anchor=west] at (3.62,3.75) {$\va-\vb$};
   \node at (45:2.15) {$\phi$};
   \node[align=center] at (2.5,-1.5) {(a) $\va^\T\vb=24$\\ $\cos\phi=0.96$};
   % (b)-(d)
-  \begin{scope}[shift={(8.6,1.4)}]
+  \begin{scope}[shift={(9.4,1.4)}]
     \draw[->,very thick,bookblue] (0,0) -- (2.2,1.1);
-    \draw[->,very thick,bookaccent] (0,0.35) -- (1.6,1.15);
+    \draw[->,very thick,bookaccent] (-0.134,0.268) -- (1.297,0.983);
     \node[align=center] at (1.1,-2.9) {(b) 同じ向き\\ $\cos\phi=+1$};
   \end{scope}
-  \begin{scope}[shift={(13,1.4)}]
+  \begin{scope}[shift={(13.6,1.4)}]
     \draw[->,very thick,bookblue] (0,0) -- (2.0,0.8);
     \draw[->,very thick,bookaccent] (0,0) -- (-0.8,2.0);
     \draw[bookgray] (21.8:0.4) -- ++(111.8:0.4) -- ++(201.8:0.4);
     \node[align=center] at (0.8,-2.9) {(c) 直角\\ $\cos\phi=0$};
   \end{scope}
-  \begin{scope}[shift={(17.6,1.4)}]
-    \draw[->,very thick,bookblue] (0,0.4) -- (2.0,1.4);
-    \draw[->,very thick,bookaccent] (0,0.2) -- (-1.6,-0.6);
+  \begin{scope}[shift={(18,1.4)}]
+    \draw[->,very thick,bookblue] (0,0.3) -- (2.0,1.3);
+    \draw[->,very thick,bookaccent] (0,0.3) -- (-1.6,-0.5);
+    \fill[black!70] (0,0.3) circle (1.2pt);
     \node[align=center] at (0.2,-2.9) {(d) 逆向き\\ $\cos\phi=-1$};
   \end{scope}
 \end{tikzpicture}
-\caption{内積と角度。(a) 本文の例。なす角 $\phi$ が小さいので、コサイン類似度は 1 に近い。(b)〜(d) 典型的な三つの場合。}
+\caption{内積と角度。(a) 本文の例。なす角 $\phi$ が小さいので、コサイン類似度は 1 に近い。(b)〜(d) 典型的な三つの場合。
+(b) の 2 本は同じ向きで、重なると見分けられないので、少し離して描いた。(d) の 2 本は、黒い点から正反対の向きに出ている。}
 \label{fig:math-inner}
 \end{figure}
 
@@ -403,7 +431,46 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
 
 本書の基盤モデルは、4096 種類のトークンの一つひとつを、192 次元のベクトルで表しています。
 このベクトルは、学習によって自動的に決まったものです（仕組みは\chapref{ch:embedding}で学びます）。
-行列 $\mW$ の $k$ 行目が、$k$ 番目のトークンのベクトルです（そう呼べる理由は、すぐあとで分かります）。
+この 4096 本のベクトルは、\figref{fig:math-roadmap}の出力の重み行列 $\mW$ の中に、1 行に 1 本ずつ入っています。
+トークンには、1 番から 4096 番までの番号が付いています。$\mW$ の $k$ 行目が、$k$ 番目のトークンのベクトルです（\figref{fig:math-rows}）。
+たとえば「ない。」は 434 番目のトークンです。$\mW$ の 434 行目を、横に 1 行ぶん取り出します。取り出した 192 個の数の並びが、「ない。」のベクトルです。
+この行を「そのトークンのベクトル」と呼べる理由は、すぐあとで $\vz=\mW\vh$ を読むと分かります。
+なお、本書のモデルは、入力のトークンをベクトルに直すときにも、同じ $\mW$ の行を使います（重み共有。\chapref{ch:transformer}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=0.88mm,every node/.append style={font=\footnotesize}]
+  % 出力の重み行列 W。上から 1 行目、（省略）、434 行目、（省略）、693 行目、（省略）、4096 行目
+  \foreach \rr/\col in {0/figgray,2/figorange,4/figgreen,6/figgray}{
+    \foreach \jj in {0,1,2,3,5}{\draw[black!45,fill=\col] (8*\jj,-5*\rr) rectangle ++(8,-5);}
+    \node at (36,-5*\rr-2.5) {$\cdots$};}
+  \foreach \rr in {1,3,5}{\node at (20,-5*\rr-2.0) {$\vdots$};}
+  \foreach \jj/\val in {0/0.02,1/0.03,2/0.10,3/-0.07,5/-0.03}{\node[font=\scriptsize] at (8*\jj+4,-12.5) {$\val$};}
+  \foreach \jj/\val in {0/0.07,1/0.05,2/0.06,3/-0.04,5/-0.03}{\node[font=\scriptsize] at (8*\jj+4,-22.5) {$\val$};}
+  \node[anchor=east] at (-1,-2.5) {1 行目};
+  \node[anchor=east] at (-1,-12.5) {434 行目};
+  \node[anchor=east] at (-1,-22.5) {693 行目};
+  \node[anchor=east] at (-1,-32.5) {4096 行目};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (0,1.5) -- (48,1.5) node[midway,above=3pt]{192 列（1 行に 192 個の数）};
+  \node at (24,-39) {出力の重み行列 $\mW$（4096 行 192 列）};
+  % トークンとの対応
+  \node[tok,font=\footnotesize,anchor=east] (ta) at (-21,-12.5) {ない。};
+  \node[tok,font=\footnotesize,anchor=east] (tb) at (-21,-22.5) {先生};
+  \node[lbl,anchor=south east] at (-20,-9) {434 番目のトークン};
+  \node[lbl,anchor=north east] at (-20,-26) {693 番目のトークン};
+  \draw[arr] (ta.east) -- (-15,-12.5);
+  \draw[arr] (tb.east) -- (-15,-22.5);
+  % 取り出した行
+  \draw[arr] (49,-12.5) -- (56,-12.5) node[right,align=left]{「ない。」のベクトル\\（192 個の数）};
+  \draw[arr] (49,-22.5) -- (56,-22.5) node[right,align=left]{「先生」のベクトル\\（192 個の数）};
+\end{tikzpicture}
+\caption{出力の重み行列 $\mW$ の行と、トークンの対応（数値は基盤モデルの実物を、小数第 2 位に丸めたもの）。
+$\mW$ の $k$ 行目に並ぶ 192 個の数が、$k$ 番目のトークンのベクトルである。
+図では、4096 行のうち 4 行、192 列のうち 5 列だけを描き、残りは横に並んだ点と縦に並んだ点で省いた（灰色の行は数値も省いた）。
+行の番号は 1 から数えた（コードでは 0 から数えるので、「ない。」の行は \code{W[433]}）。}
+\label{fig:math-rows}
+\end{figure}
+
 意味の近いトークンのベクトルは、向きも近いのでしょうか。
 6 個のトークンを選び、ベクトルどうしのコサイン類似度を式\eqref{eq:math-cosine}で計算しました（\file{ch01/vectors.py}）。
 結果が\figref{fig:math-similarity}です。色の濃いマスほど、類似度が高いことを表します。
@@ -421,7 +488,7 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
   xticklabels={7,8,先生,奥さん,東京,京都},yticklabels={7,8,先生,奥さん,東京,京都},
   tick style={draw=none},xticklabel pos=top,
   colormap={sim}{color(0)=(white) color(1)=(bookblue!65)},point meta min=-0.15,point meta max=1,
-  colorbar,colorbar style={width=2.5mm,ytick={0,0.5,1},tick label style={font=\scriptsize}},
+  colorbar,colorbar style={width=2.5mm,ytick={-0.15,0,0.5,1},tick label style={font=\scriptsize}},
   nodes near coords={\pgfmathprintnumber[fixed,fixed zerofill,precision=2]{\pgfplotspointmeta}},
   every node near coord/.append style={anchor=center,font=\scriptsize,text=black}]
 \addplot[matrix plot*,mesh/cols=6,point meta=explicit]
@@ -429,7 +496,8 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
 \end{axis}
 \end{tikzpicture}
 \caption{基盤モデルが学習した、トークンのベクトルどうしのコサイン類似度（実測）。
-対角線は自分自身との類似度なので 1。数字・人・地名の組（対角線のすぐ隣の濃いマス）が高い。}
+対角線は自分自身との類似度なので 1。数字・人・地名の組（対角線のすぐ隣の濃いマス）が高い。
+色は、$-0.15$（白）から 1（最も濃い青）までの値を表す。0 に近い値と負の値は、どちらもほぼ白になる。}
 \label{fig:math-similarity}
 \end{figure}
 
@@ -445,6 +513,8 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
 =\begin{pmatrix}3\\1\end{pmatrix}
 \label{eq:math-matvec-example}
 \end{equation}
+\figref{fig:math-matvec}(a) は、この計算を図にしたものです。
+$\mA$ の 1 行目 $(2,1)$ と $\vx$ の内積 3 が、結果の 1 番目の成分です。2 行目 $(0,1)$ と $\vx$ の内積 1 が、2 番目の成分です。
 一般には、$\mA\in\R^{m\times n}$ と $\vx\in\R^{n}$ に対して、$\mA\vx$ は $m$ 次元のベクトルで、その $i$ 番目の成分は
 \begin{equation}
 (\mA\vx)_i=\sum_{j=1}^{n}A_{ij}x_j \qquad (i=1,\dots,m)
@@ -453,23 +523,79 @@ $\va=(3,4)^\T$ なら $\norm{\va}=\sqrt{9+16}=5$ です。
 です。$\mA$ の $i$ 行目と $\vx$ の内積になっています。
 内積を取るので、\textbf{$\mA$ の列の数と $\vx$ の次元は同じ}でなければなりません。
 
-これで、$\vz=\mW\vh$ が読めます。
-$\mW$ の $k$ 行目を、ベクトル $\vw_k$ と書くことにします。
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=0.9mm,every node/.append style={font=\footnotesize}]
+  % (a) 式 (1.5) の例。マスは 6mm
+  \foreach \ii/\col/\pa/\pb in {0/figorange/2/1,1/figgreen/0/1}{
+    \draw[black!45,fill=\col] (0,-6*\ii) rectangle ++(6,-6) node[pos=0.5]{\pa};
+    \draw[black!45,fill=\col] (6,-6*\ii) rectangle ++(6,-6) node[pos=0.5]{\pb};}
+  \foreach \ii in {0,1}{\draw[black!45,fill=figblue] (15,-6*\ii) rectangle ++(6,-6) node[pos=0.5]{1};}
+  \node at (24.5,-6) {$=$};
+  \draw[black!45,fill=figorange] (28,0) rectangle ++(6,-6) node[pos=0.5]{3};
+  \draw[black!45,fill=figgreen] (28,-6) rectangle ++(6,-6) node[pos=0.5]{1};
+  \node at (6,3) {$\mA$};
+  \node at (18,3) {$\vx$};
+  \node at (31,3) {$\mA\vx$};
+  \node[anchor=west,font=\scriptsize] at (-1,-17) {1 行目: $2\times 1+1\times 1=3$};
+  \node[anchor=west,font=\scriptsize] at (-1,-21.5) {2 行目: $0\times 1+1\times 1=1$};
+  \node at (16,-39) {(a) 式\eqref{eq:math-matvec-example}の例};
+  % (b) z = W h
+  \begin{scope}[shift={(63,0)}]
+    \foreach \rr/\col in {0/figgray,2/figorange,4/figgreen,6/figgray}{
+      \foreach \jj in {0,1,2,4}{\draw[black!45,fill=\col] (5*\jj,-5*\rr) rectangle ++(5,-5);}
+      \node at (17.5,-5*\rr-2.5) {$\cdots$};
+      \draw[black!45,fill=\col] (42,-5*\rr) rectangle ++(11,-5);}
+    \foreach \rr in {1,3,5}{\node at (12.5,-5*\rr-2.0) {$\vdots$};\node at (47.5,-5*\rr-2.0) {$\vdots$};}
+    \node[anchor=east] at (-1,-2.5) {$\vw_{1}$};
+    \node[anchor=east] at (-1,-12.5) {「ない。」の行 $\vw_{434}$};
+    \node[anchor=east] at (-1,-22.5) {「先生」の行 $\vw_{693}$};
+    \node[anchor=east] at (-1,-32.5) {$\vw_{4096}$};
+    % 文脈ベクトル h（縦に 192 個）
+    \foreach \ii in {0,1,2,3,5}{\draw[black!45,fill=figblue] (28,-5*\ii-2.5) rectangle ++(5,-5);}
+    \node at (30.5,-24.5) {$\vdots$};
+    \node at (37.5,-17.5) {$=$};
+    \node at (47.5,-2.5) {$z_{1}$};
+    \node at (47.5,-12.5) {$11.47$};
+    \node at (47.5,-22.5) {$0.46$};
+    \node at (47.5,-32.5) {$z_{4096}$};
+    \node at (12.5,3) {$\mW$};
+    \node at (30.5,3) {$\vh$};
+    \node at (47.5,3) {$\vz$};
+    \node[lbl,anchor=west] at (53.5,-12.5) {$z_{434}$};
+    \node[lbl,anchor=west] at (53.5,-22.5) {$z_{693}$};
+    \node at (20,-39) {(b) $\vz=\mW\vh$。$z_k=\vw_k^\T\vh$};
+  \end{scope}
+\end{tikzpicture}
+\caption{行列とベクトルの積は、行ごとの内積を縦に並べたものである。同じ色の行と、同じ色の結果のマスが対応する。
+(a) $\mA$ の各行と $\vx$（青）の内積が、結果の同じ高さのマスに入る。
+(b) 出力の重み行列 $\mW$ の $k$ 行目 $\vw_k$ と、文脈ベクトル $\vh$（青、192 個の数）の内積が、スコア $z_k$ になる（11.47 と 0.46 は、基盤モデルの実測）。
+行と列の一部を、横に並んだ点と縦に並んだ点で省いた。行の番号の数え方は、\figref{fig:math-rows}と同じ。}
+\label{fig:math-matvec}
+\end{figure}
+
+これで、$\vz=\mW\vh$ が読めます（\figref{fig:math-matvec}(b)）。
+出力の重み行列 $\mW$ の $k$ 行目を、ベクトル $\vw_k$ と書くことにします。
+\figref{fig:math-rows}で取り出した、$k$ 番目のトークンのベクトルのことです。
 式\eqref{eq:math-matvec}から、スコアの $k$ 番目の成分は
 \begin{equation}
 z_k=\vw_k^\T\vh \qquad (k=1,\dots,4096)
 \label{eq:math-logit}
 \end{equation}
-です。$\vw_k$ は、トークン $k$ のスコアにだけ使われます。先ほど「トークン $k$ のベクトル」と呼んだのは、このためです。
-つまり、\textbf{トークン $k$ のスコアは、「トークン $k$ のベクトル」と「文脈を要約したベクトル $\vh$」の内積}です。
-$\vh$ と向きの近いトークンほど、スコアが高くなります。
+です。
+図の (b) で確かめます。「ない。」の行 $\vw_{434}$ と文脈ベクトル $\vh$ の内積が、$\vz$ の 434 番目の成分 $z_{434}$ になります。これが「ない。」のスコアで、値は 11.47 です。
+同じように、「先生」の行 $\vw_{693}$ と $\vh$ の内積が、「先生」のスコア $z_{693}=0.46$ です。
+$\vw_k$ は、トークン $k$ のスコアにだけ使われます。先ほど「トークン $k$ のベクトル」と呼んだのは、このためです。
+つまり、\textbf{トークン $k$ のスコアは、「トークン $k$ のベクトル $\vw_k$」と「文脈ベクトル $\vh$」の内積}です。
+内積は、向きの近さと、二つの長さで決まるのでした。
+そのため、トークンのベクトルの長さが同じくらいなら、文脈ベクトル $\vh$ と向きの近いトークンほど、スコアが高くなります。
 4096 個のトークンすべてについて、この内積を一度に計算するのが、$\mW\vh$ という一つの式です。
-モデル本体の仕事は、「次に来そうなトークンのベクトル」と向きの近い $\vh$ を作ることだ、とも言えます。
+モデル本体の仕事は、次に来そうなトークンのベクトルとの内積が大きくなるような文脈ベクトル $\vh$ を作ることだ、とも言えます。
 
 実物の $\vz$ を計算すると、最大のスコアは「ない。」の 11.47 で、「ないから」の 9.94、「ないと」の 9.30 が続きます。
 ただし、これらは確率ではありません。1 を超えていますし、4096 個を全部足しても 1 になりません。
 確率に直す前のこのスコアを、\term{ロジット}{logits}と呼びます。
-ロジットを確率に直す softmax は、最後の\secref{sec:math-softmax}で扱います。それまでは、結果の 0.559 などを先に借りて使います。
+ロジットを確率に直す softmax は、最後の\secref{sec:math-softmax}で扱います。それまでは、softmax で求めた結果（確率 0.559 など）の値だけを使います。
 
 \subsection*{行列のもう一つの見方：線形変換}
 \skimread{押さえる結論は、「行列を掛けることは、ベクトルを別のベクトルに移す操作であり、モデルの中ではこの操作を何段も重ねる」です。}
@@ -481,55 +607,59 @@ $\mA\vx$ は、ベクトル $\vx$ を別のベクトルに\textbf{移す}操作�
 格子の直線は直線のまま、平行な線は平行なまま、原点は動きません。
 このような移し方を\term{線形変換}{linear transformation}と呼びます。
 \figref{fig:math-roadmap}の「モデル本体」の中では、行列でベクトルを移す操作を、何段も続けて行います。この 1 段を「層」と呼びます（\chapref{ch:nn}）。
+ただし、実際の層は、行列を掛けたあとに、行列では表せない操作（活性化関数。\chapref{ch:nn}）を一つはさみます。
+行列を掛けるだけなら、次の小節で見るとおり、何段重ねても一つの行列にまとまってしまうからです。
+ここでは、「行列を掛ける」部分だけを見ます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[x=7.3mm,y=7.3mm,every node/.append style={font=\footnotesize}]
   \begin{scope}
-    \draw[black!20] (0,0) grid (2,2);
     \fill[figblue] (0,0) rectangle (1,1);
+    \draw[black!30,step=1] (0,0) grid (2,2);
     \draw[->,black!60] (-0.3,0) -- (2.6,0);
     \draw[->,black!60] (0,-0.3) -- (0,2.6);
     \draw[->,very thick,bookgreen] (0,0) -- (1,0) node[below,pos=0.6]{$(1,0)$};
     \draw[->,very thick,bookorange] (0,0) -- (0,1) node[left,pos=0.6]{$(0,1)$};
     \draw[->,very thick,bookaccent] (0,0) -- (1,1);
-    \node[text=bookaccent,anchor=west] at (1.05,1.2) {$\vx=(1,1)$};
+    \node[text=bookaccent,anchor=west] at (2.1,1.0) {$\vx=(1,1)$};
     \node at (1,-1.1) {移す前};
   \end{scope}
-  \draw[arr] (3.5,1) -- node[above]{$\mA$ を掛ける} (6.0,1);
-  \begin{scope}[shift={(7.2,0)}]
+  \draw[arr] (4.5,1) -- node[above]{$\mA$ を掛ける} (6.8,1);
+  \begin{scope}[shift={(8.6,0)}]
     \begin{scope}[cm={2,0,1,1,(0,0)}]
-      \draw[black!20] (0,0) grid (2,2);
       \fill[figblue] (0,0) rectangle (1,1);
+      \draw[black!30,step=1] (0,0) grid (2,2);
     \end{scope}
     \draw[->,black!60] (-0.3,0) -- (6.5,0);
     \draw[->,black!60] (0,-0.3) -- (0,2.6);
     \draw[->,very thick,bookgreen] (0,0) -- (2,0) node[below,pos=0.6]{$(2,0)$};
-    \draw[->,very thick,bookorange] (0,0) -- (1,1) node[above left,pos=0.75,inner sep=1pt]{$(1,1)$};
+    \draw[->,very thick,bookorange] (0,0) -- (1,1);
+    \node[text=bookorange,anchor=east] at (-0.1,0.85) {$(1,1)$};
     \draw[->,very thick,bookaccent] (0,0) -- (3,1);
-    \node[text=bookaccent,anchor=west] at (3.1,0.8) {$\mA\vx=(3,1)$};
+    \node[text=bookaccent,anchor=west] at (4.9,0.5) {$\mA\vx=(3,1)$};
     \node at (3,-1.1) {移した後};
   \end{scope}
 \end{tikzpicture}
 \caption{行列は平面を移す。$\mA=\bigl(\begin{smallmatrix}2&1\\0&1\end{smallmatrix}\bigr)$ を掛けると、
-緑の $(1,0)$ は $\mA$ の 1 列目 $(2,0)$ に、橙の $(0,1)$ は 2 列目 $(1,1)$ に移る。格子全体がゆがみ、赤の $\vx=(1,1)$ は $(3,1)$ に移る。}
+緑の $(1,0)$ は $\mA$ の 1 列目 $(2,0)$ に、橙の $(0,1)$ は 2 列目 $(1,1)$ に移る。左の 2×2 の格子（正方形のマス 4 個）は、右では平行四辺形のマス 4 個の格子になる。青いマスは、同じマスの移る先。赤の $\vx=(1,1)$ は $(3,1)$ に移る。}
 \label{fig:math-transform}
 \end{figure}
 
 \subsection*{行列どうしの積：変換を続けて行う}
-\skimread{押さえる結論は、形の規則です。形 $(m,n)$ と形 $(n,k)$ の行列の積は、形 $(m,k)$ になります。内側の数が合わなければ、積は計算できません。転置 $\mA^\T$ は、行と列の入れ替えです。}
+\skimread{押さえる結論は、形の規則です。形 $(m,n)$ と形 $(n,r)$ の行列の積は、形 $(m,r)$ になります。内側の数が合わなければ、積は計算できません。転置 $\mA^\T$ は、行と列の入れ替えです。}
 
-層を重ねるとは、変換を続けて行うことです。
+行列で移す操作を重ねるとは、変換を続けて行うことです。
 $\vx$ を行列 $\mA$ で移し、その結果をさらに行列 $\mB$ で移すと、$\mB(\mA\vx)$ になります。
-この「続けて移す」操作を一つの行列にまとめたものが、\term{行列積}{matrix product} $\mB\mA$ です。
-行列積は、次の規則で計算します。
-$\mA\in\R^{m\times n}$ と $\mB\in\R^{n\times k}$ に対して、積 $\mC=\mA\mB$ は $m$ 行 $k$ 列の行列で、
+この「続けて移す」操作を一つの行列にまとめたものが、\term{行列積}{matrix product} $\mB\mA$ です。先に掛ける $\mA$ を、右に書きます。
+行列積の計算の規則を、一般の二つの行列 $\mA$、$\mB$ の積 $\mA\mB$ について書きます（上の $\mB\mA$ は、この規則で $\mB$ を左、$\mA$ を右に置いたものです）。
+$\mA\in\R^{m\times n}$ と $\mB\in\R^{n\times r}$ に対して、積 $\mC=\mA\mB$ は $m$ 行 $r$ 列の行列で、
 \begin{equation}
 C_{ij}=\sum_{l=1}^{n}A_{il}B_{lj}
 \label{eq:math-matmul}
 \end{equation}
 です。$C_{ij}$ は、\textbf{$\mA$ の $i$ 行目と $\mB$ の $j$ 列目の内積}です（\figref{fig:math-matmul}）。
-ここでも主役は内積です。
+ここでも、計算の中心は内積です。
 
 \begin{figure}[tbp]
 \centering
@@ -537,43 +667,44 @@ C_{ij}=\sum_{l=1}^{n}A_{il}B_{lj}
   % A (3x2)
   \fill[figblue] (0,0) rectangle (2,3);
   \fill[bookblue!45] (0,1) rectangle (2,2);
-  \draw[black!45] (0,0) grid (2,3);
+  \draw[black!45,step=1] (0,0) grid (2,3);
   \node at (1,-0.9) {$\mA$};
-  \node[lbl] at (1,3.7) {$(3,\ \textcolor{bookaccent}{\mathbf{2}})$};
+  \node[lbl] at (1,4.3) {$(3,\ \textcolor{bookaccent}{\mathbf{2}})$};
   \node[lbl,anchor=east] at (-0.2,1.5) {$i$ 行目};
   \node at (3.5,1.5) {$\times$};
   % B (2x4)
   \begin{scope}[shift={(5,0.5)}]
     \fill[figgreen] (0,0) rectangle (4,2);
     \fill[bookgreen!45] (2,0) rectangle (3,2);
-    \draw[black!45] (0,0) grid (4,2);
+    \draw[black!45,step=1] (0,0) grid (4,2);
     \node at (2,-1.4) {$\mB$};
-    \node[lbl] at (2,3.2) {$(\textcolor{bookaccent}{\mathbf{2}},\ 4)$};
-    \node[lbl] at (2.5,2.5) {$j$ 列目};
+    \node[lbl] at (2,3.8) {$(\textcolor{bookaccent}{\mathbf{2}},\ 4)$};
+    \node[lbl] at (2.5,2.55) {$j$ 列目};
   \end{scope}
   \node at (10.5,1.5) {$=$};
   % C (3x4)
   \begin{scope}[shift={(12,0)}]
     \fill[figorange] (0,0) rectangle (4,3);
     \fill[bookorange!60] (2,1) rectangle (3,2);
-    \draw[black!45] (0,0) grid (4,3);
+    \draw[black!45,step=1] (0,0) grid (4,3);
     \node at (2,-0.9) {$\mC=\mA\mB$};
-    \node[lbl] at (2,3.7) {$(3,\ 4)$};
+    \node[lbl] at (2,4.3) {$(3,\ 4)$};
     \node[anchor=west,align=left] at (4.5,1.5) {$C_{ij}$ ＝ $\mA$ の $i$ 行目と\\$\mB$ の $j$ 列目の内積};
   \end{scope}
 \end{tikzpicture}
-\caption{行列積の形の規則。形 $(3,2)$ と $(2,4)$ の積は、形 $(3,4)$ になる。
-内側の二つの数（赤字）が一致しなければ、積は計算できない。外側の二つの数が、結果の形になる。}
+\caption{行列積の形の規則。マス一つが数一つを表す。形 $(3,2)$ の $\mA$ と形 $(2,4)$ の $\mB$ の積は、形 $(3,4)$ になる。
+内側の二つの数（赤字）が一致しなければ、積は計算できない。外側の二つの数が、結果の形になる。
+濃い色は、$i=2$、$j=3$ の例。$\mA$ の 2 行目（数 2 個）と $\mB$ の 3 列目（数 2 個）の内積が、$\mC$ の 2 行 3 列目のマスに入る。}
 \label{fig:math-matmul}
 \end{figure}
 
-図で確かめてほしいのは、\textbf{形の規則}です。形 $(m,n)$ と形 $(n,k)$ の積は、形 $(m,k)$ になります。
+図で確かめてほしいのは、\textbf{形の規則}です。形 $(m,n)$ と形 $(n,r)$ の積は、形 $(m,r)$ になります。
 内側の二つの数が一致していなければ、内積が取れないので、積は計算できません。
 コードを書いていて最も多く出会うエラーは、この規則の違反です。
 ベクトルは「列が 1 本の行列」と考えれば、同じ規則に従います。
 $\vz=\mW\vh$ では、$(4096,192)$ と $(192,1)$ から $(4096,1)$ ができます。
 
-小さな例で確かめます。平面を 90 度回す行列 $\mB=\bigl(\begin{smallmatrix}0&-1\\1&0\end{smallmatrix}\bigr)$ を使います。
+小さな例で確かめます。平面を反時計回りに 90 度回す行列 $\mB=\bigl(\begin{smallmatrix}0&-1\\1&0\end{smallmatrix}\bigr)$ を使います。
 式\eqref{eq:math-matvec-example}の $\mA\vx=(3,1)^\T$ を $\mB$ で移すと、$(-1,3)^\T$ です。
 $\mB$ の各行との内積を取って、$0\times 3+(-1)\times 1=-1$ と $1\times 3+0\times 1=3$ を並べました。
 先に行列どうしを掛けた $\mB\mA=\bigl(\begin{smallmatrix}0&-1\\2&1\end{smallmatrix}\bigr)$ を $\vx$ に掛けても、同じ $(-1,3)^\T$ になります。
@@ -586,32 +717,119 @@ $\mB$ の各行との内積を取って、$0\times 3+(-1)\times 1=-1$ と $1\tim
 ただし、数の掛け算と違って、\textbf{順番を入れ替えると結果が変わります}。$(\mA\mB)\vx$ は $(-1,1)^\T$ です（検算は \file{ch01/vectors.py}）。
 同じ規則で計算すると $\mA\mB=\bigl(\begin{smallmatrix}1&-2\\1&0\end{smallmatrix}\bigr)$ で、これを $\vx$ に掛けると $(1-2,\ 1+0)^\T=(-1,1)^\T$ だからです。
 
-ここで、\secref{sec:math-notation}で予告した\term{転置}{transpose}を説明します。
-行列 $\mA$ の行と列を入れ替えた行列を $\mA^\T$ と書きます。成分で書けば $(\mA^\T)_{ij}=A_{ji}$ です。
-列ベクトル $\va$（形 $(n,1)$）の転置 $\va^\T$ は、横に並んだ形 $(1,n)$ です。
-すると $\va^\T\vb$ は、形 $(1,n)$ と $(n,1)$ の行列積で、結果は形 $(1,1)$、つまり一つの数 $\sum_l a_lb_l$ になります。
-これが、内積を $\va^\T\vb$ と書く理由です。
+% [figpass] 案 10: 変換を続けて行う流れ（数値入りのデータフロー図）
+\figref{fig:math-compose}に、三つの計算の流れを並べました。
+上の 2 段は同じ $(-1,3)$ に着き、下の段だけが $(-1,1)$ に着きます。掛ける順番を入れ替えると、行き先が変わります。
 
-\subsection*{計算の量：なぜ行列積が主役なのか}
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.append style={font=\footnotesize},
+  vc/.style={cell,minimum width=7mm,minimum height=4.6mm,font=\scriptsize},
+  mt/.style={purplebox,minimum height=6mm,minimum width=9mm,inner sep=1.5pt}]
+  % ベクトルを縦 2 マスで描く: {x}{y}{上}{下}{色}
+  \providecommand{\mathfigpassvec}[5]{%
+    \node[vc,fill=#5] at (#1,#2+2.3) {#3};\node[vc,fill=#5] at (#1,#2-2.3) {#4};}
+  \foreach \yy/\name in {0/1,-16/2,-32/3}{
+    \mathfigpassvec{0}{\yy}{1}{1}{figblue}
+    \node[anchor=south] at (0,\yy+4.8) {$\vx$};}
+  % 1 段目: A で移してから B で移す
+  \node[mt] (a1) at (17,0) {$\mA$};
+  \mathfigpassvec{34}{0}{3}{1}{figorange}
+  \node[mt] (b1) at (51,0) {$\mB$};
+  \mathfigpassvec{68}{0}{$-1$}{3}{figgreen}
+  \draw[arr] (4,0) -- (a1);\draw[arr] (a1) -- (30,0);
+  \draw[arr] (38,0) -- (b1);\draw[arr] (b1) -- (64,0);
+  \node[anchor=west,align=left] at (74,0) {$\mB(\mA\vx)$：$\mA$ で移してから、$\mB$ で移す};
+  % 2 段目: まとめた BA で一度に
+  \node[mt] (ba) at (34,-16) {$\mB\mA$};
+  \mathfigpassvec{68}{-16}{$-1$}{3}{figgreen}
+  \draw[arr] (4,-16) -- (ba);\draw[arr] (ba) -- (64,-16);
+  \node[anchor=west,align=left] at (74,-16) {$(\mB\mA)\vx$：まとめた行列で一度に移す};
+  % 3 段目: B で移してから A で移す
+  \node[mt] (b3) at (17,-32) {$\mB$};
+  \mathfigpassvec{34}{-32}{$-1$}{1}{figorange}
+  \node[mt] (a3) at (51,-32) {$\mA$};
+  \mathfigpassvec{68}{-32}{$-1$}{1}{figred}
+  \draw[arr] (4,-32) -- (b3);\draw[arr] (b3) -- (30,-32);
+  \draw[arr] (38,-32) -- (a3);\draw[arr] (a3) -- (64,-32);
+  \node[anchor=west,align=left] at (74,-32) {$\mA(\mB\vx)=(\mA\mB)\vx$：順番を\\入れ替えると、行き先が変わる};
+\end{tikzpicture}
+\caption{行列積は、変換を続けて行うことである（$\mA=\bigl(\begin{smallmatrix}2&1\\0&1\end{smallmatrix}\bigr)$、$\mB=\bigl(\begin{smallmatrix}0&-1\\1&0\end{smallmatrix}\bigr)$、$\vx=(1,1)^\T$。数値は \protect\file{ch01/vectors.py} の出力）。
+縦 2 マスがベクトル、紫の箱が掛ける行列。上の 2 段は同じ $(-1,3)$（緑）に着く。下の段は、掛ける順番を入れ替えたもので、$(-1,1)$（赤）に着く。}
+\label{fig:math-compose}
+\end{figure}
+% [/figpass]
+
+ここで、\secref{sec:math-notation}で予告した\term{転置}{transpose}を説明します。
+行列 $\mA$ の行と列を入れ替えた行列を $\mA^\T$ と書きます。成分では $(\mA^\T)_{ij}=A_{ji}$ です。
+列ベクトル $\va$（形 $(n,1)$）の転置 $\va^\T$ は、形 $(1,n)$ です。
+$\va^\T\vb$ は、形 $(1,n)$ と $(n,1)$ の行列積で、結果は形 $(1,1)$、つまり一つの数 $\sum_l a_lb_l$ です。
+これが、内積を $\va^\T\vb$ と書く理由です（\figref{fig:math-transpose}は $n=3$ の例）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=5mm,y=5mm,every node/.append style={font=\footnotesize}]
+  % (a) 転置
+  \fill[figblue] (0,0) rectangle (1,3);
+  \draw[black!45,step=1] (0,0) grid (1,3);
+  \node at (0.5,2.5) {$a_1$};\node at (0.5,1.5) {$a_2$};\node at (0.5,0.5) {$a_3$};
+  \node at (0.5,3.6) {$\va$};
+  \node[lbl] at (0.5,-0.6) {形 $(3,1)$};
+  \draw[arr] (1.9,1.5) -- node[above]{転置} (4.3,1.5);
+  \begin{scope}[shift={(5,1)}]
+    \fill[figblue] (0,0) rectangle (3,1);
+    \draw[black!45,step=1] (0,0) grid (3,1);
+    \node at (0.5,0.5) {$a_1$};\node at (1.5,0.5) {$a_2$};\node at (2.5,0.5) {$a_3$};
+    \node at (1.5,1.6) {$\va^\T$};
+    \node[lbl] at (1.5,-0.6) {形 $(1,3)$};
+  \end{scope}
+  \node[anchor=east] at (-0.7,3.6) {(a)};
+  % (b) 内積
+  \begin{scope}[shift={(12,0)}]
+    \fill[figblue] (0,1) rectangle (3,2);
+    \draw[black!45,step=1] (0,1) grid (3,2);
+    \node at (0.5,1.5) {$a_1$};\node at (1.5,1.5) {$a_2$};\node at (2.5,1.5) {$a_3$};
+    \node at (1.5,2.6) {$\va^\T$};
+    \node[lbl] at (1.5,0.4) {形 $(1,3)$};
+    \node at (4,1.5) {$\times$};
+    \fill[figgreen] (5,0) rectangle (6,3);
+    \draw[black!45,step=1] (5,0) grid (6,3);
+    \node at (5.5,2.5) {$b_1$};\node at (5.5,1.5) {$b_2$};\node at (5.5,0.5) {$b_3$};
+    \node at (5.5,3.6) {$\vb$};
+    \node[lbl] at (5.5,-0.6) {形 $(3,1)$};
+    \node at (7.5,1.5) {$=$};
+    \fill[figorange] (9,1) rectangle (10,2);
+    \draw[black!45] (9,1) rectangle (10,2);
+    \node at (9.5,2.6) {$\va^\T\vb$};
+    \node[lbl] at (9.5,0.4) {形 $(1,1)$};
+    \node[anchor=east] at (-0.7,3.6) {(b)};
+  \end{scope}
+\end{tikzpicture}
+\caption{転置と、内積の書き方 $\va^\T\vb$（3 次元の例）。(a) 転置は、縦と横を入れ替える。縦に並べた $\va$ を転置すると、同じ 3 個の数を横に並べた $\va^\T$ になる。
+(b) 形 $(1,3)$ の $\va^\T$ と形 $(3,1)$ の $\vb$ の行列積は、形 $(1,1)$、つまり一つの数になる。その値 $a_1b_1+a_2b_2+a_3b_3$ が内積である。}
+\label{fig:math-transpose}
+\end{figure}
+
+\subsection*{計算の量：LLM の計算のほとんどは行列積である}
 \laterread{\chapref{ch:attention}で注意機構の計算の手間を見積もるときと、\chapref{ch:gpu}で GPU が要る理由を考えるときに使います。そのときに戻れば足ります。飛ばすときは、節末のまとめ（この小節の最後の段落）へ進んでください。}
 
 最後に、計算の手間を数えます。
-式\eqref{eq:math-matmul}では、成分一つにつき $n$ 回の掛け算をし、成分は $m\times k$ 個あります。掛け算は、全部で $m\times n\times k$ 回です。
-これを「計算量は $\calO(mnk)$ である」と言います。$\calO(\cdot)$ は、「係数を無視すれば、この式に比例する」という意味です。
+式\eqref{eq:math-matmul}では、成分一つにつき $n$ 回の掛け算をし、成分は $m\times r$ 個あります。掛け算は、全部で $m\times n\times r$ 回です。
+これを「計算量は $\calO(mnr)$ である」と言います。$\calO(\cdot)$ は、「係数を無視すれば、多くてもこの式に比例する程度」という意味です。
 
 $\vz=\mW\vh$ なら、掛け算は $4096\times 192=786{,}432$ 回です。
 \tabref{tab:math-scale}で、実際の LLM と比べます。式の形は同じで、違うのは行列の大きさだけです。
-それでも、トークンを 1 個出すたびに、最後の一歩だけで数億〜数十億回の掛け算が要ります。
+ただ、実際の LLM は行列が大きいので、トークンを 1 個出すたびに、スコアの計算 $\vz=\mW\vh$ だけで数億〜数十億回の掛け算が要ります。
 LLM の計算のほとんどは行列積なので、行列積の得意な GPU が必要になります（\chapref{ch:gpu}）。
 
 \begin{table}[tbp]
 \centering
-\caption{最後の一歩 $\vz=\mW\vh$ の規模の比較。Llama 3.1 の値は公開されている構成による\cite{dubey2024llama3}。8B、405B は、パラメータ数（約 80 億、約 4050 億）を表す。}
+\caption{スコアの計算 $\vz=\mW\vh$ の規模の比較。Llama 3.1 の値は公開されている構成による\cite{dubey2024llama3}。8B、405B は、パラメータ数（約 80 億、約 4050 億）を表す。}
 \label{tab:math-scale}
 \small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
- & $\vh$ の次元 $d$ & トークンの種類 $V$ & 掛け算の回数 $V\times d$ \\
+ & 文脈ベクトル $\vh$ の次元 $d$ & トークンの種類 $V$ & 掛け算の回数 $V\times d$ \\
 \midrule
 本書の基盤モデル & 192 & 4,096 & 約 79 万 \\
 Llama 3.1 8B & 4,096 & 128,256 & 約 5.3 億 \\
@@ -621,20 +839,20 @@ Llama 3.1 405B & 16,384 & 128,256 & 約 21 億 \\
 \end{table}
 
 この節で分かったことをまとめます。
-内積は、二つのベクトルの向きの近さを測ります。
+内積は、二つのベクトルの向きの近さと、二つの長さで決まる数です。長さの影響を除いたコサイン類似度が、向きの近さを表します。
 行列とベクトルの積は、その内積をまとめて計算します。
-スコア $\vz=\mW\vh$ は、「各トークンのベクトル」と「文脈のベクトル」の内積を 4096 個並べたものでした。
+スコア $\vz=\mW\vh$ は、「各トークンのベクトル $\vw_k$」と「文脈ベクトル $\vh$」の内積を 4096 個並べたものでした。
 
 \section{微分：少し動かすと、どれだけ変わるか}\label{sec:math-calculus}
 
-スコアの計算は読めました。次は、\figref{fig:math-roadmap}の破線の矢印です。
+スコアの計算は読めました。次は、\figref{fig:math-roadmap}の赤い破線の矢印（勾配）です。
 学習とは、損失が小さくなるように、260 万個のパラメータを少しずつ直していく作業です。
 では、どのパラメータを、増やすべきでしょうか、減らすべきでしょうか。
 やみくもに試すには、パラメータが多すぎます。
 「このパラメータを少し動かすと、損失はどれだけ変わるか」を教えてくれる道具が必要です。
 それが微分です。
 
-\subsection*{導関数：変化の倍率}
+\subsection*{導関数：少し動かしたときの変化率}
 
 関数 $f(x)=x^{2}$ を例にします。
 $x=1$ のとき $f(1)=1$ です。ここから $x$ を少しだけ増やして、$f$ がどれだけ増えるかを調べます。
@@ -642,7 +860,8 @@ $x$ の増やし幅を $\Delta x$（デルタ・エックス）と書きます�
 
 \figref{fig:math-derivative}の右の表を見てください。
 $x$ を 0.1 増やすと、$f$ は 0.21 増えます。$f$ の増加は $x$ の増加の 2.1 倍です。
-増やし幅を 0.01、0.001 と小さくすると、この倍率は 2.01、2.001 と、2 に近づいていきます。
+この「$f$ の変化 $\div$ $x$ の変化」を、\textbf{変化率}と呼びます。
+増やし幅を 0.01、0.001 と小さくすると、変化率は 2.01、2.001 と、2 に近づいていきます。
 この「近づいていく先の値」を、$x=1$ での\term{微分係数}{derivative}と呼びます。
 各点 $x$ に微分係数を対応させる関数が\jterm{導関数}で、$f'(x)$ または $\dd{f}{x}$ と書きます。
 \begin{equation}
@@ -657,15 +876,17 @@ $\lim_{\Delta x\to 0}$ は、「$\Delta x$ を限りなく 0 に近づけたと�
 \begin{minipage}[c]{0.5\linewidth}
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=\linewidth,height=37mm,xmin=-0.4,xmax=2.5,ymin=-0.8,ymax=5,
-  axis lines=middle,xlabel={$x$},ylabel={},xtick={1,2},ytick={1,4}]
+\begin{axis}[width=\linewidth,height=45mm,xmin=-0.4,xmax=4.6,ymin=-0.8,ymax=5.6,clip=false,
+  axis lines=middle,xlabel={$x$},xtick={1,1.5,2},ytick={1,4}]
 \addplot[bookblue,domain=-0.4:2.2,samples=50]{x^2};
-\addplot[bookgray,dashed,domain=0.5:2.2]{3*x-2};
-\addplot[bookaccent,domain=0.2:2.3]{2*x-1};
-\addplot[only marks,mark=*,mark size=1.5pt,black] coordinates {(1,1) (2,4)};
-\node[font=\scriptsize,text=bookaccent,anchor=west] at (axis cs:1.55,1.75) {接線（傾き 2）};
-\node[font=\scriptsize,text=bookgray,anchor=east] at (axis cs:1.52,2.9) {$\Delta x=1$（傾き 3）};
-\node[font=\scriptsize,text=bookblue,anchor=west] at (axis cs:0.05,4.5) {$f(x)=x^{2}$};
+\addplot[bookgray,dashed,domain=0.6:2.35]{3*x-2};
+\addplot[bookgray,dashed,domain=0.6:2.35]{2.5*x-1.5};
+\addplot[bookaccent,domain=0.2:2.35]{2*x-1};
+\addplot[only marks,mark=*,mark size=1.5pt,black] coordinates {(1,1) (1.5,2.25) (2,4)};
+\node[font=\scriptsize,text=bookgray,anchor=west,inner sep=1pt] at (axis cs:2.38,5.05) {$\Delta x=1$：傾き 3};
+\node[font=\scriptsize,text=bookgray,anchor=west,inner sep=1pt] at (axis cs:2.38,4.375) {$\Delta x=0.5$：傾き 2.5};
+\node[font=\scriptsize,text=bookaccent,anchor=west,inner sep=1pt] at (axis cs:2.38,3.7) {接線：傾き 2};
+\node[font=\scriptsize,text=bookblue,anchor=west,inner sep=1pt] at (axis cs:0.12,3.1) {$f(x)=x^{2}$};
 \end{axis}
 \end{tikzpicture}
 \end{minipage}\hfill
@@ -673,9 +894,10 @@ $\lim_{\Delta x\to 0}$ は、「$\Delta x$ を限りなく 0 に近づけたと�
 \centering\small
 \begin{tabular}{@{}lll@{}}
 \toprule
-$\Delta x$ & $f(1+\Delta x)-f(1)$ & 倍率 \\
+$\Delta x$ & $f(1+\Delta x)-f(1)$ & 変化率 \\
 \midrule
 1 & 3 & 3 \\
+0.5 & 1.25 & 2.5 \\
 0.1 & 0.21 & 2.1 \\
 0.01 & 0.0201 & 2.01 \\
 0.001 & 0.002001 & 2.001 \\
@@ -684,8 +906,9 @@ $\to 0$ & & $\to 2$ \\
 \bottomrule
 \end{tabular}
 \end{minipage}
-\caption{$f(x)=x^{2}$ の $x=1$ での微分。右の表の「倍率」は、$f$ の増加を $\Delta x$ で割った値で、2 に近づく。
-左のグラフでは、2 点を結ぶ直線（破線）の傾きが、接線（赤）の傾き 2 に近づく。}
+\caption{$f(x)=x^{2}$ の $x=1$ での微分。右の表の「変化率」は、$f$ の増加を $\Delta x$ で割った値で、$\Delta x$ を小さくすると 2 に近づく。
+左のグラフの破線は、点 $(1,1)$ と、そこから $\Delta x$ だけ右のグラフ上の点を結ぶ直線で、その傾きが変化率である（$\Delta x=1$ と $0.5$ の 2 本）。
+$\Delta x$ を小さくするほど、破線は接線（赤、傾き 2）に近づく。}
 \label{fig:math-derivative}
 \end{figure}
 
@@ -698,7 +921,7 @@ $(x^{n})'=nx^{n-1}$、$(e^{x})'=e^{x}$、$(\log x)'=1/x$ の三つと、
 「定数倍と和は、そのまま微分の外に出せる」という規則（たとえば $(3x^{2}+x)'=6x+1$）で、ほぼ足ります。
 三つの公式は、高校から大学 1 年の微分で学ぶものです。一つ目は、$n=2$ の場合をいま確かめました。
 残りの二つも、\figref{fig:math-derivative}の表と同じやり方で確かめられます。
-たとえば $\log x$ で、$x$ を 2 から 0.001 だけ増やすと、$\log 2.001-\log 2\approx 0.0005$ です。倍率は $0.0005/0.001=0.5$ で、公式の $1/x=1/2$ と合います。
+たとえば $\log x$ で、$x$ を 2 から 0.001 だけ増やすと、$\log 2.001-\log 2\approx 0.0005$ です。変化率は $0.0005/0.001=0.5$ で、公式の $1/x=1/2$ と合います。
 $(3x^{2}+x)'$ の例では、$3x^{2}$ の微分が $3\times 2x=6x$、$x$ の微分が 1 で、これを足しています。
 
 微分係数が分かると、$x$ を少し動かしたときの $f$ の値を、掛け算一つで見積もれます。
@@ -706,18 +929,19 @@ $(3x^{2}+x)'$ の例では、$3x^{2}$ の微分が $3\times 2x=6x$、$x$ の微�
 f(x+\Delta x)\approx f(x)+f'(x)\,\Delta x \qquad\text{（$\Delta x$ が小さいとき）}
 \label{eq:math-linear-approx}
 \end{equation}
-「$f$ の変化 $\approx$ 倍率 $\times$ $x$ の変化」という式です。
+「$f$ の変化 $\approx$ 微分係数 $\times$ $x$ の変化」という式です。
 $f(x)=x^{2}$、$x=1$、$\Delta x=0.01$ なら、右辺は $1+2\times 0.01=1.02$ で、本当の値 $1.0201$ とほぼ一致します。
 
 この式は、学習の手がかりになります。$f$ を損失、$x$ をパラメータだと思ってください。
-$f'(x)>0$ なら、$x$ を\textbf{減らせば}損失は減ります。$f'(x)<0$ なら、逆に増やせば減ります。
+$f'(x)>0$ なら、$x$ を\textbf{少し減らせば}損失は減ります。$f'(x)<0$ なら、逆に少し増やせば減ります。
 微分係数の符号が、パラメータを直す向きを教えてくれるのです。
+「少し」と断るのは、式\eqref{eq:math-linear-approx}が、$\Delta x$ が小さいときの近似だからです。大きく動かすと、損失がかえって増えることもあります。
 
 \subsection*{偏微分と勾配：変数がたくさんあるとき}
 
 パラメータは一つではありません。そこで、変数が二つの関数 $f(x,y)=x^{2}+2y^{2}$ で練習します。
 変数が複数あるときは、\textbf{一つだけを動かし、ほかは固定して}微分します。
-これを\term{偏微分}{partial derivative}と呼び、記号 $\partial$（デル）を使って $\pd{f}{x}$ と書きます。
+これを\term{偏微分}{partial derivative}と呼び、記号 $\partial$（「デル」や「ラウンド・ディー」と読みます）を使って $\pd{f}{x}$ と書きます。
 $y$ を定数とみなして $x$ で微分すると $\pd{f}{x}=2x$、$x$ を定数とみなして $y$ で微分すると $\pd{f}{y}=4y$ です。
 
 偏微分を、変数の順に並べたベクトルを\term{勾配}{gradient}と呼び、記号 $\nabla$（ナブラ）で表します。
@@ -735,8 +959,8 @@ $n$ 個のパラメータ $\vtheta=(\theta_1,\dots,\theta_n)^\T$ を受け取り
 \end{definition}}
 
 $\calL$ は、本書で損失を表す記号です。
-本書の基盤モデルなら、勾配は 260 万個の数の並びです。
-その一つひとつが、「このパラメータを少し増やすと、損失がどれだけ増えるか」を表します。
+基盤モデルなら、勾配は 260 万個の数の並びです。
+その一つひとつが、「このパラメータを少し増やすと、損失がどれだけ増えるか」です。
 
 勾配には、もう一つ大切な意味があります。\textbf{勾配は、関数が最も急に増える向きを指します}。
 理由を、内積を使って説明します。
@@ -753,12 +977,13 @@ $f$ の変化は、\textbf{勾配と $\vdelta$ の内積}で決まります。
 動かす幅 $\norm{\vdelta}$ を一定にして、向きだけを変えてみましょう。
 内積が最大になるのは $\cos\phi=1$、つまり\textbf{勾配と同じ向き}に動かしたときです。
 最小になるのは $\cos\phi=-1$、つまり\textbf{勾配と逆の向き}に動かしたときです。
-勾配と直角の向きでは $\cos\phi=0$ で、$f$ は変わりません。
+勾配と直角の向きでは $\cos\phi=0$ で、この近似の範囲では $f$ は変わりません（実際には、ごくわずかに変わります）。
 
 \figref{fig:math-gradient}(a) で確かめます。
-楕円は、$f$ の値が等しい点を結んだ線（等高線）です。地図の等高線と同じで、中心の谷底に向かって低くなります。
+楕円は、$f$ の値が等しい点を結んだ線（等高線）です。地図の等高線と同じです。
+内側の楕円ほど $f$ が小さく、原点で最小（値は 0）です。
 等高線に沿って動いても $f$ は変わらないので、等高線は勾配と直角の向きに延びます。
-赤い矢印が各点での勾配で、どれも等高線と直角に交わり、最も急な上り坂の向きを指しています。
+赤い矢印が各点での勾配で、どれも等高線と直角に交わり、外側（$f$ が増える側）を指します。
 
 \begin{figure}[tbp]
 \centering
@@ -772,7 +997,9 @@ $f$ の変化は、\textbf{勾配と $\vdelta$ の内積}で決まります。
 \draw[->,very thick,bookaccent] (axis cs:1,1) -- (axis cs:1.5,2.0);
 \draw[->,very thick,bookaccent] (axis cs:-1.5,0.5) -- (axis cs:-2.25,1.0);
 \draw[->,very thick,bookaccent] (axis cs:1.5,-0.6) -- (axis cs:2.25,-1.2);
-\node[font=\scriptsize,anchor=north] at (axis cs:0,-0.05) {谷底};
+\node[font=\scriptsize,anchor=north,inner sep=0.6pt,fill=white,fill opacity=0.9,text opacity=1] at (axis cs:0,-0.1) {最小};
+\node[font=\tiny,text=bookblue,fill=white,inner sep=0.5pt] at (axis cs:0,-1.225) {$f=3$};
+\node[font=\tiny,text=bookblue,fill=white,inner sep=0.5pt] at (axis cs:0,-1.936) {$f=7.5$};
 \node[font=\scriptsize,anchor=east] at (axis cs:0.95,1.05) {$(1,1)$};
 \node[font=\scriptsize,text=bookaccent,anchor=west] at (axis cs:1.5,2.0) {$\nabla f$};
 \end{axis}
@@ -785,15 +1012,17 @@ $f$ の変化は、\textbf{勾配と $\vdelta$ の内積}で決まります。
   title={(b) 向きと増加量（実測）},title style={font=\small,yshift=-1mm}]
 \addplot[bookblue] table[col sep=comma,x=deg,y=df]{code/ch01/out/direction.csv};
 \draw[bookaccent,dashed] (axis cs:63.4,-0.055) -- (axis cs:63.4,0.045);
-\draw[bookgray,dashed] (axis cs:243.4,-0.055) -- (axis cs:243.4,-0.044);
+\draw[bookgray,dashed] (axis cs:243.4,-0.055) -- (axis cs:243.4,-0.017);
 \node[font=\scriptsize,text=bookaccent,anchor=south] at (axis cs:95,0.046) {勾配の向き 63.4°};
-\node[font=\scriptsize,text=bookgray,anchor=south] at (axis cs:243.4,-0.03) {逆向き};
+\node[font=\scriptsize,text=bookgray,anchor=south,inner sep=1pt] at (axis cs:243.4,-0.017) {逆向き 243.4°};
 \addplot[only marks,mark=o,mark size=1.6pt,black] coordinates {(153.4,0) (333.4,0)};
-\node[font=\scriptsize,anchor=south west] at (axis cs:150,0.002) {直角：変化なし};
+\node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:160,0.004) {直角：ほぼ変化なし};
 \end{axis}
 \end{tikzpicture}
 \caption{勾配は最も急に増える向きを指す。(a) $f(x,y)=x^{2}+2y^{2}$ の等高線と、3 点での勾配（赤い矢印。長さは 1/4 に縮めた）。
-(b) 点 $(1,1)$ から距離 0.01 だけ動かしたときの $f$ の増加（実測）。勾配の向きで最大、逆向きで最小になる。}
+等高線は 5 本で、内側から $f=0.5$、$1.5$、$3$、$5$、$7.5$。
+(b) 点 $(1,1)$ から距離 0.01 だけ動かしたときの $f$ の増加（実測）。横軸は、動かす向きを $x$ 軸から反時計回りに測った角度。
+勾配の向き（赤い破線）で最大、逆向き（灰色の破線）で最小になる。白丸 2 個は、勾配と直角の向き（153.4 度と 333.4 度）で、増加はほぼ 0。}
 \label{fig:math-gradient}
 \end{figure}
 
@@ -812,21 +1041,57 @@ $f$ の変化は、\textbf{勾配と $\vdelta$ の内積}で決まります。
 前後に動かすのは、誤差を減らすためです。$x^{2}$ なら、前にだけ動かすと $2x+\Delta x$ ですが、前後に動かすと $\Delta x$ が打ち消されて、ちょうど $2x$ になります。
 \code{y} についても同じことをして、二つを並べたものが勾配です。
 このように、実際に少し動かして微分を求める方法を\term{数値微分}{numerical differentiation}と呼びます。
-出力のとおり、結果は手計算の $(2,4)$ と一致しました。
+出力のとおり、結果は手計算の $(2,4)$ と一致しました（11 行目の \code{round(6)} は、小数第 6 位までに丸めて表示する指定です）。
+
+% [figpass] 案 1: 刻み幅 eps と数値微分の誤差（既存の出力 eps_error.csv を図にする）
+では、刻み幅 \code{eps} は、どう選べばよいのでしょうか。
+\file{ch01/numgrad.py} の最後で、$e^{x}$ の $x=1$ での微分（本当の値は $e$）を、\code{eps} を $10^{-1}$ から $10^{-13}$ まで 25 通りに変えて数値微分し、本当の値とのずれ（誤差）を測りました（\figref{fig:math-eps}）。
+見てほしいのは、線の傾きと、右側での折り返しです。
+前にだけ動かす方法（橙）では、\code{eps} を 1/10 にすると、誤差も約 1/10 になります。前後に動かす方法（青）では、約 1/100 になります。
+ただし、どちらも \code{eps} を小さくしすぎると、誤差がかえって増えます。ほとんど等しい二つの値の差を取るので、計算機の小数の桁が足りなくなるからです（丸め誤差）。
+\coderef{code:math-numgrad}の $10^{-5}$ は、前後に動かす方法で誤差が最も小さくなる範囲に入っています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=52mm,xmode=log,ymode=log,x dir=reverse,
+  xmin=5e-14,xmax=0.2,ymin=1e-11,ymax=3,
+  xtick={1e-1,1e-3,1e-5,1e-7,1e-9,1e-11,1e-13},ytick={1e-10,1e-8,1e-6,1e-4,1e-2,1},
+  xlabel={刻み幅 \code{eps}（右へ行くほど小さい）},ylabel={誤差},
+  legend style={font=\scriptsize,at={(0.99,0.98)},anchor=north east,draw=black!30}]
+\addplot[bookorange,thick,mark=*,mark size=1.1pt] table[col sep=comma,x=eps,y=forward]{code/ch01/out/eps_error.csv};
+\addlegendentry{前にだけ動かす（\code{eps} が 1/10 なら、誤差も約 1/10）}
+\addplot[bookblue,thick,mark=square*,mark size=1.1pt] table[col sep=comma,x=eps,y=central]{code/ch01/out/eps_error.csv};
+\addlegendentry{前後に動かす（\code{eps} が 1/10 なら、誤差は約 1/100）}
+\draw[bookaccent,dashed] (axis cs:1e-5,1e-11) -- (axis cs:1e-5,3e-3);
+\node[font=\scriptsize,text=bookaccent,anchor=south east,inner sep=1pt] at (axis cs:2.2e-5,1.15e-11) {\coderef{code:math-numgrad}の $10^{-5}$};
+\node[font=\scriptsize,align=center,anchor=north] at (axis cs:2e-11,2e-8) {小さくしすぎると\\丸め誤差で増える};
+\end{axis}
+\end{tikzpicture}
+\caption{刻み幅 \code{eps} と、数値微分の誤差（\protect\file{ch01/numgrad.py} の出力。実測）。
+$e^{x}$ の $x=1$ での微分（本当の値 $e$）を、\code{eps} を 25 通りに変えて求め、本当の値とのずれを縦軸にとった。
+両方の軸とも、10 倍ごとに等間隔の目盛り（対数目盛り）で、横軸は右へ行くほど \code{eps} が小さい。
+前後に動かす方法（青）のほうが、同じ \code{eps} で誤差がずっと小さい。どちらも、\code{eps} を小さくしすぎると、丸め誤差のために誤差が増える。}
+\label{fig:math-eps}
+\end{figure}
+% [/figpass]
+
 
 同じスクリプトの後半では、点 $(1,1)$ から距離 0.01 だけ、向きを 1 度ずつ変えながら動かして、$f$ の増加を測りました（\figref{fig:math-gradient}(b)）。
 向きは、$x$ 軸から反時計回りに測った角度です。
 増加が最大になったのは 64 度で、勾配 $(2,4)^\T$ の向き（$\tan$ が $4/2$ になる角度で、63.4 度）とほぼ一致します。
-逆向きの 243.4 度で最も減り、直角の向きでは変化が 0 になっています。
+最も減ったのは 243 度で、逆向き（$63.4+180=243.4$ 度）とほぼ一致します。
+直角の向き（153.4 度と 333.4 度）では、増加は約 0.0001 で、ほぼ 0 です。式\eqref{eq:math-linear-approx-multi}は近似なので、ちょうど 0 にはなりません。
 
 損失を\textbf{減らしたい}なら、勾配と逆の向きにパラメータを動かせばよいことになります。
 これを繰り返すのが、\chapref{ch:ml}で学ぶ\textbf{勾配降下法}です。LLM の学習も、この方法の延長にあります。
-なお、260 万個のパラメータを一つずつ動かす数値微分は、時間がかかりすぎて学習には使えません。
+なお、数値微分は、パラメータを一つ動かすたびに、損失を 2 回計算し直します。
+260 万個のパラメータなら、勾配を 1 回求めるのに、損失の計算が約 520 万回要ります。これでは時間がかかりすぎて、学習には使えません。
 勾配を速く正確に求める方法が必要です。その土台になるのが、次の連鎖律です。
 
 \subsection*{連鎖律：計算がつながっているときの微分}
 
-損失は、パラメータから一足飛びには計算されません。
+損失は、パラメータから 1 回の計算で求まるわけではありません。
 \figref{fig:math-roadmap}のように、いくつもの計算を順に通って、最後に損失が出てきます。
 このような「関数の中に関数が入っている」形を、合成関数と呼びます。
 合成関数は、どう微分すればよいでしょうか。
@@ -838,11 +1103,13 @@ $f$ の変化は、\textbf{勾配と $\vdelta$ の内積}で決まります。
 $w=1.5$、$b=0.5$ なら、順に計算して $\hat{y}=1.5\times 2+0.5=3.5$、$r=3.5-7=-3.5$、$\calL=(-3.5)^{2}=12.25$ です。
 知りたいのは、$w$ を少し動かしたときに $\calL$ がどれだけ変わるか、つまり $\pd{\calL}{w}$ です。
 
-歯車の列を思い浮かべてください。
+$w$ を少し動かすと、その変化は $\hat{y}$、$r$、$\calL$ の順に伝わります。
+それぞれの段で変化が何倍になるかを、順に調べます。
 $w$ を $\Delta w$ だけ動かすと、$\hat{y}=wx+b$ は $x$ 倍の $2\Delta w$ だけ動きます。
 $r=\hat{y}-y$ は、$\hat{y}$ と同じだけ動きます（1 倍）。
-$\calL=r^{2}$ は、$r$ の動きの $2r=-7$ 倍だけ動きます。
-全体の倍率は、各段の倍率の\textbf{積}です。
+$\calL=r^{2}$ は、$r$ の動きの $2r=-7$ 倍だけ動きます（$r^{2}$ の導関数が $2r$ で、いま $r=-3.5$ だからです）。
+3 段を通すと、$\calL$ は $\Delta w$ の $2\times 1\times(-7)=-14$ 倍だけ動きます。
+全体の変化率は、各段の変化率の\textbf{積}です。
 \begin{equation}
 \pd{\calL}{w}=\pd{\calL}{r}\cdot\pd{r}{\hat{y}}\cdot\pd{\hat{y}}{w}
 =2r\cdot 1\cdot x=(-7)\times 1\times 2=-14
@@ -850,31 +1117,33 @@ $\calL=r^{2}$ は、$r$ の動きの $2r=-7$ 倍だけ動きます。
 \end{equation}
 これが\term{連鎖律}{chain rule}です。
 「合成関数の微分は、各段の微分の掛け算になる」という規則です。
-一般の形で書くと、$u=g(x)$、$z=f(u)$ のとき $\dd{z}{x}=\dd{z}{u}\cdot\dd{u}{x}$ です。
-\figref{fig:math-chain}に、この計算の流れを描きました。
-上段の黒い矢印が、損失を計算する向き（左から右）です。
-下段の赤い矢印が、微分を掛け合わせていく向き（右から左）です。
+一般の形で書くと、$u=g(x)$、$z=f(u)$ のとき $\dd{z}{x}=\dd{z}{u}\cdot\dd{u}{x}$ です（この $z$ は、スコア $\vz$ とは関係のない、ただの変数です）。
+\figref{fig:math-chain}に、この計算の順序を描きました。
+黒い実線の矢印が、損失を計算する向きです。
+赤い破線の矢印が、微分を掛け合わせていく向きで、損失の側から逆にたどります。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[every node/.append style={font=\footnotesize}]
-  \node[orangebox,minimum width=15mm] (yh) {$\hat{y}=3.5$};
-  \node[box,left=28mm of yh,yshift=5mm,minimum width=13mm] (w) {$w=1.5$};
-  \node[box,left=28mm of yh,yshift=-5mm,minimum width=13mm] (b) {$b=0.5$};
-  \node[orangebox,right=19mm of yh,minimum width=15mm] (r) {$r=-3.5$};
-  \node[redbox,right=19mm of r,minimum width=17mm] (L) {$\calL=12.25$};
-  \draw[arr] (w.east) -- node[above,sloped,lbl]{$\hat{y}=wx+b$} ([yshift=1.5mm]yh.west);
-  \draw[arr] (b.east) -- ([yshift=-1.5mm]yh.west);
+  \node[orangebox,minimum width=18mm] (yh) {予測\\$\hat{y}=3.5$};
+  \node[box,left=17mm of yh,minimum width=18mm] (w) {パラメータ\\$w=1.5$};
+  \node[box,above=8mm of yh,minimum width=18mm] (b) {パラメータ\\$b=0.5$};
+  \node[orangebox,right=17mm of yh,minimum width=18mm] (r) {ずれ\\$r=-3.5$};
+  \node[redbox,right=17mm of r,minimum width=18mm] (L) {損失\\$\calL=12.25$};
+  \draw[arr] (w) -- node[above,lbl]{$\hat{y}=wx+b$} (yh);
+  \draw[arr] ([xshift=-3mm]b.south) -- ([xshift=-3mm]yh.north);
   \draw[arr] (yh) -- node[above,lbl]{$r=\hat{y}-y$} (r);
   \draw[arr] (r) -- node[above,lbl]{$\calL=r^{2}$} (L);
-  \draw[darr,bookaccent] ([yshift=-8mm]L.south west) -- node[below,text=bookaccent]{$\pd{\calL}{r}=2r=-7$} ([yshift=-8mm]r.south east);
-  \draw[darr,bookaccent] ([yshift=-8mm]r.south west) -- node[below,text=bookaccent]{$\pd{r}{\hat{y}}=1$} ([yshift=-8mm]yh.south east);
-  \draw[darr,bookaccent] ([yshift=-8mm]yh.south west) -- node[below,text=bookaccent]{$\pd{\hat{y}}{w}=x=2$,\ \ $\pd{\hat{y}}{b}=1$} ++(-28mm,0);
-  \node[text=bookaccent,anchor=north west,align=left] at ([xshift=-2mm,yshift=-19mm]yh.south west)
+  \draw[darr,bookaccent] ([yshift=-3mm]L.south west) -- node[below,text=bookaccent]{$\pd{\calL}{r}=2r=-7$} ([yshift=-3mm]r.south east);
+  \draw[darr,bookaccent] ([yshift=-3mm]r.south west) -- node[below,text=bookaccent]{$\pd{r}{\hat{y}}=1$} ([yshift=-3mm]yh.south east);
+  \draw[darr,bookaccent] ([yshift=-3mm]yh.south west) -- node[below,text=bookaccent]{$\pd{\hat{y}}{w}=x=2$} ([yshift=-3mm]w.south east);
+  \draw[darr,bookaccent] ([xshift=3mm]yh.north) -- node[right,text=bookaccent]{$\pd{\hat{y}}{b}=1$} ([xshift=3mm]b.south);
+  \node[text=bookaccent,anchor=north] at ([yshift=-11.5mm]yh.south east)
     {$\pd{\calL}{w}=(-7)\times 1\times 2=-14$,\qquad $\pd{\calL}{b}=(-7)\times 1\times 1=-7$};
 \end{tikzpicture}
-\caption{連鎖律。上段は、パラメータから損失を計算する流れ（入力 $x=2$ と正解 $y=7$ は固定）。
-下段の破線は、損失から逆向きにたどりながら、各段の微分を掛け合わせる流れ。
+\caption{連鎖律。黒い実線の矢印は、パラメータ $w$、$b$ から損失 $\calL$ を計算する順（入力 $x=2$ と正解 $y=7$ は固定）。
+赤い破線の矢印は、損失から逆向きにたどる順で、添えた式がその段の微分。
+損失から目的のパラメータまで、たどった矢印の微分を掛け合わせると、$\pd{\calL}{w}$ と $\pd{\calL}{b}$ が求まる（図の下の式）。
 $\pd{\calL}{r}\cdot\pd{r}{\hat{y}}=-7$ までは、$w$ と $b$ で共通に使える。}
 \label{fig:math-chain}
 \end{figure}
@@ -883,47 +1152,80 @@ $b$ についても同じです。$\hat{y}=wx+b$ を $b$ で微分すると 1 �
 ここで、$w$ の計算と $b$ の計算の\textbf{前半が共通}であることに注目してください。
 損失に近い側の微分 $-7$ を一度計算しておけば、$w$ にも $b$ にも使い回せます。
 数値微分でも、同じ $-14$ と $-7$ が得られます（\file{ch01/numgrad.py} の後半）。
-どちらの微分も負なので、$w$ も $b$ も増やせば損失が減ると分かります。
+どちらの微分も負なので、$w$ も $b$ も少し増やせば損失が減ると分かります。
 実際、予測 3.5 は正解 7 より小さいので、増やすのが正しい向きです。
 
 「損失の側から逆向きにたどり、途中の結果を使い回す」という計算の進め方は、パラメータが何百万個あっても通用します。
-これを組織的に行うのが、\chapref{ch:nn}で学ぶ\textbf{誤差逆伝播法}です。
+これを行うのが、\chapref{ch:nn}で学ぶ\textbf{誤差逆伝播法}です。
 
-\subsection*{道が複数あるときの連鎖律と、ヤコビ行列}
-\laterread{道が複数あるときの連鎖律は、\chapref{ch:nn}の誤差逆伝播法で、枝分かれした計算の勾配を足し合わせるときに使います。ヤコビ行列は、\chapref{ch:attention}で softmax の微分を調べるときに出てきます。そのときに戻れば足ります。飛ばすときは、節末のまとめ（この小節の最後の段落）へ進んでください。}
+% [figpass] 案 9: 勾配の求め方の比較表
+ここまでに出てきた勾配の求め方を、\tabref{tab:math-grad-methods}にまとめます。
+三つとも、求めるのは同じ勾配です。違うのは、手間と、誤差と、計算機に任せられるかどうかです。
 
-ここまでの例では、$w$ から $\calL$ への道は一本でした。
-実際のモデルでは、一つの変数が\textbf{複数の道}を通って結果に影響します。
-その場合は、\textbf{道ごとに連鎖律で掛け算し、最後に足し合わせます}。
-$z$ が $u$ と $v$ で決まり、$u$ と $v$ がどちらも $t$ で決まるとき、
+\begin{table}[tbp]
+\centering
+\caption{勾配の求め方の比較。三つとも同じ勾配を求める。パラメータの個数を $n$ とした。
+「順伝播」は、損失を計算する向きの計算のこと（\chapref{ch:nn}）。PyTorch で使うときの比べ方と速さの実測は、\chapref{ch:pytorch}の\tabref{tab:pt-grad-methods}にある。}
+\label{tab:math-grad-methods}
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{16mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{18mm}>{\raggedright\arraybackslash}p{24mm}@{}}
+\toprule
+方法 & やり方 & 勾配 1 回の手間 & 誤差 & 本書で使う場面 \\
+\midrule
+式を手で微分する & 導関数の公式と連鎖律で、勾配の式を求める & 式が込み入ると、人の手では書ききれない & なし（式どおり） & 小さな例の手計算（\figref{fig:math-chain}、\secref{sec:math-mle}のコイン） \\ \addlinespace
+数値微分 & パラメータを一つずつ前後に少し動かし、損失の差を測る & 損失の計算を $2n$ 回（260 万個なら約 520 万回） & \code{eps} による誤差と、丸め誤差（\figref{fig:math-eps}） & 検算（\coderef{code:math-numgrad}） \\ \addlinespace
+誤差逆伝播法 & 連鎖律で、損失の側から逆向きに掛け、途中の結果を使い回す & 順伝播 1 回と、その数倍の手間の計算 1 回（\chapref{ch:nn}で実測） & 丸め誤差だけ & すべての学習（\chapref{ch:nn}。PyTorch では自動で行う。\chapref{ch:pytorch}） \\
+\bottomrule
+\end{tabular}
+\end{table}
+% [/figpass]
+
+
+\subsection*{計算の経路が複数あるときの連鎖律と、ヤコビ行列}
+\laterread{計算の経路が複数あるときの連鎖律は、\chapref{ch:nn}の誤差逆伝播法で、枝分かれした計算の勾配を足し合わせるときに使います。ヤコビ行列は、\chapref{ch:attention}で softmax の微分を調べるときに出てきます。そのときに戻れば足ります。飛ばすときは、節末のまとめ（この小節の最後の段落）へ進んでください。}
+
+ここまでの例では、$w$ を動かした影響は、$w\to\hat{y}\to r\to\calL$ の順に、一通りの計算を通って $\calL$ に届きました。
+このように、ある変数から結果までを、計算の順につないだものを、\textbf{経路}と呼ぶことにします。
+\figref{fig:math-chain}で言えば、$w$ から $\calL$ まで、黒い矢印を順にたどってできる 1 本の線です。
+実際のモデルでは、一つの変数が、二つ以上の計算で使われます。すると、その変数から結果までの\textbf{経路が複数}できます。
+その場合は、\textbf{経路ごとに連鎖律で掛け算し、最後に足し合わせます}。
+
+\figref{fig:math-chain-two}の例で説明します。
+$z$ が $u$ と $v$ で決まり、$u$ と $v$ がどちらも $t$ で決まるとします。
+$t$ から $z$ への経路は、$u$ を通る $t\to u\to z$ と、$v$ を通る $t\to v\to z$ の 2 本です。
+このとき、次の式が成り立ちます。
 \begin{equation}
 \dd{z}{t}=\pd{z}{u}\cdot\dd{u}{t}+\pd{z}{v}\cdot\dd{v}{t}
 \label{eq:math-chain-multi}
 \end{equation}
-です。式\eqref{eq:math-linear-approx-multi}で、各変数を動かした効果を足し合わせたのと同じ理屈です。
+右辺の第 1 項が $u$ を通る経路、第 2 項が $v$ を通る経路です。
+式\eqref{eq:math-linear-approx-multi}で、各変数を動かした効果を足し合わせたのと同じ理屈です。
 たとえば $z=uv$、$u=t^{2}$、$v=3t$ とします。代入すると $z=3t^{3}$ なので、直接微分すれば $\dd{z}{t}=9t^{2}$ です。
-式\eqref{eq:math-chain-multi}では、$u$ を通る道が $v\cdot 2t=6t^{2}$、$v$ を通る道が $u\cdot 3=3t^{2}$ で、足すと同じ $9t^{2}$ になります。
-\figref{fig:math-chain-two}が、この計算の図です。
+式\eqref{eq:math-chain-multi}では、$u$ を通る経路が $v\cdot 2t=6t^{2}$、$v$ を通る経路が $u\cdot 3=3t^{2}$ で、足すと同じ $9t^{2}$ になります。
 $z=uv$ を $u$ で偏微分すると相手の $v$、$v$ で偏微分すると相手の $u$ です。
-$u$ を通る道の $v\cdot 2t$ には $v=3t$ を、$v$ を通る道の $u\cdot 3$ には $u=t^{2}$ を代入しました。
-なお、$d$ と $\partial$ の使い分けは厳密ではなく、機械学習では、損失の微分を $\partial$ で書くのが習慣です。
+$u$ を通る経路の $v\cdot 2t$ には $v=3t$ を、$v$ を通る経路の $u\cdot 3$ には $u=t^{2}$ を代入しました。
+なお、数学では $d$ と $\partial$ を使い分けます。機械学習では、損失の微分を $\partial$ で書くのが習慣で、本書もそう書きます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[every node/.append style={font=\footnotesize}]
-  \node[box,minimum width=11mm] (t) {$t$};
-  \node[orangebox,right=27mm of t,yshift=9mm,minimum width=17mm] (u) {$u=t^{2}$};
-  \node[orangebox,right=27mm of t,yshift=-9mm,minimum width=17mm] (v) {$v=3t$};
+  \node[graybox,minimum width=11mm] (t) {$t$};
+  \node[box,right=27mm of t,yshift=9mm,minimum width=17mm] (u) {$u=t^{2}$};
+  \node[greenbox,right=27mm of t,yshift=-9mm,minimum width=17mm] (v) {$v=3t$};
   \node[redbox,right=71mm of t,minimum width=17mm] (z) {$z=uv$};
-  \draw[arr] (t.east) -- node[above,sloped,lbl]{$\dd{u}{t}=2t$} (u.west);
-  \draw[arr] (t.east) -- node[below,sloped,lbl]{$\dd{v}{t}=3$} (v.west);
-  \draw[arr] (u.east) -- node[above,sloped,lbl]{$\pd{z}{u}=v$} (z.west);
-  \draw[arr] (v.east) -- node[below,sloped,lbl]{$\pd{z}{v}=u$} (z.west);
-  \node[text=bookaccent,anchor=north] at ($(t)!0.5!(z)+(0,-17mm)$)
-    {$u$ を通る道：$v\cdot 2t=6t^{2}$\qquad $v$ を通る道：$u\cdot 3=3t^{2}$\qquad 足して $\dd{z}{t}=9t^{2}$};
+  \draw[arr,bookblue] ([yshift=1mm]t.east) -- node[above,sloped,text=bookblue]{$\dd{u}{t}=2t$} (u.west);
+  \draw[arr,bookgreen] ([yshift=-1mm]t.east) -- node[below,sloped,text=bookgreen]{$\dd{v}{t}=3$} (v.west);
+  \draw[arr,bookblue] (u.east) -- node[above,sloped,text=bookblue]{$\pd{z}{u}=v$} ([yshift=1mm]z.west);
+  \draw[arr,bookgreen] (v.east) -- node[below,sloped,text=bookgreen]{$\pd{z}{v}=u$} ([yshift=-1mm]z.west);
+  \node[text=bookblue,anchor=south] at ([yshift=1mm]u.north) {経路 1：$t\to u\to z$};
+  \node[text=bookgreen,anchor=north] at ([yshift=-1mm]v.south) {経路 2：$t\to v\to z$};
+  \node[anchor=north] at ($(t)!0.5!(z)+(0,-18.5mm)$)
+    {\textcolor{bookblue}{経路 1：$v\cdot 2t=6t^{2}$}\qquad \textcolor{bookgreen}{経路 2：$u\cdot 3=3t^{2}$}\qquad 足して $\dd{z}{t}=6t^{2}+3t^{2}=9t^{2}$};
 \end{tikzpicture}
-\caption{道が 2 本あるときの連鎖律。$t$ を動かした影響は、$u$ を通る道と $v$ を通る道の両方から $z$ に届く。
-道ごとに、矢印に書いた微分を掛け合わせ、最後に二つを足す（赤字）。}
+\caption{計算の経路が 2 本あるときの連鎖律。経路とは、$t$ から $z$ までを、計算の順に矢印でつないだもの。
+$u$ を通る経路 1（青）と、$v$ を通る経路 2（緑）がある。$t$ を動かした影響は、両方の経路から $z$ に届く。
+経路ごとに、矢印に書いた微分を掛け合わせ、最後に二つを足す（図の下の式）。}
 \label{fig:math-chain-two}
 \end{figure}
 
@@ -932,13 +1234,13 @@ $u$ を通る道の $v\cdot 2t$ には $v=3t$ を、$v$ を通る道の $u\cdot 
 いまは名前だけで十分です。\chapref{ch:attention}で softmax の微分を調べるときに、もう一度出てきます。
 
 この節で分かったことをまとめます。
-微分は、「少し動かしたときの変化の倍率」です。
+微分係数は、変数を少し動かしたときの、関数の変化率です。
 勾配は偏微分を並べたベクトルで、損失が最も急に増える向きを指します。
 連鎖律を使えば、つながった計算の微分を、各段の微分の掛け算で求められます。
 
 \subsection*{ここまでの道のり}
 
-章の半分まで来ました。\figref{fig:math-roadmap}に戻って、現在地を確かめます。
+章の半分まで来ました。\figref{fig:math-roadmap}に戻って、どこまで進んだかを確かめます。
 \begin{itemize}
 \item \textbf{記号}：太字はベクトルや行列、添字は成分、$\sum$ は総和でした。
 \item \textbf{線形代数}：スコア $\vz=\mW\vh$ は、内積を 4096 個並べたものでした。
@@ -963,7 +1265,7 @@ $u$ を通る道の $v\cdot 2t$ には $v=3t$ を、$v$ を通る道の $u\cdot 
 文脈から分かるときは、$X$ を省いて $p(3)$ や $p(x)$ と書きます。
 
 確率変数が取りうるすべての値と、それぞれの確率の一覧を、\term{確率分布}{probability distribution}と呼びます。以下では単に\textbf{分布}とも呼びます。
-分布は、次の二つの規則を必ず満たします。
+サイコロの目のように、取りうる値を数えられる場合、分布は次の二つの規則を必ず満たします。
 \begin{equation}
 p(x)\ge 0,\qquad \sum_{x}p(x)=1
 \label{eq:math-prob-axiom}
@@ -978,6 +1280,7 @@ $\sum_x$ は、「$x$ が取りうるすべての値について足す」とい�
 上位 5 個の確率を足すと 0.805 で、残りの 4091 個が合わせて 0.195 を分け合っています。
 \textbf{言語モデルの出力は、確率分布そのもの}です。
 サイコロやトークンのように、取りうる値を一つ、二つと数えられる分布を、\textbf{離散分布}と呼びます。
+数えられない場合は、この節の最後で触れます。
 
 \begin{figure}[tbp]
 \centering
@@ -990,14 +1293,17 @@ $\sum_x$ は、「$x$ が取りうるすべての値について足す」とい�
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{axis}[width=0.52\linewidth,height=37mm,xbar,bar width=2.4mm,xmin=0,xmax=0.72,
-  ytick={1,...,6},yticklabels={ない。,ないから,ないと,ないの,ない,その他 4091 個},y dir=reverse,
+  ytick={1,...,6},yticklabels={ない。,ないから,ないと,ないの,ない,その他の合計},y dir=reverse,
   ymin=0.4,ymax=6.6,xtick={0,0.2,0.4,0.6},xlabel={確率},ymajorgrids=false,
   nodes near coords,nodes near coords style={font=\scriptsize,/pgf/number format/fixed,/pgf/number format/precision=3},
   title={(b) 「どうも仕方が」の次のトークン},title style={font=\small,yshift=-1mm}]
-\addplot[fill=figorange,draw=bookorange] coordinates {(0.559,1) (0.121,2) (0.064,3) (0.045,4) (0.016,5) (0.195,6)};
+\addplot[fill=figorange,draw=bookorange,bar shift=0pt] coordinates {(0.559,1) (0.121,2) (0.064,3) (0.045,4) (0.016,5)};
+\addplot[fill=figgray,draw=black!45,bar shift=0pt] coordinates {(0.195,6)};
 \end{axis}
 \end{tikzpicture}
-\caption{確率分布の例。(a) サイコロはどの目も $1/6$。(b) 基盤モデルの予測（実測）。どちらも、棒の高さを全部足すと 1 になる。}
+\caption{確率分布の例。(a) サイコロはどの目も $1/6$。(b) 基盤モデルの予測（実測）。確率の大きい順に 5 個のトークンを並べた。
+いちばん下の灰色の棒は、残りの 4091 個のトークンの確率の合計である。
+どちらの図も、棒の長さ（(a) では高さ）を全部足すと 1 になる。}
 \label{fig:math-dist}
 \end{figure}
 
@@ -1006,10 +1312,12 @@ $\sum_x$ は、「$x$ が取りうるすべての値について足す」とい�
 言語では、トークンの\textbf{並び}を扱います。そのためには、二つ以上の確率変数の関係を表す言葉が必要です。
 本書の題材である計算ドリルで練習します。問題を無作為に 1000 問作り、演算子 $X$（足し算か引き算か）と、答えの桁数 $Y$（1〜4 桁）を調べました。
 それぞれの組み合わせが全体に占める割合が、\tabref{tab:math-joint}です。
+以下では、「この 1000 問から 1 問を無作為に選ぶ」ことを考えます。すると、表の割合は、そのまま確率として読めます。
 
 \begin{table}[tbp]
 \centering
-\caption{計算ドリル 1000 問の、演算子 $X$ と答えの桁数 $Y$ の同時分布（実測）。右端の列と最下行が周辺分布。}
+\caption{計算ドリル 1000 問の、演算子 $X$ と答えの桁数 $Y$ の同時分布（実測）。この 1000 問から 1 問を無作為に選ぶときの確率である。
+中央の 8 個の数が同時確率。右端の列と最下行が周辺分布。}
 \label{tab:math-joint}
 \small
 \begin{tabular}{@{}lccccc@{}}
@@ -1031,7 +1339,7 @@ $X=$ 引き算（$-$） & 0.097 & 0.167 & 0.251 & 0.000 & 0.515 \\
 8 個を全部足すと 1 になります。
 
 \textbf{周辺確率。}
-桁数を気にせず、「足し算である確率」だけを知りたいときは、上の行を横に足します。
+桁数を気にせず、「足し算である確率」だけを知りたいときは、表の「足し算（$+$）」の行を横に足します。
 $0.046+0.169+0.245+0.025=0.485$ です。
 このように、気にしない変数について足し合わせて得られる確率を、\term{周辺確率}{marginal probability}と呼びます。
 表の周辺（へり）に書くので、この名前があります。
@@ -1043,11 +1351,56 @@ p(x)=\sum_{y}p(x,y)
 
 \textbf{条件付き確率。}
 今度は、「引き算の問題だ」と分かっているとします。そのとき、答えが 1 桁である確率はいくつでしょうか。
-引き算だと分かっているので、表の下の行だけを見ます。
-下の行の合計は 0.515 で、そのうち 1 桁は 0.097 です。
+引き算だと分かっているので、表の「引き算（$-$）」の行だけを見ます。
+この行の合計は 0.515 で、そのうち 1 桁は 0.097 です。
 割合は $0.097/0.515=0.188$ です。
 これを\term{条件付き確率}{conditional probability}と呼び、$p(y\mid x)$ と書きます。
 縦棒 $\mid$ の右側が「分かっていること」（条件）です。
+
+% [figpass] 案 4: 条件付き確率を、表の切り出しと割り直しで見せる
+\figref{fig:math-conditional}(a) は、この計算を図にしたものです。
+表から「引き算」の行だけを切り出し、4 個の数を、行の合計 0.515 で割り直します。
+割り直すと、4 個の数の和が 1 になり、「引き算の問題の中での、答えの桁数の分布」ができます。
+つまり、条件付き確率は、表のうち条件に合う部分だけを切り出し、和が 1 になるように割り直したものです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.append style={font=\footnotesize},
+  c/.style={cell,minimum width=11mm,minimum height=5.5mm}]
+  % (a) 行で切り出す
+  \foreach \j/\h in {0/1 桁,1/2 桁,2/3 桁,3/4 桁}{\node at (11*\j+5.5,6.5) {\h};}
+  \foreach \j/\v in {0/0.046,1/0.169,2/0.245,3/0.025}{\node[c,fill=white,text=bookgray] at (11*\j+5.5,0) {\v};}
+  \foreach \j/\v in {0/0.097,1/0.167,2/0.251,3/0.000}{\node[c,fill=figorange] at (11*\j+5.5,-5.5) {\v};}
+  \node[anchor=east,text=bookgray] at (-0.5,0) {足し算};
+  \node[anchor=east] at (-0.5,-5.5) {引き算};
+  \node[anchor=west] at (44.5,-5.5) {合計 0.515};
+  \draw[arr] (22,-9.5) -- node[right,font=\scriptsize]{行の合計 0.515 で割る} (22,-17);
+  \foreach \j/\v in {0/0.188,1/0.324,2/0.487,3/0.000}{\node[c,fill=figgreen] at (11*\j+5.5,-21) {\v};}
+  \node[anchor=east] at (-0.5,-21) {$p(y\mid -)$};
+  \node[anchor=west] at (44.5,-21) {合計 1};
+  \node at (22,-29) {(a) 引き算と分かったときの、桁数の分布};
+  % (b) 列で切り出す
+  \begin{scope}[shift={(70,0)}]
+    \node at (5.5,6.5) {1 桁};
+    \node[c,fill=figpurple] at (5.5,0) {0.046};
+    \node[c,fill=figpurple] at (5.5,-5.5) {0.097};
+    \node[anchor=east] at (-0.5,0) {$+$};
+    \node[anchor=east] at (-0.5,-5.5) {$-$};
+    \node at (5.5,-11.5) {合計 0.143};
+    \draw[arr] (12.5,-2.75) -- node[above,font=\scriptsize]{0.143 で割る} (27,-2.75);
+    \node at (33,6.5) {$p(x\mid\text{1 桁})$};
+    \node[c,fill=figgreen] at (33,0) {0.322};
+    \node[c,fill=figgreen] at (33,-5.5) {0.678};
+    \node at (33,-11.5) {合計 1};
+    \node at (19,-29) {(b) 1 桁と分かったときの、演算子の分布};
+  \end{scope}
+\end{tikzpicture}
+\caption{条件付き確率は、表の一部を切り出して、和が 1 になるように割り直したものである（\tabref{tab:math-joint}の数値。結果は \protect\file{ch01/prob.py} の出力）。
+(a) 「引き算（$-$）」の行（橙）の 4 個の数を、行の合計 0.515 で割ると、条件付き分布 $p(y\mid -)$（緑）になる。表示は丸めた値なので、足すと 0.999。
+(b) 「1 桁」の列（紫）を、列の合計 0.143 で割ると、$p(x\mid\text{1 桁})$ になる（ベイズの定理の小節で使う）。}
+\label{fig:math-conditional}
+\end{figure}
+% [/figpass]
 
 {\tcbset{bookbox/.append style={unbreakable}}%
 \begin{definition}[条件付き確率]\label{def:math-conditional}
@@ -1060,7 +1413,7 @@ p(y\mid x)\defeq\frac{p(x,y)}{p(x)}
 
 何も知らないときの「答えが 1 桁」の確率は $p(\text{1 桁})=0.143$ でした。
 引き算だと知ると、それが 0.188 に上がります。
-\textbf{情報が増えると、確率は変わります}。
+\textbf{情報が増えると、確率は変わることがあります}（変わらない場合が、あとで出てくる「独立」です）。
 言語モデルが出しているのは、まさにこの条件付き確率です。
 \figref{fig:math-dist}(b) は、$p(\text{次のトークン}\mid\text{どうも仕方が})$ という条件付き分布でした。
 条件にあたる文脈が変われば、分布も変わります。
@@ -1077,7 +1430,8 @@ p(x,y)=p(x)\,p(y\mid x)
 \laterread{本書のこの先の章では、ベイズの定理を直接は使いません。ほかの本で「ベイズ」という言葉に出会ったときに、戻ってくれば足ります。次の小節の「独立」は、必読です。}
 
 条件と結果を入れ替えた確率も考えられます。
-答えが 1 桁だと分かったとき、それが引き算である確率は、表の左の列から $p(-\mid\text{1 桁})=0.097/0.143=0.678$ です。
+答えが 1 桁だと分かったとき、それが引き算である確率は、表の「1 桁」の列から $p(-\mid\text{1 桁})=0.097/0.143=0.678$ です。
+表の「1 桁」の列を切り出して、列の合計で割り直す計算です（\figref{fig:math-conditional}(b)）。% [figpass]
 この「入れ替え」は、表がなくても計算できます。
 同時確率は、式\eqref{eq:math-product}のとおり $p(x)\,p(y\mid x)$ と書けました。
 $x$ と $y$ の役割を入れ替えれば、$p(y)\,p(x\mid y)$ とも書けます。
@@ -1094,14 +1448,14 @@ p(x\mid y)=\frac{p(y\mid x)\,p(x)}{p(y)}
 
 もう一つ、大切な言葉があります。
 片方の値を知っても、もう片方の確率が変わらないとき、二つの確率変数は\term{独立}{independent}であると言います。
-式で書けば $p(y\mid x)=p(y)$、言い換えると $p(x,y)=p(x)\,p(y)$ です。
+式で書けば、すべての $x$ と $y$ について $p(y\mid x)=p(y)$、言い換えると $p(x,y)=p(x)\,p(y)$ が成り立つことです。
 二つ目の式は、式\eqref{eq:math-product}の $p(x,y)=p(x)\,p(y\mid x)$ で、$p(y\mid x)$ を $p(y)$ に置き換えたものです。
 \textbf{独立なら、同時確率は、それぞれの確率の積になります}。
 演算子と桁数は独立でしょうか。
 仮に独立なら、「足し算かつ 1 桁」の確率は $p(+)\,p(\text{1 桁})=0.485\times 0.143=0.069$ のはずです。
-ところが、\tabref{tab:math-joint}の実際の値は 0.046 です。二つは独立ではありません。
+ところが、\tabref{tab:math-joint}の実際の値は 0.046 です。一組でも合わなければ、独立ではありません。
 だからこそ、演算子を知ることが、桁数を予測する手がかりになります。
-言語も同じです。トークンどうしが独立でないからこそ、文脈から次のトークンを予測できます。
+言語も同じです。トークンどうしが独立でないから、文脈から次を予測できます。
 
 \subsection*{確率の連鎖律：文の確率を、次トークン予測に分解する}
 
@@ -1117,16 +1471,19 @@ p(x_1,x_2,\dots,x_T)=\prod_{t=1}^{T}p(x_t\mid x_{<t})
 $x_{<t}$ は、$t$ 番目より前の全部、つまり $x_1,\dots,x_{t-1}$ をまとめた書き方です。
 $t=1$ のときは前に何もないので、$p(x_1)$ のことだと約束します。
 
-この式が、言語モデルの設計図です。
+言語モデルは、この式の右辺に合わせて作ります。
+つまり、条件付き確率 $p(x_t\mid x_{<t})$ を、位置ごとに一つずつ計算するように作ります。
 左辺は「文全体の確率」という、直接は扱いにくいものです。
 右辺は「それまでの文脈が与えられたときの、次のトークンの確率」の掛け算です。
-次のトークンの確率さえ出せれば、どんなに長い文の確率も計算できます。
+次のトークンの確率さえ出せれば、長い文の確率も計算できます。
 
 \figref{fig:math-tree}は、基盤モデルに「12+35=」を与えたときの例です。数字は、1 文字が 1 トークンです。
 答え「47」と改行が続く確率は、三つの条件付き確率の積で $0.428\times 0.929\times 1.000=0.398$ です。
-ところが、「57」と改行が続く確率は $0.559\times 0.918\times 1.000=0.513$ で、こちらのほうが高くなっています。
-モデルは、確率に従って次のトークンを選びます。\chapref{ch:intro}で「47」と書けたのは、たまたま正解の側が選ばれたからです。
-本書の小さな基盤モデルは、この問題を間違えやすいのです。「正答率は 9 割弱」の、残りの 1 割強にあたります
+ところが、「57」と改行が続く確率は $0.559\times 0.918\times 1.000=0.513$ で、こちらのほうが高いのです。
+\chapref{ch:intro}では、この確率に従って、くじを引くように次のトークンを選びました（サンプリング。次の小節で扱います）。
+「47」と書けたのは、たまたま正解の側が選ばれたからです。
+確率が最大のトークンをいつも選ぶなら、「5」が選ばれ、答えは必ず「57」になります。
+\chapref{ch:intro}の「正答率は 8 割台の半ば（200 問で 86.5\%）」は、この方法で測った値です。この方法では、この問題は誤答する側（200 問では 13.5\%）に入ります
 （最初の「5」の確率 0.559 は、「ない。」の 0.559 と同じ値ですが、これは偶然です）。
 言語モデルの詳しい定式化は、\chapref{ch:lm}で行います。
 
@@ -1150,8 +1507,10 @@ $t=1$ のときは前に何もないので、$p(x_1)$ のことだと約束し�
   \node[anchor=west,align=left] at ([xshift=3mm]a3.east) {「47」（正解）\\積は $0.398$};
   \node[anchor=west,align=left] at ([xshift=3mm]b3.east) {「57」（誤り）\\積は $0.513$};
 \end{tikzpicture}
-\caption{確率の連鎖律。矢印の数は、そこまでの並びを条件とした次のトークンの確率（基盤モデルの実測）。
-道に沿って掛け合わせると、その並び全体の確率になる。}
+\caption{確率の連鎖律。矢印に添えた数は、そこまでの並びを条件とした、次のトークンの確率（基盤モデルの実測）。
+左から右へ矢印をたどり、添えた数を掛け合わせると、その並び全体の確率になる。
+最初の分かれ目は、「4」「5」「その他」の三つで、合計が 1 になる。
+その先は、確率の大きい枝だけを描いた（省いた枝も合わせれば、合計は 1）。}
 \label{fig:math-tree}
 \end{figure}
 
@@ -1168,6 +1527,7 @@ $t=1$ のときは前に何もないので、$p(x_1)$ のことだと約束し�
 $x$ そのものではなく、$x$ から計算した量 $f(x)$ の期待値も、同じように $\E_{x\sim p}[f(x)]=\sum_x p(x)f(x)$ と書きます。
 下付きの $x\sim p$ は、「$x$ は分布 $p$ に従う」という意味です。
 本書に出てくる損失は、ほぼすべてこの形の期待値です。
+$x$ がデータ 1 個、$p$ がデータの出方を表す分布、$f(x)$ がそのデータ 1 個についての損失に当たります（具体的な形は\secref{sec:math-info}で見ます）。
 
 分布から実際に値を一つ取り出すことを、\term{サンプリング}{sampling}と呼びます。サイコロを 1 回振ることに当たります。
 \figref{fig:math-dist}(b) の分布から、次のトークンを 1 万回サンプリングしてみました（\file{ch01/sampling.py}）。
@@ -1179,8 +1539,9 @@ LLM が同じ質問に毎回違う文章を返すのは、このようにサン�
 10 回では 0.300 と大きく外れます。しかし、100 回で 0.460、1000 回で 0.543、1 万回で 0.560 と、確率 0.559 に近づきます（\figref{fig:math-sampling}(a)）。
 「ない。」なら 1、それ以外なら 0 という数を考えると、その平均が割合で、期待値が確率 0.559 です。
 期待値は、式\eqref{eq:math-expectation}より $0.559\times 1+0.441\times 0=0.559$ だからです。
-\textbf{たくさんサンプリングして平均を取れば、期待値に近づきます}。この性質を大数の法則と呼びます。
+\textbf{同じ分布から、毎回独立に、たくさんサンプリングして平均を取れば、期待値に近づきます}。この性質を大数の法則と呼びます。
 機械学習では、損失の期待値を、手元のデータでの平均で代用します（\chapref{ch:ml}）。
+
 
 \begin{figure}[tbp]
 \centering
@@ -1205,9 +1566,44 @@ LLM が同じ質問に毎回違う文章を返すのは、このようにサン�
 \end{axis}
 \end{tikzpicture}
 \caption{(a) サンプリングの回数と、「ない。」が出た割合（実測）。回数が増えると、確率 0.559（破線）に近づく。
-(b) 正規分布の密度（青線）と、10 万個のサンプルのヒストグラム（赤い丸）。$\mu\pm\sigma$ の範囲（塗った部分）に約 68\% が入る。}
+横軸は、10 倍ごとに等間隔の目盛り（対数目盛り）。
+(b) 正規分布の密度（青線）。赤い丸は、10 万個のサンプルを 40 個の区間に分け、各区間に入った割合から求めた密度（実測）。
+横軸の目盛りは平均 $\mu$ からのずれで、「$-\sigma$」は $\mu-\sigma$ の位置。$\mu-\sigma$ から $\mu+\sigma$ の範囲（塗った部分）に約 68\% が入る。
+縦軸の目盛りは省いた（曲線の高さは $\sigma$ によって変わる）。}
 \label{fig:math-sampling}
 \end{figure}
+
+% [figpass] 案 2: 乱数の種を 20 通りに変えたサンプリング（sweep_sampling.py）
+では、平均は、回数とともにどのくらいの速さで期待値に近づくのでしょうか。
+1 本の実験だけでは、たまたまの当たり外れと区別できません。
+そこで、\file{ch01/sweep_sampling.py} で、乱数の種だけを 20 通りに変えて、同じ 1 万回のサンプリングを 20 本行いました（分布と回数は固定）。
+\figref{fig:math-sampling-seeds}では、20 本の線の、縦の広がりを見てください。
+「ない。」の割合は、10 回では 0.200〜0.800 と大きくばらつきます。
+100 回では 0.460〜0.700、1000 回では 0.532〜0.598、1 万回では 0.546〜0.569 と、広がりは狭くなります。
+回数を 100 倍にすると、広がりは約 1/10 になりました（10 回の 0.600 が 1000 回で 0.066、100 回の 0.240 が 1 万回で 0.023）。
+データの平均で期待値を代用するとき、データが多いほど、代用の精度が上がります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=48mm,xmode=log,xmin=1,xmax=10000,ymin=0,ymax=1,
+  xlabel={サンプリングした回数 $n$},ylabel={「ない。」の割合}]
+\pgfplotsinvokeforeach{1,...,19}{%
+  \addplot[bookblue!45,thin,forget plot] table[col sep=comma,x=n,y=s#1]{code/ch01/out/sweep_sampling.csv};}
+\addplot[bookblue,thick] table[col sep=comma,x=n,y=s0]{code/ch01/out/sweep_sampling.csv};
+\addplot[black,densely dotted] table[col sep=comma,x=n,y=lo]{code/ch01/out/sweep_sampling.csv};
+\addplot[black,densely dotted] table[col sep=comma,x=n,y=hi]{code/ch01/out/sweep_sampling.csv};
+\draw[bookaccent,dashed] (axis cs:1,0.559) -- (axis cs:10000,0.559);
+\node[font=\scriptsize,text=bookaccent,anchor=south east] at (axis cs:10000,0.70) {確率 0.559};
+\end{axis}
+\end{tikzpicture}
+\caption{乱数の種を 20 通りに変えたときの、サンプリングの回数と「ない。」の割合（実測）。
+分布（\figref{fig:math-dist}(b)）と回数（1 本あたり 1 万回）は固定し、種だけを変えた（\protect\file{ch01/sweep_sampling.py}）。
+細い線 19 本と濃い線 1 本（種 0）の、合わせて 20 本が、20 通りの種の実験。点線は、その 20 本の最小と最大。濃い線は、\figref{fig:math-sampling}(a) と同じ実験である。
+回数が増えるほど、20 本の広がりは狭くなり、確率 0.559（破線）に集まる。}
+\label{fig:math-sampling-seeds}
+\end{figure}
+% [/figpass]
 
 \subsection*{期待値の線形性、分散・標準偏差、正規分布}
 \laterread{分散と正規分布は、\chapref{ch:ml}で二乗誤差の由来を説明するとき、\chapref{ch:training}でパラメータの最初の値を決めるとき、\chapref{ch:eval-serving}で正答率のぶれを見積もるときに使います。期待値の線形性は、\chapref{ch:attention}でスコアの大きさを調べるときと、\chapref{ch:rl-basics}以降の強化学習で使います。そのときに戻れば足ります。飛ばすときは、節末のまとめ（この小節の最後の段落）へ進んでください。}
@@ -1224,6 +1620,7 @@ LLM が同じ質問に毎回違う文章を返すのは、このようにサン�
 \label{eq:math-linearity}
 \end{equation}
 です。和を二つに分け、定数を前に出しただけです。
+別々の確率変数 $X$ と $Y$ の和でも、同じように $\E[X+Y]=\E[X]+\E[Y]$ が成り立ちます（独立でなくてもかまいません）。
 この性質を\jterm{期待値の線形性}と呼びます。強化学習（\chapref{ch:rl-basics}）の式変形で、何度も使います。
 
 値のばらつきを測るのが\term{分散}{variance}です。期待値を $\mu=\E[X]$ として、
@@ -1242,6 +1639,7 @@ LLM が同じ質問に毎回違う文章を返すのは、このようにサン�
 最後に、値が連続的に変わる場合に触れます。
 身長や温度のように、取りうる値を一つ、二つと数えられない確率変数では、棒グラフの代わりに曲線を使います。
 曲線の高さを確率密度と呼び、\textbf{曲線の下の面積}が確率を表します。
+曲線の下の面積は、全体で 1 です。高さそのものは確率ではないので、1 を超えることもあります。
 本書で主に使う連続的な分布は、\term{正規分布}{normal distribution}です。
 平均 $\mu$、標準偏差 $\sigma$ の正規分布を $\calN(\mu,\sigma^{2})$ と書き、その密度は次の式で表されます。
 \begin{equation}
@@ -1249,12 +1647,13 @@ p(x)=\frac{1}{\sqrt{2\pi\sigma^{2}}}\exp\!\left(-\frac{(x-\mu)^{2}}{2\sigma^{2}}
 \label{eq:math-normal}
 \end{equation}
 式を覚える必要はありません。形を覚えてください（\figref{fig:math-sampling}(b)）。
-平均 $\mu$ を中心とした左右対称の山で、平均から離れるほど急に低くなります。
-山の幅を決めるのが $\sigma$ です。
+平均 $\mu$ のところが最も高く、左右対称で、平均から離れるほど急に低くなる曲線です。
+曲線の幅を決めるのが $\sigma$ です。
 平均が 0、標準偏差が 1 の $\calN(0,1)$ を、とくに標準正規分布と呼びます。
 
 正規分布は、モデルのパラメータの最初の値を決めるときに使います。
 本書の基盤モデルも、大部分のパラメータを $\calN(0,0.02^{2})$ からのサンプリングで決めています（\chapref{ch:training}）。
+この分布は幅が狭いので、密度は中央で約 20 になります。先ほど述べた、密度が 1 を超える例です。
 10 万個サンプリングすると、$\pm\sigma$、$\pm 2\sigma$、$\pm 3\sigma$ の範囲に入った割合は、0.680、0.954、0.997 でした。
 
 この節では、確率の言葉をそろえました。
@@ -1293,7 +1692,7 @@ $\calD$ は、観測したデータ（10 回分の結果）です。縦棒は、
 数値を入れてみます。$\theta=0.5$ なら、尤度は $0.5^{10}=0.000977$ です。
 $\theta=0.7$ なら $0.7^{7}\times 0.3^{3}=0.002224$ で、約 2.3 倍に増えます。
 $\theta=0.9$ では $0.000478$ に下がります。
-\figref{fig:math-mle}(a) は、$\theta$ を 0 から 1 まで動かしたときの尤度です。山の頂上は $\theta=0.7$ にあります。
+\figref{fig:math-mle}(a) は、$\theta$ を 0 から 1 まで動かしたときの尤度です。尤度は、$\theta=0.7$ で最大になります。
 尤度が最大になるパラメータを選ぶ方法を、\term{最尤推定}{maximum likelihood estimation}と呼びます。
 選ばれた値は、帽子を付けて $\hat\theta$ と書きます。
 \begin{equation}
@@ -1301,7 +1700,7 @@ $\theta=0.9$ では $0.000478$ に下がります。
 \label{eq:math-mle}
 \end{equation}
 なお、尤度は $\theta$ についての確率分布ではありません。
-\figref{fig:math-mle}(a) の曲線の下の面積は、1 になりません。比べるための「点数」だと考えてください。
+\figref{fig:math-mle}(a) の曲線の下の面積は、1 になりません。尤度は、$\theta$ の候補どうしを比べるための数だと考えてください。
 
 \begin{figure}[tbp]
 \centering
@@ -1324,7 +1723,8 @@ $\theta=0.9$ では $0.000478$ に下がります。
 \end{axis}
 \end{tikzpicture}
 \caption{10 回中 7 回が表だったときの、(a) 尤度と (b) 対数尤度（\protect\file{ch01/coin_mle.py} の出力）。
-形は違うが、頂上はどちらも $\theta=0.7$（破線）にある。}
+曲線の形は違うが、最大になる場所は、どちらも $\theta=0.7$（破線）である。
+(b) の対数尤度は、$\theta$ が 0 や 1 に近づくと、いくらでも小さくなる（図は $-20$ より上だけを描いた）。曲線は $\theta=0.01$〜$0.99$ の範囲だけを計算して描いたので、右端は $\theta=0.99$ の約 $-13.9$ で止まっている。$\theta$ をさらに 1 に近づければ、値は下がり続ける。}
 \label{fig:math-mle}
 \end{figure}
 
@@ -1339,21 +1739,23 @@ $\theta=0.9$ では $0.000478$ に下がります。
 対数を取る理由は、三つあります。
 \begin{itemize}
 \item \textbf{最大の場所が変わらない}。$\log$ は増加関数なので、尤度が大きいほど、対数尤度も大きくなります。
-  \figref{fig:math-mle}(b) の頂上も、同じ $\theta=0.7$ にあります。
-\item \textbf{和のほうが扱いやすい}。和の微分は、項ごとの微分の和です。積の微分は、そう簡単にはいきません。
+  \figref{fig:math-mle}(b) でも、最大になる場所は同じ $\theta=0.7$ です。
+\item \textbf{和のほうが扱いやすい}。和の微分は、項ごとの微分の和です。積の微分は、もっと手間がかかります。
+  たとえば 10 個の積を微分すると、項が 10 個出て、そのそれぞれに残りの 9 個の因子が付きます。
 \item \textbf{コンピュータで計算できる}。1 より小さい数をたくさん掛けると、値が小さくなりすぎて、コンピュータの中で 0 になってしまいます。
 \end{itemize}
 三つ目を、数で確かめます。
 1 万回投げて表が 7000 回出たときの尤度 $0.7^{7000}\times 0.3^{3000}$ を NumPy で計算すると、\code{0.0} と表示されます（\file{ch01/coin_mle.py}）。
-本当の値は約 $10^{-2653}$ ですが、コンピュータの小数は、約 $10^{-324}$ より小さい正の数を表せず、0 に丸めます。
+本当の値は約 $10^{-2653}$ ですが、NumPy の標準の小数（64 ビット）は、約 $10^{-324}$ より小さい正の数を表せず、0 に丸めます。
 この現象を、アンダーフローと呼びます。
 なお、$10^{-2653}$ という桁は、底が 10 の対数 $\log_{10}$ で数えました。$7000\log_{10}0.7+3000\log_{10}0.3=-1084.3-1568.6=-2652.9$ です。
 一方、対数尤度 $7000\log 0.7+3000\log 0.3$ は、$-6108.6$ という、ふつうの大きさの数です。
 $\log 0.7=-0.3567$、$\log 0.3=-1.2040$ なので、$-2496.7-3611.9=-6108.6$ と計算できます。
 本書の学習データ（コーパスと呼びます）は約 248 万トークンあり、その確率の積は、対数なしでは計算できません。
 
-頂上の位置は、式でも求められます。表が $k$ 回、裏が $n-k$ 回なら、対数尤度は $k\log\theta+(n-k)\log(1-\theta)$ です。
-頂上では傾きが 0 なので、$\theta$ で微分して 0 と置きます。
+最大になる場所は、式でも求められます。表が $k$ 回、裏が $n-k$ 回なら、対数尤度は $k\log\theta+(n-k)\log(1-\theta)$ です。
+表も裏も出たなら、最大の場所は 0 と 1 の間にあります（\figref{fig:math-mle}(b)）。
+そこでは傾きが 0 なので、$\theta$ で微分して 0 と置きます。
 \begin{equation}
 \dd{}{\theta}\Bigl[k\log\theta+(n-k)\log(1-\theta)\Bigr]=\frac{k}{\theta}-\frac{n-k}{1-\theta}=0
 \label{eq:math-coin-derivative}
@@ -1370,6 +1772,52 @@ $\log 0.7=-0.3567$、$\log 0.3=-1.2040$ なので、$-2496.7-3611.9=-6108.6$ と
 データが少ないと、最尤推定は、手元のデータだけに合わせすぎた極端な答えを出します。
 この問題は過学習と呼ばれ、\chapref{ch:ml}で詳しく扱います。
 
+% [figpass] 案 3: 投げる回数 n を変えた最尤推定（sweep_mle_n.py）
+データの量で、最尤推定の答えはどれだけ変わるのでしょうか。
+\file{ch01/sweep_mle_n.py} で、表の確率が本当に 0.7 のコインを $n$ 回投げて $\hat\theta=k/n$ を求める実験を、1 万回くり返しました。
+投げる回数 $n$ を 3、10、30、100、1000 の 5 通りに変え、本当の確率 0.7 と、くり返しの回数は固定しました。
+\figref{fig:math-mle-n}は、1 万個の $\hat\theta$ の散らばりです。左から右へ、棒の広がりを見比べてください。
+$n=3$ では、$\hat\theta$ は 0、1/3、2/3、1 の 4 通りしか取れず、37\% の実験で 0 か 1、つまり「必ず裏」「必ず表」と言い切りました。
+$n$ が増えると、棒は 0.7 のまわりに集まります。真ん中の 90\% の実験が入る範囲は、$n=10$ で 0.500〜0.900、$n=100$ で 0.620〜0.770、$n=1000$ で 0.676〜0.724 でした。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{figpassmle/.style={scale only axis,width=19mm,height=24mm,ybar,bar width=0.045,
+  xmin=-0.08,xmax=1.08,ymin=0,ymax=1,xtick={0,0.5,1},ytick={0,0.5,1},
+  title style={font=\small,yshift=-1.5mm},tick label style={font=\scriptsize},
+  xlabel={$\hat\theta$},xlabel style={yshift=1mm}}}
+\begin{axis}[figpassmle,at={(0.0mm,0)},title={$n=3$},ylabel={実験の割合}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=n3]{code/ch01/out/sweep_mle_n.csv};
+\draw[bookaccent,dashed] (axis cs:0.7,0) -- (axis cs:0.7,1);
+\end{axis}
+\begin{axis}[figpassmle,at={(24.5mm,0)},title={$n=10$},yticklabels={}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=n10]{code/ch01/out/sweep_mle_n.csv};
+\draw[bookaccent,dashed] (axis cs:0.7,0) -- (axis cs:0.7,1);
+\end{axis}
+\begin{axis}[figpassmle,at={(49.0mm,0)},title={$n=30$},yticklabels={}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=n30]{code/ch01/out/sweep_mle_n.csv};
+\draw[bookaccent,dashed] (axis cs:0.7,0) -- (axis cs:0.7,1);
+\end{axis}
+\begin{axis}[figpassmle,at={(73.5mm,0)},title={$n=100$},yticklabels={}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=n100]{code/ch01/out/sweep_mle_n.csv};
+\draw[bookaccent,dashed] (axis cs:0.7,0) -- (axis cs:0.7,1);
+\end{axis}
+\begin{axis}[figpassmle,at={(98.0mm,0)},title={$n=1000$},yticklabels={}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=center,y=n1000]{code/ch01/out/sweep_mle_n.csv};
+\draw[bookaccent,dashed] (axis cs:0.7,0) -- (axis cs:0.7,1);
+\end{axis}
+\end{tikzpicture}
+\caption{投げる回数 $n$ を 5 通りに変えたときの、最尤推定 $\hat\theta=k/n$ の散らばり（実測）。
+表の確率が 0.7（赤い破線）のコインを $n$ 回投げる実験を、$n$ ごとに 1 万回行った（\protect\file{ch01/sweep_mle_n.py}）。
+棒の高さは、$\hat\theta$ が幅 0.05 の区間（中心が 0、0.05、…、1）に入った実験の割合。
+変えたのは $n$ だけで、本当の確率とくり返しの回数は同じ。
+$n$ が小さいほど推定は大きく外れ、$n=3$ では 37\% の実験で 0 か 1（左端と右端の棒）になった。}
+\label{fig:math-mle-n}
+\end{figure}
+% [/figpass]
+
+
 \subsection*{損失としての負の対数尤度}
 
 コインの話を、一般の形にしておきます。
@@ -1384,14 +1832,51 @@ $N$ 個のデータを $\calD=\{x^{(1)},\dots,x^{(N)}\}$、パラメータ $\vth
 これを\term{負の対数尤度}{negative log-likelihood}と呼びます。
 最尤推定は、この $\calL(\vtheta)$ を\textbf{最小}にする $\vtheta$ を探すことと同じです。
 
-言語モデルのデータは、トークンの並び $x_1,\dots,x_N$ です。トークンどうしは、独立ではありません。
+言語モデルのデータは、トークンの並び $x_1,\dots,x_N$ です（ここでは、データの個数 $N$ が、トークンの個数に当たります）。トークンどうしは、独立ではありません。
 それでも、同じ形の式になります。確率の連鎖律（式\eqref{eq:math-prob-chain}）で、並び全体の確率を積に分解できるからです。
 対数を取ると、$\log\ptheta(x_1,\dots,x_N)=\sum_{t=1}^{N}\log\ptheta(x_t\mid x_{<t})$ です。
 独立を仮定したのではありません。文脈を条件に入れたうえで、位置ごとの項に分けています。
 式\eqref{eq:math-nll}の $\ptheta(x^{(i)})$ に当たるのは、「文脈を読んだモデルが、その位置の正解のトークンに付けた確率」です。
-章の冒頭に出てきた「損失 3.11」は、この平均の値でした。
-ただし、基盤モデルのパラメータは約 260 万個あります。コインのように、式を解いて頂上を求めることはできません。
-代わりに、\secref{sec:math-calculus}の勾配を使って、少しずつ谷底に近づきます（\chapref{ch:ml}）。
+ここで言う文脈 $x_{<t}$ は、直前の 1 個ではなく、その位置より前の全部です。
+\figref{fig:math-positions}に、\figref{fig:math-tree}の計算ドリルの例で、位置ごとの文脈と正解を描きました。
+章の冒頭に出てきた「損失 3.11」は、この $-\log$ を、たくさんの位置で平均した値でした。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,every node/.append style={font=\footnotesize},
+  ctx/.style={tok,fill=figblue,draw=bookblue,font=\footnotesize},
+  ans/.style={tok,fill=figgreen,draw=bookgreen,very thick,font=\footnotesize}]
+  \node[anchor=south] at (2.35,0.5) {\textcolor{bookblue}{青：文脈 $x_{<t}$}\quad \textcolor{bookgreen}{緑：正解 $x_t$}};
+  \node[anchor=south] at (7.0,0.5) {正解に付けた確率};
+  \node[anchor=south] at (10.2,0.5) {その $-\log$（損失）};
+  \draw[black!40] (-0.2,0.48) -- (11.8,0.48);
+  % 1 段目
+  \node[ctx,minimum width=16mm] at (0.8,0) {12+35=};
+  \node[ans] at (2.3,0) {4};
+  \node at (7.0,0) {$0.428$};
+  \node at (10.2,0) {$-\log 0.428=0.849$};
+  % 2 段目
+  \node[ctx,minimum width=16mm] at (0.8,-0.75) {12+35=};
+  \node[ctx] at (2.3,-0.75) {4};
+  \node[ans] at (3.4,-0.75) {7};
+  \node at (7.0,-0.75) {$0.929$};
+  \node at (10.2,-0.75) {$-\log 0.929=0.074$};
+  % 3 段目
+  \node[ctx,minimum width=16mm] at (0.8,-1.5) {12+35=};
+  \node[ctx] at (2.3,-1.5) {4};
+  \node[ctx] at (3.4,-1.5) {7};
+  \node[ans] at (4.5,-1.5) {改行};
+  \node at (7.0,-1.5) {$1.000$};
+  \node at (10.2,-1.5) {$-\log 1.000=0.000$};
+\end{tikzpicture}
+\caption{位置ごとの文脈と正解。「12+35=」に「4」「7」「改行」が続く並びを、位置ごとに 1 段ずつ、3 段に描いた。
+青い箱が文脈 $x_{<t}$（その位置より前の全部）、緑の箱が正解 $x_t$（次の 1 個）である。「12+35=」は、複数のトークンを 1 個の箱にまとめた。
+右の確率は、\figref{fig:math-tree}の上の枝の値。負の対数尤度は、右端の $-\log$ を、すべての位置で平均したもの（この 3 段だけなら約 0.31）。}
+\label{fig:math-positions}
+\end{figure}
+
+ただし、基盤モデルのパラメータは約 260 万個あり、モデルの式も込み入っています。コインのように、式を解いて最小の場所を求めることはできません。
+代わりに、\secref{sec:math-calculus}の勾配を使って、損失が小さくなる向きへ、パラメータを少しずつ動かします（\chapref{ch:ml}）。
 
 この節の答えをまとめます。
 パラメータは、「手元のデータが最も起こりやすくなるように」選びます。
@@ -1408,17 +1893,17 @@ $-\log p$ には、「驚きの大きさ」という直感的な意味があり�
 \subsection*{情報量は驚きの大きさ}
 
 「明日も東から日が昇る」と聞いても、誰も驚きません。確率がほぼ 1 のことだからです。
-「明日、真夏の東京に雪が積もる」と聞けば、とても驚きます。確率がとても小さいことだからです。
+「明日、真夏の東京に雪が積もる」と聞けば、驚きます。確率がとても小さいことだからです。
 起きたことの確率が小さいほど、驚きは大きくなります。
-この驚きを数にしたものが、\term{情報量}{information content}です。確率 $p(x)$ の結果 $x$ が起きたときの情報量を、次の式で定めます。
+驚きを数にしたものが、\term{情報量}{information content}です。確率 $p(x)$ の結果 $x$ の情報量を、次の式で定めます。
 \begin{equation}
 I(x)\defeq-\log p(x)=\log\frac{1}{p(x)}
 \label{eq:math-information}
 \end{equation}
-なぜ $-\log$ なのでしょうか。驚きの量に望まれる三つの性質を、すべて満たすからです（\figref{fig:math-info}(a)）。
+なぜ $-\log$ なのでしょうか。驚きの量に望まれる、次の三つの性質を満たすからです（\figref{fig:math-info}(a)）。
 \begin{itemize}
 \item 確実なこと（$p=1$）が起きても、驚かない。$-\log 1=0$ です。
-\item 確率が小さいほど、驚きが大きい。$-\log p$ は、$p$ が 0 に近づくほど大きくなります。
+\item 確率が小さいほど、驚きが大きい。$-\log p$ は、$p$ が 0 に近いほど大きくなります。
 \item 独立な二つのことが両方起きたときの驚きは、それぞれの驚きの和になる。
   独立なら同時確率は積 $p(x)p(y)$ で、$-\log\bigl(p(x)p(y)\bigr)=-\log p(x)-\log p(y)$ です。
 \end{itemize}
@@ -1434,22 +1919,22 @@ I(x)\defeq-\log p(x)=\log\frac{1}{p(x)}
   xlabel={確率 $p$},ylabel={情報量 $-\log p$},
   title={(a) 情報量（驚き）},title style={font=\small,yshift=-1mm}]
 \addplot[bookblue,domain=0.005:1,samples=200]{-ln(x)};
-\addplot[only marks,mark=*,mark size=1.5pt,bookaccent] coordinates {(0.559,0.582) (0.121,2.112) (1,0)};
+\addplot[only marks,mark=*,mark size=1.5pt,bookaccent] coordinates {(0.559,0.582) (0.121,2.112)};
 \node[font=\scriptsize,anchor=south west] at (axis cs:0.56,0.6) {「ない。」0.582};
 \node[font=\scriptsize,anchor=south west] at (axis cs:0.13,2.1) {「ないから」2.11};
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=37mm,xmin=0,xmax=1,ymin=0,ymax=0.85,
+\begin{axis}[width=0.5\linewidth,height=37mm,xmin=0,xmax=1,ymin=0,ymax=0.9,
   xlabel={表の確率 $\theta$},ylabel={エントロピー $H$},
   title={(b) コインのエントロピー},title style={font=\small,yshift=-1mm}]
 \addplot[bookblue,domain=0.001:0.999,samples=200]{-x*ln(x)-(1-x)*ln(1-x)};
 \draw[bookaccent,dashed] (axis cs:0,0.693) -- (axis cs:1,0.693);
-\node[font=\scriptsize,text=bookaccent,anchor=south] at (axis cs:0.5,0.70) {$\log 2=0.693$};
+\node[font=\scriptsize,text=bookaccent,anchor=south,inner sep=1pt] at (axis cs:0.2,0.70) {$\log 2=0.693$};
 \end{axis}
 \end{tikzpicture}
-\caption{(a) 情報量 $-\log p$。確率が小さいほど大きい。赤い点は、基盤モデルの予測での値。
-(b) コインのエントロピー。$\theta=0.5$ で最大になり、結果が決まっている両端では 0 になる。}
+\caption{(a) 情報量 $-\log p$。確率が小さいほど大きく、$p=1$（右端）で 0。赤い点 2 個は、基盤モデルでの値。
+(b) コインのエントロピー。$\theta=0.5$ で最大、結果が決まっている両端では 0。}
 \label{fig:math-info}
 \end{figure}
 
@@ -1475,11 +1960,48 @@ $\theta$ が 0 か 1 なら、結果は決まっているので、エントロ�
 
 実物のモデルでも測ってみます。\tabref{tab:math-entropy-real}は、基盤モデルの予測のエントロピーを、三つの文脈で計算した結果です。
 計算ドリルの「12+35=47」の次は、改行に決まっています。モデルもそう確信していて、エントロピーは 0.000 です。
-「吾輩は」の次は、どんな言葉でも続きえます。エントロピーは 6.661 と大きく、上限の $\log 4096=8.318$ に近づきます。
+「吾輩は」の次は、いろいろな言葉が続きえます。エントロピーは 6.661 と大きく、上限の $\log 4096=8.318$ の 8 割ほどです。
+これは、約 780 通りの中から等しい確率で一つを選ぶときと、同じ不確かさです（$\log 780\approx 6.66$）。
+
+% [figpass] 案 6: 表 1.4 の三つの文脈の分布（fig_entropy_ctx.py）
+数の表だけでは、分布の形が見えません。
+\figref{fig:math-entropy-ctx}に、三つの文脈で、確率の大きい順に 10 個のトークンの確率を並べました（\file{ch01/fig_entropy_ctx.py}）。
+左から右へ、エントロピーが大きくなるにつれて、棒が低く平らになることを見てください。
+「12+35=47」では、1 本の棒だけが高さ 1 です。「どうも仕方が」では、上位 10 個で 0.867 を占めます。
+「吾輩は」では、最大でも 0.044 で、上位 10 個を合わせても 0.139 です。残りの 0.861 は、ほかの 4086 個に散らばっています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{figpassent/.style={scale only axis,width=30mm,height=24mm,ybar,bar width=0.6,
+  xmin=0.3,xmax=10.7,ymin=0,ymax=1.08,xtick={1,5,10},ytick={0,0.5,1},
+  title style={font=\small,yshift=-1.5mm,align=center},tick label style={font=\scriptsize},
+  xlabel={順位},xlabel style={yshift=1mm}}}
+\begin{axis}[figpassent,at={(0mm,0)},title={「12+35=47」の次},ylabel={確率}]
+\addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=rank,y=drill47]{code/ch01/out/fig_entropy_ctx.csv};
+\node[font=\scriptsize,anchor=north east,align=right] at (axis cs:10.5,1.04) {$H=0.000$\\上位 10 個の\\合計 1.000};
+\end{axis}
+\begin{axis}[figpassent,at={(41mm,0)},title={「どうも仕方が」の次},yticklabels={}]
+\addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=rank,y=shikata]{code/ch01/out/fig_entropy_ctx.csv};
+\node[font=\scriptsize,anchor=north east,align=right] at (axis cs:10.5,1.04) {$H=2.204$\\上位 10 個の\\合計 0.867};
+\end{axis}
+\begin{axis}[figpassent,at={(82mm,0)},title={「吾輩は」の次},yticklabels={}]
+\addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=rank,y=wagahai]{code/ch01/out/fig_entropy_ctx.csv};
+\node[font=\scriptsize,anchor=north east,align=right] at (axis cs:10.5,1.04) {$H=6.661$\\上位 10 個の\\合計 0.139};
+\end{axis}
+\end{tikzpicture}
+\caption{\tabref{tab:math-entropy-real}の三つの文脈での、次のトークンの分布（基盤モデルの実測）。
+4096 個のトークンのうち、確率の大きい順に 10 個を、順位を横軸にして棒で示した（\protect\file{ch01/fig_entropy_ctx.py}）。縦軸は 3 枚とも同じ。
+エントロピー $H$ が大きい分布ほど、確率が多くのトークンに散らばり、棒が低く平らになる。}
+\label{fig:math-entropy-ctx}
+\end{figure}
+% [/figpass]
+
 
 \begin{table}[tbp]
 \centering
-\caption{基盤モデルの予測のエントロピー（\file{ch01/entropy.py} の出力）。次に来るものが決まっている文脈ほど、小さい。}
+\caption{基盤モデルの予測のエントロピー（\file{ch01/entropy.py} の出力）。次に来るものが決まっている文脈ほど、小さい。
+「12+35=47」と「吾輩は」は、実際には、行の先頭を表す改行（「吾輩は」は改行と全角の空白）を前に付けて入力した。}
 \label{tab:math-entropy-real}
 \small
 \begin{tabular}{@{}llrr@{}}
@@ -1497,7 +2019,10 @@ $\theta$ が 0 か 1 なら、結果は決まっているので、エントロ�
 
 ここまでは、分布が一つでした。予測の良し悪しを測るには、分布が二つ必要です。
 現実の分布 $p$ と、モデルが予測する分布 $q$ です。
-\figref{fig:math-roadmap}の $\vp$ はモデルの予測なので、この節の書き方では $q$ の側に当たります。
+$p$ は、結果が実際に起こる確率です。ふつうは、直接は分かりません。
+$q$ は、モデルが付ける確率で、\secref{sec:math-mle}の $\ptheta$ と同じものです。
+\figref{fig:math-roadmap}の確率 $\vp$ も、記号は $p$ ですが、モデルの予測なので、この節では $q$ の側に当たります。
+分からない $p$ の代わりには、手元のデータの中の割合（経験分布 $\hat p$）を使います。これは、この節の最後の小節で出てきます。
 結果は、現実の分布 $p$ に従って起こります。一方、驚きの大きさは、自分の予測 $q$ で決まります。
 このときの平均の驚きが、\term{交差エントロピー}{cross-entropy}です。
 \begin{equation}
@@ -1513,6 +2038,7 @@ H(p,q)\defeq\E_{x\sim p}\bigl[-\log q(x)\bigr]=-\sum_{x}p(x)\log q(x)
 式で書くと、$-\log q(x)=-\log\frac{1}{6}=\log 6$ はどの $x$ でも同じ値です。和の外に出せて、残る $\sum_x p(x)$ は 1 です。
 正しく予測できていれば、平均の驚きは $H(p)=1.498$ で済んだはずです。
 差の 0.294 は、予測が外れていたせいで、余計に感じた驚きです（\figref{fig:math-decomp}）。$1.792-1.498=0.294$ と計算しました。
+
 この差が、\term{KL ダイバージェンス}{Kullback--Leibler divergence}です。二重の縦棒は、二つの分布の区切りです。
 \begin{equation}
 \KL{p}{q}\defeq H(p,q)-H(p)=\sum_{x}p(x)\log\frac{p(x)}{q(x)}
@@ -1521,11 +2047,44 @@ H(p,q)\defeq\E_{x\sim p}\bigl[-\log q(x)\bigr]=-\sum_{x}p(x)\log q(x)
 右の等号では、$-\sum_x p(x)\log q(x)+\sum_x p(x)\log p(x)$ を一つの和にまとめ、$\log p-\log q=\log(p/q)$ を使いました。
 移項すれば $H(p,q)=H(p)+\KL{p}{q}$ です。
 交差エントロピーは、「現実そのものの不確かさ」と「予測のずれによる上乗せ」の和に分解できます。
-ここまでに出てきた四つの量を、\tabref{tab:math-info-summary}に並べました。どれも、驚き $-\log(\text{確率})$ から作った量です。
+四つの量を、\tabref{tab:math-info-summary}に並べました。どれも、驚き $-\log(\text{確率})$ から作った量です。
+
+% [figpass] 案 11: 交差エントロピーとエントロピーを、目ごとのマスで計算する
+\figref{fig:math-ce-cells}では、いかさまサイコロの例の $H(p,q)$ と $H(p)$ について、それぞれの和を作る項を、目ごとに並べて計算しました。
+同じ $p(x)$ に、予測 $q$ の驚きを掛けて足すと交差エントロピー、現実 $p$ の驚きを掛けて足すとエントロピーです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.append style={font=\footnotesize},
+  c/.style={cell,minimum width=10mm,minimum height=5.2mm,font=\scriptsize}]
+  \foreach \j in {1,...,6}{\node at (10*\j+38,6) {\j};}
+  \node at (113,6) {合計};
+  \node[anchor=east] at (42,6) {目 $x$};
+  \foreach \r/\name/\col/\a/\b/\tot in {
+      0/現実 $p(x)$/figgray/0.5/0.1/1,
+      1/予測 $q(x)$/figgray/1\slash 6/1\slash 6/1,
+      2/予測の驚き $-\log q(x)$/figorange/1.792/1.792/,
+      3/$p(x)\times(-\log q(x))$/figorange/0.896/0.179/1.792,
+      4/現実の驚き $-\log p(x)$/figblue/0.693/2.303/,
+      5/$p(x)\times(-\log p(x))$/figblue/0.347/0.230/1.498}{
+    \node[anchor=east] at (42,-5.6*\r) {\name};
+    \node[c,fill=\col] at (48,-5.6*\r) {\a};
+    \foreach \j in {2,...,6}{\node[c,fill=\col] at (10*\j+38,-5.6*\r) {\b};}
+    \node at (113,-5.6*\r) {\tot};}
+  \node[anchor=west,text=bookorange] at (118,-16.8) {$=H(p,q)$};
+  \node[anchor=west,text=bookblue] at (118,-28) {$=H(p)$};
+\end{tikzpicture}
+\caption{いかさまサイコロ $p$ を、公平なサイコロ $q$ で予測したときの、交差エントロピーとエントロピーの計算。
+4 行目（橙）は、1 行目の $p(x)$ と、3 行目の予測の驚き $-\log q(x)$ の積で、合計が $H(p,q)=1.792$。
+6 行目（青）は、$p(x)$ と、5 行目の現実の驚き $-\log p(x)$ の積で、合計が $H(p)=1.498$。
+マスの数は小数第 3 位に丸めたので、そのまま足すと合計と少しずれる。}
+\label{fig:math-ce-cells}
+\end{figure}
+% [/figpass]
 
 \begin{table}[tbp]
 \centering
-\caption{この節の四つの量。どれも、驚き $-\log(\text{確率})$ の平均か、その差である。
+\caption{この節の四つの量。どれも、驚き $-\log(\text{確率})$ から作った量である（驚きそのもの、その平均、平均どうしの差）。
 右端は、いかさまサイコロ $p$ を、公平なサイコロ $q$ で予測した例での値。情報量は、1 の目（確率 0.5）の値。}
 \label{tab:math-info-summary}
 \small
@@ -1566,8 +2125,8 @@ KL ダイバージェンスには、大切な性質が三つあります。
 
 一つ目。\textbf{必ず 0 以上で、0 になるのは $p=q$ のときだけ}です。
 理由を示します。$\log$ のグラフは、$x=1$ での接線 $y=x-1$ より上には出ません（\figref{fig:math-exp-log}(b)）。
-つまり $\log x\le x-1$ で、等しくなるのは $x=1$ のときだけです。
-$x$ に $q(x)/p(x)$ を入れて、$p(x)$ を掛けて足し合わせます。
+$\log x\le x-1$ で、等しいのは $x=1$ のときだけです。
+$x$ に $q(x)/p(x)$ を入れ、$p(x)$ を掛けて足します。
 \begin{equation}
 -\KL{p}{q}=\sum_{x}p(x)\log\frac{q(x)}{p(x)}\le\sum_{x}p(x)\Bigl(\frac{q(x)}{p(x)}-1\Bigr)=\sum_{x}q(x)-1=0
 \label{eq:math-gibbs}
@@ -1581,11 +2140,14 @@ $q$ を $K$ 通りの一様分布にすると $H(p,q)=\log K$ なので、先ほ
 したがって、交差エントロピーは $H(p)$ より小さくなりません。最小になるのは、予測が現実と一致したときです。
 交差エントロピーを小さくすれば、予測は現実に近づきます。これが、交差エントロピーを損失に使える理由です。
 
-二つ目。\textbf{$p$ と $q$ を入れ替えると、値が変わります}。
+二つ目。\textbf{$p$ と $q$ を入れ替えると、ふつうは値が変わります}。
 KL ダイバージェンスは分布の「ずれ」を測りますが、ふつうの意味の距離ではありません。
+距離なら、どちらから測っても同じ値になるからです。
+本書では、左側に現実、右側に予測を置きます。
 
-三つ目。\textbf{実際に起こることに小さな確率を付けると、強く罰せられます}。
+三つ目。\textbf{実際に起こることに小さな確率を付けると、値がとても大きくなります}。
 $-\log q$ は、$q$ が 0 に近づくと、いくらでも大きくなるからです。
+実際に起こること（$p(x)>0$）に $q(x)=0$ を付けると、KL ダイバージェンスは無限大になります。
 三つの量を、コードで確かめます（\coderef{code:math-entropy}）。
 
 \snippet{エントロピー、交差エントロピー、KL ダイバージェンス}{code:math-entropy}{ch01/entropy.py}{entropy}
@@ -1597,11 +2159,15 @@ $-\log q$ は、$q$ が 0 に近づくと、いくらでも大きくなるから
 出力の 1〜2 行目は、手計算と一致しています。$1.498+0.294=1.792$ という分解も確かめられます。
 3 行目の左は、$p$ と $q$ を入れ替えた値です。0.294 が 0.243 に変わりました。
 右は、1 の目の確率を 0.001 と予測した \code{bad} との比較です。
-半分の確率で出る目を「ほぼ出ない」と予測したので、KL ダイバージェンスは 2.761 に跳ね上がりました。
+半分の確率で出る目を「ほぼ出ない」と予測したので、KL ダイバージェンスは 2.761 まで大きくなりました。
 
 \subsection*{最尤推定は交差エントロピーの最小化}
 
-準備が整いました。前の節の負の対数尤度（式\eqref{eq:math-nll}）を、もう一度見ます。
+準備が整いました。話の骨組みを、先に示します。
+分からない $p$ の代わりに、手元のデータの中の割合（経験分布 $\hat p$）を使います。
+すると、交差エントロピーは、前の節の負の対数尤度と同じ式になります。これを順に確かめます。
+
+前の節の負の対数尤度（式\eqref{eq:math-nll}）を、もう一度見ます。
 コインの例では、10 回のうち表が 7 回、裏が 3 回でした。モデルが表に付ける確率を $q(\text{表})$ と書くと、負の対数尤度は
 \begin{equation}
 -\frac{1}{10}\Bigl[7\log q(\text{表})+3\log q(\text{裏})\Bigr]
@@ -1610,6 +2176,7 @@ $-\log q$ は、$q$ が 0 に近づくと、いくらでも大きくなるから
 \end{equation}
 です。右辺は、データの中の割合 $\hat p=(0.7,0.3)$ と、予測 $q$ の交差エントロピー $H(\hat p,q)$ になっています。
 データの中の割合を分布と見なした $\hat p$ を、経験分布と呼びます。
+データが多ければ、割合は確率に近づくので（大数の法則）、$\hat p$ を現実の分布 $p$ の代わりに使えます。
 一般の場合も、同じ値のデータをまとめて数えれば、同じ形になります。
 \begin{equation}
 -\frac{1}{N}\sum_{i=1}^{N}\log q\bigl(x^{(i)}\bigr)
@@ -1632,6 +2199,62 @@ H(\hat p,q)=-\log q(y)
 \figref{fig:math-roadmap}の右端の $-\log p_{\text{正解}}$ は、この式でした。図の $p_{\text{正解}}$ が、ここでの $q(y)$ です。
 これを学習データのすべての位置で平均したものが、学習で使う損失（式\eqref{eq:math-nll}）です。
 
+ここで、疑問が一つ出ます。
+位置ごとの経験分布が「正解に確率 1」なら、モデルも、正解に確率 1 を付けるのが最もよいのでしょうか。
+一つの位置だけなら、そのとおりです。
+しかし、同じ文脈はデータの中に何度も出てきて、続きはそのたびに違います。文脈が同じなら、モデルが出す分布 $q$ は同じです。
+たとえば、「どうも仕方が」が 10 回出てきて、続きは「ない。」が 6 回、「ないから」が 4 回だったとします（仮の数です）。
+この 10 か所の損失の平均は、$-\bigl[0.6\log q(\text{ない。})+0.4\log q(\text{ないから})\bigr]$ です。
+コインの式\eqref{eq:math-coin-ce}と同じ形なので、最小にする予測は、続きの割合どおりの $q(\text{ない。})=0.6$、$q(\text{ないから})=0.4$ です。
+だから、学習したモデルが出す確率は、1 ではなく、0.559 のような値になります。
+
+% [figpass] 案 5: 10 か所の平均の損失を q の関数として描く
+\figref{fig:math-ce-curve}は、この例を図にしたものです。
+(a) は、1 か所だけの経験分布と、10 か所をまとめた割合です。(b) は、10 か所の損失の平均を、$q(\text{ない。})$ を動かしながら描いたものです。
+曲線の底が $q(\text{ない。})=0.6$ にあることを見てください。
+$q(\text{ない。})$ を 1 に近づけると、平均の損失はかえって急に大きくなります。「ないから」が来た 4 か所で、$-\log q(\text{ないから})$ がいくらでも大きくなるからです。
+底の高さは $H(\hat p)=0.673$ で、曲線と底の高さの差が $\KL{\hat p}{q}$ です（式\eqref{eq:math-mle-ce}）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\pgfplotsset{figpassbar/.style={scale only axis,width=21mm,height=26mm,ybar,bar width=4.5mm,
+  xmin=0.4,xmax=2.6,ymin=0,ymax=1.15,xtick={1,2},xticklabels={ない。,ないから},ytick={0,0.5,1},xticklabel style={font=\scriptsize},
+  title style={font=\footnotesize,yshift=-1.5mm,align=center},tick label style={font=\scriptsize},
+  nodes near coords,nodes near coords style={font=\scriptsize},
+  every node near coord/.append style={/pgf/number format/fixed}}}
+\begin{axis}[figpassbar,at={(0,0)},title={1 か所の経験分布\\（正解が「ない。」）},ylabel={確率}]
+\addplot[fill=figgreen,draw=bookgreen] coordinates {(1,1) (2,0)};
+\end{axis}
+\begin{axis}[figpassbar,at={(27mm,0)},title={10 か所の割合\\（6 回と 4 回）},yticklabels={}]
+\addplot[fill=figgreen,draw=bookgreen] coordinates {(1,0.6) (2,0.4)};
+\end{axis}
+\node[font=\small] at (24mm,-11mm) {(a) 経験分布};
+\begin{axis}[scale only axis,width=46mm,height=30mm,at={(70mm,0)},xmin=0,xmax=1,ymin=0,ymax=2.2,
+  xlabel={モデルの予測 $q(\text{ない。})$},ylabel={10 か所の平均の損失},
+  xtick={0,0.2,0.4,0.6,0.8,1},ytick={0,0.5,1,1.5,2},tick label style={font=\scriptsize},
+  title={(b) 平均の損失},title style={font=\small,yshift=-1.5mm}]
+\addplot[bookblue,thick,domain=0.02:0.985,samples=200]{-(0.6*ln(x)+0.4*ln(1-x))};
+\draw[bookgray,dashed] (axis cs:0,0.673) -- (axis cs:1,0.673);
+\node[font=\scriptsize,text=bookgray,anchor=north west,inner sep=1pt] at (axis cs:0.02,0.64) {$H(\hat p)=0.673$};
+\draw[bookaccent,dotted] (axis cs:0.6,0) -- (axis cs:0.6,0.673);
+\fill[bookaccent] (axis cs:0.6,0.673) circle (1.4pt);
+\node[font=\scriptsize,text=bookaccent,anchor=north east,inner sep=1pt,fill=white] at (axis cs:0.58,0.40) {最小：$q=0.6$};
+\draw[bookpurple,line width=0.8pt] (axis cs:0.9,0.673) -- (axis cs:0.9,0.984);
+\draw[decorate,decoration={brace,amplitude=3pt},bookpurple,line width=0.6pt] (axis cs:0.908,0.984) -- (axis cs:0.908,0.673);
+\node[font=\scriptsize,text=bookpurple,anchor=north east,align=right,inner sep=1pt] at (axis cs:0.99,0.60) {$\KL{\hat p}{q}$\\（$q=0.9$）};
+\draw[bookpurple,thin] (axis cs:0.935,0.60) -- (axis cs:0.935,0.8285);
+\end{axis}
+\end{tikzpicture}
+\caption{位置ごとの経験分布と、平均の損失（「どうも仕方が」が 10 回出て、続きが「ない。」6 回、「ないから」4 回という、本文の仮の数による例）。
+(a) 1 か所だけなら、経験分布は正解に確率 1 を置く。10 か所をまとめると、割合は 0.6 と 0.4。
+(b) 10 か所の損失の平均 $-\bigl[0.6\log q(\text{ない。})+0.4\log q(\text{ないから})\bigr]$。モデルは、この 2 個のトークンだけに確率を付けるとした（$q(\text{ないから})=1-q(\text{ない。})$）。
+最小は、割合どおりの $q(\text{ない。})=0.6$ で、その値は $H(\hat p)=0.673$（破線）。曲線と破線の差が $\KL{\hat p}{q}$ で、たとえば $q=0.9$ では 0.311（紫の括弧）。}
+\label{fig:math-ce-curve}
+\end{figure}
+% [/figpass]
+
+
 \begin{quiz}
 学習を始める前のモデルは、4096 個のトークンのどれにも、ほぼ同じ確率を付けます。
 このモデルの損失は、およそいくつでしょうか。
@@ -1639,8 +2262,11 @@ H(\hat p,q)=-\log q(y)
 
 どのトークンの確率も $1/4096$ なので、正解が何であっても、損失は $-\log(1/4096)=\log 4096=8.318$ です。
 実測の 8.34 と、ほぼ一致します。\secref{sec:math-notation}で予告した一致の理由は、これでした。
+なお、学習前のモデルがほぼ同じ確率を付けるのは、パラメータの最初の値を 0 に近い小さな数にしてあり、スコアがどれも 0 に近くなるからです（\chapref{ch:training}）。
 学習後の損失 3.11 は、驚きが平均 3.11 まで減ったことを意味します。
-確率に戻すと $e^{-3.11}=0.045$ です。正解のトークンに、ならして 4.5\% ほどの確率を付けられるようになりました。
+確率に戻すと $e^{-3.11}=0.045$ です。
+これは、「どの位置でも、正解に同じ確率を付けるモデル」に置き換えるなら、その確率が 4.5\% に当たる、という意味です。
+足して個数で割った平均ではありません（全部掛け合わせて、個数ぶんの 1 乗根を取った平均です）。
 $1/4096=0.02\%$ から見れば、約 180 倍です（丸める前の値で、$0.0446\div 0.000244\approx 183$）。
 損失をこのように読み替える方法は、\chapref{ch:lm}でパープレキシティとして学びます。
 
@@ -1650,7 +2276,7 @@ $1/4096=0.02\%$ から見れば、約 180 倍です（丸める前の値で、$0
 
 \section{softmax と log-sum-exp：スコアを確率に直す}\label{sec:math-softmax}
 
-\figref{fig:math-roadmap}の地図には、まだ読んでいない矢印が一つだけ残っています。ロジット $\vz$ を確率 $\vp$ に直す部分です。
+\figref{fig:math-roadmap}には、まだ読んでいない矢印が一つだけ残っています。スコア（ロジット）$\vz$ を確率 $\vp$ に直す部分です。
 \secref{sec:math-linalg}で見たとおり、ロジットは 11.47 や 9.94 といった実数です。負の値も取ります。そのままでは確率になりません。
 この節の問いは、「好きな実数の組を、どうやって確率分布に直すか」です。
 
@@ -1664,9 +2290,12 @@ p_k=\softmax(\vz)_k\defeq\frac{\exp(z_k)}{\sum_{j=1}^{V}\exp(z_j)}
 \label{eq:math-softmax}
 \end{equation}
 この関数を、\textbf{softmax}（ソフトマックス）関数と呼びます。$V$ は成分の数で、言語モデルではトークンの種類の数（語彙の大きさ）です。
-最大の成分だけを選ぶ $\max$ と違って、大きい成分ほど大きな確率を、なめらかに（soft に）割り当てます。
+最大の成分だけに確率 1 を付け、ほかを 0 にする方法（$\argmax$ で一つを選ぶこと）と違って、大きい成分ほど大きな確率を、なめらかに（soft に）割り当てます。
+なお、$\exp$ は、0 以上で和が 1 になる関数の中から選んだものです（ほかの関数も作れます）。
+$\exp$ なら、スコアが負でも値は正で、大小の順序が保たれます。$\log$ を取ると割り算が引き算になり、損失の計算とも相性がよくなります（式\eqref{eq:math-log-softmax}）。
 \figref{fig:math-softmax}は、$\vz=(2,1,0)$ の計算です。
 左から右へ、$\exp$ を取り、合計 11.107 で割ると、確率 $(0.665,0.245,0.090)$ になります。
+最大の成分だけに確率 1 を付ける方法なら、$(1,0,0)$ になるところです。
 途中を書きます。$\exp$ を取ると $e^{2}=7.389$、$e^{1}=2.718$、$e^{0}=1$ で、合計は $7.389+2.718+1=11.107$ です。
 それぞれを合計で割ると、$7.389/11.107=0.665$、$2.718/11.107=0.245$、$1/11.107=0.090$ です。
 三つを足すと、$0.665+0.245+0.090=1$ になっています。
@@ -1691,7 +2320,7 @@ p_k=\softmax(\vz)_k\defeq\frac{\exp(z_k)}{\sum_{j=1}^{V}\exp(z_j)}
   \node[lbl,below=1mm of e2] {すべて正。合計 11.107};
   \node[lbl,below=1mm of p2] {すべて正。合計 1};
 \end{tikzpicture}
-\caption{softmax の計算。$\exp$ で正の数に直し、合計で割って和を 1 にする。大小の順序は変わらない。}
+\caption{softmax の計算。$\exp$ で正にし、合計で割って和を 1 にする。大小の順序は同じ。}
 \label{fig:math-softmax}
 \end{figure}
 
@@ -1708,10 +2337,10 @@ $e^{1.53}=4.62$ で、確率の比 $0.559/0.121=4.62$ と一致します。
 全成分に $c$ を足すと、分子も分母も $e^{c}$ 倍になり、約分されるからです。
 $e^{z_k+c}=e^{c}e^{z_k}$ という規則（\tabref{tab:math-explog}の 1 行目）を、分子と、分母の各項に使いました。
 たとえば、$(2,1,0)$ と $(1002,1001,1000)$ は、同じ確率になります。
-ロジットは、値そのものではなく、ほかとの差に意味がある量です。
+ロジットは、値そのものではなく、差に意味がある量です。
 
-\subsection*{そのまま計算すると壊れる}
-\skimread{押さえる結論は二つです。式のとおりに $\exp$ を計算すると、ロジットが大きいときに結果が壊れます。そこで、最大値を引いてから計算します（対数確率を求めるこの計算を、log-sum-exp と呼びます）。ライブラリはこの計算を内部で行うので、損失を計算する関数には、確率ではなくロジットをそのまま渡します。式の導出は、\chapref{ch:ml}で log-sum-exp を使うときに読み直せば足ります。}
+\subsection*{そのまま計算すると、正しい値が得られない}
+\skimread{押さえる結論は二つです。式のとおりに $\exp$ を計算すると、ロジットが大きいときに、途中の値が大きくなりすぎて、正しい値が得られません。そこで、最大値を引いてから計算します（対数確率を求めるこの計算を、log-sum-exp と呼びます）。ライブラリはこの計算を内部で行うので、損失を計算する関数には、確率ではなくロジットをそのまま渡します。式の導出は、\chapref{ch:ml}で log-sum-exp を使うときに読み直せば足ります。}
 
 式\eqref{eq:math-softmax}を、そのまま 2 行のコードにした関数に、$(2,1,0)$ と $(1002,1001,1000)$ を渡してみます
 （\file{ch01/softmax.py} の \code{softmax_naive}）。次が、その出力です。
@@ -1721,31 +2350,32 @@ $e^{z_k+c}=e^{c}e^{z_k}$ という規則（\tabref{tab:math-explog}の 1 行目�
 1 行目は $(2,1,0)$ の結果で、\figref{fig:math-softmax}と同じ値です。
 ところが、$(1002,1001,1000)$ では警告が出て、結果は \code{nan}（数ではない、という印）になりました。
 警告には、問題の起きた 2 行（$\exp$ を取る行と、合計で割る行）が表示されています。
-原因は $e^{1002}$ です。コンピュータの小数が表せる最大の数は、約 $1.8\times 10^{308}$ です。
-$e^{z}$ は、$z$ が 710 を超えると、無限大（\code{inf}）として扱われます。これをオーバーフローと呼びます。
+原因は $e^{1002}$ です。NumPy の標準の小数（64 ビット）が表せる最大の数は、約 $1.8\times 10^{308}$ です。
+$e^{z}$ は、$z$ が約 710 を超えると、無限大（\code{inf}）として扱われます。これをオーバーフローと呼びます。
 710 という境目は、最大の数の対数です。$\log(1.8\times 10^{308})=\log 1.8+308\log 10\approx 0.6+709.2=709.8$ と計算できます。
+PyTorch の標準である 32 ビットの小数では、最大の数は約 $3.4\times 10^{38}$ で、境目はずっと手前の約 88 です。
 無限大を無限大で割ることはできないので、結果が \code{nan} になります。
-学習の途中で損失が \code{nan} になる事故は、このような計算から起こります。
+学習中に損失が \code{nan} になる原因の一つが、このような計算です。
 
 対策には、二つ目の性質を使います。全成分から最大値を引いても、確率は変わりません。
 引いた後は、最大の成分が 0、ほかは負になります。$\exp$ を取っても 1 以下なので、オーバーフローしません。
 
-損失の計算では、確率そのものより、その対数 $\log p_k$ が必要です。式\eqref{eq:math-softmax}の対数を取ると、
+損失の計算に必要なのは、確率の対数 $\log p_k$ です。式\eqref{eq:math-softmax}の対数を取ると、
 \begin{equation}
 \log p_k=z_k-\log\sum_{j=1}^{V}\exp(z_j)
 \label{eq:math-log-softmax}
 \end{equation}
 です。割り算が引き算に変わりました（\tabref{tab:math-explog}）。
-第 2 項は、$\exp$ を取り、和を取り、$\log$ を取る計算です。その順に読んで、\term{log-sum-exp}{log-sum-exp}と呼びます。
-ここでも、最大値 $m=\max_j z_j$ を先にくくり出します。
-$\sum_j e^{z_j}=e^{m}\sum_j e^{z_j-m}$ なので、対数を取ると次の式になります。
+第 2 項は、$\exp$ を取り、和を取り、$\log$ を取る計算です。この順に読んで、\term{log-sum-exp}{log-sum-exp}と呼びます。
+ここでも、最大値 $m=\max_j z_j$ をくくり出します。
+$\sum_j e^{z_j}=e^{m}\sum_j e^{z_j-m}$ なので、対数は次の式です。
 \begin{equation}
 \log\sum_{j=1}^{V}\exp(z_j)=m+\log\sum_{j=1}^{V}\exp(z_j-m)
 \label{eq:math-lse}
 \end{equation}
 右辺の和は、1 以上 $V$ 以下です。最大の成分の項が $e^{0}=1$ で、ほかの項は 0 と 1 の間だからです。
-したがって、右辺は安全に計算できます。
-確率を計算してから $\log$ を取る方法は、勧められません。確率が 0 に丸められると、$\log 0$ が $-\infty$ になるからです。
+したがって、オーバーフローを起こさずに計算できます。
+確率を計算してから $\log$ を取るのは、勧められません。確率が 0 に丸められると、$\log 0$ が $-\infty$ になるからです。
 
 \snippet{安定な softmax と log-softmax}{code:math-softmax-stable}{ch01/softmax.py}{stable}
 
@@ -1756,6 +2386,53 @@ $(1002,1001,1000)$ の対数確率は $(-0.408,-1.408,-2.408)$ です。
 この値は、手でも追えます。最大値 $m=1002$ を引くと $(0,-1,-2)$ で、$\exp$ の和は $1+0.368+0.135=1.503$ です。
 式\eqref{eq:math-lse}より、log-sum-exp は $1002+\log 1.503=1002.408$ です。
 式\eqref{eq:math-log-softmax}より、$\log p_1=1002-1002.408=-0.408$ となります。確率 0.665 の対数 $\log 0.665=-0.408$ と一致します。
+
+% [figpass] 案 7: 式のとおりの計算と、最大値を引いてからの計算を、段ごとに並べる
+\figref{fig:math-lse}に、二つの計算の手順を並べました。
+左が式\eqref{eq:math-softmax}のとおりの計算（\code{softmax_naive}）、右が最大値を引いてからの計算（\code{log_softmax}）です。
+上から順に数をたどり、左ではどの段で \code{inf} が現れるのか、右ではなぜ現れないのかを見比べてください。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.append style={font=\footnotesize},
+  c/.style={cell,minimum width=12mm,minimum height=5.2mm,font=\scriptsize}]
+  % (a) 式のとおり
+  \node at (13,7) {(a) 式のとおりに計算する};
+  \foreach \j/\v in {0/1002,1/1001,2/1000}{\node[c,fill=figorange] at (12*\j+1,0) {\v};}
+  \draw[arr] (13,-3.5) -- node[right,font=\scriptsize]{$\exp$ を取る} (13,-8.5);
+  \foreach \j in {0,1,2}{\node[c,fill=figred] at (12*\j+1,-12) {\code{inf}};}
+  \draw[arr] (13,-15.5) -- node[right,font=\scriptsize]{3 個を足す} (13,-20.5);
+  \node[c,fill=figred] at (13,-24) {\code{inf}};
+  \draw[arr] (13,-27.5) -- node[right,font=\scriptsize]{合計で割る} (13,-32.5);
+  \foreach \j in {0,1,2}{\node[c,fill=figred] at (12*\j+1,-36) {\code{nan}};}
+  \node[anchor=north,align=center,font=\scriptsize,text=bookaccent] at (13,-40) {$e^{1000}$ も 64 ビットの小数の上限\\（約 $1.8\times 10^{308}$）を超え、\code{inf} になる};
+  % (b) 最大値を引いてから
+  \begin{scope}[shift={(66,0)}]
+  \node at (13,7) {(b) 最大値 $m=1002$ を引いてから計算する};
+  \foreach \j/\v in {0/1002,1/1001,2/1000}{\node[c,fill=figorange] at (12*\j+1,0) {\v};}
+  \draw[arr] (13,-3.5) -- node[right,font=\scriptsize]{$m$ を引く} (13,-8.5);
+  \foreach \j/\v in {0/0,1/$-1$,2/$-2$}{\node[c,fill=figgray] at (12*\j+1,-12) {\v};}
+  \draw[arr] (13,-15.5) -- node[right,font=\scriptsize]{$\exp$ を取る（どれも 1 以下）} (13,-20.5);
+  \foreach \j/\v in {0/1,1/0.368,2/0.135}{\node[c,fill=figgray] at (12*\j+1,-24) {\v};}
+  \draw[arr] (13,-27.5) -- node[right,font=\scriptsize,align=left]{足して 1.503。その $\log$ に $m$ を足す} (13,-32.5);
+  \node[c,fill=figpurple,minimum width=20mm] at (13,-36) {1002.408};
+  \node[anchor=west,font=\scriptsize] at (24,-36) {log-sum-exp（式\eqref{eq:math-lse}）};
+  \draw[arr] (13,-39.5) -- node[right,font=\scriptsize]{$z_k-1002.408$（1 段目から引く）} (13,-44.5);
+  % 1 段目の z_k も、最後の段の材料になることを示す破線
+  \draw[arr,bookgray,dashed] (-5,0) -- (-8,0) -- (-8,-48) -- (-5,-48);
+  \foreach \j/\v in {0/$-0.408$,1/$-1.408$,2/$-2.408$}{\node[c,fill=figgreen] at (12*\j+1,-48) {\v};}
+  \node[anchor=west,font=\scriptsize] at (32,-48) {対数確率 $\log p_k$};
+  \end{scope}
+\end{tikzpicture}
+\caption{確率の対数を求める二つの手順（ロジットが $(1002,1001,1000)$ の例）。数値は、\protect\file{ch01/softmax.py} の出力と本文の手計算。
+(a) 式のとおりに $\exp$ を取ると、2 段目で 3 個とも \code{inf}（赤）になり、最後は \code{nan} になる。
+(b) 最大値を引いてから $\exp$ を取ると、どの段の数もふつうの大きさに収まり、対数確率 $(-0.408,-1.408,-2.408)$ が求まる。
+確率が欲しいときは、(b) の 3 段目の数を、合計 1.503 で割る（$0.665$、$0.245$、$0.090$）。
+(b) の左の灰色の破線は、最後の段で 1 段目の $z_k$ をもう一度使うことを示す。}
+\label{fig:math-lse}
+\end{figure}
+% [/figpass]
+
 PyTorch などのライブラリは、この安定な計算を内部で行います。
 そのため、損失を計算する関数には、確率ではなくロジットをそのまま渡します（\chapref{ch:pytorch}）。
 
@@ -1763,24 +2440,74 @@ PyTorch などのライブラリは、この安定な計算を内部で行いま
 
 これで、\figref{fig:math-roadmap}の実線の矢印が、すべて読めるようになりました。
 章の締めくくりに、実物の数値で端から端まで計算します（\coderef{code:math-last-step}）。
-使うのは、基盤モデルが「どうも仕方が」を読んだ後のベクトル $\vh$ と、行列 $\mW$ です。
-どちらも、\file{ch01/dump_base.py} が基盤モデルから取り出して、\file{ch01/out/last_step.npz} に保存してあります。
+使うのは、基盤モデルが「どうも仕方が」を読んで作った文脈ベクトル $\vh$ と、出力の重み行列 $\mW$ です。
+どちらも、\file{ch01/dump_base.py} が基盤モデルから取り出し、\file{ch01/out/last_step.npz} に保存しました。
 
-\snippet{ベクトル $\vh$ から、確率と損失までを計算する}{code:math-last-step}{ch01/softmax.py}{last-step}
+% コード 1.4 の見出しだけがページ末に残らないように、コードの箱（10 行）が入らないなら改ページする
+\providecommand{\mathneedspace}[1]{\par\penalty0\relax\ifdim\pagetotal<\pagegoal\ifdim\dimexpr\pagegoal-\pagetotal\relax<#1\relax\newpage\fi\fi}
+\mathneedspace{14\baselineskip}
+\snippet{文脈ベクトル $\vh$ から、確率と損失までを計算する}{code:math-last-step}{ch01/softmax.py}{last-step}
 \outputfile{ch01/out/softmax_3.txt}
 
-1〜2 行目で、$\vh$（192 個の数）、$\mW$（形 $(4096,192)$）、トークンの文字列の一覧を読み込みます。
+1〜2 行目で、$\vh$（192 個の数）、$\mW$（形 $(4096,192)$）、トークンの文字列の一覧を読み込みます（\code{.tolist()} は、配列をリストに直します）。
 3 行目の \code{W @ h} が、行列とベクトルの積 $\vz=\mW\vh$ です（式\eqref{eq:math-logit}）。4096 個の内積を、一度に計算します。
 コメントの \code{(192,)} は、NumPy でのベクトルの形の書き方です。
 4 行目で、ロジットを softmax に通して、確率に直します。
-ここで使う \code{softmax} と、9 行目の \code{log_softmax} は、\coderef{code:math-softmax-stable}の関数です。それぞれ、確率と、その対数を、壊れない手順で計算します。
-出力の 1 行目のとおり、4096 個の確率の和は 1 です。
+ここで使う \code{softmax} と、9 行目の \code{log_softmax} は、\coderef{code:math-softmax-stable}の関数です。それぞれ、確率と、その対数を、オーバーフローを起こさない手順で計算します。
+5 行目は、確率の和を表示します（\code{round(6)} は、小数第 6 位までに丸める指定です）。出力の 1 行目のとおり、4096 個の確率の和は 1 です。
 6〜7 行目は、確率の大きい順に 5 個を表示します。\code{np.argsort(-p)} は、\code{p} の大きい順に番号を並べる関数です。
 1 位は「ない。」で、ロジットは 11.47、確率は \textbf{0.559} です。
 \chapref{ch:intro}で見た数字を、内積と $\exp$ と割り算だけで再現できました。
 8 行目の \code{np.argmax(p)} は、確率が最大のトークン、つまり「ない。」の番号です（\secref{sec:math-notation}の $\argmax$）。
 9 行目は、正解がこの「ない。」だった場合の損失 $-\log p_{\text{正解}}$ で、値は 0.582 です。
+10 行目は、比較のために $\log 4096$ を表示します。
 何も知らないモデルの 8.318 よりも、学習後の平均 3.11 よりも小さい値です。「どうも仕方が」の続きは、モデルにとって当てやすい場所でした。
+
+% [figpass] 案 8: 最後の一歩を 4 コマのコマ割りの図で
+\figref{fig:math-last-panels}は、\coderef{code:math-last-step}の計算を 4 コマに分けたものです。コマの番号は計算の順です。各コマの見出しの下に、対応するコードの行番号を書きました。(1)〜(3) は、コードのコメントの (1)〜(3) と同じ計算です。
+数の個数を追ってください。(1) で 192 個の数が 4096 個のスコアになり、(2) で 4096 個の確率になり、(4) で 1 個の損失になります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.append style={font=\scriptsize},
+  frame/.style={draw=black!35,rounded corners=2pt,minimum width=29.5mm,minimum height=44mm,anchor=north west},
+  head/.style={anchor=north west,font=\footnotesize\bfseries,text width=27.5mm,align=left,inner sep=0pt},
+  sub/.style={anchor=north west,text width=27.5mm,align=left,inner sep=0pt,text=bookgray}]
+  \foreach \i in {0,...,3}{\node[frame] at (32*\i,0) {};}
+  \foreach \i in {0,1,2}{\draw[arr] (32*\i+29.7,-22) -- (32*\i+31.8,-22);}
+  % (1) スコア
+  \node[head] at (1,-1.5) {(1) スコアを作る};
+  \node[sub] at (1,-6) {3 行目。$\vz=\mW\vh$\\192 個の数 → 4096 個のスコア};
+  \node[anchor=north west,inner sep=0pt] at (1.5,-15) {\begin{tabular}{@{}l@{\ }r@{}}
+    ない。 & 11.47\\ ないから & 9.94\\ ないと & 9.30\\ ないの & 8.95\\ ない & 7.93\\ ほか 4091 個 & \end{tabular}};
+  % (2) 確率
+  \node[head] at (33,-1.5) {(2) 確率に直す};
+  \node[sub] at (33,-6) {4 行目。$\exp$ を取り、合計で割る。4096 個の確率の和は 1};
+  \node[anchor=north west,inner sep=0pt] at (33.5,-15) {\begin{tabular}{@{}l@{\ }r@{}}
+    ない。 & \textbf{0.559}\\ ないから & 0.121\\ ないと & 0.064\\ ないの & 0.045\\ ない & 0.016\\ ほか 4091 個 & 0.195\end{tabular}};
+  % (3) 選ぶ
+  \node[head] at (65,-1.5) {(3) 最大を選ぶ};
+  \node[sub] at (65,-6) {6〜8 行目。大きい順に並べ、確率が最大のものを選ぶ（$\argmax$）};
+  \node[tok,anchor=north] at (80,-17) {ない。};
+  \node[anchor=north,text width=27.5mm,align=center] at (80,-25) {確率 0.559。\\サンプリングなら、\\ほかのトークンが\\0.441 の確率で選ばれる};
+  % (4) 損失
+  \node[head] at (97,-1.5) {(4) 損失を測る};
+  \node[sub] at (97,-6) {9 行目。正解が「ない。」なら $-\log 0.559=0.582$};
+  % 棒の名前は、それぞれの棒のすぐ上に置く（組と組のあいだは広くあける）
+  \foreach \k/\v/\lab/\col in {0/0.582/この位置/figred,1/3.11/学習後の平均/figgray}{
+    \node[anchor=north west,inner sep=0pt] at (98,-16.5-8*\k) {\lab\ \v};
+    \fill[\col,draw=black!40] (98,-19.6-8*\k) rectangle ++(\v*3.2,-2.8);}
+  \node[anchor=north west,inner sep=0pt,align=left] at (98,-32.5) {何も知らないモデル\\（$\log 4096$）8.318};
+  \fill[figgray,draw=black!40] (98,-38.9) rectangle ++(8.318*3.2,-2.8);
+\end{tikzpicture}
+\caption{最後の一歩を 4 コマで（\coderef{code:math-last-step}の出力。「どうも仕方が」を読んだ基盤モデルの実測）。
+(1)(2) は 4096 個のうち、確率の大きい 5 個だけを示した。(2) の最後の行は、残りの 4091 個の確率の合計。
+(3) で選ぶのは、文章を書くとき。学習のときは、(2) の確率から、正解の確率を取り出して (4) に進む。
+(4) の棒の長さは損失の値で、この位置の 0.582 は、学習後の平均 3.11 や、何も知らない（どのトークンにも同じ確率を付ける）モデルの $\log 4096=8.318$ よりずっと小さい。}
+\label{fig:math-last-panels}
+\end{figure}
+% [/figpass]
+
 
 この節の答えをまとめます。
 スコアを確率に直すには、$\exp$ を取って合計で割ります。これが softmax です。
@@ -1788,30 +2515,31 @@ PyTorch などのライブラリは、この安定な計算を内部で行いま
 
 \begin{table}[tbp]
 \centering
-\caption{この章の道具と、本書での主な出番。}
+\caption{この章で準備した数学の道具と、本書で主に使う場所。}
 \label{tab:math-usage}
 \small
 \begin{tabular}{@{}ll@{}}
 \toprule
-道具 & 主な出番 \\
+数学の道具 & 主に使う場所 \\
 \midrule
 内積・コサイン類似度 & 埋め込み（\chapref{ch:embedding}）、注意機構（\chapref{ch:attention}） \\
 行列積 & すべての層（\chapref{ch:nn}以降）、計算量（\chapref{ch:gpu}） \\
 勾配 & 勾配降下法（\chapref{ch:ml}、\chapref{ch:training}） \\
-連鎖律 & 誤差逆伝播法（\chapref{ch:nn}） \\
-条件付き確率と連鎖律 & 言語モデル（\chapref{ch:lm}） \\
+連鎖律（微分） & 誤差逆伝播法（\chapref{ch:nn}） \\
+条件付き確率と連鎖律（確率） & 言語モデル（\chapref{ch:lm}） \\
 期待値・サンプリング & 文章の生成（\chapref{ch:lm}）、強化学習（\chapref{ch:rl-basics}） \\
 最尤推定・交差エントロピー & 損失関数（\chapref{ch:ml}、\chapref{ch:pretraining}） \\
 KL ダイバージェンス & 蒸留（\chapref{ch:distillation}）、強化学習（\chapref{ch:rl-llm}） \\
-softmax & 出力の確率、注意機構（\chapref{ch:attention}） \\
+情報量・エントロピー & パープレキシティ（\chapref{ch:lm}） \\
+softmax & 出力の確率（\chapref{ch:ml}、\chapref{ch:lm}）、注意機構（\chapref{ch:attention}） \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{summary}
 \item 細字はスカラー、太字の小文字はベクトル、太字の大文字は行列です。$\log$ は自然対数です。
-\item 内積は、ベクトルの似かたを測ります。ロジット $\vz=\mW\vh$ は、内積を並べたものです。
-\item 勾配は、関数が最も増える向きを指します。合成関数の微分は、連鎖律で積に分解できます。
+\item 内積とコサイン類似度は、二つのベクトルの向きの近さを測ります。スコア（ロジット）$\vz=\mW\vh$ は、内積を並べたものです。
+\item 勾配は、関数が最も急に増える向きを指します。合成関数の微分は、連鎖律で積に分解できます。
 \item 言語モデルの出力は、文脈を条件とした次のトークンの分布です。文の確率は、その積です。
 \item 最尤推定は、データが最も起こりやすいパラメータを選びます。交差エントロピーの最小化と同じです。
 \item 損失は、正解に付けた確率の $-\log$ です。何も知らないモデルでは $\log 4096=8.318$ になります。

@@ -1,0 +1,9 @@
+name,mode,tmin,tmed,tmax
+mul2,eager,1.36,1.36,1.37
+mul2,compile,1.40,1.43,1.44
+poly,eager,11.15,11.16,11.24
+poly,compile,3.22,3.24,3.28
+tanh,eager,64.38,64.40,64.47
+tanh,compile,63.81,63.84,64.87
+gelu,eager,76.66,76.69,76.71
+gelu,compile,78.55,78.55,78.70

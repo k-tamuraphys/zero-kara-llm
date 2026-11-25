@@ -1,0 +1,4 @@
+name,n_nonemb,val_loss
+small,12480,5.193
+medium,98944,4.788
+large,788736,4.615

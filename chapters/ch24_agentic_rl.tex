@@ -1,15 +1,15 @@
-\chapter{Agentic RL：エージェントを強化学習で鍛える}\label{ch:agentic-rl}
+\chapter{Agentic RL：エージェントを強化学習で訓練する}\label{ch:agentic-rl}
 \bookmap{7}
 
 \begin{chapterlead}
-\textbf{ここまで}: \chapref{ch:rl-llm}では、1 回の応答を正誤の報酬で鍛える強化学習（GRPO）を作りました。
-\chapref{ch:agent}では、電卓を呼べるエージェント \file{ch23_tool_sft.pt} を SFT で作り、言い回しを変えると崩れることを見ました。\\
-\textbf{この章の問い}: ツールを何度も呼んでから答える「複数ステップの仕事」を、強化学習でどう鍛えるのでしょうか。
-1 回の応答を鍛える強化学習と、何が同じで何が違うのでしょうか。\\[1mm]
+\textbf{ここまで}: \chapref{ch:rl-llm}では、1 回の応答を正誤の報酬で学習させる強化学習（GRPO）を作りました。
+\chapref{ch:agent}では、電卓を呼べるエージェント \file{ch23_tool_sft.pt} を SFT で作り、言い回しを変えると正答率が大きく下がることを見ました。\\
+\textbf{この章の問い}: ツールを何度も呼んでから答える「何段階もある仕事」を、強化学習でどう学習させるのでしょうか。
+1 回の応答を学習させる強化学習と、何が同じで何が違うのでしょうか。\\[1mm]
 \textbf{この章を終えると}:
 \begin{itemize}
 \item エージェントの仕事を、状態・行動・遷移・報酬という MDP の言葉で書けます。
-\item 軌跡全体に 1 つの報酬を与え、モデルが書いたトークンだけに勾配を流す GRPO を実装できます。
+\item 軌跡全体に 1 つの報酬を与え、モデルが書いたトークンだけを損失に入れる GRPO を実装できます。
 \item 報酬の設計（正解の報酬、ツールのコスト）で、エージェントの振る舞いが変わることを実験で確かめられます。
 \item 強化学習だけでは届かない所と、SFT で下地を作ってから強化学習をする理由を説明できます。
 \item 報酬ハッキング、検証器、サンドボックス、並列ロールアウトなど、実際の Agentic RL の基盤を説明できます。
@@ -18,8 +18,8 @@
 
 \begin{readingguide}
 \item[\rgpre] この章は 3 周目に読む章です。\chapref{ch:rl-llm}の GRPO（\secref{sec:rl-grpo}）と実験の結果 82.6\% → 84.7\%（\secref{sec:rl-exp}）、\chapref{ch:agent}のツール呼び出しの書式・エージェントループ・\file{ch23_tool_sft.pt}（\secref{sec:agent-toolcall}〜\secref{sec:agent-mini}）を、そのまま使います。\chapref{ch:policy-gradient}からは、方策勾配とベースラインの考え方だけを使います。確率比とクリップ、GAE は名前が出るだけです。
-\item[\rgmust] \secref{sec:arl-why}〜\secref{sec:arl-mdp}：学習前のエージェントの診断と、エージェントの仕事を MDP として書く方法。ここで測る 2.3\% と 31.9\% という 2 つの数字が、後の実験の失敗を説明します。
-\item[\rgmust] \secref{sec:arl-env}〜\secref{sec:arl-grpo}：環境と報酬を作り、GRPO を軌跡に広げます。報酬の線引きの計算と、マスク付きの損失（式\eqref{eq:arl-loss}）が、この章の背骨です。
+\item[\rgmust] \secref{sec:arl-why}〜\secref{sec:arl-mdp}：学習前のエージェントの診断と、エージェントの仕事を MDP として書く方法、学習の 1 周（\figref{fig:arl-cycle}）。ここで測る 2.3\% と 31.9\% という 2 つの数字が、後の実験の失敗を説明します。
+\item[\rgmust] \secref{sec:arl-env}〜\secref{sec:arl-grpo}：環境と報酬を作り、GRPO を軌跡に広げます。報酬の線引きの計算と、マスク付きの損失（式\eqref{eq:arl-loss}）が、この章の中心です。
 \item[\rgskim] \secref{sec:arl-rollout}：多くの軌跡を束ねて進めるコードの細部。「\code{rollout} は軌跡のリストを返し、モデルが書いたトークンにマスク 1 を付ける」という結論と\figref{fig:arl-rollout-turns}を押さえれば、先へ進めます。
 \item[\rgmust] \secref{sec:arl-exp}：強化学習だけでは失敗し、短い SFT をはさむと 63.9\% → 92.8\% に伸びる実験。\chapref{ch:capstone}は、この結果とモデルを使います。
 \item[\rgskim] \secref{sec:arl-real}：実際の開発の規模と基盤。「骨組みは本章と同じで、手間の大半は環境と基盤にある」という結論と、\tabref{tab:arl-scale}・\figref{fig:arl-infra}をつかめば足ります。
@@ -72,22 +72,23 @@
 
 一つ目は、採点の対象です。
 1 回の応答ではなく、\textbf{ツールを呼んで結果を受け取り、また考えて答える、という一連の仕事}を採点します。
-このような複数ステップの仕事を強化学習で鍛える方法を、\term{Agentic RL}{agentic reinforcement learning}と呼びます。
+このように、ツールとのやり取りを何度もはさむ仕事を強化学習で学習させる方法を、\term{Agentic RL}{agentic reinforcement learning}と呼びます。
 
 二つ目は、\textbf{何を学ばせるか}です。
 \chapref{ch:rl-llm}の強化学習は、暗算という\textbf{能力そのもの}を伸ばそうとして、82.6\% から 84.7\% への約 2 ポイントの伸びにとどまりました。
 この章の強化学習が変えるのは、「いつ・どう道具を使うか」という\textbf{振る舞い}です。
 先に結果を言うと、同じ 1,000 問の正答率は、31.6\% から最後には 92.8\% に届きます。
 
-ただし、その全部が強化学習の手柄ではありません。
-強化学習だけで鍛える最初の実験は失敗します。
+ただし、その全部が強化学習の成果ではありません。
+強化学習だけで学習させる最初の実験は失敗します。
 式の書き方を教える短い SFT で 63.9\% まで上げ、そこから強化学習で 92.8\% に届きました。
 強化学習のぶんは 63.9\% → 92.8\% の約 29 ポイントです。
 それでも、同じ GRPO で約 2 ポイントだった\chapref{ch:rl-llm}とは、効き方がまったく違います。
-なぜ失敗し、どう立て直したかも含めて、手元のエージェントを実際に鍛えながら順に見ていきましょう。
+この章で追いかける数字は、31.6\%（学習前）→ 63.9\%（短い SFT の後）→ 92.8\%（強化学習の後）の 3 つです。
+なぜ失敗し、どう立て直したかも含めて、手元のエージェントを実際に学習させながら順に見ていきましょう。
 
 %======================================================================
-\section{なぜエージェントを強化学習で鍛えるのか}\label{sec:arl-why}
+\section{なぜエージェントを強化学習で学習させるのか}\label{sec:arl-why}
 
 章の冒頭で見た \code{64*6} の失敗は、たまたまでしょうか。
 それとも、SFT だけでエージェントを作ることの限界なのでしょうか。
@@ -127,7 +128,7 @@
 \addplot[fill=figblue, draw=bookblue] coordinates {(1,0.001) (2,0.504) (3,0.789)};
 \end{axis}
 \end{tikzpicture}
-\caption{質問の言い回しごとの、最初に \code{<|tool|>} を選ぶ確率（\file{probe.txt} の 2〜4 行目）。}
+\caption{質問の言い回しごとの、最初に \code{<|tool|>} を選ぶ確率（\file{probe.txt} の 2〜4 行目。図では確率の小さい順に並べ替えた）。どの型にも足し算と引き算の両方が入る（「\code{a+bは？}」型には「\code{a-bは？}」も入る）。}
 \label{fig:arl-probe-bar}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.45\linewidth}
@@ -135,7 +136,7 @@
 \begin{tikzpicture}
 \begin{axis}[ybar, width=\linewidth, height=33mm, ymin=0, ymax=1.0, bar width=9mm,
   xmin=0.4, xmax=2.6, xtick={1,2},
-  xticklabels={{電卓を\\呼ばせた}, {暗算\\させた}},
+  xticklabels={{電卓を呼ばせた\\（477 問）}, {暗算させた\\（523 問）}},
   xticklabel style={align=center},
   tick label style={font=\scriptsize}, ylabel={加減算の正答率}, label style={font=\footnotesize},
   nodes near coords, nodes near coords style={font=\scriptsize},
@@ -143,7 +144,7 @@
 \addplot[fill=figorange, draw=bookorange] coordinates {(1,0.023) (2,0.319)};
 \end{axis}
 \end{tikzpicture}
-\caption{最初の役割トークンを強制したときの加減算の正答率（\file{probe.txt} の 9 行目）。}
+\caption{最初の役割トークンを強制したときの加減算の正答率（\file{probe.txt} の「半々に強制」の行）。どちらの棒も、3 通りの言い回しを混ぜた問題での値。}
 \label{fig:arl-forced}
 \end{minipage}
 \end{figure}
@@ -152,13 +153,17 @@
 強制的に電卓を呼ばせた 477 問の正答率は 2.3\% しかありません。
 暗算させた 523 問の 31.9\% より、ずっと低いのです（\figref{fig:arl-forced}）。
 続く例の 3 行が示すとおり、式を \code{*} で書いたり、数を写し間違えたりするからです。
+一方、暗算の 31.9\% も、冒頭の「\code{a+bは？}」型の約 81\% よりずっと低い値です。
+523 問には 3 通りの言い回しが混ざっていて、「\code{a+bは？}」型以外の言い回しは、暗算でもほとんど解けないからです。
+貪欲の評価で、「\code{a+bは？}」型以外の質問に暗算で答えた 224 問の正答率は 7.6\% でした（集計は \file{ch24/phrasing.py}）。
 この 2 本の棒の差は、後の実験で大きな意味を持ちます。
 貪欲（温度 0。いちばん確率の高いトークンを選ぶ）での成績（出力の中ほどの 3 行）は、加減算 31.6\%、掛け算 91.3\%、掛けて足す 98.3\% でした。
 
 \begin{table}[tbp]
 \centering
 \caption{学習前のエージェント（\file{ch23_tool_sft.pt}）の診断。加減算の質問 1,000 問を言い回しで 3 つに分けた。
-電卓の確率は、質問の直後に \code{<|tool|>} を選ぶ確率（温度 1）の平均。}
+電卓の確率は、質問の直後に \code{<|tool|>} を選ぶ確率（温度 1）の平均。
+各型は足し算と引き算の両方を含む（例は引き算の問題。\figref{fig:arl-probe-bar}の「\code{a+bは？}」型が 1 行目に当たる）。}
 \label{tab:arl-probe}
 \small
 \begin{tabular}{p{33mm}rrp{54mm}}
@@ -167,7 +172,7 @@
 \midrule
 \code{65-46は？} & 348 & 0.001 & ほぼ必ず暗算。電卓を試す機会がない \\
 \code{65引く46は？} & 307 & 0.504 & 半々。電卓を呼ぶと式を書き誤る \\
-\code{65から46を引くと…} & 345 & 0.789 & ほぼ電卓。掛け算の言い回しに似ている \\
+\code{65から46を引くと…} & 345 & 0.789 & ほぼ電卓。掛け算の言い回しに似ているためと考えられる \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -201,8 +206,9 @@
 \draw[arr] (q2) -- (try); \draw[arr] (try) -- (rl);
 \node[lbl, above=1mm of q2] {RL：結果だけを採点する};
 \end{tikzpicture}
-\caption{SFT と強化学習の違い。SFT は「正しい振る舞い」を人が書く必要がある。
-強化学習は振る舞いをモデルに選ばせ、結果だけを採点する。}
+\caption{SFT と強化学習の違い（模式図。右の試行の結果は、説明のために作った例）。SFT は「正しい振る舞い」を人が書く必要がある。
+強化学習は振る舞いをモデルに選ばせ、結果だけを採点する。
+実際には、学習前のこのモデルは「\code{a+bは？}」型の質問ではほぼ必ず暗算し、電卓を呼んでも正しい式をほとんど書けない（\tabref{tab:arl-probe}、\figref{fig:arl-forced}）。このことが後の実験で問題になる（\secref{sec:arl-exp}）。}
 \label{fig:arl-sft-vs-rl}
 \end{figure}
 
@@ -216,7 +222,7 @@
 この節の要点です。
 学習前のエージェントは、質問文の見た目で電卓を呼び、しかも足し算の式が書けません。
 「いつツールを使うか」のお手本は書けませんが、結果の採点はできます。
-これが、エージェントを強化学習で鍛える理由です。
+これが、エージェントを強化学習で学習させる理由です。
 
 %======================================================================
 \section{エージェントの仕事を MDP として書く}\label{sec:arl-mdp}
@@ -224,7 +230,7 @@
 強化学習を使うと決めたら、まず問題を強化学習の言葉で書き直す必要があります。
 \chapref{ch:rl-llm}では、1 回の応答の生成を、トークンを 1 つずつ選ぶ MDP として書きました。
 エージェントの仕事では、そこに「外の世界」（電卓）が加わります。
-この節の問いは、その違いを MDP の言葉でどう書くか、です。
+この節の問いは、その違いを MDP の言葉でどう書くか、そして学習の 1 周で何をくり返すのか、です。
 
 \subsection{状態・行動・遷移・報酬}
 
@@ -233,9 +239,15 @@
 
 \begin{itemize}
 \item \textbf{状態} $s_t$：それまでの文脈の全文です。質問、自分が書いた発話、電卓が返した結果をすべて並べたトークン列です。
-大きなエージェントでは、これに「環境の状態」（ファイルの中身、ブラウザの画面など）が加わります。
+大きなエージェントでは、文脈の外にも「環境の状態」（ファイルの中身、ブラウザの画面など）があります。
+モデルが見られるのは、そのうちツールで読み出して文脈に入った部分だけです。
+このように、方策が環境の状態の一部しか見られない問題を\term{部分観測 MDP}{partially observable MDP; POMDP}と呼び、文脈に入った環境の出力を\term{観測}{observation}と呼びます。
+本章の電卓には、文脈の外に隠れた状態がありません。電卓の結果は、すべて文脈に入ります。
 \item \textbf{行動} $a_t$：次の 1 トークンです。役割トークン \code{<|tool|>} を選ぶことも、式の数字を書くことも、すべて行動です。
-\chapref{ch:agent}では「ツール呼び出しの文字列」という発話 1 つをまとめて行動と見ましたが、学習の式では、それを 1 トークンずつに分けて数えます。
+\chapref{ch:agent}の\tabref{tab:agent-rl-map}では、発話 1 つ（ツール呼び出しの文字列か、最終応答）をまとめて行動と見ました。
+本章の学習の式では、それを 1 トークンずつに分けて数えます。
+言語モデルは確率を 1 トークンずつ出すので、発話の確率はトークンの確率の積になり、方策勾配もトークンごとの和として計算できるからです（\chapref{ch:rl-llm}と同じ見方です）。
+二つの見方は、同じ軌跡を別の細かさで区切ったもので、報酬も、学習で動かす確率も同じです。
 \item \textbf{遷移}：行動のトークンを文脈の末尾に足すことです。ただし、\code{<|tool|>式<|end|>} を書き終えたときだけは、
 外側のプログラムが電卓を実行し、\code{<|result|>値<|end|>} を文脈に書き足します。
 この部分は\textbf{モデルが選んだものではなく、環境が書いたもの}です。
@@ -243,80 +255,271 @@
 途中の各トークンの報酬は 0 です。
 \item \textbf{割引率} $\gamma$：遠い先の報酬をどれだけ割り引くかを決める数でした。
 本章では\chapref{ch:rl-llm}と同じく $\gamma=1$ とし、最後の報酬を割り引かずにそのまま使います。
-どのエピソードも数ターンで必ず終わるので、割り引かなくても困りません。
+どのエピソードもモデルの発話 3 回までで必ず終わるので、割り引かなくても困りません。
 \end{itemize}
 
-\chapref{ch:rl-llm}の MDP との違いは、3 つ目の遷移にあります。
-1 回の応答では、遷移は「選んだトークンを足す」だけで、完全に決まっていました。
-エージェントでは、ときどき\textbf{環境が文脈に割り込みます}。
-私たちの電卓は決まった値を返しますが、検索エンジンは同じ問い合わせにも日によって違う結果を返します。
-実際の遷移は確率的で、時間とともに変わりもするのです。
+\paragraph{4 つの時間の単位。}
+この章には、時間の進み方を数える単位が 4 つ出てきます。
+取り違えやすいので、ここで名前を決めておきます（\figref{fig:arl-traj}の下の段）。
+\begin{itemize}
+\item \textbf{トークンの位置} $k$：軌跡の中で何番目のトークンか、です。質問と電卓の結果のトークンも数えます。
+\figref{fig:arl-traj}の軌跡は 30 トークンで、$k=1,\dots,30$ です。
+\item \textbf{MDP の時刻} $t$：モデルが 1 トークン選ぶたびに 1 進みます。
+電卓の結果のトークンは、モデルが \code{<|end|>} を選んだ直後の 1 回の遷移で、まとめて書き足されます。
+ですから、結果のトークンには時刻を割り当てません。
+\figref{fig:arl-traj}では、モデルが選んだ 11 個のトークンが $a_0,\dots,a_{10}$ です。
+\item \textbf{ターン}：モデルの 1 回の発話（\code{<|tool|>}…\code{<|end|>} か \code{<|assistant|>}…\code{<|end|>}）と、それに対する環境の返答を合わせて、1 ターンと呼びます。
+最終応答で終わるターンには、環境の返答はありません。
+本章のエピソードは最大 3 ターンです。
+\item \textbf{学習ステップ}：パラメータを 1 回更新する単位です（\chapref{ch:rl-llm}と同じ使い方です）。
+本章では、1 学習ステップに 128 本のエピソードを作ります（\figref{fig:arl-cycle}）。
+\end{itemize}
+大きいほうから並べると、1 学習ステップは 128 エピソード、1 エピソードは 1〜3 ターン、1 ターンはモデルの数トークンの発話と環境の返答です。
+以下、「ステップ」とだけ書いたら、学習ステップのことです。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm]
-\tikzset{t/.style={draw=black!50, minimum height=6mm, inner sep=1.5pt, rounded corners=1pt}}
-\def\Y{0}
-\node[t, fill=figgray, anchor=west] (u) at (0,\Y) {\code{<|user|>64と6を足すといくつですか？<|end|>}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of u] (a1) {\code{<|tool|>}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of a1] (a2) {\code{64+6}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of a2] (a3) {\code{<|end|>}};
-\node[t, fill=figgray, anchor=west] (r) at (12,-17) {\code{<|result|>70<|end|>}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of r] (b1) {\code{<|assistant|>}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of b1] (b2) {\code{70です。}};
-\node[t, fill=figorange, anchor=west, right=0.6mm of b2] (b3) {\code{<|end|>}};
-\node[greenbox, anchor=west, font=\scriptsize] (R) at (98,-17) {報酬 $r$};
-\draw[arr] (b3) -- (R);
-\node[lbl, anchor=west] at (0,7) {質問（環境が書く。マスク 0）};
-\node[lbl, anchor=west] at (56,7) {電卓の呼び出し（モデルが書く。マスク 1）};
-\node[lbl, anchor=west] at (0,-24) {電卓の結果（環境が書く。マスク 0）};
-\node[lbl, anchor=west] at (46,-24) {最終応答（モデルが書く。マスク 1）};
-\draw[darr] (a3.south) -- ++(0,-4) -| node[lbl, below, pos=0.25]{電卓が実行して結果を返す} (r.north);
+\begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm,
+  tk/.style={draw=black!50, minimum height=5.5mm, minimum width=4.4mm, inner sep=1pt,
+    rounded corners=1pt, font=\scriptsize\ttfamily, anchor=west},
+  mo/.style={tk, fill=figorange}, en/.style={tk, fill=figgray},
+  kk/.style={font=\tiny, text=black!70, inner sep=0.5pt},
+  tt/.style={font=\tiny, text=bookaccent, inner sep=0.5pt}]
+% 1 段目：質問とターン 1 の発話
+\node[en, font=\scriptsize] (q) at (0,0) {質問（15 トークン）};
+\node[mo, right=0.6mm of q] (a0) {tool};
+\node[mo, right=0.6mm of a0] (a1) {6};
+\node[mo, right=0.6mm of a1] (a2) {4};
+\node[mo, right=0.6mm of a2] (a3) {+};
+\node[mo, right=0.6mm of a3] (a4) {6};
+\node[mo, right=0.6mm of a4] (a5) {end};
+% 2 段目：電卓の結果とターン 2 の発話
+\node[en] (r0) at (16,-36) {result};
+\node[en, right=0.6mm of r0] (r1) {7};
+\node[en, right=0.6mm of r1] (r2) {0};
+\node[en, right=0.6mm of r2] (r3) {end};
+\node[mo, right=3mm of r3] (b0) {asst};
+\node[mo, right=0.6mm of b0] (b1) {7};
+\node[mo, right=0.6mm of b1] (b2) {0};
+\node[mo, right=0.6mm of b2, font=\scriptsize] (b3) {です。};
+\node[mo, right=0.6mm of b3] (b4) {end};
+\node[greenbox, font=\scriptsize, minimum width=12mm, anchor=west, right=5mm of b4] (R) {報酬 $r$};
+\draw[arr] (b4) -- (R);
+% 位置 k と時刻 t の段
+\node[kk, anchor=east] at (-1,-5) {位置 $k$};
+\node[tt, anchor=east] at (-1,-8.2) {時刻 $t$};
+\node[kk] at ([yshift=-2.25mm]q.south) {1〜15};
+\node[tt] at ([yshift=-5.45mm]q.south) {（行動ではない）};
+\foreach \n/\k/\t in {a0/16/0, a1/17/1, a2/18/2, a3/19/3, a4/20/4, a5/21/5} {
+  \node[kk] at ([yshift=-2.25mm]\n.south) {\k};
+  \node[tt] at ([yshift=-5.45mm]\n.south) {\t};
+}
+\node[kk, anchor=east] at (15,-41) {位置 $k$};
+\node[tt, anchor=east] at (15,-44.2) {時刻 $t$};
+\foreach \n/\k in {r0/22, r1/23, r2/24, r3/25} {
+  \node[kk] at ([yshift=-2.25mm]\n.south) {\k};
+  \node[tt, text=black!50] at ([yshift=-5.45mm]\n.south) {--};
+}
+\foreach \n/\k/\t in {b0/26/6, b1/27/7, b2/28/8, b3/29/9, b4/30/10} {
+  \node[kk] at ([yshift=-2.25mm]\n.south) {\k};
+  \node[tt] at ([yshift=-5.45mm]\n.south) {\t};
+}
+% ターンの区切り
+\node[anchor=south, text=black!75, align=center] at ([yshift=1mm]q.north) {質問（マスク 0）};
+\draw[decorate, decoration={brace, amplitude=2pt}, draw=black!60]
+  ([yshift=1mm]a0.north west) -- ([yshift=1mm]a5.north east)
+  node[midway, above=1.2mm, text=black!75, align=center] {ターン 1：電卓の呼び出し\\（マスク 1）};
+\draw[decorate, decoration={brace, amplitude=2pt}, draw=black!60]
+  ([yshift=1mm]r0.north west) -- ([yshift=1mm]r3.north east)
+  node[midway, above=1.2mm, text=black!75, align=center] {ターン 1 の残り：\\電卓の結果（マスク 0）};
+\draw[decorate, decoration={brace, amplitude=2pt}, draw=black!60]
+  ([yshift=1mm]b0.north west) -- ([yshift=1mm]b4.north east)
+  node[midway, above=1.2mm, text=black!75, align=center] {ターン 2：最終応答\\（マスク 1）};
+% 電卓の呼び出し → 結果（行と行のあいだの空いた所を通す）
+\draw[darr] (a5.east) -- ++(5,0) coordinate (dz) -- (dz |- 0,-21) -- (11,-21) |- (r0.west);
+\node[lbl, font=\scriptsize, anchor=west, align=left] at ([xshift=1mm]dz |- 0,-9) {電卓が実行して\\結果を返す\\（1 回の遷移）};
+% 状態と行動の例
+\draw[bookblue, thick, |-|] ([yshift=-10.5mm]q.south west) -- ([yshift=-10.5mm]a2.south east)
+  node[midway, below=0.6mm, text=bookblue] {状態 $s_3$：ここまでの全トークン};
+\draw[->, bookblue, thick] ([yshift=-10.5mm]a3.south) -- ([yshift=-7.2mm]a3.south)
+  node[pos=0, anchor=north west, xshift=1.5mm, yshift=-0.6mm, text=bookblue] {行動 $a_3$};
 \end{tikzpicture}
-\caption{1 本の軌跡（エピソード）。橙のトークンはモデルが選んだ行動で、勾配を流す（マスク 1）。
-灰色は質問と電卓の結果で、環境が書いたので勾配を流さない（マスク 0）。報酬は最後に 1 回だけ届く。}
+\caption{1 本の軌跡（エピソード）を、トークン 1 つずつの箱に分けたもの。橙のトークンはモデルが選んだ行動で、損失に入れる（マスク 1）。
+灰色は質問と電卓の結果で、環境が書いたので損失に入れない（マスク 0）。マスク 0 のトークンも文脈としてモデルに入り、後のトークンの計算に使われる。
+報酬は最後に 1 回だけ届く。箱の下の段は、トークンの位置 $k$ と、MDP の時刻 $t$（橙の箱にだけ振る）。
+質問の 15 トークンは 1 つの箱にまとめた。\code{tool}・\code{end}・\code{result}・\code{asst} は、\code{<|tool|>}・\code{<|end|>}・\code{<|result|>}・\code{<|assistant|>} の略。}
 \label{fig:arl-traj}
 \end{figure}
 
-\figref{fig:arl-traj}は、1 本の軌跡をトークンの色で塗り分けたものです。
+\figref{fig:arl-traj}は、1 本の軌跡をトークン 1 つずつの箱に分け、色で塗り分けたものです。
+本書のトークナイザでは、数字は 1 桁 1 トークンなので、式 \code{64+6} は 4 トークンです。
 橙がモデルの行動、灰色が環境の書いた部分です。
+箱の下の 2 段を比べてください。
+位置 $k$ は 30 まで進みますが、時刻 $t$ は橙の箱にだけ振られ、$a_{10}$ で終わります。
+たとえば時刻 3 の状態 $s_3$ は、質問と \code{<|tool|>}・\code{6}・\code{4} を並べた列で、行動 $a_3$ は次の 1 トークン \code{+} です。
 質問から最終応答までの 1 回の仕事が 1 つのエピソードで、その記録の全文が軌跡です。
 どちらも\chapref{ch:rl-basics}で定義した言葉です。
 最終応答を書き終えた状態が、終端状態に当たります。
 右端に 1 つだけある報酬で、橙のトークンすべての確率を調整するのが、この章の強化学習です。
 
-\subsection{1 回の応答の RL と何が違うか}
+マスク 0 は、「このトークンの確率は学習しない」という印です。
+灰色のトークンを、モデルが見ないわけではありません。
+質問も電卓の結果も文脈としてモデルに入り、その後の橙のトークンを計算するときに使われます。
+たとえば最終応答の \code{7} の確率は、直前の結果 \code{70} を読んだうえで計算されます。
+学習で上げ下げしないのは、灰色のトークン自身を出す確率だけです。
 
-いま書いた MDP は、\chapref{ch:rl-llm}の MDP とどこが同じで、どこが違うのでしょうか。
-その違いは、学習の難しさにどう響くのでしょうか。
-項目ごとに並べて確かめます。
+\chapref{ch:rl-llm}の MDP との違いは、3 つ目の遷移にあります。
+1 回の応答では、遷移は「選んだトークンを足す」だけで、完全に決まっていました。
+エージェントでは、ときどき\textbf{環境が文脈に書き足します}。
+私たちの電卓は、同じ式にいつも同じ値を返します。遷移は決定的です。
+検索エンジンや外部のサービスでは、同じ呼び出しにも違う結果が返ることがあります。このときの遷移は確率的です。
+さらに、検索の対象が日々更新されると、結果の出方そのものが時間とともに変わります。
+これは\textbf{非定常}と呼ばれ、遷移の確率が変わらないという MDP の前提から外れます。
+遷移が確率的だと、同じ行動でも報酬が運で変わります。
+アドバンテージに運のぶんが混ざるので、学習にはより多くの軌跡が要ります（演習 5 で考えます）。
+なお、温度 1 で生成するたびに応答が違うのは、方策からサンプリングしているからです。
+遷移が確率的なのとは別のことです。
+
+\subsection{学習の 1 周と、迷路・1 回の応答との比較}\label{sec:arl-cycle}
+
+いま書いた MDP で、学習は具体的に何をくり返すのでしょうか。
+そして、迷路（\chapref{ch:rl-basics}）や 1 回の応答（\chapref{ch:rl-llm}）と、どこが同じでどこが違うのでしょうか。
+先に学習の 1 周の全体を図で見て、それから項目ごとに並べます。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,every node/.style={font=\scriptsize},
+  fr/.style={draw=bookgray,rounded corners=2pt,minimum width=41mm,minimum height=68mm,anchor=north west,inner sep=0pt},
+  frc/.style={fr,draw=bookorange,very thick},
+  ft/.style={font=\footnotesize\bfseries,text=bookblue,anchor=north west},
+  qb/.style={draw=bookblue,fill=figblue,rounded corners=1pt,minimum width=34mm,minimum height=4.6mm,anchor=north west,font=\scriptsize},
+  tx/.style={anchor=north west,align=left,font=\scriptsize,inner sep=0pt}]
+  \node[fr] (f1) at (0,0) {};
+  \node[frc] (f2) at (44.5,0) {};
+  \node[frc] (f3) at (89,0) {};
+  \node[frc] (f4) at (89,-73) {};
+  \node[fr] (f5) at (44.5,-73) {};
+  % ① 問題を作る（②〜④の 1〜3 行目の問題）
+  \node[ft] at (1.5,-1.5) {① 問題を作る};
+  \node[qb] at (3.5,-9) {\code{9×35に519を足すと…}};
+  \node[qb] at (3.5,-15) {\code{745から53を引くと…}};
+  \node[qb] at (3.5,-21) {\code{720-66は？}};
+  \node[anchor=north] at (20.5,-26) {$\vdots$};
+  \node[tx,text width=37mm] at (2.5,-36) {$Q=16$ 問を毎ステップその場で作る。上の 3 問は、②〜④の 1〜3 行目の問題。\\[1mm]種類は平均して、加減算：掛け算：掛けて足す $=2:1:1$（この図の 16 問では $9:4:3$）。\\[1mm]正解の数も同時に分かる。};
+  % ② 多ターンでロールアウトする
+  \node[ft] at (46,-1.5) {② 多ターンで解かせる};
+  \begin{axis}[at={(48.5mm,-9mm)},anchor=north west,x=2.2mm,y=2.2mm,y dir=reverse,
+    xmin=0.5,xmax=8.5,ymin=0.5,ymax=16.5,hide axis,clip=false,scale only axis,
+    scatter/classes={0={mark=square*,mark size=1.1mm,draw=white,fill=bookblue!35},
+                     1={mark=square*,mark size=1.1mm,draw=white,fill=bookorange!70}}]
+  \addplot[scatter,only marks,scatter src=explicit symbolic]
+    table[col sep=comma,x=i,y=q,meta=calls]{code/ch24/out/fig_cycle.csv};
+  \end{axis}
+  \node[tx,text width=17mm] at (68,-9) {1 行が 1 問の\\グループ（$G=8$）。\\1 マスが\\\textbf{1 エピソード}。\\[1mm]橙：電卓を呼び、\\2 ターン（89 本）\\青：1 ターンで\\終えた（39 本）\\[1mm]電卓の結果は\\環境が書き足す。};
+  \node[tx,text width=38mm] at (46.5,-47) {$16\times8=128$ 本。温度 1。探索の $\varepsilon=0.2$（確率 0.2 で、最初の役割トークンを半々に強制する）。};
+  % ③ 採点する
+  \node[ft] at (90.5,-1.5) {③ 採点する（報酬）};
+  \begin{axis}[at={(93mm,-9mm)},anchor=north west,x=2.2mm,y=2.2mm,y dir=reverse,
+    xmin=0.5,xmax=8.5,ymin=0.5,ymax=16.5,hide axis,clip=false,scale only axis,
+    scatter/classes={0={mark=square*,mark size=1.1mm,draw=white,fill=bookaccent!22},
+                     1={mark=square*,mark size=1.1mm,draw=white,fill=bookaccent!55},
+                     2={mark=square*,mark size=1.1mm,draw=white,fill=bookgreen!22},
+                     3={mark=square*,mark size=1.1mm,draw=white,fill=bookgreen!55}}]
+  \addplot[scatter,only marks,scatter src=explicit symbolic]
+    table[col sep=comma,x=i,y=q,meta=rcls]{code/ch24/out/fig_cycle.csv};
+  \end{axis}
+  \node[tx,text width=17mm] at (112.5,-9) {検証器が 1 本\\ずつ採点する。\\[1mm]%
+\textcolor{bookgreen!55}{\rule{2.2mm}{2.2mm}} 1：\\\quad 暗算で正解\\%
+\textcolor{bookgreen!22}{\rule{2.2mm}{2.2mm}} 0.8：\\\quad 電卓で正解\\%
+\textcolor{bookaccent!55}{\rule{2.2mm}{2.2mm}} 0：\\\quad 暗算で誤り\\%
+\textcolor{bookaccent!22}{\rule{2.2mm}{2.2mm}} $-0.2$：\\\quad 電卓で誤り};
+  \node[tx,text width=38mm] at (90.5,-47) {色は報酬 $r$。緑が正解、赤が誤り（\figref{fig:rl-cycle}と同じ）。淡い色は電卓を使った軌跡で、電卓 1 回のコスト $c=0.2$ が引かれる。\\[1mm]報酬の平均 0.38};
+  % ④ 方策を 1 回更新する
+  \node[ft] at (90.5,-74.5) {④ 方策を 1 回更新する};
+  \begin{axis}[at={(93mm,-82mm)},anchor=north west,x=2.2mm,y=2.2mm,y dir=reverse,
+    xmin=0.5,xmax=8.5,ymin=0.5,ymax=16.5,hide axis,clip=false,scale only axis,
+    scatter/classes={0={mark=square*,mark size=1.1mm,draw=white,fill=bookaccent!55},
+                     1={mark=square*,mark size=1.1mm,draw=white,fill=bookgreen!55},
+                     2={mark=square*,mark size=1.1mm,draw=white,fill=black!22}}]
+  \addplot[scatter,only marks,scatter src=explicit symbolic]
+    table[col sep=comma,x=i,y=q,meta=acls]{code/ch24/out/fig_cycle.csv};
+  \end{axis}
+  \node[tx,text width=17mm] at (112.5,-82) {行ごとに標準化して $\hat A_i$。\\[1mm]色は $\hat A_i$ の\\符号（報酬では\\ない）。\\緑：上げる\\赤：下げる\\灰：$\hat A=0$（全員同じ報酬の 1 行）};
+  \node[tx,text width=38mm] at (90.5,-120) {モデルが書いたトークン（マスク 1、計 1,594 個）だけで損失を作り、$\vtheta$ を 1 回動かす。};
+  % ⑤ 捨てて次の周へ
+  \node[ft] at (46,-74.5) {⑤ 捨てて、次の周へ};
+  \begin{scope}[shift={(48.5,-117.2)},x=2.2mm,y=2.2mm]
+    \fill[black!4] (0,0) rectangle (8,16);
+    \draw[black!15,step=1] (0,0) grid (8,16);
+    \draw[bookgray,dashed,thick] (0,0) -- (8,16) (0,16) -- (8,0);
+  \end{scope}
+  \node[tx,text width=17mm] at (68,-82) {使った 128 本は捨てる。\\[1mm]更新したモデルで、新しい 16 問から ① をやり直す。\\[1mm]①〜⑤の 1 周が 1 学習ステップ。};
+  \node[tx,text width=38mm] at (46.5,-120) {SFT＋RL では、$c=0.2$ でも $c=0$ でも 73 ステップで $128\times73=9{,}344$ 本。};
+  % 評価（1 周の外）
+  \node[graybox,anchor=north west,text width=37mm,align=left,font=\scriptsize] at (0,-75) {\textbf{評価（1 周の外で）}\\学習の前と後に、別の種で作った固定の問題（加減算 1,000 問など）を貪欲で解かせ、正答率と電卓の使用率を測る。勾配には入らない（\tabref{tab:arl-setup}）。};
+  \node[tx,text width=38mm,text=bookorange!80!black] at (0,-106) {\textbf{橙の枠}（②③④）が、1 回の応答の 1 周（\figref{fig:rl-cycle}）と違うコマ。\\[1mm]②：多ターン（電卓の結果が入る）\\③：報酬が 4 つの値（電卓のコスト）\\④：モデルが書いたトークンだけを損失に入れる\\[1mm]①は、問題の種類が違うだけ（\figref{fig:rl-cycle}は加減算だけ）。};
+  % 矢印
+  \draw[arr] (f1.east) -- (f2.west);
+  \draw[arr] (f2.east) -- (f3.west);
+  \draw[arr] (f3.south) -- (f4.north);
+  \draw[arr] (f4.west) -- (f5.east);
+  \draw[arr,rounded corners=2pt] (f5.north) -- ++(0,2.5) -| (f1.south);
+  % 時間の単位
+  \node[anchor=north west,text width=127mm,align=left] at (0,-144) {時間の単位：1 学習ステップ ＝ 128 エピソード。1 エピソード ＝ 1〜3 ターン（この例の 128 本は 1 か 2 ターンで、3 ターンになったものはない）。1 ターン ＝ モデルの発話（数トークン）＋環境の返答（電卓を呼んだときだけ。最終応答のターンにはない）。この例では、1 エピソードでモデルが書いたのは 5〜22 トークン。};
+\end{tikzpicture}
+\caption{エージェントの強化学習の 1 周（コマ割りの図。SFT＋RL の設定）。①〜⑤を 1 回まわるのが 1 学習ステップである。
+②③④のマスの色は、SFT＋RL（電卓 1 回のコスト $c=0.2$。\secref{sec:arl-exp}）の 1 ステップ目と同じ乱数で、同じ 128 本を作り直した結果（\file{ch24/fig_cycle.py}。報酬の平均 0.3766 が学習の記録と一致することを確かめた）。
+③の色の約束（緑が正解、赤が誤り）は\figref{fig:rl-cycle}の③と同じで、電卓を使った軌跡を淡い色にした。}
+\label{fig:arl-cycle}
+\end{figure}
+
+\figref{fig:arl-cycle}は、\chapref{ch:rl-llm}の\figref{fig:rl-cycle}の多ターン版です。
+コマの並びは同じで、違うのは橙の枠の②③④です。
+②では、1 本のエピソードの途中で、電卓が結果を書き足します。
+図の 128 本のうち 89 本が電卓を呼んで 2 ターンになり、39 本は 1 ターンで終わりました。
+③の報酬は、電卓のコスト $c=0.2$ のぶん、0 と 1 のほかに 0.8 と $-0.2$ も取ります。
+③の色の約束は\figref{fig:rl-cycle}と同じで、緑が正解、赤が誤りです。
+淡い色の軌跡は、電卓を使ったので $c$ が引かれています。
+④では、モデルが書いたトークンだけを損失に入れます。
+④の色は報酬ではなく、$\hat A_i$ の符号です。
+①は、問題の種類が加減算だけから 3 種類に増えましたが、問題を作って正解も同時に分かるという働きは同じです。
+16 行のうち 1 行（13 行目、掛け算の問題）は 8 本とも同じ報酬 0.8 で、その行の $\hat A$ はすべて 0 です（計算の丸めで $\pm0.001$ 程度の値になります）。
+②は\secref{sec:arl-rollout}、③は\secref{sec:arl-env}、④は\secref{sec:arl-grpo}で、コードと一緒に詳しく見ます。
 
 \begin{table}[tbp]
 \centering
-\caption{1 回の応答を鍛える強化学習（\chapref{ch:rl-llm}）と、エージェントを鍛える強化学習（本章）の比較。
-下の 2 行は本書の実験での違い（結果は\secref{sec:arl-exp}で確かめる）。}
+\caption{迷路（\chapref{ch:rl-basics}）、1 回の応答を学習させる強化学習（\chapref{ch:rl-llm}）、エージェントを学習させる強化学習（本章）の比較。
+\tabref{tab:rl-settings}の「道具を使う RL」の列を、多ターンにかかわる項目について広げたもの。
+状態の数や、同じ状態に二度来るかなど、迷路と LLM に共通の違いは\tabref{tab:rl-vs-maze}にある。
+下の 2 行は本書の実験での違いで、「加減算の成績」は加減算 1,000 問の正答率（結果は\secref{sec:arl-exp}で確かめる）。}
 \label{tab:arl-vs-rl22}
-\small
-\begin{tabular}{p{25mm}p{42mm}p{52mm}}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{18.5mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{46.5mm}}
 \toprule
- & 1 回の応答（\chapref{ch:rl-llm}） & エージェント（本章・実際の開発） \\
+ & 迷路（\chapref{ch:rl-basics}） & 1 回の応答（\chapref{ch:rl-llm}） & エージェント（本章。実際の開発） \\
 \midrule
-1 エピソード & 質問 → 応答 1 つ & 質問 → 発話・ツール・結果の往復 → 最終応答 \\
-環境 & なし（トークンを足すだけ） & あり（電卓、シェル、ブラウザ、ファイル）\\
-遷移 & 決定的 & 環境が割り込む。確率的なことも、変わることもある \\
-1 エピソードの長さ & 本書の実験は数トークン。長く考える推論モデルでは数千トークン & 本章は約 30 トークン・最大 3 ターン。実際は 100 ターン・10 万トークン超も \\
-報酬 & 最後に 1 回（正誤） & 最後に 1 回（タスクの成否）。ツールのコストなども \\
-勾配を流す所 & 応答の全トークン & モデルが書いたトークンだけ（結果は除く） \\
-1 本の生成の費用 & 生成するだけ & 生成＋ツールの実行（数秒〜数分）\\
+目的 & 期待収益 $J$ を最大に（穴を避けて早くゴールへ） & 報酬の期待値、つまり正答率を最大に & 報酬の期待値（正答率 $-\,c\times$ 1 問あたりの平均の呼び出し回数）を最大に \\ \addlinespace
+1 エピソード & スタートから、ゴールか穴に着くまで & 質問 → 応答 1 つ & 質問 → 発話と電卓の結果の往復 → 最終応答（本章は最大 3 ターン） \\ \addlinespace
+遷移を決めるもの & 環境（床が滑る。確率的） & 方策だけ（選んだトークンを足す。決定的） & 方策と環境。ときどき環境が結果を書き足す（電卓は決定的。検索などは確率的なこともある） \\ \addlinespace
+外部のツール & なし & なし（環境は質問を出し、トークンを足し、採点するだけ） & あり（本章は電卓。実際はシェル、ブラウザ、ファイル） \\ \addlinespace
+報酬 & ゴールで $+1$、穴で $-1$ & 最後に 1 回（正誤） & 最後に 1 回（正誤）。本章では電卓 1 回につき $-c$ \\ \addlinespace
+1 エピソードの長さ & \figref{fig:rlb-trajectory}の例で 5 手 & 本書の実験は数トークン。長く考える推論モデルでは数千トークン & 本章は約 30 トークン・最大 3 ターン。実際は 100 ターン・10 万トークン超も \\ \addlinespace
+集めるデータ & 歩いた軌跡（状態・行動・報酬の列） & 毎ステップ 16 問 $\times$ 8 本の応答と報酬。使ったら捨てる & 毎ステップ 16 問 $\times$ 8 本の軌跡（トークン ID・マスク・電卓の回数・最終応答）と報酬。使ったら捨てる \\ \addlinespace
+損失に入れるトークン & ― & 応答の全トークン & モデルが書いたトークンだけ（ツールの結果は入れない） \\ \addlinespace
+評価 & スタートの価値 $V(8)$ & 学習に使わない問題の正答率（貪欲） & 学習に使わない問題の正答率と、電卓の使用率（貪欲） \\ \addlinespace
+1 本の生成の費用 & ― & 生成するだけ & 生成＋ツールの実行（実際は数秒〜数分）\\
 \midrule
-学ばせるもの & 暗算の\textbf{能力}そのもの & いつ・どう道具を使うかという\textbf{振る舞い} \\
-加減算 1,000 問 & 82.6\% → 84.7\% & 63.9\% → 92.8\%（SFT の前は 31.6\%） \\
+学ばせるもの & ― & 暗算の\textbf{能力}そのもの & いつ・どう道具を使うかという\textbf{振る舞い} \\
+加減算の成績 & ― & 82.6\% → 84.7\% & 63.9\% → 92.8\%（SFT＋RL、$c=0$。SFT の前は 31.6\%） \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\tabref{tab:arl-vs-rl22}に違いを並べました。
-4 行目の「1 エピソードの長さ」は、\term{ホライゾン}{horizon}とも呼びます。
+\tabref{tab:arl-vs-rl22}に、三つを並べました。
+\chapref{ch:rl-llm}の 1 回の応答との本質的な違いは、「遷移を決めるもの」「外部のツール」「損失に入れるトークン」の 3 行です。
+「目的」「1 エピソード」「報酬」「評価」「1 本の生成の費用」の行の違いは、ツールとの往復と、電卓のコスト・使用率が加わったことから来ています。
+「1 エピソードの長さ」の行は、\term{ホライゾン}{horizon}とも呼びます。
 本章の軌跡は約 30 トークンですが、実際のエージェントでは、ツールとの往復が 100 ターン、10 万トークンを超えることもあります。
 ホライゾンが長くなると、最後の報酬が「どの行動のおかげか」が分かりにくくなります。
 \chapref{ch:rl-basics}で見た信用割当の問題が、いっそう厳しくなるのです（\secref{sec:arl-grpo}）。
@@ -324,18 +527,52 @@
 長い仕事で一度も成功しなければ、報酬は 0 ばかりで学ぶ手がかりがありません。
 さらに、軌跡を 1 本作るたびにツールを実行するので、ロールアウト（方策を動かして軌跡を集めること。\chapref{ch:policy-gradient}）が高くつきます。
 
+\paragraph{六つの問いへの、多ターン版の答え。}
+\chapref{ch:rl-llm}では、LLM の強化学習について「何をゴールにするか」などの問いに答えました（\figref{fig:rl-cycle}の後）。
+同じ問いに、本章の多ターンの設定で答えると、次のようになります。
+\begin{itemize}
+\item \textbf{何をゴールとしてやらせるのか}：1 回の仕事の報酬 $r(\tau)$（\secref{sec:arl-env}の式\eqref{eq:arl-reward}）の期待値を最大にすることです。
+報酬は正解なら 1 で、電卓を 1 回呼ぶごとに $c$ を引くので、期待値は「正答率 $-\,c\times$ 1 問あたりの平均の呼び出し回数」です。
+$c=0$ ならゴールは正答率そのもので、$c$ を大きくすると、正答率と呼び出しの節約の釣り合いを取ることがゴールになります（\figref{fig:arl-cost}）。
+\item \textbf{エピソードは何に当たるのか}：1 つの質問から最終応答までの 1 回の仕事です。
+途中に電卓の呼び出しと結果が入り、最大 3 ターンで終わります。
+最終応答にたどり着けなかったもの（役割トークンを書かなかった、3 ターンとも電卓を呼んで使い切った、など）も 1 本のエピソードで、報酬は 0 から呼び出しのコストを引いた値です。
+\item \textbf{どういうデータを集めるのか}：前もって用意するのは、問題を作るプログラムと採点の規則（検証器）だけです。
+軌跡（トークン ID・マスク・電卓の回数・最終応答）と報酬は、毎ステップ、いまのモデルと電卓に作らせます。
+1 ステップに 16 問 $\times$ 8 本 $=128$ 本で、1 回の更新に使ったら捨てます。問題も毎ステップ新しく作ります。
+\item \textbf{どういう訓練をするのか}：同じ質問の 8 本の報酬を標準化してアドバンテージ $\hat A_i$ を作ります。
+それをモデルが書いたトークンの対数確率に掛けて足した損失（\secref{sec:arl-grpo}の式\eqref{eq:arl-loss}）を、勾配降下法で小さくします。
+電卓が書いたトークンは、損失に入れません。
+\item \textbf{どうやってエピソードを評価し、最適化するのか}：エピソードは検証器が 1 本ずつ採点します（報酬）。
+その報酬を同じ質問の 8 本と比べた $\hat A_i$ を重みにして、最適化します。
+モデル全体の出来は、これとは別に、学習に使わない固定の問題を貪欲で解かせた正答率と電卓の使用率で測ります（\figref{fig:arl-cycle}の左下）。
+この評価は勾配には入りません。
+\item \textbf{小さな迷路モデルとの違いは何か}：次の段落で答えます。
+\end{itemize}
+
+迷路との関係は、二つに分けて読めます。
+一つ目は、迷路に\textbf{近づいた}点です。
+1 回の応答では、環境の仕事は「トークンを末尾に付け、最後に採点する」ことだけで、次の状態は方策の選んだとおりに決まりました（\figref{fig:rl-token-mdp}）。
+エージェントでは、迷路の床の滑りと同じように、次の状態の一部を環境が決めます。
+電卓は決定的ですが、検索エンジンのように結果が毎回違う道具なら、遷移は迷路と同じく確率的になります。
+それでも、学習するのは方策だけで、環境の遷移（電卓の働き）は学習しません。この点も迷路と同じです（\tabref{tab:rlb-two-models}）。
+二つ目は、迷路と\textbf{違うまま}の点です。
+状態は文脈の全文なので、数は天文学的で、1 つのエピソードの中で同じ状態に二度と来ません（\tabref{tab:rl-vs-maze}）。
+そのため迷路のような価値の表は作れず、同じ質問から $G$ 本を始め直して、報酬を比べます。
+
 一方で、\textbf{アルゴリズムの骨組みは\chapref{ch:rl-llm}とほとんど同じ}です。
-違うのは「軌跡のどのトークンに勾配を流すか」というマスクの中身だけです。
+違うのは「軌跡のどのトークンを損失に入れるか」というマスクの中身だけです。
 これは\chapref{ch:agent}の SFT で「結果のトークンは学ばない」マスクを使ったのと同じ考え方です。
 
 この節の要点です。
-エージェントの仕事は、状態＝文脈の全文、行動＝次のトークン、遷移＝トークンを足す（ときどき環境が割り込む）、報酬＝最後のタスクの成否、割引率 $\gamma=1$、という MDP で書けます。
-1 回の応答の RL との違いは、環境の割り込み、長いホライゾン、疎な報酬、ロールアウトの費用です。
+エージェントの仕事は、状態＝文脈の全文、行動＝次のトークン、遷移＝トークンを足す（ときどき環境が結果を書き足す）、報酬＝最後のタスクの成否、割引率 $\gamma=1$、という MDP で書けます。
+学習は「問題を作る → 多ターンで解かせる → 採点する → 1 回更新する → 捨てる」の 1 周のくり返しです。
+1 回の応答の RL との違いは、環境が書き足す遷移、損失に入れるトークンの選び方、長いホライゾン、疎な報酬、ロールアウトの費用です。
 
 %======================================================================
 \section{環境と報酬を作る}\label{sec:arl-env}
 
-強化学習でエージェントを鍛えるには、まず\textbf{練習場}が要ります。
+強化学習でエージェントを学習させるには、まずエージェントが仕事をする場が要ります。
 問題を出し、エージェントの行動に応じて結果を返し、最後に採点する仕組みです。
 \chapref{ch:rl-basics}の言葉では、これが環境（エージェントの外側にあるすべて）です。
 この節の問いは、環境にはどんな部品が要り、報酬をどう決めればよいか、です。
@@ -354,7 +591,7 @@
 このように、正解を機械的に確かめられるタスクを\term{検証可能なタスク}{verifiable task}と言い、採点するプログラムを\textbf{検証器}と呼びます。
 \chapref{ch:rl-llm}の「検証可能な報酬」と同じ考え方です。
 学習ではこの 3 種類を 2 : 1 : 1 の割合で混ぜます。
-掛け算を混ぜるのは、加減算を鍛えるあいだに掛け算を忘れないようにするためです。
+掛け算を混ぜるのは、加減算を学習させるあいだに掛け算を忘れないようにするためです。
 
 2 つ目の部品は、エピソードの記録です。
 次の \code{Traj} は、1 本の軌跡を表します。
@@ -375,7 +612,7 @@
 
 3 つ目の部品は、エージェントに実際に仕事をさせて軌跡を集めるロールアウトです。
 \chapref{ch:agent}の \code{run_agent} は、1 問ずつループを回しました。
-強化学習では、1 ステップに 16 問 $\times$ 8 本 $=128$ 本の軌跡を作ります（\secref{sec:arl-grpo}）。
+強化学習では、1 学習ステップに 16 問 $\times$ 8 本 $=128$ 本の軌跡を作ります（\figref{fig:arl-cycle}の②）。
 100 本以上の軌跡が要るので、1 本ずつでは遅すぎます。
 そこで、全部の軌跡を\textbf{ターンごとに束ねて}同時に進めます。
 
@@ -423,9 +660,9 @@
 \node[lbl, anchor=north west] at (63.2,-25.6) {電卓が返す結果};
 \node[lbl, anchor=south west, align=left] at (84.8,4.6) {ターン 2：残った 2 本だけ\\\code{active} は [1, 3]};
 \end{tikzpicture}
-\caption{束ねたロールアウトの進み方（4 本の例）。左端の数字は軌跡の番号。破線の枠の中の発話を、1 回の計算でまとめて生成する。
+\caption{束ねたロールアウトの進み方（4 本の例）。左端の数字は軌跡の番号。破線の枠の中の発話を、束ねて同時に生成する（1 トークンずつ進めるが、各トークンは全員ぶんを 1 回の計算でまとめて出す）。
 \code{<|assistant|>} で答えた 0 番と 2 番はターン 1 で終わり、電卓を呼んだ 1 番と 3 番だけがターン 2 に進む。
-橙がマスク 1、灰色がマスク 0。区切りの \code{<|end|>} は省いた。}
+橙がマスク 1、灰色がマスク 0。1 つの箱は 1 回の発話（または質問・電卓の結果）で、いくつものトークンからなる。質問の前の \code{<|user|>} と、区切りの \code{<|end|>} は省いた。}
 \label{fig:arl-rollout-turns}
 \end{figure}
 
@@ -458,11 +695,12 @@
 \code{<|assistant|>} で始まっていれば、最終応答として \code{reply} に記録して終わりです（32〜34 行目）。
 どちらでもない発話（役割トークンを書かなかった、など）は失敗として扱います。
 このとき \code{reply} は \code{None} のままです。
+3 ターンとも電卓を呼んで \code{max_turns=3} を使い切った軌跡も、最終応答がないので \code{reply} は \code{None} のままで、不正解になります。
 最後の 38 行目の 129 は、文脈長 128 の入力に、最後の位置の正解 1 トークンを足した長さです。
 引数の \code{gen} は乱数の生成器で、同じ実験を再現できるように外から渡します。
 
 \code{_generate_turn} の中身は本文に載せません。
-速くするために、多くの文脈を 1 つの行列にまとめて一度に計算します（短い文脈の前には詰め物のトークン \code{<|pad|>} を入れます）。
+速くするために、多くの文脈を 1 つの行列にまとめて一度に計算します（短い文脈の前には詰め物のトークン \code{<|pad|>} を入れます。詰め物は注意の計算から隠すので、生成の結果は変わりません）。
 途中結果を使い回す\textbf{KV キャッシュ}（\chapref{ch:modern-arch}）も使っています。
 手元の CPU では、128 本のロールアウトが、キャッシュなしで約 14 秒、ありで約 2 秒でした（1 回ずつ測った目安です）。
 
@@ -500,7 +738,9 @@ $\mathbf{1}[\cdot]$ は中が正しければ 1、そうでなければ 0 を返�
 電卓の報酬は、確率 $p'$ で 0.8、残りは $-0.2$ なので、期待値は $0.8p'-0.2(1-p')=p'-0.2$ です。
 途中を書くと、$0.8p'-0.2+0.2p'$ の $p'$ の項をまとめて $p'-0.2$ になります。
 $c$ がほかの値でも同じ計算で、$(1-c)p'-c(1-p')=p'-c$ です。
-電卓を使うと、期待値はいつも $c$ だけ下がるわけです。
+電卓を 1 回使うと、報酬の期待値は、電卓の正答率 $p'$ よりいつも $c$ だけ低くなるわけです（2 回呼べば $2c$ 低くなります）。
+ここでの $p$ と $p'$ は、本来は、学習が実際に解かせる条件（温度 1 のロールアウト）での正答率です。
+\secref{sec:arl-exp}では、まず貪欲で測った正答率を目安に使い、最後に温度 1 で測り直して比べます。
 
 \begin{quiz}
 $c=0.2$ とします。
@@ -535,20 +775,21 @@ $c=0.2$ とします。
 \node[anchor=west, font=\scriptsize, text=bookgreen] at (axis cs:1.02,0.03) {▲ このモデルの暗算の実力（6 種類の問題）};
 \end{axis}
 \end{tikzpicture}
-\caption{暗算と電卓の報酬の期待値。水平の線（電卓。$p'\approx1$ として $1-c$）が右上がりの線（暗算。$p$）より上にある範囲では電卓が得で、交点（黒丸）が線引きになる。
-横軸の三角は、このモデルの暗算の正答率の目安（\tabref{tab:arl-breakdown}の「暗算」の列。近い値は上下にずらした）。}
+\caption{暗算と電卓の報酬の期待値。水平の線（電卓。電卓を使ったときの正答率を $p'\approx1$ として $1-c$。$c$ は電卓 1 回のコスト）が右上がりの線（暗算。$p$）より上にある範囲では電卓が得で、交点（黒丸）が線引きになる。
+横軸の三角は、このモデルの暗算の正答率の目安（\tabref{tab:arl-breakdown}の「暗算」の列。貪欲で測った値）。三角の縦の位置に意味はない（横軸の上に置き、近い値は上下にずらした）。}
 \label{fig:arl-expected}
 \end{figure}
 
 \figref{fig:arl-expected}は、この線引きを図にしたものです。
 右上がりの線が暗算の期待値 $p$、水平の線が電卓の期待値 $1-c$ です（$p'\approx1$ としています）。
 二つの線が交わる黒丸が線引きで、$c$ を大きくするほど左へ動き、暗算に回すべき問題が増えます。
-コスト $c$ は、「どこで線を引くか」を決めるつまみなのです。
+$c$ を変えると、電卓を使う問題と使わない問題の境目が動きます。
+コスト $c$ は、この境目を決める設定値なのです。
 横軸の三角は、\secref{sec:arl-exp}の実験で使います。
 
 \begin{table}[tbp]
 \centering
-\caption{エージェントの報酬設計の選択肢。上の 2 行が本章で使うもの。}
+\caption{エージェントの報酬設計の選択肢。本章で使うのは、1 行目と、2 行目のうちの「ツール 1 回 $-c$」。}
 \label{tab:arl-reward-design}
 \small
 \begin{tabular}{p{28mm}p{44mm}p{46mm}}
@@ -557,7 +798,7 @@ $c=0.2$ とします。
 \midrule
 最終の成否（疎） & 正解なら 1、テストが通れば 1 & 正確。ただし成功が稀だと学べない \\
 コスト・罰 & ツール 1 回 $-c$、長さの罰、書式違反は 0 & 効率を教えられる。強すぎると必要な道具も使わなくなる \\
-部分点（密） & テストの何割が通ったか、途中の手順の正しさ & 学びやすい。部分点だけを稼ぐ近道を生む \\
+部分点（密な報酬。途中にも与える） & テストの何割が通ったか、途中の手順の正しさ & 学びやすい。部分点だけを稼ぐ報酬ハッキングを招きやすい \\
 LLM 審査員 & 別の LLM が採点基準（ルーブリック）に沿って採点 & 検証できない仕事にも使える。審査員自身がだまされうる \\
 \bottomrule
 \end{tabular}
@@ -567,20 +808,24 @@ LLM 審査員 & 別の LLM が採点基準（ルーブリック）に沿って�
 実際の開発で標準になっているのは、1 行目の「最終の成否」です。
 コーディングエージェントなら「修正後にテストが全部通ったら 1」です\cite{agentica2025deepswe}。
 部分点や LLM 審査員は、成否を機械的に確かめられない仕事で使われます。
+途中の手順に点を与える報酬（過程の報酬）が、最終の成否だけの報酬よりどこまで役立つかには、まだ議論があります。
+検索エージェントの研究では、途中の検索に点を与えても最終の成績はあまり上がらなかった、という報告があります。
+一方で、コーディングエージェントを、手順の採点基準（ルーブリック）に沿った過程の報酬も使って学習させた報告もあります。
+本章は、最終の成否だけを使います。
 
 \subsection{報酬ハッキング}
 
 報酬の設計には、いつも落とし穴があります。
 \chapref{ch:rl-llm}の報酬モデルの実験で、「答えは答えは47です。」のような不自然な応答が高い点を取ったのを思い出してください。
-方策が報酬の穴を突いて、本来の目的を果たさずに点を稼ぐことを、報酬ハッキングと呼びました\cite{amodei2016concrete}。
+方策が報酬の穴（報酬の決め方の不備）を突いて、本来の目的を果たさずに点を稼ぐことを、報酬ハッキングと呼びました\cite{amodei2016concrete}。
 エージェントは環境の中で行動できるので、穴の突き方も多彩になります。
 \begin{itemize}
 \item 採点のテストそのものを書き換える、あるいは削除する。
 \item プログラムの変更履歴（\code{git log}）やネットワークから、正解の修正を探し出して写す。
 これは実際に報告されています\cite{liu2026arcticswe}。
-約 270 億パラメータのモデル（本書のミニGPT の約 1 万倍の大きさです）にバグ修正の課題を 60 回解かせたところ、19 回でこの近道が使われました。
-見かけの解決率は、50.0\% から 65.0\% に水増しされていました（差は 60 回中 9 回ぶんです。近道を使った 19 回のすべてで、成否が変わったわけではありません）。
-\item 書式が少し崩れた出力を、採点側の寛容な読み取り（パーサ）が直してしまい、壊れた出力でも報酬がもらえる。
+約 270 億パラメータのモデル（本書のミニGPT の約 1 万倍の大きさです）にバグ修正の課題を 60 回解かせたところ、19 回で、この「正解の修正を探して写す」やり方が使われました。
+見かけの解決率は、50.0\% から 65.0\% に水増しされていました（差は 60 回中 9 回ぶんです。写した 19 回のすべてで、成否が変わったわけではありません）。
+\item 書式の少し違う出力を、採点側の寛容な読み取り（パーサ）が直してしまい、書式の誤った出力でも報酬がもらえる。
 \end{itemize}
 私たちの電卓環境にも小さな穴があります。
 電卓は \code{1+1+1+…} のような式を何度でも受け付けます。
@@ -627,10 +872,36 @@ GRPO では、同じ質問に答えたグループの報酬の平均が、その
 多くの軌跡で平均すると、押し上げと押し下げが打ち消し合います。
 決め手になった行動だけが、いつも良い報酬と組になり、一方向に押され続けます（すぐ後の数値例で確かめます）。
 その代わり、軌跡が長いほど打ち消し合いに多くのサンプルが要り、学習は遅くなります。
-価値関数を学んで各ターンの良し悪しを見積もる方法（PPO と GAE、\chapref{ch:policy-gradient}）や、
-ターンごとに報酬を与える方法も研究されています。
-それでも、現在の大規模な Agentic RL の多くは、軌跡に 1 つのアドバンテージを使う単純なやり方を採っています\cite{agentica2025deepswe,cao2025skyrl,liu2026arcticswe}。
-本章もそれに従います。
+
+では、報酬を軌跡の中でもっと細かく割り振ることはできないのでしょうか。
+やり方は、割り振りの細かさで三つに分けられます（\tabref{tab:arl-credit}）。
+1 つ目が、いま述べた\textbf{軌跡単位}で、本章が使うものです。
+2 つ目は\textbf{ターン単位}で、ターンごとに報酬を与えるか、ターンごとの良し悪しを見積もって、発話ごとに違う重みを付けます。
+3 つ目は\textbf{トークン単位}で、価値関数を別のネットワークで学び、トークンごとにアドバンテージを見積もります。
+\chapref{ch:policy-gradient}の PPO と GAE\cite{schulman2017proximal,schulman2016high}がこれに当たります。
+
+\begin{table}[tbp]
+\centering
+\caption{信用割当の細かさによる、アドバンテージの作り方の比較。どれが良いかは決着していない（本文）。}
+\label{tab:arl-credit}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{15mm}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{23mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{27mm}}
+\toprule
+細かさ & アドバンテージの作り方 & 長所 & 短所・費用 & 使われている所 \\
+\midrule
+軌跡単位（GRPO 系） & 最後の報酬を同じ質問の $G$ 本と比べ、モデルが書いた全トークンに同じ値を掛ける & 価値のネットワークが要らない。実装が簡単 & 決め手の行動を見分けるのに、多くの軌跡が要る（長い仕事ほど） & 公開されたコーディングエージェントの強化学習の多く\cite{agentica2025deepswe,cao2025skyrl,liu2026arcticswe}。本章 \\ \addlinespace
+ターン単位 & ターンごとの報酬か、ターンごとの良し悪しの見積もりで、発話ごとに違う値を掛ける & どのターンが良かったかを区別できる & ターンの良し悪しを測る方法を設計する手間 & 研究が続いている（2026 年） \\ \addlinespace
+トークン単位（PPO＋GAE） & 価値関数でトークンごとに見積もる。観測のトークンは飛ばす & 位置ごとに違う重みを作れる。1 問 1 本の軌跡でも学べる & 価値のネットワークを別に学ぶ費用と手間 & GUI を操作するエージェントの報告の一部など。\chapref{ch:policy-gradient} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+どれが良いかは、まだ決着していません。
+軌跡単位の報酬だけで足りていて、うまくいかない原因は、全員が同じ報酬のグループから何も学べないこと（すぐ後で見ます）などにある、と主張する研究があります。
+一方で、ターン単位やトークン単位の信用割当を提案する研究も、2026 年に入っても続いています。
+GUI を操作するエージェントの報告には、価値関数を使う PPO のほうが GRPO より良かった、とするものもあります。
+本章は、公開事例で多く使われていて、いちばん簡単な軌跡単位を使います。
 
 \subsection{軌跡単位の GRPO}
 
@@ -644,6 +915,10 @@ GRPO（\chapref{ch:rl-llm}）は、同じ質問に $G$ 本の応答を生成し�
 を作ります。
 これは式\eqref{eq:rl-grpo-adv}と同じ形です（分母の $10^{-4}$ は、0 で割らないための小さな数です）。
 平均を引いて標準偏差で割るこの操作を、以下では\textbf{標準化}と呼びます。
+グループの $G$ 本がすべて同じ報酬なら、分子が 0 なので、$\hat A_i$ はすべて 0 です。
+全部正解の易しすぎる問題からも、全部不正解の難しすぎる問題からも、方策勾配の項は何も学びません（\chapref{ch:rl-llm}の\figref{fig:rl-group-signal}と同じです）。
+\figref{fig:arl-cycle}の④の灰色の行が、これに当たります。
+学習の記録（\file{train_*.csv} の \code{informative} の列）では、違う報酬が混ざったグループの割合は、RL のみ（$c=0$）で平均 65\%、SFT＋RL（$c=0$）で平均 88\% でした。
 
 数値例で確かめましょう。
 「857+968は？」に $G=4$ 本の軌跡を作り、$c=0.2$ のもとで\tabref{tab:arl-adv-example}の結果になったとします。
@@ -680,22 +955,32 @@ $\hat A_i$ は平均を引いて作ったので、4 本を足すと 0 になり�
 そのため、4 本すべてに現れる \code{です。} のようなトークンは、押し上げと押し下げが打ち消し合って、ほとんど動きません。
 一方、決め手である式の \code{+} は、良い軌跡 2・3 にだけ現れるので、合計 $+1.72$ で強く押し上げられます。
 最初の \code{<|tool|>} は軌跡 2・3・4 に現れ、合計は $+0.67$ なので、少しだけ上がります。
-文脈が違えば勾配も少し違うので、おおまかな見方ですが、最後の報酬 1 つから決め手が浮かび上がる仕組みは、これで分かります。
+文脈が違えば勾配も少し違うので、おおまかな見方ですが、最後の報酬 1 つだけから、決め手のトークンが一方向に押される仕組みは、これで分かります。
 
-損失は、モデルが書いたトークン（マスク $m_{i,t}=1$）だけで、トークンについて平均します。
+損失は、モデルが書いたトークン（マスク $m_{i,k}=1$）だけで、トークンについて平均します。
 \begin{equation}
-\mathcal{L}(\vtheta)=\frac{1}{\sum_{i,t}m_{i,t}}\sum_{i=1}^{N}\sum_{t}m_{i,t}
-\Bigl(-\hat A_i\log\pitheta(a_{i,t}\mid s_{i,t})+\beta\,\hat{\mathbb{D}}_{i,t}\Bigr)
+\mathcal{L}(\vtheta)=\frac{1}{\sum_{i,k}m_{i,k}}\sum_{i=1}^{N}\sum_{k}m_{i,k}
+\Bigl(-\hat A_i\log\pitheta(x_{i,k}\mid x_{i,<k})+\beta\,\hat{\mathbb{D}}_{i,k}\Bigr)
 \label{eq:arl-loss}
 \end{equation}
-ここで $N$ はこのステップの軌跡の総数、$a_{i,t}$ は軌跡 $i$ の $t$ 番目のトークン、$s_{i,t}$ はその直前までの文脈です。
-分母の $\sum_{i,t}m_{i,t}$ は、モデルが書いたトークンの総数です。
+ここで $N$ はこのステップの軌跡の総数（本章では 128）です。
+$k$ は軌跡の中のトークンの位置（\secref{sec:arl-mdp}の「4 つの時間の単位」）で、$x_{i,k}$ は軌跡 $i$ の位置 $k$ のトークン、$x_{i,<k}$ はその直前までの文脈です。
+$m_{i,k}$ はマスクで、位置 $k$ のトークンをモデルが書いたなら 1、環境が書いたなら 0 です。
+マスクが 1 の位置のトークンだけが、MDP の行動 $a_t$ に当たります。そこでの文脈 $x_{i,<k}$ が状態 $s_t$ です。
+マスクが 0 の位置（質問と電卓の結果）の項は、0 が掛かって消えます。
+分母の $\sum_{i,k}m_{i,k}$ は、モデルが書いたトークンの総数です。
+この式が、どんな形の表の上で計算されるかは、すぐ後のコードと\figref{fig:arl-shape}で見ます。
 
 平均の取り方は、\chapref{ch:rl-llm}の式\eqref{eq:rl-grpo}と少し違います。
 \chapref{ch:rl-llm}では、応答ごとに長さで割ってから、応答について平均しました。
 本章では、全部の軌跡のトークンをまとめて、1 回だけ平均します。
 そのため、モデルが多くのトークンを書いた軌跡ほど、損失の中での重みが大きくなります。
 たとえば電卓を呼んだ軌跡は、呼び出しの発話のぶんだけ、暗算の軌跡より重くなります。
+どちらの平均が良いかには、議論があります。
+応答ごとに長さで割ると、長い応答の 1 トークンあたりの重みが小さくなり、長い誤答が罰されにくくなる、という指摘があります\cite{liu2025understanding}。
+DAPO\cite{yu2025dapo}は、本章と同じトークン平均を採っています。
+式\eqref{eq:arl-adv}で標準偏差で割ることにも、易しすぎる問題と難しすぎる問題を強調しすぎる、という指摘があります\cite{liu2025understanding}（演習 2 で考えます）。
+本章では電卓を呼ぶ軌跡ほど損失の中で重いので、この選択が電卓の使用率の伸び方に影響した可能性もあります（確かめていません）。
 後で載せるコードも、この式のとおりに計算しています。
 
 括弧の中の 2 つの項を、\chapref{ch:rl-llm}を思い出しながら読みます。
@@ -706,20 +991,22 @@ $\hat A_i$ が正の軌跡では、$-\hat A_i\log\pitheta$ を小さくするた
 つまり、その軌跡のトークンの確率を上げます。
 $\hat A_i$ が負の軌跡では向きが逆になり、確率を下げます。
 
-第 2 項の $\hat{\mathbb{D}}_{i,t}$ は、いまのモデル $\pitheta$ が参照モデル $\pi_{\text{ref}}$（学習の出発点の写し）からどれだけ離れたかを、トークンごとに測った値です。
+第 2 項の $\hat{\mathbb{D}}_{i,k}$ は、いまのモデル $\pitheta$ が参照モデル $\pi_{\text{ref}}$（学習の出発点の写し）からどれだけ離れたかを、トークンごとに測った値です。
 中身は、\chapref{ch:rl-llm}の式\eqref{eq:rl-kl-k3}と同じ KL の推定量です。
-二つのモデルがそのトークンに付けた確率の比を $u=\pi_{\text{ref}}(a_{i,t}\mid s_{i,t})/\pitheta(a_{i,t}\mid s_{i,t})$ と書くと、
+二つのモデルがそのトークンに付けた確率の比を $u=\pi_{\text{ref}}(x_{i,k}\mid x_{i,<k})/\pitheta(x_{i,k}\mid x_{i,<k})$ と書くと、
 \begin{equation*}
-\hat{\mathbb{D}}_{i,t}=u-\log u-1
+\hat{\mathbb{D}}_{i,k}=u-\log u-1
 \end{equation*}
 です。
 二つの確率が同じなら $u=1$ で、値は $1-\log1-1=0$ です。
 $u$ が 1 から離れるほど、値は大きくなります。
-\chapref{ch:policy-gradient}の PPO では、同じ形の量を $\rho_t-1-\log\rho_t$ と書きました。
-文字と項の順番が違うだけで、同じ形の関数です。
-本章の式\eqref{eq:arl-loss}では、これを $\hat{\mathbb{D}}_{i,t}$ という 1 つの記号にまとめて書いています。
-この項は、出発点から離れすぎないための\textbf{ブレーキ}です。
-$\beta$ はブレーキの強さで、大きいほど出発点の振る舞いにとどまろうとします。
+\chapref{ch:policy-gradient}の PPO では、$\rho_t-1-\log\rho_t$ という量を使いました。
+これは、同じ関数 $f(x)=x-\log x-1$ に、別の比を入れたものです。
+PPO では新しい方策と古い方策の比 $\rho_t$ を入れ、ここでは参照モデルといまのモデルの比 $u$ を入れます。
+関数の形は同じですが、中に入れる比が違うので、量としては別物です。
+本章の式\eqref{eq:arl-loss}では、これを $\hat{\mathbb{D}}_{i,k}$ という 1 つの記号にまとめて書いています。
+この項は、出発点から離れるほど大きくなる罰（\chapref{ch:rl-llm}の KL 罰則）です。
+$\beta$ は罰の強さで、大きいほど出発点の振る舞いにとどまろうとします。
 本章では\chapref{ch:rl-llm}と同じ $\beta=0.04$ を使います。
 
 \chapref{ch:rl-llm}の式\eqref{eq:rl-grpo}にあった確率比 $\rho$（いまの方策の確率を、軌跡を生成したときの方策の確率で割った比）とクリップは、省いています。
@@ -729,36 +1016,77 @@ $\beta$ はブレーキの強さで、大きいほど出発点の振る舞いに
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm]
-\tikzset{c/.style={draw=black!40, minimum width=8.6mm, minimum height=5mm, inner sep=0pt}}
-\foreach \lab/\m [count=\k] in {質問/0, tool/1, 64+6/1, end/1, result/0, 70/0, end/0, asst/1, 70です/1, end/1} {
-  \ifnum\m=1 \node[c, fill=figorange] (n\k) at (\k*9.2, 0) {\texttt{\lab}};
-  \else \node[c, fill=figgray] (n\k) at (\k*9.2, 0) {\lab}; \fi
-  \node[font=\scriptsize] at (\k*9.2, -5.5) {$\m$};
+\tikzset{c/.style={draw=black!40, minimum width=8.6mm, minimum height=5mm, inner xsep=0.8mm, inner ysep=0pt}}
+\coordinate (n0) at (4.6,0);
+\foreach \lab/\m [count=\k] in {質問/0, tool/1, 64+6/1, end/1, result/0, 70/0, end/0, asst/1, 70です。/1, end/1} {
+  \pgfmathtruncatemacro{\j}{\k-1}
+  \ifnum\m=1 \node[c, fill=figorange, anchor=west] (n\k) at ([xshift=0.6mm]n\j.east) {\texttt{\lab}};
+  \else \node[c, fill=figgray, anchor=west] (n\k) at ([xshift=0.6mm]n\j.east) {\texttt{\lab}}; \fi
+  \node[font=\scriptsize] at ([yshift=-5.5mm]n\k.center) {$\m$};
 }
-\node[anchor=east, font=\scriptsize] at (4, 0) {トークン};
+\node[anchor=east, font=\scriptsize, align=right] at (4, 0) {トークン\\（まとまり）};
 \node[anchor=east, font=\scriptsize] at (4, -5.5) {マスク $m$};
 \node[anchor=east, font=\scriptsize] at (4, -11.5) {重み};
-\foreach \k in {2,3,4,8,9,10} { \node[font=\scriptsize, text=bookaccent] at (\k*9.2, -11.5) {$\hat A_i$}; }
-\foreach \k in {1,5,6,7} { \node[font=\scriptsize, text=bookgray] at (\k*9.2, -11.5) {0}; }
-\node[greenbox, font=\scriptsize, anchor=west] (rw) at (100, 0) {報酬 $r_i$};
+\foreach \k in {2,3,4,8,9,10} { \node[font=\scriptsize, text=bookaccent] at ([yshift=-11.5mm]n\k.center) {$\hat A_i$}; }
+\foreach \k in {1,5,6,7} { \node[font=\scriptsize, text=bookgray] at ([yshift=-11.5mm]n\k.center) {0}; }
+\node[greenbox, font=\scriptsize, anchor=west] (rw) at ([xshift=3mm]n10.east) {報酬 $r_i$};
 \draw[arr] (n10.east) -- (rw.west);
-\draw[darr] (rw.south) |- (97,-11.5);
-\node[lbl, anchor=north east] at (113,-13.5) {グループ内で標準化して $\hat A_i$ にし（式\eqref{eq:arl-adv}）、橙のトークンすべてに掛ける};
+\draw[darr] (rw.south) |- ([xshift=1.5mm,yshift=-11.5mm]n10.east);
+\node[lbl, anchor=north east] at (rw.east |- 0,-13.5) {グループ内で標準化して $\hat A_i$ にし（式\eqref{eq:arl-adv}）、橙のトークンすべてに掛ける};
 \end{tikzpicture}
 \caption{軌跡単位の信用割当。最後の報酬から作ったアドバンテージ $\hat A_i$ を、モデルが書いたトークン（橙、マスク 1）すべてに同じ重みとして掛ける。
-環境が書いたトークン（灰色）には勾配を流さない。\code{tool}・\code{asst} などは、\code{<|tool|>}・\code{<|assistant|>} などの略。}
+環境が書いたトークン（灰色）は損失に入れない。
+箱は 1 つ以上のトークンのまとまりで（\code{質問} は 15 トークン、\code{64+6} は 4 トークン、\code{70} は 2 トークン、\code{70です。} は 3 トークン。1 トークンずつの姿は\figref{fig:arl-traj}）、まとまりの中のトークンには同じマスクと重みが付く。
+損失にはこのほか、マスク 1 の位置ごとに KL の項 $\beta\hat{\mathbb{D}}_{i,k}$ が加わる（図では省いた）。
+\code{tool}・\code{asst} などは、\code{<|tool|>}・\code{<|assistant|>} などの略。}
 \label{fig:arl-credit}
 \end{figure}
 
 \figref{fig:arl-credit}は、式\eqref{eq:arl-loss}の重みを 1 本の軌跡の上に書いたものです。
 下の段を左から見てください。
 橙のトークンにはすべて同じ $\hat A_i$ が掛かり、灰色のトークンは 0 です。
-電卓の結果 \code{70} にも勾配を流すと、「電卓がどんな値を返すか」をモデルに予測させることになります。
-それはモデルの仕事ではありません。
+なぜ、環境が書いたトークンを損失から外してよいのでしょうか。
+理由は、方策勾配の式そのものにあります。
+\chapref{ch:policy-gradient}では、軌跡の確率を「方策の確率」と「環境の遷移確率」の積に分けました。
+対数を取って $\vtheta$ で微分すると、遷移確率の項は $\vtheta$ を含まないので消えるのでした（式\eqref{eq:pg-log-traj}・式\eqref{eq:pg-grad-log-traj}）。
+エージェントの軌跡でも同じです。
+軌跡の確率は、モデルが書いたトークンの確率の積に、電卓が結果を返す確率を掛けたものです（本章の電卓は決定的なので、正しい結果を返す確率は 1 です）。
+後ろの因子は $\vtheta$ によらないので、微分すると消えます。
+ですから方策勾配の式には、はじめからマスク 1 のトークンしか出てきません。
+マスクは、この式をそのままコードにしたものなのです。
+
+そのうえで、もし電卓の結果 \code{70} も損失に入れたらどうなるかを考えます。
+それは、「電卓がどんな値を返すか」をモデルに予測させる学習になります。
+方策勾配の式にはない項で、モデルの仕事でもありません。
 しかも、自分で書いていない結果の確率を上げる学習は、「電卓の結果を自分で作り出す」という誤り（幻覚と呼ばれます）を招きかねません。
-だから結果のトークンは学習から外します。
-実際の開発でも同じです。
-たとえば、検索エンジンを使うエージェントを鍛えた Search-R1 や DeepResearcher という研究は、検索で取ってきた文書のトークンを損失から外したと報告しています\cite{jin2025searchr1,zheng2025deepresearcher}。
+実際の開発でも、結果のトークンは外します。
+たとえば、検索エンジンを使うエージェントを学習させた Search-R1 や DeepResearcher という研究は、検索で取ってきた文書のトークンを損失から外したと報告しています\cite{jin2025searchr1,zheng2025deepresearcher}。
+
+損失に入れるかどうかを決めるのは、トークンの種類ごとだけではありません。
+軌跡ごとに決めることもあります。
+本章での選び方を、\tabref{tab:arl-loss-tokens}にまとめました。
+ツールの結果を外すことは、公開事例でほぼ共通しています。
+ほかの行は、研究や開発によって選び方が違います。
+
+\begin{table}[tbp]
+\centering
+\caption{損失に入れるか（マスク）の選び方。本章の選び方と、ほかの選択。}
+\label{tab:arl-loss-tokens}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{13mm}>{\raggedright\arraybackslash}p{40mm}>{\raggedright\arraybackslash}p{42mm}}
+\toprule
+トークン・軌跡 & 本章 & 理由 & ほかの選択 \\
+\midrule
+質問 & 入れない & 環境が書いたもので、行動ではない & ― \\ \addlinespace
+モデルの発話（呼び出しと最終応答） & 入れる & 方策の行動そのもの & ― \\ \addlinespace
+ツールの結果 & 入れない & 環境が書いた。入れると結果の予測を学ぶことになる & 公開事例でも外すのがふつう\cite{jin2025searchr1,zheng2025deepresearcher} \\ \addlinespace
+$\varepsilon$ で強制した最初の役割トークン & 入れる & 強制して試した枝からも学ぶため（いまの方策からのサンプルではない偏りは許す） & 重点サンプリングで偏りを直す（演習 3）。外すと、「電卓を呼ぶ」という選択そのものを強められない \\ \addlinespace
+最終応答に届かなかった軌跡 & 入れる & 失敗も、比べるための手がかりになる（報酬は $0-c\,n_{\text{call}}$） & 文脈の上限や時間切れで打ち切られた軌跡を、損失から外す報告がある\cite{agentica2025deepswe} \\ \addlinespace
+詰め物 \code{<|pad|>} & 入れない & 長さをそろえるための穴埋めで、意味がない & ― \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{1 ステップの学習をコードで書く}
 
@@ -773,28 +1101,106 @@ $\beta$ はブレーキの強さで、大きいほど出発点の振る舞いに
 3 行目で各軌跡の報酬（式\eqref{eq:arl-reward}）を計算し、$(Q,G)$ の形に並べます。
 4 行目が式\eqref{eq:arl-adv}で、行（同じ質問のグループ）ごとに平均を引き、標準偏差で割ります。
 5 行目の \code{view(-1)} で $(Q,G)$ の表を 1 列に並べ直し、軌跡 1 本につき 1 つの値にします。
+並ぶ順は、質問 1 の $G$ 本、質問 2 の $G$ 本、…で、1 行目で軌跡を並べた順と同じです（\figref{fig:arl-shape}の①〜②）。
 6 行目の \code{model.train()} は、モデルを学習用の状態に戻す指定です（ロールアウトの中で、生成用の状態に切り替えていました）。
 7 行目の \code{traj_logprobs} は、128 本の軌跡を 1 つの行列にまとめ、全トークンの $\log\pitheta$ を 1 回の順伝播で計算して、マスクと一緒に返します。
+軌跡の長さはばらばらなので、短い軌跡の後ろは詰め物のトークンで埋め、詰め物のマスクは 0 にします。
+返ってくる \code{m} が、式\eqref{eq:arl-loss}のマスク $m_{i,k}$ です。
 形は $(N, L-1)$ です。$N=128$ は軌跡の本数、$L$ は最も長い軌跡のトークン数で、先頭のトークンは予測の対象にならないので 1 つ減ります。
 8〜9 行目で参照モデル（学習の出発点の写し）の $\log\pi_{\text{ref}}$ も計算します。
 参照モデルは更新しないので、\code{torch.no_grad()} で勾配の記録を止めています。
-10〜11 行目が KL の推定 $u-\log u-1$（$u=\pi_{\text{ref}}/\pitheta$）、つまり式\eqref{eq:arl-loss}の $\hat{\mathbb{D}}_{i,t}$ です。
+10〜11 行目が KL の推定 $u-\log u-1$（$u=\pi_{\text{ref}}/\pitheta$）、つまり式\eqref{eq:arl-loss}の $\hat{\mathbb{D}}_{i,k}$ です。
 10 行目の \code{d} が $\log\pi_{\text{ref}}-\log\pitheta=\log u$ なので、11 行目の \code{torch.exp(d)} が $u$ になります。
-13 行目が式\eqref{eq:arl-loss}そのものです。\code{adv[:, None]} は形を $(N,1)$ にする書き方で、軌跡ごとの 1 つの値が、その軌跡の全トークンに掛かります。
+13 行目が式\eqref{eq:arl-loss}そのものです。\code{adv[:, None]} は形を $(N,1)$ にする書き方で、軌跡ごとの 1 つの値が、その軌跡の全トークンに掛かります（\figref{fig:arl-shape}の③〜④）。
 \code{* m} でモデルの書いたトークンだけを残し、\code{m.sum()} で割ってトークン平均にしています。
 14〜15 行目は学習率のウォームアップで、最初の 20 ステップは学習率を 0 から線形に上げます。
-予備実験では、これがないと最初の数回の更新で方策が大きく崩れました。
+予備実験（学習率をもっと大きくした試走）では、ウォームアップがないと、3 回ほどの更新で KL の推定値が 0.4〜0.7 に達し、方策が出発点から大きく離れてしまいました。
 Adam は勾配を「最近の勾配の大きさ」で割ってから進むので（\chapref{ch:training}）、学習の最初は、勾配が小さくても学習率ほどの歩幅で進んでしまうのです。
 16〜17 行目で、前のステップの勾配を消してから、誤差逆伝播で新しい勾配を計算します。
 最後に、18 行目で勾配のノルムを 1 に切り詰めて（\chapref{ch:training}）、19 行目で 1 回だけ更新します。
 
-\subsection{探索：一度も試さない行動は学べない}
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm,
+  cv/.style={draw=black!45, minimum width=9mm, minimum height=5mm, inner sep=0pt, font=\scriptsize}]
+% (Q, G) の報酬の表
+\node[anchor=south west, align=left] at (0,6) {\textbf{① 報酬} \code{r}\\形 $(Q,G)=(2,2)$};
+\node[cv, fill=figgreen] (r11) at (14,2.5) {$1$};
+\node[cv, fill=figred]   (r12) at (23,2.5) {$-0.2$};
+\node[cv, fill=figgreen] (r21) at (14,-2.5) {$0.8$};
+\node[cv, fill=figgreen] (r22) at (23,-2.5) {$0.8$};
+\node[anchor=east] at (9,2.5) {質問 1};
+\node[anchor=east] at (9,-2.5) {質問 2};
+% 標準化した表
+\node[anchor=south west, align=left] at (48,6) {\textbf{② アドバンテージ} \code{adv}\\形 $(Q,G)=(2,2)$};
+\node[cv, fill=figgreen] (s11) at (53,2.5) {$+0.71$};
+\node[cv, fill=figred]   (s12) at (62,2.5) {$-0.71$};
+\node[cv, fill=figgray]  (s21) at (53,-2.5) {$0$};
+\node[cv, fill=figgray]  (s22) at (62,-2.5) {$0$};
+\draw[arr] (28.5,0) -- node[above, align=center, text=black!75, font=\tiny]{4 行目：行ごとに\\標準化} (48,0);
+\node[anchor=west, align=left, text=black!75] at (68,0) {質問 2 は 2 本とも同じ報酬\\なので $\hat A=0$（何も学ばない）};
+% 1 列に並べ直す
+\draw[arr] (57.5,-5.5) -- ++(0,-6) -| (6,-19.5);
+\node[anchor=west, align=left, text=black!75] at (59.5,-9.2) {5 行目 \code{view(-1)}、13 行目 \code{adv[:, None]}\\で 1 列に並べ直す：形 $(N,1)=(4,1)$};
+% (N,1) の列
+\node[anchor=south] at (6,-19.5) {};
+\foreach \v/\f [count=\i] in {+0.71/figgreen, -0.71/figred, 0/figgray, 0/figgray} {
+  \node[cv, fill=\f] (a\i) at (6,-17-\i*5.5) {$\v$};
+  \node[anchor=east, text=black!70] at (0.5,-17-\i*5.5) {$i=\i$};
+}
+% (N, L-1) の行列
+\begin{scope}[shift={(17,-19.75)}, x=5mm, y=5.5mm]
+  % 1 行目：暗算（質問 3、答え 4、詰め物 5）
+  \fill[figgray] (0,-1) rectangle (3,0); \fill[figorange] (3,-1) rectangle (7,0);
+  % 2・3 行目：電卓（質問 3、呼び出し 4、結果 2、答え 3）
+  \foreach \r in {2,3} {
+    \fill[figgray] (0,-\r) rectangle (3,-\r+1); \fill[figorange] (3,-\r) rectangle (7,-\r+1);
+    \fill[figgray] (7,-\r) rectangle (9,-\r+1); \fill[figorange] (9,-\r) rectangle (12,-\r+1);
+  }
+  % 4 行目：電卓（質問 3、呼び出し 3、結果 2、答え 3、詰め物 1）
+  \fill[figgray] (0,-4) rectangle (3,-3); \fill[figorange] (3,-4) rectangle (6,-3);
+  \fill[figgray] (6,-4) rectangle (8,-3); \fill[figorange] (8,-4) rectangle (11,-3);
+  \draw[black!40, step=1] (0,-4) grid (12,0);
+\end{scope}
+\node[font=\large] at (13.5,-30.5) {$\times$};
+\node[anchor=south west, align=left] at (17,-19.3) {\textbf{③ マスク} \code{m} と対数確率 \code{logp}：形 $(N,L-1)=(4,12)$（列はトークンの位置）};
+% 行ごとの橙の数
+\foreach \n/\why [count=\i] in {4/暗算・正解（後ろは詰め物）, 7/電卓・誤り, 7/電卓・正解, 6/電卓・正解} {
+  \node[anchor=west, text=black!75] at (78,-17-\i*5.5) {橙 \n：\why};
+}
+% 凡例と最後の割り算
+\node[anchor=north west, align=left, text width=124mm] at (-4,-45) {%
+\tikz\fill[figorange] (0,0) rectangle (2.5mm,2.5mm); マスク 1（モデルが書いた）\quad
+\tikz\fill[figgray] (0,0) rectangle (2.5mm,2.5mm); マスク 0（質問・電卓の結果）\quad
+\tikz\draw[black!40] (0,0) rectangle (2.5mm,2.5mm); マスク 0（詰め物 \code{<|pad|>}）\\[1mm]
+\textbf{④ 13 行目}：各行の $\hat A_i$ を、その行の 12 列すべてに掛け（形 $(N,1)$ を $(N,L-1)$ に引き伸ばす）、\code{* m} で橙のマスだけを残す。
+橙のマスの値を全部足して、橙のマスの数 \code{m.sum()}（$4+7+7+6=24$）で割ったものが損失。橙のマスが多い行ほど、損失の中で重い。};
+\end{tikzpicture}
+\caption{式\eqref{eq:arl-loss}と\coderef{code:arl-grpo-step}の形の流れ（模式図。$Q=2$、$G=2$、$c=0.2$ の小さな例で、トークン数は縮めて描いた）。
+報酬の表 $(Q,G)$ を行ごとに標準化し、1 列 $(N,1)$ に並べ直して、トークンの表 $(N,L-1)$ の各行に掛ける。軌跡の並び順は、質問 1 の $G$ 本、質問 2 の $G$ 本、…の順。
+KL の項も同じ \code{* m} で橙のマスだけが残る（図では省いた）。}
+\label{fig:arl-shape}
+\end{figure}
+
+\figref{fig:arl-shape}は、このコードの中で表の形がどう変わるかを、$Q=2$、$G=2$ の小さな例で描いたものです。
+①の報酬の表を、②で行ごとに標準化します。
+質問 2 は 2 本とも 0.8 なので、アドバンテージは 2 本とも 0 です。
+②の表を 1 列に並べ直して、③のトークンの表の各行に掛けます。
+③の行ごとに橙のマスの数が違うことに注目してください。
+暗算の軌跡（1 行目）は 4 個、電卓を呼んだ軌跡は 6〜7 個なので、全部をまとめて 1 回だけ平均すると、電卓の軌跡のほうが損失の中で重くなります。
+これが、式\eqref{eq:arl-loss}の後で述べた「多くのトークンを書いた軌跡ほど重い」ということです。
+
+\subsection{探索：試さない行動は、良いと分からない}
 
 もう一つ、大事な問題があります。
 \tabref{tab:arl-probe}の「\code{65-46は？}」型では、電卓を呼ぶ確率が 0.001 でした。
 1 問に 8 本の軌跡を作っても、電卓を使う軌跡が 1 本でも出る確率は約 $1-(1-0.001)^8\approx0.008$ です。
 電卓を使った軌跡がなければ、電卓が良いかどうかは比べようがありません。
-方策勾配法は「試した行動の中から良いものを強める」方法なので、\textbf{一度も試さない行動は永遠に学べない}のです。
+方策勾配法は、試した行動の報酬だけを手がかりにします。
+ですから、\textbf{一度も試さない行動については、「良い」という証拠を直接得られません}。
+ほかの行動の確率が下がったぶん、試していない行動の確率が間接的に上がることはあります。
+重みは多くの文脈で共通なので、別の言い回しの質問で強めた振る舞いが、こちらに移ることもあります。
+しかしそれは、良いと分かったから上がるのではありません。
 これが、\chapref{ch:rl-basics}で見た探索の問題です。
 
 そこで本章では、ロールアウトの最初の役割トークンだけ、確率 $\varepsilon=0.2$ で \code{<|tool|>} と \code{<|assistant|>} を半々に\textbf{強制}します。
@@ -828,17 +1234,18 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 8 本とも電卓を試さない確率は、$(1-0.10)^8=0.9^8\approx0.43$ です。
 ですから、8 本のうち 1 本以上が電卓を試す確率は、0.008 から $1-0.43=0.57$ に上がります。
 ほぼ 2 問に 1 問で、電卓と暗算を比べられるようになりました。
+比べられるとは、グループの中に違う報酬が混ざり、$\hat A_i$ が 0 でなくなる、ということです。
 逆に、ほとんど電卓を呼ぶ質問でも、$0.2\times0.5=0.1$、つまり 1 割の軌跡は暗算を試します。
 
 ただし、強制したトークンもそのまま「モデルの行動」として学習に使うので、厳密には方策勾配の前提（いまの方策からのサンプル）から少しずれます。
 本章では簡単さを優先し、この偏りを許します（演習で考えます）。
 また、強制するのは最初の 1 トークンだけで、その後に何を書くかはモデル任せです。
-この点は、次の節の実験で効いてきます。
+この点は、次の節の実験の結果に関係してきます。
 
 この節の要点です。
 軌跡に 1 つの報酬が届いたら、グループの中で標準化したアドバンテージを、モデルが書いたトークンすべてに同じ重みで掛けます。
 環境が書いたトークンは学習から外します。
-一度も試さない行動は学べないので、最初の役割トークンに強制的な探索を入れます。
+一度も試さない行動は、良いという証拠が得られないので、最初の役割トークンに強制的な探索を入れます。
 
 %======================================================================
 \section{実験：電卓を使うことを覚えるか}\label{sec:arl-exp}
@@ -848,22 +1255,33 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 強化学習で、エージェントは「加減算でも電卓を使う」ことを覚えるでしょうか。
 そして、電卓のコスト $c$ を変えると、振る舞いはどう変わるでしょうか。
 
-評価には、学習とは別の乱数の種で作った、固定の問題を使います（問題は乱数で作るので、小さな数の問題は、たまたま学習中にも出てきます）。
+評価には、学習とは別の乱数の種で作った、固定の問題を使います。
+問題は乱数で作るので、小さな数の問題は、たまたま学習中にも出てきます。
+学習と同じ種で学習の問題の列を作り直して数えると、評価の加減算 1,000 問のうち、73 ステップまでに学習にも出たのは 26 問（2.6\%）で、103 ステップまででも 33 問（3.3\%）でした（\file{ch24/sweep_overlap.py}）。
+重なった 33 問のうち 26 問は、2 つの数がどちらも 1 桁の問題です。
+学習率・ウォームアップ・$\varepsilon$ などの設定は、予備実験で、学習中の報酬と KL の推定値を見て決めました。
+ただし、後で使う $c=0.35$ という値だけは、評価の問題の集計（\tabref{tab:arl-breakdown}）を見てから選びました。
+その実験では、評価の問題が設定の選択に使われています（\chapref{ch:ml}のテストデータの約束からは外れます）。
 加減算は\chapref{ch:rl-llm}と同じ種 777 の 1,000 問、掛け算と掛けて足すは各 300 問です。
 \chapref{ch:rl-llm}で見たとおり、200 問ではぶれが $\pm2$〜3 ポイントあるので、1,000 問で測ります（このときの標準誤差は約 1.5 ポイントです）。
 標準誤差は、正答率 $p$ を $n$ 問で測ったときのぶれの大きさで、$\sqrt{p(1-p)/n}$ でした（\chapref{ch:eval-serving}）。
 学習前の $p=0.316$ と $n=1000$ を入れると、$\sqrt{0.316\times0.684/1000}\approx0.015$、つまり約 1.5 ポイントです。
 生成は貪欲（温度 0）です。
 学習の設定は、1 ステップ $Q=16$ 問 $\times$ $G=8$ 本、学習率 $3\times10^{-5}$（最初の 20 ステップはウォームアップ）、$\beta=0.04$、探索 $\varepsilon=0.2$ です。
-1 回の学習は CPU で約 6.5〜9 分（約 70〜100 ステップ）です。CPU を他の作業と共有しているので、速さは実験ごとに違います。
+1 回の学習は、ステップ数ではなく\textbf{時間で打ち切ります}（CPU で約 6.5〜9 分）。
+その間に進んだのは 73〜103 ステップで、実験ごとに違います。
+CPU を他の作業と共有しているので、1 ステップの速さが実験ごとに違うからです。
 どの実験も乱数の種 1 つの結果なので、1〜2 ポイントの差には意味を読み込まないでください。
 設定を\tabref{tab:arl-setup}にまとめました。
-学習の設定は 4 つの実験で共通で、変えるのは出発点のモデルとコスト $c$ だけです。
+学習率などの設定は、強化学習を行う 3 つの実験（系図の①③④）で共通で、変えるのは出発点のモデルとコスト $c$ です。
+系図の②は短い SFT で、その設定は\coderef{code:arl-cold-data}の後で述べます。
+打ち切りの時間と、その結果のステップ数だけは、実験ごとに違います。
 
 \begin{table}[tbp]
 \centering
 \caption{この節の実験の設定。評価は、学習とは別の固定の問題を貪欲に解かせて測る。
-学習の設定はどの実験でも同じで、変えるのは出発点のモデルとコスト $c$ だけ。}
+「学習」の欄は強化学習（\figref{fig:arl-lineage}の①③④）の設定で、打ち切りの時間を除いてどの実験でも同じ。変えるのは出発点のモデルとコスト $c$。
+②のコールドスタート（短い SFT）は含まない（設定は\coderef{code:arl-cold-data}の後の本文）。}
 \label{tab:arl-setup}
 \small
 \begin{tabular}{llp{78mm}}
@@ -876,9 +1294,9 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 学習 & 問題 & その場で作る。加減算 : 掛け算 : 掛けて足す $=2:1:1$ \\
  & 1 ステップの軌跡 & $Q=16$ 問 $\times$ $G=8$ 本 $=128$ 本（温度 1） \\
  & 学習率 & $3\times10^{-5}$（最初の 20 ステップはウォームアップ） \\
- & KL のブレーキ & $\beta=0.04$ \\
+ & KL 罰則の強さ & $\beta=0.04$ \\
  & 探索 & $\varepsilon=0.2$（最初の役割トークンだけ） \\
- & 長さ & 約 70〜100 ステップ（CPU で約 6.5〜9 分） \\
+ & 長さ & 時間で打ち切る（CPU で約 6.5〜9 分）。進んだのは、RL のみ $c=0$ で 89、$c=0.2$ で 90 ステップ、SFT＋RL は $c=0,0.2$ で 73、$c=0.35$ で 91、$c=0.5$ で 103 ステップ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -890,21 +1308,22 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 \centering
 \begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm]
 \node[box, font=\scriptsize, text width=27mm, align=center] (pre) at (0,0) {\textbf{学習前}\\（\file{ch23_tool_sft.pt}）\\31.6\%（電卓 42.8\%）};
-\node[redbox, font=\scriptsize, text width=66mm, align=center, anchor=west] (rl) at (46,0) {\textbf{RL のみ}\\① $c=0$：43.5\%（30.7\%）\quad $c=0.2$：41.4\%（16.6\%）};
+\node[redbox, font=\scriptsize, text width=66mm, align=center, anchor=west] (rl) at (46,0) {\textbf{\mbox{RL のみ}}\\① $c=0$：43.5\%（30.7\%）\quad $c=0.2$：41.4\%（16.6\%）};
 \node[box, font=\scriptsize, text width=27mm, align=center] (cold) at (0,-18.5) {\textbf{コールドスタート後}\\（\file{ch24_cold.pt}）\\63.9\%（61.5\%）};
-\node[greenbox, font=\scriptsize, text width=66mm, align=center, anchor=west] (sr) at (46,-18.5) {\textbf{SFT＋RL}\\③ $c=0$：92.8\%（100\%）\quad $c=0.2$：93.6\%（100\%）\\④ $c=0.35$：91.0\%（88.6\%）\quad $c=0.5$：66.7\%（44.3\%）};
+\node[greenbox, font=\scriptsize, text width=66mm, align=center, anchor=west] (sr) at (46,-18.5) {\textbf{\mbox{SFT＋RL}}\\③ $c=0$：92.8\%（100\%）\quad $c=0.2$：93.6\%（100\%）\\④ $c=0.35$：91.0\%（88.6\%）\quad $c=0.5$：66.7\%（44.3\%）};
 \draw[arr] (pre) -- node[lbl, font=\scriptsize, above]{① 強化学習だけ} (rl);
 \draw[arr] (pre) -- node[lbl, font=\scriptsize, right]{② コールドスタート（短い SFT）} (cold);
-\draw[arr] (cold) -- node[lbl, font=\scriptsize, above]{③ 強化学習} node[lbl, font=\scriptsize, below]{④ コストを上げる} (sr);
+\draw[arr] ([yshift=1.5mm]cold.east) -- node[lbl, font=\scriptsize, above]{③ 強化学習（$c=0, 0.2$）} ([yshift=1.5mm]sr.west);
+\draw[arr] ([yshift=-3mm]cold.east) -- node[lbl, font=\scriptsize, below, align=center]{④ $c$ だけ変えて\\学習し直す} ([yshift=-3mm]sr.west);
 \end{tikzpicture}
 \caption{この節の実験の系図。数字は加減算 1,000 問の正答率（括弧内は電卓の使用率）。
 比較に使う\chapref{ch:rl-llm}の 2 つのモデル（電卓なし）は、系図の外にある。}
 \label{fig:arl-lineage}
 \end{figure}
 
-\subsection{強化学習だけで鍛える}
+\subsection{強化学習だけで学習させる}
 
-まず、学習前のモデル \file{ch23_tool_sft.pt} から強化学習だけで鍛えます（系図の①。$c=0$ と $c=0.2$ の 2 通り）。
+まず、学習前のモデル \file{ch23_tool_sft.pt} から強化学習だけで学習させます（系図の①。$c=0$ と $c=0.2$ の 2 通り）。
 
 \begin{quiz}
 結果を見る前に予想してください。
@@ -915,7 +1334,7 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 
 答えは「下がる」です。
 加減算の正答率は 31.6\% から、$c=0$ で 43.5\%、$c=0.2$ で 41.4\% に上がりました（\figref{fig:arl-lineage}の右上の箱。全体は後で\tabref{tab:arl-results}にまとめます）。
-暗算で答えるときの書き方の崩れ（\code{<|assistant|>} の後に \code{57+} と式を書きかける、など）が減ったからです。
+暗算で答えるときの書き方の誤り（\code{<|assistant|>} の後に \code{57+} と式を書きかける、など）が減ったからです。
 ところが、電卓の使用率を見ると、42.8\% から 30.7\%（$c=0$）、16.6\%（$c=0.2$）へと\textbf{下がって}います。
 エージェントは「加減算でも電卓を使う」ではなく、「加減算では電卓を使わない」ことを覚えたのです。
 
@@ -923,7 +1342,7 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 \centering
 \begin{tikzpicture}[font=\scriptsize, x=1mm, y=1mm]
 \node[box, text width=15mm, align=center] (q) at (0,0) {加減算の\\質問};
-\node[orangebox, text width=27mm, align=center] (t) at (32,5.5) {電卓を呼ぶ\\（式は \code{64*6}）};
+\node[orangebox, text width=27mm, align=center] (t) at (32,5.5) {電卓を呼ぶ\\（式を誤る。例 \code{64*6}）};
 \node[plainbox, text width=27mm, align=center] (a) at (32,-5.5) {暗算で答える};
 \node[redbox, text width=22mm, align=center] (tr) at (66,5.5) {正答率 2.3\%\\報酬が低い};
 \node[greenbox, text width=22mm, align=center] (ar) at (66,-5.5) {正答率 31.9\%\\報酬が高い};
@@ -946,17 +1365,17 @@ $\varepsilon$-貪欲法は、確率 $\varepsilon$ でランダムな行動を選
 強化学習は、\textbf{実際に試した振る舞いのうち、良かったほうを強める}ことしかしません。
 良かったのは暗算のほうなので、暗算を選ぶ確率が上がり、電卓を選ぶ確率が下がりました。
 「電卓に \code{64+6} と書けば正解できる」という振る舞い（破線の箱）は、ほとんど試されなかったので、強めようがありませんでした。
-\secref{sec:arl-grpo}の「一度も試さない行動は学べない」が、役割トークンの選び方だけでなく、式の書き方でも起きたのです。
+\secref{sec:arl-grpo}の「一度も試さない行動は、良いと分からない」が、役割トークンの選び方だけでなく、式の書き方でも起きたのです。
 $\varepsilon$ で役割トークンを強制しても、その後の式の書き方までは探索してくれません。
 
 探索だけで新しい技能を見つけるのは、とても効率が悪いのです。
-実際の Agentic RL でも、ツールの書き方を知らないモデルには、強化学習の前に SFT で下地を作ることがよくあります（\secref{sec:arl-real}）。
+実際の Agentic RL でも、ツールの書き方を知らないモデルには、強化学習の前に SFT で下地（強化学習の探索で試せるようになるための、基本の書き方や動き）を作ることがよくあります（\secref{sec:arl-real}）。
 
 \subsection{コールドスタート：式の書き方だけを教える}
 
 そこで、強化学習の前に短い SFT をはさみます（系図の②）。
 これを\term{コールドスタート}{cold start}と呼びます。
-冷えたエンジンを暖めてから走り出すように、強化学習が動き出せる所までモデルを先に連れていく、という意味です。
+強化学習を始める前に、少量のお手本で、強化学習が動き出せる所までモデルを先に連れていく工程です。
 ただし、教えるのは\textbf{式の書き方だけ}です。
 「いつ電卓を使うか」は、強化学習に見つけさせたいので教えません。
 そのために、加減算の問題には硬貨を投げて、半分には電卓を使うお手本、半分には暗算のお手本を付けます。
@@ -979,7 +1398,7 @@ $\varepsilon$ で役割トークンを強制しても、その後の式の書き
 電卓の使い方を知ったので、正答率は 31.6\% から大きく上がりました。
 しかし、まだ 4 割近くの問題（385 問）で暗算をしていて、その正答率は 29.4\% しかありません（電卓を使った 615 問は 85.5\%。集計は \file{ch24/phrasing.py}）。
 正解の数に直すと $615\times0.855+385\times0.294\approx526+113=639$ 問で、全体の 63.9\% と合います。
-硬貨で教えたので、電卓を使うかどうかは、まだ半ば気まぐれなのです。
+硬貨で教えたので、電卓を使う割合は、どの種類の問題でも 4〜7 割と、まだ半々に近いのです（\tabref{tab:arl-breakdown}の「コールドスタート後」の列）。
 
 \subsection{コールドスタートの後に強化学習をする}
 
@@ -1015,7 +1434,7 @@ $\varepsilon$ で役割トークンを強制しても、その後の式の書き
 \end{tikzpicture}\\[0.5mm]
 \pgfplotslegendfromname{arlcurvelegend}
 \caption{学習中の加減算の電卓使用率（左）と正答率（右）。線は学習中のロールアウト（温度 1、探索 $\varepsilon=0.2$）での値で、
-直前 10 ステップの平均を描いた（移動平均）。丸印は、学習の前と後のモデルを貪欲で評価した値（青の●が SFT＋RL $c=0$、灰色の○が RL のみ $c=0$）。}
+直前 10 ステップの平均を描いた（移動平均。線がステップ 10 から始まるのはこのため）。丸印は、学習の前と後のモデルを貪欲で評価した値（青の●が SFT＋RL $c=0$、灰色の○が RL のみ $c=0$）。}
 \label{fig:arl-curves}
 \end{figure}
 
@@ -1030,8 +1449,39 @@ $\varepsilon$ で役割トークンを強制しても、その後の式の書き
 実線が 6 割で終わるのに、右上の丸印は 92.8\% にあります。
 どちらも実測で、測り方が違います。
 線は温度 1 でサンプリングした学習中のロールアウトの成績、丸印は同じモデルを貪欲で測った評価の値です。
-暗算を強制された 1 割の軌跡だけでは、30 ポイントの差になりません。
-残りは、温度 1 だと数字を写し間違えやすいためと考えられます（内訳は測っていません）。
+この差の内訳を確かめるために、学習後のモデルに、評価の 1,000 問を条件を変えて解かせました（\file{ch24/sweep_temp.py}。\tabref{tab:arl-temp}）。
+SFT＋RL $c=0$ の列を上から見てください。
+貪欲で 92.8\%、温度 1 で 66.1\%、温度 1 に学習中と同じ探索 $\varepsilon=0.2$ を加えると 62.3\% です。
+約 30 ポイントの差のうち、探索で暗算を強制したぶんは約 4 ポイントで、残りの約 27 ポイントは温度 1 のぶんでした。
+温度 1 では、電卓に強制しても 67.1\% にとどまります。
+確率の低いトークンもときどき選ばれるので、式に数を写すときや、結果を答えに写すときの誤りが増えると考えられます（誤りの中身までは数えていません）。
+
+\begin{table}[tbp]
+\centering
+\caption{生成の条件を変えて測った、加減算 1,000 問の正答率（\%）。「強制」は、最初の役割トークンを \code{<|tool|>}（電卓）か \code{<|assistant|>}（暗算）に固定したもの。
+評価の問題を使い、学習はしていない（\file{ch24/sweep_temp.py}。生成の乱数の種は 1 つ）。}
+\label{tab:arl-temp}
+\small
+\begin{tabular}{lrrr}
+\toprule
+条件 & \shortstack[r]{コールド\\スタート後} & \shortstack[r]{SFT＋RL\\$c=0$} & \shortstack[r]{SFT＋RL\\$c=0.5$} \\
+\midrule
+貪欲（評価と同じ） & 63.9 & 92.8 & 66.7 \\
+温度 1 & 32.9 & 66.1 & 54.2 \\
+温度 1 ＋ 探索 $\varepsilon=0.2$（学習中の条件） & -- & 62.3 & -- \\
+\midrule
+貪欲、電卓に強制 & 84.6 & 92.8 & 84.8 \\
+貪欲、暗算に強制 & 26.4 & 12.2 & 26.2 \\
+温度 1、電卓に強制 & 44.3 & 67.1 & 62.7 \\
+温度 1、暗算に強制 & 17.3 & 11.1 & 19.3 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\tabref{tab:arl-temp}の下の 4 行からは、もう一つ分かることがあります。
+SFT＋RL $c=0$ のモデルは、暗算に強制すると 12.2\%（貪欲）しか解けません。
+コールドスタート後の 26.4\% より低くなっています。
+暗算をほとんど使わなくなったことと関係があると考えられますが、確かめてはいません。
 
 \begin{table}[tbp]
 \centering
@@ -1086,7 +1536,7 @@ SFT＋RL $c=0.2$ & \textbf{93.6} & 100 & 86.7 & 100 & 92.3 & 100 \\
 \addplot[bar shift=0pt, fill=figblue, draw=bookblue] coordinates {(31.6,3) (43.5,4) (63.9,5) (92.8,6)};
 \end{axis}
 \end{tikzpicture}
-\caption{加減算 1,000 問の正答率。灰色の 2 本は\chapref{ch:rl-llm}（電卓なし）、青の 4 本は本章（電卓つき、$c=0$）。}
+\caption{加減算 1,000 問の正答率。灰色の 2 本は\chapref{ch:rl-llm}（電卓なし）、青の 4 本は本章（電卓つき。RL のみと SFT＋RL は $c=0$ の結果）。}
 \label{fig:arl-stages}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.41\linewidth}
@@ -1101,12 +1551,12 @@ SFT＋RL $c=0.2$ & \textbf{93.6} & 100 & 86.7 & 100 & 92.3 & 100 \\
 \legend{電卓使用率, 正答率}
 \end{axis}
 \end{tikzpicture}
-\caption{コスト $c$ を変えたときの、加減算の電卓使用率と正答率（SFT＋RL）。}
+\caption{コスト $c$ を変えたときの、加減算の電卓使用率と正答率（SFT＋RL、貪欲で評価）。$c$ 以外の設定は同じ。時間で打ち切ったので、ステップ数は $c=0, 0.2$ で 73、$c=0.35$ で 91、$c=0.5$ で 103。乱数の種は 1 つ。}
 \label{fig:arl-cost}
 \end{minipage}
 \end{figure}
 
-\chapref{ch:rl-llm}では、電卓を持たない計算アシスタントを強化学習で鍛えました。
+\chapref{ch:rl-llm}では、電卓を持たない計算アシスタントを強化学習で学習させました。
 伸びは約 2 ポイントで、灰色の 2 本の棒はほとんど同じ長さです。
 繰り上がりの暗算という\textbf{能力}を伸ばすのは、260 万パラメータのモデルには難しかったからです。
 本章のエージェントは、暗算の力を伸ばしていません。
@@ -1116,9 +1566,11 @@ SFT＋RL $c=0.2$ & \textbf{93.6} & 100 & 86.7 & 100 & 92.3 & 100 \\
 
 ただし、青い棒の 2 本目（RL のみ、43.5\%）を忘れてはいけません。
 式の書き方という下地を SFT で作って（3 本目）、はじめて強化学習が効きました（4 本目）。
-「SFT で下地を作り、強化学習で仕上げる」という順番が、この章のいちばんの教訓です。
+このモデルのように、必要な技能（式の書き方）を探索では試せないときは、「SFT で下地を作り、強化学習で仕上げる」という順番が要ります。
+これが、この章のいちばんの教訓です。
+強いモデルでは SFT をはさまない報告もあり、どちらが良いかは出発点のモデルによります（\secref{sec:arl-real}の\tabref{tab:arl-recipes}）。
 
-掛け算の能力が壊れていないかも確かめます。
+掛け算の正答率が下がっていないかも確かめます。
 $c=0$ では掛け算 89.0\%（学習前 91.3\%）、掛けて足す 98.0\%（同 98.3\%）で、300 問の標準誤差（約 1.7 ポイント）程度の差です。
 約 1.7 ポイントは、正答率を 0.9 として $\sqrt{0.9\times0.1/300}\approx0.017$ と計算した値です。
 $c=0.2$ では掛けて足すが 92.3\% に下がりましたが、原因は確かめられていません。
@@ -1127,7 +1579,7 @@ $c=0.2$ では掛けて足すが 92.3\% に下がりましたが、原因は確�
 
 \outputfile{ch24/out/examples.txt}
 
-見やすくするために、この出力では区切りの \code{<|end|>} を省いています（「SFT後」はコールドスタート後のモデルです）。
+見やすくするために、この出力では区切りの \code{<|end|>} を省いています（「SFT後」はコールドスタート後のモデルです。モデル名の後の ○ は正解、× は不正解の印です）。
 1 問目（\code{57足す73は？}）では、学習前は \code{<|assistant|>} の後に \code{57+} と式を書いてしまって失敗しました。
 コールドスタート後は電卓に \code{57+73} を渡しています。
 2 問目（\code{13+955は？}）は、学習前は暗算で正解していたのに、コールドスタート後は式の写し間違い（\code{13+975}）で失敗し、RL 後は正しく写しています。
@@ -1153,22 +1605,29 @@ $c=0.2$ でも電卓の使用率が 100\% になったのは、期待と違う�
 
 \tabref{tab:arl-breakdown}は、加減算 1,000 問を、桁数と繰り上がりの有無で 6 種類に分けたものです。
 「暗算」の列は、問題の種類ごとの暗算の実力の目安です。
-RL のみ $c=0.2$ のモデルは電卓を 16.6\% しか使わないので、その正答率を借りました（別のモデルの値なので、あくまで目安です）。
+RL のみ $c=0.2$ のモデルは電卓を 16.6\% の問題でしか使わないので、その正答率を借りました。
+電卓を使った問題（正答率 0.6\%）も含んだ値で、暗算で答えた 834 問だけに絞ると、全体で 0.495 です（\file{ch24/phrasing.py}）。
+別のモデルの、しかも貪欲で測った値なので、あくまで目安です。
 最も易しい「1 桁・繰り上がりなし」でも 0.68 です。
 \figref{fig:arl-expected}の横軸の三角が、この列の 6 つの値です。
 6 つとも、$c=0.2$ の線引き $p=0.8$ より左にあります。
 つまり、どの種類の問題でも電卓のほうが得です。
-前の小節の「すべて電卓」は、この計算どおりの答えだったのです。
+前の小節の「すべて電卓」は、この計算と同じ向きの答えでした。
+ここでは電卓の正答率を $p'\approx1$ としました。
+実際には「3 桁」で 0.90 ほどですが（\tabref{tab:arl-breakdown}の $c=0.2$ の括弧内）、$p'=0.9$ でも線引きは $p=0.7$ で、結論は変わりません。
+ただし、強化学習が大きくしようとするのは、温度 1 のロールアウトでの期待値です。
+温度 1 で測り直した比較は、この小節の最後で見ます。
 
 では、コストを $c=0.35$ に上げたらどうなるでしょうか。
 線引きは $p=1-0.35=0.65$ に動きます。
 「暗算」の列で 0.65 を超えるのは、「1 桁・繰り上がりなし」の 0.68 だけなので、「この種類だけ暗算に切り替わる」と予想できます。
-確かめるために、コストを $c=0.35$ と $c=0.5$ に上げて、同じ学習を約 6.5 分（91・103 ステップ）回しました（系図の④）。
+確かめるために、コールドスタート後のモデル \file{ch24_cold.pt} から、コストだけを $c=0.35$ と $c=0.5$ に変えて、同じ学習を約 6.5 分（91・103 ステップ）回しました（系図の④）。
+③で学習したモデルから続けたのではなく、③と同じ出発点から学習し直しています。
 
 \begin{table}[tbp]
 \centering
 \caption{加減算 1,000 問を、大きいほうの数の桁数と繰り上がり（引き算では繰り下がり）の有無で分けた。右の 4 列は電卓使用率で、括弧内は正答率。
-「暗算」の列だけは、RL のみ $c=0.2$ のモデル（電卓をほとんど使わない）の正答率で、暗算の実力の目安。}
+「暗算」の列だけは、RL のみ $c=0.2$ のモデルの正答率で、暗算の実力の目安（このモデルは 16.6\% の問題で電卓を使うので、その問題も含む）。}
 \label{tab:arl-breakdown}
 \small
 \begin{tabular}{lrrrrrr}
@@ -1195,7 +1654,7 @@ RL のみ $c=0.2$ のモデルは電卓を 16.6\% しか使わないので、そ
 それ以外の問題では 0.86〜1.00 です。
 予想した向きに動きましたが、暗算に切り替わったのは 3 割ほどです。
 この種類で暗算に回した 34 問のうち 30 問は正解で、種類全体の正答率は 0.95 を保っています。
-\textbf{易しい問題の一部は暗算、それ以外は電卓}という使い分けが、報酬のつまみ $c$ を回すだけで現れ始めたのです。
+\textbf{易しい問題の一部は暗算、それ以外は電卓}という使い分けが、報酬のコスト $c$ を変えるだけで現れ始めたのです。
 これは、人が事前にお手本に書けなかった線引きです。
 ただし、線引きはまだ粗く、「3 桁・あり」でも 34 問を暗算に回して、すべて間違えています。
 暗算に回した 114 問のうち 87 問は「\code{a+bは？}」型で、質問文の見た目で決める癖も少し戻りました。
@@ -1203,13 +1662,76 @@ RL のみ $c=0.2$ のモデルは電卓を 16.6\% しか使わないので、そ
 $c=0.2$（93.6\%、100\%）と比べると、正答率を 2.6 ポイント手放して、電卓の呼び出しを 1 割余り減らしたことになります。
 
 \figref{fig:arl-cost}は、$c$ を横軸にして、全体の電卓使用率（実線）と正答率（破線）を描いたものです。
-$c=0.35$ まではどちらの線もほぼ水平で、$c=0.5$ で 2 本とも大きく下がります（電卓使用率 44.3\%、正答率 66.7\%）。
+$c=0.35$ までは、正答率はほとんど変わらず（93.6\% → 91.0\%）、電卓使用率は 1 割余り下がります（100\% → 88.6\%）。
+$c=0.5$ では、2 本とも大きく下がります（電卓使用率 44.3\%、正答率 66.7\%）。
+\figref{fig:arl-breakdown-c}は、電卓使用率を問題の種類ごとに描いたものです（\tabref{tab:arl-breakdown}の右の 3 列に、$c=0$ を足しました）。
+$c=0.35$ で最初に下がるのは、最も易しい「1 桁・なし」の線です。
+$c=0.5$ では、「1 桁・あり」以外の 5 本の線が、まとめて 0.34〜0.55 に下がります。
 ただし、$c=0.5$ での使い分けは、問題の難しさに沿っていません。
 「3 桁・あり」は暗算の正答率が 0.24 しかないので、$1-0.5=0.5$ でも電卓のほうが得なはずです。
 それなのに使用率は 0.39 で、正答率は 0.40 に落ちています。
-原因は確かめられていません。
-学習中は温度 1 なので、電卓を使っても写し間違いが増えます。
-そのため電卓の期待値 $p'-0.5$ と暗算の差がわずかになり、103 ステップでは学び分けられなかったのかもしれません。
+
+なぜでしょうか。
+強化学習が大きくするのは、温度 1 のロールアウトでの報酬の期待値でした。
+そこで、学習後の $c=0.5$ のモデルについて、温度 1 での暗算の正答率 $p$ と電卓の正答率 $p'$ を、問題の種類ごとに測りました（\file{ch24/sweep_temp.py}。最初の役割トークンを暗算か電卓に強制して解かせる）。
+\figref{fig:arl-threshold}は、横軸に $p$、縦軸に電卓の期待値 $p'-c$ を取ったものです。
+点が斜めの破線より上なら、温度 1 では電卓のほうが得です。
+「3 桁・あり」では、温度 1 の電卓の正答率は 0.53 しかなく、期待値は $0.53-0.5=0.03$ です。
+暗算の 0.03 とほとんど同じなので、報酬からは、どちらが得かがほとんど区別できません。
+使用率 0.39 は、この「区別できない」状態と矛盾しません。
+ほかの種類でも、温度 1 で電卓が得な 2 種類（「1 桁・あり」と「2 桁・あり」）は使用率が高く（1.00 と 0.55）、暗算が得な 3 種類（「1 桁・なし」「2 桁・なし」「3 桁・なし」）は低くなっています（0.34〜0.48）。
+貪欲で測った目安とは合わなかった振る舞いが、学習と同じ温度 1 で測った $p$ と $p'$ となら、おおむね合うのです。
+線引きの計算は、学習が実際に解かせている条件での正答率で考える必要がある、ということです。
+ただし、これは学習の後のモデルで測った値で、学習の途中の値ではありません。
+乱数の種も 1 つなので、確かな説明とまでは言えません。
+$c=0$ のモデル（青の丸）は、温度 1 でも、どの種類でも点が破線よりずっと上にあります。
+$p'$ から $0.2$ を引いても、どの種類でも $p$ を上回ります（\figref{fig:arl-threshold}の丸の縦の値から 0.2 を引いても、破線より上）。
+$c=0$ と $c=0.2$ の「すべて電卓」は、温度 1 で測っても筋の通った答えです。
+
+\begin{figure}[tbp]
+\centering
+\begin{minipage}[t]{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=\linewidth, height=48mm, xmin=-0.03, xmax=0.53, ymin=0, ymax=1.08,
+  xtick={0,0.2,0.35,0.5}, xticklabels={0,0.2,0.35,0.5}, ytick={0,0.25,0.5,0.75,1},
+  tick label style={font=\scriptsize}, xlabel={電卓のコスト $c$}, ylabel={加減算の電卓使用率}, label style={font=\footnotesize},
+  legend style={font=\tiny, at={(0.02,0.03)}, anchor=south west, legend columns=2, draw=black!30}, legend cell align=left]
+\addplot[thick, bookblue, mark=*, mark size=1.3pt] table[col sep=comma, x=c, y=d1n_tool]{code/ch24/out/breakdown_by_c.csv};
+\addplot[thick, bookblue, dashed, mark=o, mark size=1.3pt] table[col sep=comma, x=c, y=d1c_tool]{code/ch24/out/breakdown_by_c.csv};
+\addplot[thick, bookgreen, mark=square*, mark size=1.2pt] table[col sep=comma, x=c, y=d2n_tool]{code/ch24/out/breakdown_by_c.csv};
+\addplot[thick, bookgreen, dashed, mark=square, mark size=1.2pt] table[col sep=comma, x=c, y=d2c_tool]{code/ch24/out/breakdown_by_c.csv};
+\addplot[thick, bookaccent, mark=triangle*, mark size=1.6pt] table[col sep=comma, x=c, y=d3n_tool]{code/ch24/out/breakdown_by_c.csv};
+\addplot[thick, bookaccent, dashed, mark=triangle, mark size=1.6pt] table[col sep=comma, x=c, y=d3c_tool]{code/ch24/out/breakdown_by_c.csv};
+\legend{1 桁・なし, 1 桁・あり, 2 桁・なし, 2 桁・あり, 3 桁・なし, 3 桁・あり}
+\end{axis}
+\end{tikzpicture}
+\caption{コスト $c$ を変えたときの、問題の種類ごとの電卓使用率（SFT＋RL、貪欲で評価。\tabref{tab:arl-breakdown}の数値に、$c=0$ の点（6 種類とも 1.00）を足した）。$c=0$ と $0.2$ では 6 本の線がすべて 1.00 で重なる。
+実線は繰り上がりなし、破線はあり。$c$ 以外の設定は同じで、ステップ数は\tabref{tab:arl-setup}のとおり $c$ ごとに違う。乱数の種は 1 つ。}
+\label{fig:arl-breakdown-c}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.94\linewidth, height=48mm, xmin=0, xmax=0.75, ymin=0, ymax=0.88,
+  xtick={0,0.2,0.4,0.6}, ytick={0,0.2,0.4,0.6,0.8},
+  tick label style={font=\scriptsize}, xlabel={暗算の正答率 $p$（温度 1）}, ylabel={電卓の期待値 $p'-c$（温度 1）}, label style={font=\footnotesize},
+  legend style={font=\tiny, at={(0.5,-0.3)}, anchor=north, draw=black!30}, legend cell align=left, clip=false]
+\addplot[black!50, dashed, domain=0:0.75, forget plot] {x};
+\node[font=\tiny, text=black!60, anchor=south east] at (axis cs:0.6,0.63) {電卓と暗算が同じ};
+\addplot[only marks, mark=*, mark size=1.6pt, bookblue] table[col sep=comma, x=p, y=pc]{code/ch24/out/fig_threshold_cold_c0.csv};
+\addplot[only marks, mark=triangle*, mark size=2.2pt, bookaccent,
+  nodes near coords, point meta=explicit symbolic,
+  nodes near coords style={font=\tiny, text=black!80, anchor=west, xshift=1pt, fill=white, inner sep=0.5pt}]
+  table[col sep=comma, x=p, y=pc, meta=lab]{code/ch24/out/fig_threshold_cold_c05.csv};
+\legend{SFT＋RL $c=0$（使用率はすべて 1.00）, SFT＋RL $c=0.5$}
+\end{axis}
+\end{tikzpicture}
+\caption{温度 1 で測った、問題の種類ごとの暗算の正答率 $p$（横軸）と電卓の期待値 $p'-c$（縦軸）。破線より上なら電卓が得。
+$p'$ は、最初の役割トークンを電卓に強制したときの正答率。三角に添えた数は、$c=0.5$ のモデルのその種類での電卓使用率（貪欲）。\file{ch24/sweep_temp.py} による。}
+\label{fig:arl-threshold}
+\end{minipage}
+\end{figure}
 
 ここから分かるのは、\textbf{報酬の設計がそのまま振る舞いの設計になる}ということです。
 $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると呼び出しを節約し始め、上げすぎると必要な電卓まで使わなくなります。
@@ -1218,7 +1740,7 @@ $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると�
 \begin{intuition}{ここまでの道のり}
 \begin{itemize}
 \item 学習前のエージェントは、質問文の見た目で電卓を呼び、足し算の式も書けませんでした（加減算 31.6\%）。
-\item 強化学習だけで鍛えると、電卓を\textbf{やめる}ことを覚えました（43.5\%）。正しい式を試さなかったからです。
+\item 強化学習だけで学習させると、電卓を\textbf{やめる}ことを覚えました（43.5\%）。正しい式を試さなかったからです。
 \item 式の書き方だけを SFT で教えてから強化学習をすると、加減算でも電卓を使うようになりました（63.9\% → 92.8\%）。
 \item 電卓のコスト $c$ を上げると、「易しい問題は暗算」という使い分けが現れ始めました（$c=0.35$）。
 \end{itemize}
@@ -1233,7 +1755,7 @@ $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると�
 \skimread{押さえる結論は、「実際の Agentic RL も骨組みは本章と同じ（多ターンのロールアウト、最後の成否の報酬、GRPO 系の方策勾配、結果のトークンのマスク）。手間の大半は、タスクと実行環境の用意、サンドボックス、非同期のロールアウト基盤にある」です。自分でエージェントの強化学習を組むときに、読み直してください。}
 
 私たちの実験は、電卓 1 つ、30 トークンほどの軌跡、CPU 数分の学習でした。
-この節の問いは、ソフトウェアのバグを直すコーディングエージェントのような実際のエージェントを鍛えるとき、本章の部品が何に当たるのか、です。
+この節の問いは、ソフトウェアのバグを直すコーディングエージェントのような実際のエージェントを学習させるとき、本章の部品が何に当たるのか、です。
 公開されている事例を見ると、アルゴリズムの骨組みは本章と同じで、違いの大半は\textbf{環境と基盤}にあります。
 この節は眺めるだけでかまいません。
 製品名や細かな数字を覚える必要はなく、対応表（\tabref{tab:arl-scale}）と基盤の図（\figref{fig:arl-infra}）をつかめば十分です。
@@ -1241,7 +1763,8 @@ $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると�
 \subsection{実際の手順}
 
 公開された報告によく見られる手順と規模を、本章の実験と並べたのが\tabref{tab:arl-scale}です。
-規模は桁違いですが、左右の列は 1 行ずつ対応していて、流れは同じです。
+規模は桁違いですが、左右の列は 1 行ずつ対応させてあり、大きな流れは同じです。
+ただし、2 行目の重なりの除去は本章では行っておらず、3 行目の SFT は実際の開発でも省くことがあり、5 行目の報酬は本章では電卓のコストのぶん 0/1 ではありません。
 
 \begin{table}[tbp]
 \centering
@@ -1249,17 +1772,17 @@ $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると�
 実際の数値は公開された報告\cite{pan2025swegym,agentica2025deepswe,cao2025skyrl,liu2026arcticswe,bai2025kimik2}による。}
 \label{tab:arl-scale}
 \small
-\begin{tabular}{rp{24mm}p{51mm}p{40mm}}
+\begin{tabular}{rp{24mm}p{48mm}p{40mm}}
 \toprule
  & 手順・部品 & 実際の開発（コーディングエージェントなど） & 本章の実験 \\
 \midrule
 1 & タスクを集める & 実際のバグ報告と修正を数千件。1 件ごとに実行環境とテストを用意 & 計算問題をその場で作る \\
 2 & 評価との重なりを除く & 評価用の問題と同じ出どころのタスクを外す & 評価の問題は別の種で作る（重なりは除いていない） \\
-3 & SFT で下地を作る & 成功した軌跡の SFT で、ツールの書式と基本の動きを教える & \chapref{ch:agent}の SFT と、コールドスタート \\
+3 & SFT で下地を作る & 成功した軌跡の SFT で、ツールの書式と基本の動きを教える & \chapref{ch:agent}の SFT と、コールドスタート（実際の開発では、はさまない報告も多い。\tabref{tab:arl-recipes}） \\
 4 & 多ターンのロールアウト & シェル・ファイル編集・検索などのツールで最大 100 ターン、3.2〜13 万トークン。16〜64 問 $\times$ 8 本、温度 1 & 電卓 1 つで最大 3 ターン、約 30 トークン。16 問 $\times$ 8 本、温度 1 \\
-5 & 疎な 0/1 の報酬 & テストが通れば 1。書式違反や打ち切りは 0 & 正解なら 1、電卓 1 回につき $-c$ \\
+5 & 最後の成否の報酬（疎） & テストが通れば 1。書式違反や打ち切りは 0 & 正解なら 1、誤りは 0。＋電卓 1 回につき $-c$（$c=0.2$ なら 1・0.8・0・$-0.2$） \\
 6 & GRPO 系の方策勾配 & 軌跡に 1 つのアドバンテージ。細かな改良を加える & 式\eqref{eq:arl-loss} \\
-7 & 観測を損失から外す & ツールの結果のトークンには勾配を流さない & マスク $m=0$ \\
+7 & 観測を損失から外す & ツールの結果（観測）のトークンは損失に入れない & マスク $m=0$ \\
 \midrule
  & モデル & 数十億〜約 1 兆パラメータ & ミニGPT（260 万パラメータ） \\
  & サンドボックス & コンテナや軽量な仮想マシンを 1 万個以上 & 構文木で式を制限した電卓 \\
@@ -1269,7 +1792,7 @@ $c=0$ ならエージェントは迷わず電卓を使い、$c$ を上げると�
 \end{table}
 
 1 行目の実行環境は、タスクごとに\textbf{コンテナ}として用意します。
-コンテナは、必要なプログラム一式を詰めて、周りから切り離して動かす使い捨ての箱です（Docker はその代表的な道具です）。
+コンテナは、必要なプログラム一式を詰めて、周りから切り離して動かす、使い捨ての実行環境です（Docker はその代表的な道具です）。
 SWE-Gym では、Python の実タスク 2,438 個の実行環境が、合計 6 TB になりました\cite{pan2025swegym}。
 2 行目は、評価（SWE-bench\cite{jimenez2024swebench}など）を公正にするためです。
 評価と同じ問題で学習すると、問題を覚えただけで点が上がり、実力が測れなくなります（\chapref{ch:eval-serving}で見た汚染です）。
@@ -1277,8 +1800,10 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 3 行目が、本章と同じ「SFT で下地、強化学習で仕上げ」の順番です。
 ただし、いつも要るわけではありません。
 指示どおりにツールを呼べるモデルでは、SFT をはさまずに強化学習だけで始めた報告も多くあります\cite{agentica2025deepswe,liu2026arcticswe}（それでも、手がかりを与えるなどの助けが要ったと報告されています\cite{cao2025skyrl}）。
+DeepSWE は、SFT 済みのモデルから始めた強化学習は 100 回の更新で改善しなかった、とまで報告しています\cite{agentica2025deepswe}。
+どちらの順番が良いかは、出発点のモデルによって報告が分かれています（\tabref{tab:arl-recipes}）。
 4 行目のシェルは、コマンドを実行する道具です。
-6 行目の「細かな改良」は、たとえば KL のブレーキ（本章の $\beta$ の項）を外す、確率を上げる側のクリップを緩める（DAPO という手法\cite{yu2025dapo}の工夫）、といったものです\cite{agentica2025deepswe}。
+6 行目の「細かな改良」は、たとえば KL 罰則（本章の $\beta$ の項）を外す、確率を上げる側のクリップを緩める（DAPO という手法\cite{yu2025dapo}の工夫）、といったものです\cite{agentica2025deepswe}。
 
 \subsection{ロールアウトの基盤：サンドボックスと並列化}
 
@@ -1288,7 +1813,7 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 一つ目は\textbf{安全}です。
 学習中のエージェントは、まだ下手で、\code{rm -rf /} のような危険なコマンドを実行するかもしれません。
 報酬ハッキングのために、採点用のテストを書き換えようとするかもしれません。
-そこで、ツールの実行は、外の世界から切り離した使い捨ての箱、サンドボックスの中で行います（\chapref{ch:agent}）。
+そこで、ツールの実行は、外の世界から切り離した使い捨ての実行環境、サンドボックスの中で行います（\chapref{ch:agent}）。
 1 本の軌跡ごとに、コンテナや軽量な仮想マシン（1 台の計算機の中に作る、仮の小さな計算機）を立ち上げ、終わったら捨てます。
 
 二つ目は\textbf{規模}です。
@@ -1297,7 +1822,7 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 
 三つ目は\textbf{待ち時間}です。
 軌跡の長さは大きくばらつきます。
-1 ステップの全軌跡が終わるまで学習を待つ（同期式）と、長い軌跡を待つあいだ GPU が遊んでしまいます。
+1 ステップの全軌跡が終わるまで学習を待つ（同期式）と、長い軌跡を待つあいだ、GPU が計算をしない時間ができます。
 そこで多くの基盤は、生成を受け持つプログラム（推論エンジン）と学習を別の GPU に分け、終わった軌跡から順に学習に回す\textbf{非同期}の作りにしています。
 その代わり、学習に使う軌跡は「少し前の方策」が生成したものになります。
 生成した方策と、いま更新している方策が違うので、確率比 $\rho$ は 1 からずれます。
@@ -1311,31 +1836,33 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 \node[orangebox, text width=30mm, align=center, right=of task] (inf) {推論エンジン\\（方策の写しで生成）};
 \node[graybox, text width=30mm, align=center, right=17mm of inf] (sb) {サンドボックス群\\（ツールを実行）};
 \node[greenbox, text width=30mm, align=center, below=7mm of sb] (rw) {検証器\\（テストで採点）};
-\node[purplebox, text width=30mm, align=center, below=7mm of inf] (buf) {軌跡のバッファ\\（トークン ID・log π・マスク・報酬）};
+\node[purplebox, text width=30mm, align=center, below=7mm of inf] (buf) {軌跡のバッファ\\（トークン ID・\mbox{$\log\pi$}・マスク・報酬）};
 \node[box, text width=24mm, align=center, below=7mm of task] (tr) {学習器\\（GRPO で更新）};
 \draw[arr] (task) -- (inf);
 \draw[arr] ([yshift=1.5mm]inf.east) -- node[lbl, above]{呼び出し} ([yshift=1.5mm]sb.west);
 \draw[arr] ([yshift=-1.5mm]sb.west) -- node[lbl, below]{結果} ([yshift=-1.5mm]inf.east);
 \draw[arr] (sb) -- node[lbl, right]{最終状態} (rw);
+\draw[arr] (task.north) -- ++(0,5mm) -| node[lbl, pos=0.25, above, inner sep=1.5pt]{採点に使うテスト} ([xshift=5mm]sb.east) |- (rw.east);
 \draw[arr] (rw) -- node[lbl, above]{報酬} (buf);
 \draw[arr] (inf) -- node[lbl, right]{軌跡} (buf);
 \draw[arr] (buf) -- (tr);
 \draw[darr] (tr.north) -- ++(0,5.5mm) -| node[lbl, pos=0.25, below, inner sep=1.5pt]{新しい重みを配る} ([xshift=-6mm]inf.south);
 \end{tikzpicture}
-\caption{実際の Agentic RL の基盤の概略。推論エンジンとサンドボックスが軌跡を作り、検証器が採点し、
+\caption{実際の Agentic RL の基盤の概略。推論エンジンとサンドボックスが軌跡を作り、検証器がタスクのテストで採点し、
 学習器が更新した重みを推論エンジンに配り直す。本章では、これらがすべて 1 つの Python プロセスの中にある。}
 \label{fig:arl-infra}
 \end{figure}
 
 \figref{fig:arl-infra}に、基盤の部品の関係を描きました。
-本章のコードと対応させると、タスクの集合が \code{make_task}、推論エンジンとサンドボックスが \code{rollout} と \code{calculator}、
+本章のコードと対応させると、タスクの集合が \code{make_task}（\file{ch24/env.py} の、問題を 1 つ作る関数。本文には載せていません）、推論エンジンとサンドボックスが \code{rollout} と \code{calculator}、
 検証器が \code{reward}、学習器が GRPO の 1 ステップです。
 実際の基盤では、これらが別々のマシンで動きます。
 
 もう一つ、実務で大切な注意があります。
 学習に使うトークン列は、\textbf{推論エンジンが実際に生成したトークン ID をそのまま}使います。
-生成した文字列をもう一度トークン化すると、同じ文字列でも別のトークン列になることがあり（\chapref{ch:tokenizer}）、
-「モデルが選んでいないトークン」の確率を押し上げてしまうからです。
+生成した文字列をもう一度トークン化すると、同じ文字列でも別のトークン列になることがあるからです（\chapref{ch:tokenizer}）。
+たとえば本書のトークナイザでは、モデルが \code{で}・\code{す}・\code{。} の 3 トークンを続けて書いても、文字列に戻してトークン化し直すと \code{です。} の 1 トークンになります。
+こうして作り直したトークン列で学習すると、「モデルが選んでいないトークン」（この例では \code{です。}）の確率を押し上げてしまいます。
 本章の \code{Traj} も、文字列ではなくトークン ID を記録しています。
 
 \subsection{SFT・蒸留との組み合わせ}
@@ -1343,12 +1870,35 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 強化学習は、SFT や蒸留と組み合わせて使われることがよくあります。
 代表的なのは、\textbf{成功した軌跡の再利用}です。
 エージェントに多くのタスクを解かせ、テストが通った軌跡だけを集めて SFT します。
-これは\term{棄却サンプリング}{rejection sampling}による微調整と呼ばれ、SWE-Gym はこの方法で解決率を上げました\cite{pan2025swegym}。
+テストに通らなかった軌跡を捨てる（棄却する）ので、これは\term{棄却サンプリング}{rejection sampling}による微調整と呼ばれ、SWE-Gym はこの方法で解決率を上げました\cite{pan2025swegym}。
 集めた軌跡は、強化学習の前に下地を作るコールドスタートにも、強化学習で強くなったモデルの振る舞いを小さなモデルへ移す蒸留（\chapref{ch:distillation}）にも使えます。
 
 この順番は、エージェントに限りません。
 推論モデルの DeepSeek-R1（\chapref{ch:rl-llm}）も、コールドスタートの SFT の後に強化学習を行っています\cite{guo2025deepseekr1}。
 本章の「強化学習だけでは電卓をやめてしまった」という失敗は、ツールの使い方をまだ知らないモデルで、この順番が採られる理由そのものです。
+
+ここまでに出てきた進め方を、\tabref{tab:arl-recipes}に並べました。
+本章の実験から言えるのは、「必要な技能を探索で試せないモデルでは、先に SFT が要る」という条件つきの結論です。
+試せる技能を持つ強いモデルでは、強化学習だけで始めるほうが良かったという報告もあります。
+どの進め方が良いかは、出発点のモデルや、お手本や教師のモデルが手に入るかによって変わり、一つに決着してはいません。
+
+\begin{table}[tbp]
+\centering
+\caption{強化学習と SFT・蒸留の組み合わせ方の比較。どれが良いかは出発点のモデルによる（本文）。}
+\label{tab:arl-recipes}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{22mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{24mm}>{\raggedright\arraybackslash}p{26mm}>{\raggedright\arraybackslash}p{24mm}}
+\toprule
+進め方 & 要るもの & 長所 & 短所 & 例・本書での扱い \\
+\midrule
+強化学習だけ & 検証器（採点の規則） & お手本が要らない & 探索で試せない技能は見つからない & 本章の①（失敗）。ツールを呼べる強いモデルでの報告\cite{agentica2025deepswe,liu2026arcticswe} \\ \addlinespace
+コールドスタートの SFT → 強化学習 & 少量のお手本＋検証器 & 強化学習が動き出せる所から始められる & お手本を用意する手間。SFT の癖が残りうる & 本章の②③。DeepSeek-R1\cite{guo2025deepseekr1} \\ \addlinespace
+成功した軌跡の SFT（棄却サンプリング） & ときどき成功するモデル＋検証器 & 人がお手本を書かなくてよい & 成功が稀だと、軌跡が集まらない & SWE-Gym\cite{pan2025swegym}。演習 4 \\ \addlinespace
+蒸留 & 強い教師のモデル & 小さなモデルに安く移せる & 教師のモデルが要る & \chapref{ch:distillation} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 この節の要点です。
 実際の Agentic RL の骨組みは本章と同じですが、手間の大半はタスクと実行環境の用意、安全なサンドボックス、大量のロールアウトを回す非同期の基盤にあります。
@@ -1356,11 +1906,11 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 
 %======================================================================
 \begin{summary}
-\item Agentic RL は、ツールを使う複数ステップの仕事を、最後の成否の報酬で鍛える強化学習です。お手本を人が書けない振る舞いも、採点できれば学べます。
-\item エージェントの仕事は、状態＝文脈の全文、行動＝次のトークン、遷移＝トークンを足す（結果は環境が割り込む）、報酬＝最後の成否、割引率 $\gamma=1$ の MDP で書けます。
-\item 環境は、検証可能なタスクの集合・軌跡の記録・ロールアウト・報酬の 4 つの部品でできています。報酬にツールのコスト $-c$ を足すと、「電卓で正答率が $c$ 以上上がる問題だけ電卓を使う」という線引きを教えられます。
-\item 軌跡単位の GRPO では、グループで標準化したアドバンテージを、モデルが書いたトークンだけに掛けます。ツールの結果のトークンには勾配を流しません。
-\item 一度も試さない行動は学べないので、探索の工夫が要ります。それでも見つからない技能（本章では式の書き方）は、先に SFT で教えます（コールドスタート）。
+\item Agentic RL は、ツールとのやり取りを何度もはさむ仕事を、最後の成否の報酬で学習させる強化学習です。お手本を人が書けない振る舞いも、採点できれば学べます。
+\item エージェントの仕事は、状態＝文脈の全文、行動＝次のトークン、遷移＝トークンを足す（ツールの結果は環境が書き足す）、報酬＝最後の成否、割引率 $\gamma=1$ の MDP で書けます。学習は「問題を作る → 多ターンで解かせる → 採点する → 1 回更新する → 捨てる」のくり返しです。
+\item 環境は、検証可能なタスクの集合・軌跡の記録・ロールアウト・報酬の 4 つの部品でできています。報酬にツールのコスト $-c$ を足すと、「電卓で正答率が $c$ より大きく上がる問題だけ電卓を使う」という線引きを教えられます。正答率は、学習が実際に解かせる条件（温度 1）で考えます。
+\item 軌跡単位の GRPO では、グループで標準化したアドバンテージを、モデルが書いたトークンだけに掛けます。ツールの結果のトークンは損失に入れません（文脈としてはモデルに入ります）。
+\item 一度も試さない行動は、良いという証拠が得られないので、探索の工夫が要ります。それでも見つからない技能（本章では式の書き方）は、先に SFT で教えます（コールドスタート）。
 \item 同じ GRPO でも、暗算の能力を伸ばそうとした\chapref{ch:rl-llm}は 82.6\% → 84.7\%、道具を使う振る舞いを変えた本章は 63.9\% → 92.8\% でした（SFT の前は 31.6\%）。何を学ばせるかで、効き方は変わります。
 \item 報酬は穴を突かれます（報酬ハッキング）。軌跡を読んで確かめます。実際の開発の手間の大半は、実行環境・サンドボックス・非同期の基盤にあります。
 \end{summary}
@@ -1376,7 +1926,7 @@ SWE-bench のようなコードのベンチマークの採点の仕組みは、\
 \item \cite{shao2024deepseekmath}：GRPO の原論文。式\eqref{eq:arl-adv}の出どころ。
 \item \cite{wei2025swerl}：SWE-RL。実際の GitHub の修正を使ったコーディングの強化学習。報酬は正解の修正との類似度。
 \item \cite{pan2025swegym}：SWE-Gym。実行できるタスク環境の作り方と、成功軌跡の再利用。
-\item \cite{agentica2025deepswe}、\cite{cao2025skyrl}、\cite{liu2026arcticswe}：コーディングエージェントを強化学習で鍛えた公開事例。3 つ目に、報酬ハッキングの実例がある。
+\item \cite{agentica2025deepswe}、\cite{cao2025skyrl}、\cite{liu2026arcticswe}：コーディングエージェントを強化学習で学習させた公開事例。3 つ目に、報酬ハッキングの実例がある。
 \item \cite{bai2025kimik2}：Kimi K2 の技術報告。検証可能な報酬と大規模サンドボックス。
 \item \cite{sheng2025hybridflow}：verl。推論と学習を組み合わせる強化学習基盤の設計。
 \end{itemize}

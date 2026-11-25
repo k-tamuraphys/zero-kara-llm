@@ -19,10 +19,10 @@
 \begin{readingguide}
 \item[\rgpre] \chapref{ch:posttraining}の \file{sft.pt} と、その正答率の測り方が分かれば読めます。
 \secref{sec:es-stats}は、\secref{sec:math-prob}の小節「期待値の線形性、分散・標準偏差、正規分布」を使います（\chapref{ch:math}で後回しにした人は、先に読んでください）。
-後半で使う KV キャッシュ（\secref{sec:ma-kvcache}）は、本文で要点を思い出します。
+後半で使う KV キャッシュ（\secref{sec:ma-kvcache}の\figref{fig:ma-kvcache}）は、本文で要点を思い出します。
 \item[\rgmust] \secref{sec:es-what}〜\secref{sec:es-bench}：測るもの、評価のプログラム、標準誤差と信頼区間、二つのモデルの比べ方、汚染。\chapref{ch:rl-llm}、\chapref{ch:agent}、\chapref{ch:capstone}と\appref{app:benchmarks}は、「その差は偶然ではないか」を、ここの方法で判断します。
-\item[\rgskim] \secref{sec:es-stats}の小節「ブートストラップ」と\secref{sec:es-judge}：式のない量の誤差と、正解が一つでない仕事の測り方。結論は見出しの下の札にあります。
-\item[\rgskim] \secref{sec:es-cost}〜\secref{sec:es-server}：モデルを速く届ける仕組み。「読むのは安く、書くのは高い」「まとめるほど全体は速く、一人ひとりは遅い」の二つと、図を追えば足ります。コードは 2 周目で構いません。
+\item[\rgskim] \secref{sec:es-stats}の小節「ブートストラップ」と\secref{sec:es-judge}：式のない量の誤差と、正解が一つでない仕事の測り方。結論は、見出しのすぐ下の「流し読み可」の枠に書いてあります。
+\item[\rgskim] \secref{sec:es-cost}〜\secref{sec:es-server}：モデルを速く届ける仕組み。「1 トークンあたりでは、プロンプトの処理（プリフィル）は安く、生成（デコード）は高い」「まとめるほど全体は速く、一人ひとりは遅い」の二つと、図を追えば足ります。コードは 2 周目で構いません。
 \item[\rglater] \secref{sec:es-cache}と\secref{sec:es-stack}：KV キャッシュの保存と料金、実際の推論エンジンと費用。API のプロンプトキャッシュを使うときや、推論エンジンを選ぶとき（\appref{app:toolmap}）に戻れば足ります。
 \end{readingguide}
 
@@ -42,12 +42,12 @@
 82.6\% という数字に「$\pm$ どれだけ」が付くのかを計算し、一つ目の食い違いを解きます。
 後半は\textbf{推論}、つまりモデルを届ける方法です。
 まず、計算をまとめて、同じ 1,000 問を約 2 秒で解けるようにします。
-次に、100 人が同時に質問しても応答できるサーバに仕立てます。
+次に、100 人が同時に質問しても応答できるサーバを作ります。
 
 \section{何を測るか：三つの物差し}\label{sec:es-what}
 
 モデルを測るには、まず「何を」測るかを決める必要があります。
-本書ではすでに、性質の違う物差しを使ってきました。この節では、それらを一列に並べます。
+本書ではすでに、性質の違う物差し（モデルの良し悪しを数字で表すための基準）を使ってきました。この節では、それらを一列に並べます。
 
 モデルの出力の良し悪しを、決まった手順で数字にすることを\term{評価}{evaluation}と呼びます。
 評価に使う物差しは、\figref{fig:es-ladder}の三つに大きく分けられます。
@@ -63,7 +63,7 @@
   \draw[arr,bookgray] ([yshift=-5mm]a.south west) -- node[below,lbl]{右へ行くほど、知りたいことに近い。しかし、測るのに手間と費用がかかる} ([yshift=-5mm]c.south east);
   \node[lbl,above=0.5mm of a] {学習中に毎回測れる};
   \node[lbl,above=0.5mm of b] {採点プログラムが要る};
-  \node[lbl,above=0.5mm of c] {人か代役が要る};
+  \node[lbl,above=0.5mm of c,align=center] {人か、人の代わりの\\LLM が要る};
 \end{tikzpicture}
 \caption{評価の三つの物差し。左は安く測れるが、知りたいこと（役に立つか）から遠い。右はその逆である。}
 \label{fig:es-ladder}
@@ -71,7 +71,7 @@
 
 一つ目は、\textbf{損失とパープレキシティ}です（\chapref{ch:lm}）。
 検証データで「次のトークン」をどれだけ当てられるかを測ります。
-学習の途中で何度でも安く測れるので、学習の進み具合を見張るのに向いています。
+学習の途中で何度でも安く測れるので、学習の進み具合を確かめるのに向いています。
 二つ目は、\textbf{課題の正答率}です。
 計算アシスタントなら、応答が正しいかどうかを数えます。
 三つ目は、\textbf{人の好み}です。
@@ -85,9 +85,15 @@
 
 1 トークンあたりの損失は 0.1268 で、とても小さな値です。
 パープレキシティは $e^{0.1268}\approx1.135$ で、「毎回ほぼ 1 個の候補に絞れている」ことを意味します。
-トークン単位の正解率、つまり正解のトークンが確率 1 位だった割合は 95.8\% です
-（損失から逆算した $e^{-0.1268}\approx0.88$ は、正解に付けた確率の平均にあたる別の量です。確率が 0.6 でも 1 位なら「当たり」に数えます）。
+トークン単位の正解率、つまり正解のトークンが確率 1 位だった割合は 95.8\% です。
+これは当たり外れを数えた割合で、正解に付けた確率が 0.6 でも、1 位なら「当たり」に数えます。
 これだけを見ると、ほぼ完璧なモデルです。
+
+なお、損失から逆算した $e^{-0.1268}\approx0.88$ は、95.8\% とは別の量です。
+損失は「正解に付けた確率の $\log$」に $-1$ を掛けて平均したものなので、$e^{-\text{損失}}$ は、正解に付けた確率を全部掛け合わせ、トークン数 $N$ で $N$ 乗根をとった値になります。
+この平均の取り方を\textbf{幾何平均}と呼びます（足して $N$ で割るふつうの平均は、算術平均と呼びます）。
+たとえば、確率 0.6 と 0.99 で、どちらも 1 位だった 2 トークンなら、正解率は 100\%、算術平均は 0.795、幾何平均は $\sqrt{0.6\times0.99}\approx0.77$ です。
+幾何平均は算術平均以下になり、確率をほぼ 0 にしたトークンが少しあるだけで、大きく下がります。
 
 ところが、応答が丸ごと正しい割合は 82.6\% しかありません。
 理由は掛け算です。
@@ -95,11 +101,16 @@
 1 トークンを当てる確率が 0.958 なら、4.46 個続けて当てる確率は、おおよそ $0.958^{4.46}\approx0.826$ です。
 「おおよそ」と書いたのは、各トークンの当たり外れを独立とみなし、応答の長さを平均の 4.46 で代表させた概算だからです。
 模範応答を見せずに自力で生成させたときの正答率も、同じ 82.6\% です。
-確率が最大のトークンを選んでいくかぎり、最初に間違えるトークンまでは、どちらも同じ道をたどるからです。
+こちらは偶然の一致ではありません。
+確率が最大のトークンを選ぶ貪欲法で自力で生成すると、各ステップでモデルが見る列は、最初に 1 位を外すまで、模範応答の途中までとまったく同じです。
+そのため、模範応答の全トークンが 1 位なら、自力の生成も模範応答と同じ列になって正解します。
+1 個でも 1 位を外せば、自力の生成もそこで模範応答から外れて不正解です。
+つまり「自力で生成して正解」と「お手本つきで全トークンが 1 位」は必ず同時に起こるので、二つの割合は一致します
+（$0.958^{4.46}$ のほうは概算なので、3 桁まで合ったのは半分は偶然です）。
 
 損失は「1 トークンあたりの平均」ですが、仕事の成否は、たいてい「全部合っているか」で決まります。
 応答が長くなるほど、この差は開きます。
-\textbf{学習の進み具合は損失で見張り、モデルの出来は課題の正答率で判断します。}
+\textbf{学習の進み具合は損失で確かめ、モデルの出来は課題の正答率で判断します。}
 
 正答率を測るには、応答を\textbf{採点}する方法を決めなければなりません。
 \tabref{tab:es-scoring}に、よく使われる採点方法をまとめました。
@@ -109,7 +120,7 @@
 
 \begin{table}[tbp]
 \centering
-\caption{応答の採点方法。上ほど安くて確実、下ほど幅広い仕事に使える。}
+\caption{応答の採点方法。上ほど安く、同じ応答には毎回同じ点が付く。下ほど、正解が一つに決まらない仕事に使えるが、採点に手間と費用がかかり、採点する人や LLM によって点が揺れる。}
 \label{tab:es-scoring}
 \small
 \begin{tabularx}{\linewidth}{lXl}
@@ -135,19 +146,19 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 \chapref{ch:posttraining}の \code{chat_accuracy}（\coderef{code:post-chat-accuracy}）は、問題を作り、解かせ、正解を数える作業を一つの関数にまとめたものでした。
 この節では、それを部品に分け、「どこで間違えたか」まで調べられるようにします。
 
-問題集を読み込み、モデルに解かせ、採点し、集計するプログラム一式を、\term{評価ハーネス}{evaluation harness}と呼びます（ハーネスは、馬と馬車をつなぐ馬具のことです）。
+問題集を読み込み、モデルに解かせ、採点し、集計するプログラム一式を、\term{評価ハーネス}{evaluation harness}と呼びます（ハーネス（harness）は英語で、もとは馬具や、体に付ける装具を指す語です）。
 \figref{fig:es-harness}が、その流れです。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[node distance=4.5mm,
-  st/.style={box,minimum width=19mm,minimum height=10mm,font=\footnotesize},
+  st/.style={box,minimum width=19mm,minimum height=12mm,font=\footnotesize},
   nt/.style={lbl,align=center,font=\scriptsize}]
-  \node[st,orangebox] (q) {問題集};
+  \node[st,orangebox,minimum height=12mm] (q) {問題集};
   \node[st,right=of q] (p) {プロンプト\\に整形};
   \node[st,right=of p] (g) {モデルが\\生成};
-  \node[st,greenbox,right=of g] (s) {採点};
-  \node[st,purplebox,right=of s] (c) {集計・\\誤り分析};
+  \node[st,greenbox,right=of g,minimum height=12mm] (s) {採点};
+  \node[st,purplebox,right=of s,minimum height=12mm] (c) {集計・\\誤り分析};
   \draw[arr] (q) -- (p); \draw[arr] (p) -- (g); \draw[arr] (g) -- (s); \draw[arr] (s) -- (c);
   \node[nt,below=1mm of q] {何問か\\どう選んだか};
   \node[nt,below=1mm of p] {言い回し\\テンプレート};
@@ -166,7 +177,7 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 
 引数 \code{reply_fn} は、「質問の文字列を受け取り、応答の文字列を返す関数」です。
 \file{sft.pt} を直接呼ぶなら \code{lambda q: chat_reply(model, tok, q)} を渡します。
-あとで作る推論サーバへの問い合わせに替えても、ハーネスは気にしません。
+あとで作る推論サーバへの問い合わせに替えても、ハーネスのほうは書き換えずに使えます。
 \code{problems} の各要素 \code{p} は、質問 \code{question}、模範応答 \code{target}、演算 \code{op}、桁数 \code{digits}、繰り上がりの有無 \code{carry} を持つ辞書です。
 5 行目で 1 問ずつ応答させ、7 行目で採点しています。
 採点は完全一致で、模範応答 \code{p["target"]}（「\code{47です。}」など）と 1 文字でも違えば不正解です。
@@ -186,7 +197,7 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 繰り上がり・繰り下がりのある問題は、ない問題より約 19 ポイント低くなっています。
 \figref{fig:es-category}は、これらを組み合わせて描いたものです。
 3 桁で繰り上がりのある足し算は 61.6\% しか解けていません。
-「82.6\%」という一つの数字の裏には、これだけのむらがあります。
+「82.6\%」という一つの数字の中に、問題の種類によるこれだけの差が含まれています。
 
 \begin{figure}[tbp]
 \centering
@@ -219,27 +230,30 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 
 \begin{table}[tbp]
 \centering
-\caption{質問の言い回しと正答率（同じ 1,000 個の計算。例は $12+35$ の場合）。上の 3 つは SFT の手本にあった言い回し、下の 3 つは手本にない言い回しである。}
+\caption{質問の言い回しと正答率（同じ 1,000 個の計算。例は $12+35$ の場合）。上の 3 つは SFT の手本にあった言い回し、下の 3 つは手本にない言い回しである。
+「\code{12+35=}」は、事前学習の計算ドリル（\code{12+35=47} の形）では見ているが、SFT の手本の対話の形にはない。}
 \label{tab:es-prompt}
 \small
 \begin{tabular}{llr}
 \toprule
 & 言い回し & 正答率 \\
 \midrule
-\multirow{3}{*}{学習で見た} & \code{12+35は？} & 82.3\% \\
+\multirow{3}{*}{手本にあった} & \code{12+35は？} & 82.3\% \\
  & \code{12足す35は？} & 81.6\% \\
  & \code{12と35を足すといくつですか？} & 83.0\% \\
 \midrule
-\multirow{3}{*}{見ていない} & \code{12たす35は？} & 80.3\% \\
+\multirow{3}{*}{手本にない} & \code{12たす35は？} & 80.3\% \\
  & \code{12+35=} & 55.4\% \\
  & \code{12 + 35 は？}（空白を入れる） & 33.7\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-学習で見た 3 つの言い回しでは、正答率はほぼ同じです。
+SFT の手本にあった 3 つの言い回しでは、正答率はほぼ同じです。
 ところが、記号の前後に空白を入れただけで、82.3\% が 33.7\% に落ちます。
 人にとっては同じ質問でも、モデルにとっては見たことのないトークンの並びだからです。
+事前学習のドリルと同じ書き方の「\code{12+35=}」も、対話の中でこの形でたずねると 55.4\% にとどまりました。
+事前学習で見た書き方でも、SFT の手本の対話の形になければ、強みにはならなかったのです。
 本書のモデルは小さいので極端に出ていますが、大きなモデルでも、プロンプトの細部で点数が動くことは珍しくありません。
 
 \begin{caution}{点数は「モデル」だけのものではない}
@@ -268,7 +282,7 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 
 正答率は 79.5\% から 91.0\% まで、11 ポイント以上も散らばっています。
 モデルが同じでも、200 問の試験では、これだけ運に左右されるのです。
-\chapref{ch:posttraining}の 87.0\%（緑の破線）は、この山の中のごく普通の 1 回でした。
+\chapref{ch:posttraining}の 87.0\%（緑の破線）は、この分布の中ほどにある、ごく普通の 1 回でした。
 
 \begin{figure}[tbp]
 \begin{minipage}[t]{0.43\linewidth}
@@ -282,28 +296,29 @@ LLM 審査員 & 別の LLM に採点基準を渡して判定させる & 自由�
 \draw[bookgray,dashed,very thick] (axis cs:82.6,0) -- (axis cs:82.6,11) node[anchor=south east,inner sep=1pt,font=\scriptsize,text=bookgray]{82.6\%};
 \end{axis}
 \end{tikzpicture}
-\caption{200 問の問題集 50 個で測った正答率の分布（1\% 刻み）。最低 79.5\%、最高 91.0\%、平均 85.8\%。
+\caption{200 問の問題集 50 個で測った正答率の分布（1\% 刻み。各棒は、目盛りの値の $-0.5$ 以上 $+0.5$ 未満を数えたもので、85.5\% は 86 の棒に入る）。最低 79.5\%、最高 91.0\%、平均 85.8\%。
 赤の曲線は、式\eqref{eq:es-se}から予想される正規分布。破線は冒頭の二つの数字。}
 \label{fig:es-hist}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.54\linewidth}
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=1.04\linewidth,height=38mm,xmin=0,xmax=51,ymin=70,ymax=100,
+\begin{axis}[width=1.04\linewidth,height=38mm,xmin=0,xmax=51,ymin=70,ymax=105,
   xlabel={何回目の試験か（乱数の種）},ylabel={正答率（\%）},xtick={1,10,20,30,40,50},
-  xmajorgrids=false,unbounded coords=discard,legend pos=south east,
-  legend style={legend columns=2,font=\scriptsize}]
+  xmajorgrids=false,unbounded coords=discard,ytick={70,80,90,100},
+  legend style={at={(0.5,0.98)},anchor=north,legend columns=2,font=\scriptsize,inner sep=1pt}]
 \addplot[only marks,bookblue,mark=*,mark size=0.9pt,error bars/.cd,y dir=both,y explicit]
   table[col sep=comma,x=seed,y=hit_acc,y error=half]{code/ch19/out/ci50.csv};
 \addplot[only marks,bookaccent,mark=square*,mark size=1.3pt,error bars/.cd,y dir=both,y explicit,
   error bar style={very thick}]
   table[col sep=comma,x=seed,y=miss_acc,y error=half]{code/ch19/out/ci50.csv};
-\draw[bookgray,dashed,thick] (axis cs:0,85.8) -- (axis cs:51,85.8);
+\draw[black!60,dashed,very thick] (axis cs:0,85.83) -- (axis cs:51,85.83);
 \legend{含んだ（46 本）,外れた（4 本）}
 \end{axis}
 \end{tikzpicture}
 \caption{同じ 50 回の、正答率（印）と 95\% 信頼区間（縦棒）。破線は 1 万問での正答率 85.8\%。
-赤い四角の 4 本は、区間が破線に届いていない。}
+赤い四角の 4 本は、区間が破線に届いていない。
+種 4 の区間（下端 85.84\%）は、85.83\% にわずかに届かないだけなので、図では破線に接して見える。}
 \label{fig:es-ci50}
 \end{minipage}
 \end{figure}
@@ -393,7 +408,7 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 真の値の代わりには、50 回分を合わせた 1 万問の正答率 85.8\% を使います。
 50 本の区間のうち、85.8\% を含んだのは 46 本（92\%）で、4 本は外れました。
 50 本の 95\% は $50\times0.95=47.5$ 本なので、ほぼ定義どおりです。
-裏を返すと、\textbf{20 回に 1 回ほどは外れます}。
+言い換えると、\textbf{20 回に 1 回ほどは外れます}。
 信頼区間は「絶対にこの中にある」という保証ではありません。
 
 では、冒頭の二つの数字に信頼区間を付けます。
@@ -430,10 +445,10 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 そのようなときに使えるのが\term{ブートストラップ}{bootstrap}です。
 
 本当は、新しい問題集を何度も作って測り直したいのですが、手元には 1,000 問の結果しかありません。
-そこで、その 1,000 問を「問題全体の縮図」とみなし、そこから\textbf{重複を許して} 1,000 問を選び直します
+そこで、その 1,000 問を「問題全体から無作為に選んだ見本で、易しい問題と難しい問題を、問題全体と同じような割合で含んでいる」とみなし、そこから\textbf{重複を許して} 1,000 問を選び直します
 （重複を許さないと、毎回もとと同じ 1,000 問になってしまいます）。
 たとえば、5 問の正誤が (1, 1, 0, 1, 1) なら、不正解の 1 問を 2 回引いて正答率が 60\% になる回も、1 回も引かずに 100\% になる回もあります（\figref{fig:es-bootstrap}）。
-この散らばりが、「問題集を作り直したときのぶれ」の代役になります。
+この散らばりを、「問題集を作り直したときのぶれ」の代わりに使います。
 
 \begin{figure}[tbp]
 \centering
@@ -447,21 +462,25 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 }
 \node[anchor=west] at (5.7,0) {正答率 80\%};
 \draw[black!35] (-7.2,-0.75) -- (8.6,-0.75);
+\foreach \i in {1,...,5} \node[lbl,font=\scriptsize] at (\i,-1.25) {\i};
+\node[lbl,anchor=east,font=\scriptsize] at (0.3,-1.25) {何回目に引いたか};
 \foreach \r/\picks/\vals/\acc in {
-  1/{2, 5, 3, 3, 1}/{1/1,2/1,3/0,4/0,5/1}/60,
-  2/{4, 1, 1, 5, 2}/{1/1,2/1,3/1,4/1,5/1}/100,
-  3/{3, 2, 4, 5, 1}/{1/0,2/1,3/1,4/1,5/1}/80} {
-  \pgfmathsetmacro{\y}{-0.5-\r}
+  1/{2, 5, 3, 3, 1}/{1/2/1,2/5/1,3/3/0,4/3/0,5/1/1}/60,
+  2/{4, 1, 1, 5, 2}/{1/4/1,2/1/1,3/1/1,4/5/1,5/2/1}/100,
+  3/{4, 4, 2, 5, 3}/{1/4/1,2/4/1,3/2/1,4/5/1,5/3/0}/80} {
+  \pgfmathsetmacro{\y}{-1.0-1.45*\r}
   \node[anchor=east] at (0.3,\y) {選び直し \r（\picks 番を引く）};
-  \foreach \i/\v in \vals {
+  \foreach \i/\k/\v in \vals {
     \ifnum\v=1 \node[ok] at (\i,\y) {1}; \else \node[ng] at (\i,\y) {0}; \fi
+    \node[font=\tiny,text=black!70] at (\i,\y+0.68) {\k 番};
   }
   \node[anchor=west] at (5.7,\y) {正答率 \acc\%};
 }
-\node[anchor=west,lbl] at (5.7,-4.5) {……（1 万回くり返す）};
+\node[anchor=west,lbl] at (5.7,-6.0) {……（1 万回くり返す）};
 \end{tikzpicture}
 \caption{ブートストラップの考え方（5 問の例。赤が不正解）。手元の正誤から、重複を許して同じ数だけ引き直す。
-不正解の 3 番を 2 回引いた回は 60\%、1 回も引かなかった回は 100\% と、引き直すたびに正答率が散らばる。}
+下の 3 段は、引いた順に左から並べたもので、マスの上の小さな字が、引いた問題の番号である（列の位置は問題の番号ではない）。
+選び直し 1 は 3 番を 2 回引いて 4 番を引かず 60\%、選び直し 2 は 3 番を引かず 100\%、選び直し 3 は 4 番を 2 回、3 番を 1 回引いて 80\% と、引き直すたびに正答率が散らばる。}
 \label{fig:es-bootstrap}
 \end{figure}
 
@@ -469,6 +488,9 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 この二つの間に全体の 95\% が入るので、これが 95\% 信頼区間です。
 1,000 問の結果では [80.2\%, 84.9\%] となり、式から求めた [80.3\%, 84.9\%] とほぼ一致しました。
 1 万個の正答率の標準偏差は標準誤差の見積もりで、これも式と同じ 1.20 ポイントでした。
+\figref{fig:es-boot-dist}が、この 1 万個の正答率の分布です（\file{ch19/sweep_bootstrap.py} で、\file{ch19/stats.py} と同じ種を使って描き直しました）。
+棒が選び直しの分布、赤の曲線が式\eqref{eq:es-se}の標準誤差から予想される正規分布で、二つはほぼ重なっています。
+2 本の破線の間に、棒の全体の 95\% が入ります。
 ブートストラップが本当に役立つのは式のない量で、次の節では、二つのモデルの差の信頼区間に使います。
 
 \subsection*{何問あれば足りるか}
@@ -480,6 +502,49 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 同じ計算で、1,000 問なら $\pm2.2$ ポイント、1 万問なら $\pm0.7$ ポイントになります。
 表の 50 問と 200 問、500 問と 2,000 問を見比べてください。
 問題が 4 倍になると、幅が半分になっています。
+\figref{fig:es-se-n}は、同じ表をグラフにしたものです。
+横軸は問題数で、目盛りは 1 目盛りごとに 10 倍になります。
+左の端では、問題を少し増やすだけで幅が大きく縮みますが、右へ行くほど、幅を少し縮めるのに多くの問題が要ります。
+
+\begin{figure}[tbp]
+\begin{minipage}[t]{0.48\linewidth}
+\centering
+\pgfplotstableread[col sep=comma]{code/ch19/out/sweep_bootstrap_ci.csv}\esbootci
+\pgfplotstablegetelem{0}{lo}\of\esbootci\let\esbootlo\pgfplotsretval
+\pgfplotstablegetelem{0}{hi}\of\esbootci\let\esboothi\pgfplotsretval
+\begin{tikzpicture}
+\begin{axis}[width=1.04\linewidth,height=38mm,xmin=77.5,xmax=87.5,ymin=0,ymax=1900,
+  xlabel={選び直した正答率（\%）},ylabel={回数（1 万回中）},xtick={78,80,...,86},
+  scaled y ticks=false,xmajorgrids=false,clip mode=individual]
+\addplot[ybar,bar width=1.6mm,fill=figblue,draw=bookblue] table[col sep=comma,x=acc,y=count]{code/ch19/out/sweep_bootstrap.csv};
+\addplot[smooth,bookaccent,very thick] table[col sep=comma,x=acc,y=normal]{code/ch19/out/sweep_bootstrap.csv};
+\draw[black!60,dashed,very thick] (axis cs:\esbootlo,0) -- (axis cs:\esbootlo,1900) node[anchor=north east,font=\scriptsize,inner sep=1pt]{\esbootlo};
+\draw[black!60,dashed,very thick] (axis cs:\esboothi,0) -- (axis cs:\esboothi,1900) node[anchor=north west,font=\scriptsize,inner sep=1pt]{\esboothi};
+\end{axis}
+\end{tikzpicture}
+\caption{1,000 問（種 777）の結果から、重複を許して 1,000 問を選び直すことを 1 万回くり返したときの、正答率の分布（0.5\% 刻み）。
+赤の曲線は、式\eqref{eq:es-se}の標準誤差 1.20 ポイントから予想される正規分布。
+破線は、下から 2.5\% と 97.5\% の位置で、その間がブートストラップの 95\% 信頼区間。}
+\label{fig:es-boot-dist}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=1.04\linewidth,height=38mm,xmode=log,xmin=35,xmax=70000,ymin=0,ymax=11,
+  xlabel={問題数 $n$（対数の目盛り）},ylabel={幅（$\pm$ ポイント）},
+  xtick={100,1000,10000},xticklabels={100,{1,000},1 万},xmajorgrids=false]
+\addplot[bookblue,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=n,y=half]{code/ch19/out/se_vs_n.csv};
+\node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:200,4.95) {200 問 $\pm$4.9};
+\node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:1000,2.21) {1,000 問 $\pm$2.2};
+\draw[black!60,thin] (axis cs:10000,0.70) -- (axis cs:16000,3.6);
+\node[font=\scriptsize,anchor=south,inner sep=1pt] at (axis cs:16000,3.6) {1 万問 $\pm$0.7};
+\end{axis}
+\end{tikzpicture}
+\caption{問題数と、95\% 信頼区間の幅（縦軸。正答率 85\% のとき。\tabref{tab:es-n}と同じ値を、\file{ch19/out/se_vs_n.csv} から描いた）。
+問題を 4 倍にするごとに、幅は半分になる。}
+\label{fig:es-se-n}
+\end{minipage}
+\end{figure}
 
 \begin{table}[tbp]
 \centering
@@ -487,12 +552,12 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 幅を半分にするには、問題を 4 倍にしなければならない。}
 \label{tab:es-n}
 \small
-\begin{tabular}{lrrrrrrrr}
+\begin{tabular}{lrrrrrrrrr}
 \toprule
-問題数 $n$ & 50 & 200 & 500 & 1,000 & 2,000 & 5,000 & 1 万 & 5 万 \\
+問題数 $n$ & 50 & 100 & 200 & 500 & 1,000 & 2,000 & 5,000 & 1 万 & 5 万 \\
 \midrule
-標準誤差 & 5.05 & 2.52 & 1.60 & 1.13 & 0.80 & 0.50 & 0.36 & 0.16 \\
-95\% 信頼区間の幅（$\pm$） & 9.9 & 4.9 & 3.1 & 2.2 & 1.6 & 1.0 & 0.7 & 0.3 \\
+標準誤差 & 5.05 & 3.57 & 2.52 & 1.60 & 1.13 & 0.80 & 0.50 & 0.36 & 0.16 \\
+95\% 信頼区間の幅（$\pm$） & 9.9 & 7.0 & 4.9 & 3.1 & 2.2 & 1.6 & 1.0 & 0.7 & 0.3 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -504,7 +569,7 @@ $n$ 問で測った正答率 $\hat p$ の標準誤差は、次の式で求めま
 164 問の HumanEval では、正答率 50\% のモデルの標準誤差は $\sqrt{0.5\times0.5/164}\approx0.039$、つまり約 3.9 ポイントです。
 
 ここまで扱ったのは、\textbf{問題の選び方}によるぶれでした。
-ほかに、\textbf{生成の乱数}によるぶれ（温度を上げてくじ引きで選ぶ場合。本章は貪欲法なので、ありません）と、\textbf{学習の乱数}によるぶれがあり、後者は次の節で測ります。
+ほかに、\textbf{生成の乱数}によるぶれ（温度を上げて、確率に従ってトークンを選ぶ、つまりサンプリングする場合。本章は貪欲法なので、ありません）と、\textbf{学習の乱数}によるぶれがあり、後者は次の節で測ります。
 
 この節をまとめます。
 $n$ 問で測った正答率には、$\sqrt{\hat p(1-\hat p)/n}$ の標準誤差があり、その 1.96 倍の幅を付けたものが 95\% 信頼区間です。
@@ -542,6 +607,13 @@ B は、同じ式で $\sqrt{0.842\times0.158/1000}\approx0.0115$、つまり 1.1
 差の 1.6 ポイントは、標準誤差の $1.6\div1.66\approx0.96$ 倍しかありません。
 1.96 倍に遠く届かないので、「差がある」とは言えません。
 
+ただし、この計算の前提には注意が要ります。
+A と B は同じ 1,000 問を解いたので、二つの正答率は独立ではありません。
+易しい問題が多ければ両方とも上がり、難しい問題が多ければ両方とも下がる、というように、一緒に上下します。
+独立を前提にした式\eqref{eq:es-unpaired}は、この一緒に上下する分を、引き算で消えずに残るぶれとして数えてしまいます。
+そのため、同じ問題で比べた二つのモデルに使うと、差の標準誤差を大きめに見積もります。
+誤りというより、判定が慎重になりすぎる計算です。
+
 \subsection*{対応のある比較}
 
 しかし、この計算は情報を捨てています。
@@ -555,8 +627,8 @@ A と B は\textbf{同じ問題}を解いたのです。
 \foreach \x/\ttl/\aa/\bb/\cc/\dd in {0/{(a) 1,000 問}/800/26/42/132, 62/{(b) 1 万問}/{8,340}/243/317/{1,100}} {
   \begin{scope}[xshift=\x mm]
   \node[c,fill=figgray] (a) at (0,0) {\aa};
-  \node[c,fill=figred] (b) at (19mm,0) {\textbf{\bb}};
-  \node[c,fill=figgreen] (cc) at (0,-7.5mm) {\textbf{\cc}};
+  \node[c,fill=figred] (b) at (19mm,0) {\textbf{\bb}\enspace{\scriptsize($b$)}};
+  \node[c,fill=figgreen] (cc) at (0,-7.5mm) {\textbf{\cc}\enspace{\scriptsize($c$)}};
   \node[c,fill=figgray] (d) at (19mm,-7.5mm) {\dd};
   \node[lbl,above=0.3mm of a] {B 正解}; \node[lbl,above=0.3mm of b] {B 誤り};
   \node[lbl,left=0.3mm of a] {A 正解}; \node[lbl,left=0.3mm of cc] {A 誤り};
@@ -565,7 +637,8 @@ A と B は\textbf{同じ問題}を解いたのです。
 \end{tikzpicture}
 \caption{A（\file{sft.pt}）と B（\file{ch16_sft.pt}）の正誤の組み合わせ。
 灰色のマスは両者の結果が同じ問題で、差には関係しない。
-差を決めるのは、赤（A だけ正解）と緑（B だけ正解）の食い違いだけである。}
+差を決めるのは、赤（A だけ正解）と緑（B だけ正解）の食い違いだけである。
+赤のマスの数が、式\eqref{eq:es-paired}の $b$、緑のマスの数が $c$ にあたる。}
 \label{fig:es-paired}
 \end{figure}
 
@@ -620,7 +693,11 @@ A だけ正解の数を $b$、B だけ正解の数を $c$ とすると、平均�
 ここで使った計算は\term{符号検定}{sign test}と呼ばれます。
 $p$ 値が 0.05 より小さいときに「偶然とは考えにくい」と判断するのが、広く使われている習慣です。
 これは、「差が標準誤差の 1.96 倍を超える」という基準を、確率で言い換えたものにあたります。
-1.94 倍も 0.068 も、境目の少し手前です。
+ただし、この言い換えは、差のぶれを正規分布で近似したときの対応です。
+正規分布で計算すると、1.94 倍の外れ方に対する $p$ 値は約 0.052 で、0.05 のわずかに上です。
+符号検定は近似を使わず、68 回のコイン投げの出方を正確に数え上げるので、値が少し違い、0.068 になりました。
+食い違いの数が少ないほど、正規分布の近似と正確な値の差は大きくなります。
+どちらの計算でも、境目の少し手前という結論は同じです。
 
 1,000 問では決着がつかないので、問題を増やします。
 前節の 50 個の問題集（計 1 万問）でも、同じ比較をしました（\file{ch19/compare.py}。出力は \file{ch19/out/compare.txt}）。
@@ -629,13 +706,38 @@ $p$ 値が 0.05 より小さいときに「偶然とは考えにくい」と判�
 式\eqref{eq:es-paired}に $b=243$、$c=317$、$n=10000$ を入れると、$\frac{1}{10000}\sqrt{560-74^2/10000}\approx0.002365$ で、対応ありの標準誤差は約 0.24 ポイントです。
 差はその $0.74\div0.2365\approx3.13$ 倍あり、$p$ 値は 0.002 です。
 前節のブートストラップ（手元の結果から、重複を許して選び直すことをくり返す方法）で求めた差の 95\% 信頼区間は [$+0.25$, $+1.19$] で、0 を含みません。
-B は A より、わずかに、しかし確かに良いモデルです。
+この 1 万問の範囲で見ると、B のファイルは A のファイルより、わずかに、しかし確かに良く仕上がっています。
+ただし、これは学習の手法の差ではありません（次の段落）。
 対応のない計算では、1 万問あっても、差の標準誤差は約 0.488 ポイントです。
 差はその 1.52 倍にとどまり、この差を見分けられません。
 
 ところで、A と B の違いは、学習中の丸め誤差だけでした。
-つまり、\textbf{学習をやり直すだけで、正答率は 0.7 ポイントほど動く}のです（前節の最後に挙げた「学習の乱数」）。
+つまり、\textbf{学習をやり直すだけで、正答率が 0.7 ポイント動いた例が、少なくとも一つある}のです（前節の最後に挙げた「学習の乱数」）。
+ここで比べたのは A と B の 1 組だけなので、ぶれがふつうどれくらいの大きさなのかまでは分かりません。
+それを知るには、種を変えて何回も学習し直し、正答率の散らばりを測る必要があります。
 「新しい手法で 1 ポイント上がった」という主張は、乱数の種を変えて何度か学習し、そのぶれと比べるまでは、安心できません。
+
+前節とこの節で、誤差の求め方が五つ出てきました。
+\tabref{tab:es-error-methods}に、何を求めるのか、何を前提にするのか、いつ使うのかを並べます。
+二つのモデルを同じ問題で測ったなら、下の二つ（対応ありの式と符号検定）を使います。
+
+\begin{table}[tbp]
+\centering
+\caption{本章で使った誤差の求め方の比較。「本章の値」は、1,000 問（種 777）の A（\file{sft.pt}）と B（\file{ch16_sft.pt}）の場合。}
+\label{tab:es-error-methods}
+\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}p{27mm}>{\raggedright\arraybackslash}Xl@{}}
+\toprule
+方法 & 求めるもの & 前提・使う場面 & 本章の値 \\
+\midrule
+式\eqref{eq:es-se} & 1 つの正答率の標準誤差 & 問題を無作為に選ぶ（独立）。採点が正解・不正解の 2 値 & A で 1.20 ポイント \\
+ブートストラップ & 式のない量も含めて、何でも & 手元の結果を、問題全体から選んだ見本とみなす & A で 1.20 ポイント \\
+対応なし（式\eqref{eq:es-unpaired}） & 差の標準誤差 & 二つの正答率が独立。別々の問題集で測ったとき & 1.66 ポイント \\
+対応あり（式\eqref{eq:es-paired}） & 差の標準誤差 & 同じ問題で測り、問題ごとの正誤を突き合わせる & 0.82 ポイント \\
+符号検定 & $p$ 値 & 同じ問題で測る。差がないと仮定し、食い違いだけを数える & $p=0.068$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 \begin{practice}{モデルを比べるときの手順}
 (1) 二つのモデルを\textbf{同じ問題}で測り、問題ごとの正誤を記録に残します。
@@ -656,19 +758,20 @@ B は A より、わずかに、しかし確かに良いモデルです。
 
 ここまでは、自作の問題集で自作のモデルを測りました。
 世の中のモデルどうしを比べるには、全員が同じ問題集を使う必要があります。
-この節では、共通の問題集の代表例と、それが狂う仕組みを見ます。
+この節では、共通の問題集の代表例と、その点数が信頼できなくなる仕組みを見ます。
 
 公開された問題集と採点方法の組を、\term{ベンチマーク}{benchmark}と呼びます。
 \tabref{tab:es-scoring}の MMLU や HumanEval のほか、実在のソフトウェアの修正依頼 2,294 件を集めた SWE-bench\cite{jimenez2024swebench}などがあります。
 代表的なベンチマークの中身と、いまの状況は、\appref{app:benchmarks}にまとめました。
-共通の物差しは便利ですが、使われるうちに狂っていきます。
-狂い方は、おもに三つあります。
+共通の物差しは便利ですが、使われるうちに、点数が実力を表さなくなっていきます。
+その原因は、おもに三つあります。
 \begin{itemize}
 \item \term{汚染}{contamination}：試験問題が学習データに入ってしまうこと。
 LLM の学習データはウェブから大量に集めるので、公開された問題と解答が紛れ込みます。
 \item \textbf{試験への過学習}：同じ試験で測っては点の良い設定を選ぶことをくり返すと、その試験にだけ強いモデルができます（\secref{sec:ml-generalization}の過学習が、試験問題に対して起きます）。
 \item \term{飽和}{saturation}：点数が満点近くに達し、モデルの差が見えなくなること。
 2026 年 9 月公開の SWE-Bench Pro V2 の公開版は、数週間で 99.4\% $\pm$ 0.4\% に達しました。
+\appref{app:benchmarks}では、「満点近く」を「9 割を超える」と決めて、各ベンチマークに飽和・飽和に近いなどの状態を付けています（\secref{sec:bm-howto}）。
 \end{itemize}
 問題そのものの誤りもあります。
 OpenAI は 2026 年 2 月、SWE-bench から人が確認して選んだ 500 件での報告をやめました。
@@ -683,13 +786,17 @@ OpenAI は 2026 年 2 月、SWE-bench から人が確認して選んだ 500 件�
 事前学習の計算ドリル 12 万行まで含めると、616 問は同じ計算を見たことがあります。
 
 見た問題は、どれだけ有利でしょうか。
-3 桁の問題にしぼり、見た問題と、桁数と言い回しをそろえて数だけを変えた「未見の双子」を、1,000 問ずつ比べました（\tabref{tab:es-contam}）。
+3 桁の問題にしぼり、見た問題と、それぞれの問題の数だけを変えた問題を、1,000 問ずつ比べました（\tabref{tab:es-contam}）。
+見た問題は、試験問題からではなく、学習データの側から集めました。
+1 行目は SFT の手本 3,000 件の中の 3 桁の問題（同じ質問文を除いて 1,000 問）、2 行目は、新しく作った問題のうち、事前学習のドリルに同じ計算があり、SFT の手本にはないもの 1,000 問です。
+数だけを変えた問題は、二つの数のそれぞれの桁数、演算、言い回しを同じにして、学習データのどこにもない数を選んで作りました。
+以下、これを「未見の双子」と呼びます（繰り上がりの有無まではそろえていません）。
 
 \begin{table}[tbp]
 \small
 \begin{minipage}[t]{0.5\linewidth}
 \centering
-\caption{見た問題と、未見の双子の正答率（3 桁の問題を 1,000 問ずつ）。}
+\caption{見た問題と、未見の双子の正答率（3 桁の問題を 1,000 問ずつ）。見た問題は学習データの側から集め、双子は数だけを変えて作った。}
 \label{tab:es-contam}
 \begin{tabular}{@{}lrr@{}}
 \toprule
@@ -721,13 +828,17 @@ SFT の手本にあった質問は、未見の双子より 10.9 ポイントも�
 ポイントに直すと 1.08 と 1.36 なので、差の標準誤差は $\sqrt{1.08^2+1.36^2}\approx1.7$ ポイントです。
 10.9 ポイントは、その約 6 倍あります。
 偶然ではありません。
+双子は繰り上がりの有無をそろえていないので、差のすべてが記憶によるとは言い切れません。
+ただ、同じ作り方の 2 行目では差がほとんど出ていないので、作り方による偏りは小さいと考えられます。
 モデルは、手本の一部を答えごと覚えています。
 一方、事前学習のドリルの形（\code{12+35=47}）で見ただけの計算は、有利になっていません
 （2 行目。差の 2.1 ポイントは、同じ計算で求めた標準誤差 約 1.35 ポイントの約 1.6 倍で、誤差の範囲です）。
-2 行目がどちらも 90\% 前後と高いのは、ドリルで見たことのある 3 桁の計算が易しいものに偏っていて、選んだ 1,000 問の 9 割近くが「3 桁と 1 桁」の計算だからです（\file{ch19/contam_check.py}）。
+2 行目がどちらも 90\% 前後と高いのは、問題の中身が易しいほうに偏っているからです。
+ドリルで見たことのある 3 桁の計算は、選んだ 1,000 問の 9 割近く（885 問）が「3 桁と 1 桁」の計算でした（\file{ch19/contam_check.py}）。
+双子も同じ桁数の組み合わせで作るので、両方とも易しくなります。
 
 \tabref{tab:es-leak}は、最悪の場合です。
-試験問題（種 777 の 1,000 問）そのものを学習データに使うと、試験の点は 82.6\% から 95.9\% に跳ね上がります。
+試験問題（種 777 の 1,000 問）そのものを学習データに使うと、試験の点は 82.6\% から 95.9\% に大きく上がります。
 しかし、新しい 1,000 問（種 778）での正答率は 84.9\% から 82.5\% で、上がっていません
 （対応のある比較では、差の $-2.4$ ポイントは標準誤差 1.3 ポイントの 1.8 倍で、下がったとも言い切れません）。
 外から見えるのは 95.9\% という点数だけで、実力は上がっていません。
@@ -736,11 +847,11 @@ SFT の手本にあった質問は、未見の双子より 10.9 ポイントも�
 読む側は、どの版を、どんな設定で、何問解いた点数かを見ます（確かめる項目は\secref{sec:bm-read}）。
 
 この節をまとめます。
-ベンチマークは共通の物差しですが、汚染・試験への過学習・飽和で狂います。
+ベンチマークは共通の物差しですが、汚染・試験への過学習・飽和で、点数が実力を表さなくなります。
 本書の実験でも、手本と同じ質問は約 11 ポイント有利でした。
 
 \section{正解が一つでないとき：人の好みと LLM 審査員}\label{sec:es-judge}
-\skimread{押さえる結論は、「正解が一つに決まらない仕事は、人の対比較か、代役の LLM 審査員で測る。審査員には偏りがあるので、順序を入れ替えて判定させ、人の判定と照らし合わせる」です。}
+\skimread{押さえる結論は、「正解が一つに決まらない仕事は、人の対比較か、人の代わりに判定する LLM 審査員で測る。審査員には偏りがあるので、順序を入れ替えて判定させ、人の判定と照らし合わせる」です。}
 
 計算問題は、文字列を比べるだけで採点できました。
 しかし、要約や説明のように、LLM の仕事の多くは正解が一つに決まりません。
@@ -748,7 +859,7 @@ SFT の手本にあった質問は、未見の双子より 10.9 ポイントも�
 
 古くからの方法は、模範解答と共通する語の並びを数えることです（翻訳の BLEU\cite{papineni2002bleu}、要約の ROUGE\cite{lin2004rouge}）。
 安く計算できますが、同じ意味を別の言葉で書いた良い応答に、低い点が付いてしまいます。
-確実なのは、人に読んでもらうことです。
+知りたいこと（使う人の役に立つか）をいちばん直接に測れるのは、人に読んでもらうことです。
 人は、一つの応答に点数を付けるのは苦手でも、二つを見比べて良いほうを選ぶのは得意です。
 Chatbot Arena（現在の名前は Arena）\cite{chiang2024chatbot}では、利用者が、名前を伏せた二つのモデルの応答を見て良いほうに投票し、集まった勝ち負けをモデルごとの点数に直します（求め方は\secref{sec:rl-rlhf}）。
 
@@ -765,19 +876,19 @@ Zheng らの研究\cite{zheng2023judging}では、GPT-4 を審査員にしたと
 （本書の小さなモデルには審査員は務まらないので、この節には実験がありません）。
 
 この節をまとめます。
-正解が一つでない仕事は、人の対比較か、代役の LLM 審査員で測ります。
+正解が一つでない仕事は、人の対比較か、人の代わりに判定する LLM 審査員で測ります。
 審査員には偏りがあるので、順序の入れ替えと人の判定との照合が要ります。
 
 \begin{column}{ここまでの道のり}
 (1) 物差しは、損失・課題の正答率・人の好みの三つ。
 (2) 正答率は評価ハーネスで測り、信頼区間を付ける。
 (3) 比較は、同じ問題で食い違いを数える。
-(4) ベンチマークは汚染・試験への過学習・飽和で狂う。
+(4) ベンチマークの点数は、汚染・試験への過学習・飽和で信頼できなくなる。
 後半では、測り終えたモデルを利用者に届けます。
 \end{column}
 
 \section{1 回の生成にかかる時間}\label{sec:es-cost}
-\skimread{押さえる結論は、「生成は、プロンプトをまとめて読むプリフィルと、1 個ずつ書くデコードからなる。読むのは安く、書くのは高い」です。定義\ref{def:es-latency}の言葉は、後の節でも使います。}
+\skimread{押さえる結論は、「生成は、プロンプトをまとめて処理するプリフィルと、1 個ずつ生成するデコードからなる。1 トークンあたりでは、プリフィルは安く、デコードは高い」です。定義\ref{def:es-latency}の言葉は、後の節でも使います。}
 
 ここからは推論、つまり学習済みのモデルに出力を作らせる側の話です。
 冒頭の二つ目の数字を思い出してください。
@@ -793,21 +904,24 @@ Zheng らの研究\cite{zheng2023judging}では、GPT-4 を審査員にしたと
   \node[graybox,bx,minimum width=13mm] at (4,5.5) {待ち};
   \node[box,bx,minimum width=24mm] at (18,5.5) {プリフィル};
   \foreach \i in {1,...,6} \node[orangebox,bx,minimum width=8mm] at (34+\i*9,5.5) {\i};
+  \draw[bookblue,dashed,thick,rounded corners=1pt] (17.3,1.2) rectangle (51.7,9.8);
   \draw (4,-1) -- (4,10); \node[lbl,anchor=east] at (3.2,5.5) {質問が届く};
   \draw[decorate,decoration={brace,amplitude=3pt}] (5,11) -- (51,11) node[midway,above=3pt,lbl]{TTFT};
-  \draw[decorate,decoration={brace,amplitude=3pt}] (61,11) -- (70,11) node[midway,above=3pt,lbl]{トークン間時間};
-  \node[lbl] at (30,-3) {プロンプト全体を 1 回で読む};
-  \node[lbl] at (72,-3) {デコード：1 個ずつ生成};
-  \draw[decorate,decoration={brace,amplitude=3pt,mirror}] (4,-7) -- (96,-7) node[midway,below=3pt,lbl]{レイテンシ（応答が終わるまでの時間）};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (60,11) -- (69,11) node[midway,above=3pt,lbl]{トークン間時間};
+  \draw[black!50] (51.85,-1) -- (51.85,1);
+  \node[lbl,align=center,anchor=north] at (34.5,-1.5) {プリフィル：プロンプト全体を\\1 回で処理し、1 個目を出す};
+  \node[lbl,align=center,anchor=north] at (74,-1.5) {デコード：2 個目から\\1 個ずつ生成};
+  \draw[decorate,decoration={brace,amplitude=3pt,mirror}] (4,-10.5) -- (96,-10.5) node[midway,below=3pt,lbl]{レイテンシ（応答が終わるまでの時間）};
 \end{tikzpicture}
-\caption{1 回の質問の時間の流れ。橙の箱が、生成されるトークンである。
-灰色の「待ち」は、サーバがほかの質問で手一杯のときに順番を待つ時間で、\secref{sec:es-server}で現れる。}
+\caption{1 回の質問の時間の流れ（模式図）。橙の箱が、生成されるトークンである。
+1 個目のトークンは、プリフィルの計算の最後に出る（青の破線の枠）。2 個目からがデコードである。
+灰色の「待ち」は、サーバがほかの質問の処理で空いていないときに、順番を待つ時間で、\secref{sec:es-server}で現れる。}
 \label{fig:es-timeline}
 \end{figure}
 
 
 生成は、二つの段階に分かれます（\figref{fig:es-timeline}）。
-プロンプト全体を読ませ、1 個目のトークンを出すまでが\term{プリフィル}{prefill}です。
+プロンプト全体をモデルに通して処理し、1 個目のトークンを出すまでが\term{プリフィル}{prefill}です。
 2 個目以降を 1 個ずつ生成する段階を\textbf{デコード}（decode）と呼びます
 （\chapref{ch:tokenizer}の、番号を文字列に戻す「デコード」とは別の意味です）。
 
@@ -830,10 +944,14 @@ Zheng らの研究\cite{zheng2023judging}では、GPT-4 を審査員にしたと
 因果マスクのおかげで、過去の分は、後ろにトークンを足しても変わりません。
 そこで、各層のキーとバリューを覚えておき、新しい 1 個の分だけを計算します。
 覚えておかなければ、1 個生成するたびに、列全体を計算し直すことになります。
+\figref{fig:ma-kvcache}の (b) が、その様子を 1 ステップずつ描いたコマ送りの図でした。
+橙のマスがそのステップで計算するキーとバリュー、青のマスがキャッシュから読むキーとバリューです。
+あの図のステップ 1（プロンプト「吾輩は」を処理して、1 個目の「猫」を選ぶ）が、この節のプリフィルにあたり、ステップ 2 以降がデコードにあたります。
+本章の図でも、キャッシュについては同じ色の使い方をします（橙は計算する、青はキャッシュにあるものを使う。グラフでは、キャッシュなしが灰、ありが赤）。
 
 ここからは、モデルと KV キャッシュの置き場を一つにまとめた部品を使い、これを\textbf{エンジン}と呼びます（\file{ch19/engine.py}）。
 エンジンの操作は二つだけです。
-プロンプトを読ませる \code{prefill} と、新しいトークンを足して計算を進める \code{forward} で、どちらも「次のトークン」のロジットを返します。
+プロンプトをまとめて処理する \code{prefill} と、新しいトークンを足して計算を進める \code{forward} で、どちらも「次のトークン」のロジットを返します。
 効果を測りましょう（\file{ch19/latency.py}。長い文を書ける \file{base.pt} を使い、スレッド数は 1。
 トークンは、本章を通して温度 0 の貪欲法で選びます）。
 
@@ -841,30 +959,30 @@ Zheng らの研究\cite{zheng2023judging}では、GPT-4 を審査員にしたと
 \centering
 \begin{tikzpicture}
 \begin{axis}[width=0.5\linewidth,height=35mm,xlabel={何個目のトークンか},ylabel={1 個の生成時間（ミリ秒）},
-  ymin=0,ymax=16,xmin=0,xmax=100,legend pos=north west,legend style={font=\scriptsize},title={\footnotesize (a)},title style={yshift=-1.5mm}]
-\addplot[bookaccent] table[col sep=comma,x=i,y=plain_ms]{code/ch19/out/per_token.csv};
-\addplot[bookblue] table[col sep=comma,x=i,y=cached_ms]{code/ch19/out/per_token.csv};
+  ymin=0,ymax=21,ytick={0,5,10,15,20},xmin=0,xmax=100,legend pos=north west,legend style={font=\scriptsize},title={\footnotesize (a)},title style={yshift=-1.5mm}]
+\addplot[bookgray,thick] table[col sep=comma,x=i,y=plain_ms]{code/ch19/out/per_token.csv};
+\addplot[bookaccent,thick] table[col sep=comma,x=i,y=cached_ms]{code/ch19/out/per_token.csv};
 \legend{キャッシュなし,キャッシュあり}
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{axis}[width=0.5\linewidth,height=35mm,xlabel={プロンプトの長さ（トークン）},ylabel={時間（ミリ秒）},
-  ymin=0,ymax=16,xmin=0,xmax=128,legend pos=north west,legend style={font=\scriptsize},title={\footnotesize (b)},title style={yshift=-1.5mm}]
+  ymin=0,ymax=21,ytick={0,5,10,15,20},xmin=0,xmax=128,legend pos=north west,legend style={font=\scriptsize},title={\footnotesize (b)},title style={yshift=-1.5mm}]
 \addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=n_prompt,y=ttft_ms]{code/ch19/out/ttft.csv};
 \addplot[bookorange,mark=square*,mark size=1.3pt] table[col sep=comma,x=n_prompt,y=next_ms]{code/ch19/out/ttft.csv};
 \legend{1 個目まで（TTFT）,2 個目以降の 1 個}
 \end{axis}
 \end{tikzpicture}
-\caption{(a) 16 トークンのプロンプトから 100 トークンを生成したときの、1 個ごとの生成時間。
+\caption{(a) 16 トークンのプロンプトから 100 トークンを生成したときの、1 個ごとの生成時間（\file{base.pt}、1 スレッド）。色は\figref{fig:ma-kv-speed}と同じで、灰がキャッシュなし、赤があり。
 (b) プロンプトの長さを変えたときの TTFT と、その後のトークン間時間（キャッシュあり）。}
 \label{fig:es-per-token}
 \end{figure}
 
 \figref{fig:es-per-token}(a) を見てください。
-キャッシュなし（赤）では、列が伸びるほど 1 個の生成時間が延び、100 個目には約 10 ミリ秒かかります。
+キャッシュなし（灰）では、列が伸びるほど 1 個の生成時間が延び、100 個目には約 10 ミリ秒かかります。
 毎回、伸びた列の全体を計算し直すからです。
-キャッシュあり（青）では、1 個目だけが約 6 ミリ秒で、2 個目からは約 2 ミリ秒のまま増えません。
-1 個目が遅いのは、16 トークンのプロンプトを読むプリフィルだからです。
+キャッシュあり（赤）では、1 個目だけが約 6 ミリ秒で、2 個目からは約 2 ミリ秒のまま増えません。
+1 個目が遅いのは、16 トークンのプロンプトを処理するプリフィルだからです。
 100 トークン全体では 791 ミリ秒が 213 ミリ秒になり、$791\div213\approx3.7$ 倍速くなりました。
 \figref{fig:ma-kv-speed}と同じ効果です。
 定義\ref{def:es-latency}の式でも確かめられます。
@@ -874,14 +992,27 @@ TTFT が 5.8 ミリ秒、トークン間時間が約 2.1 ミリ秒なので、$5
 
 (b) は、二つの段階の違いを示しています。
 プロンプトを 4 トークンから 120 トークンへ 30 倍に伸ばしても、TTFT は 2.8 ミリ秒から 9.5 ミリ秒へ、約 3 倍にしかなりません（$9.5\div2.8\approx3.4$）。
-プリフィルは、プロンプトの全トークンを 1 回の行列計算でまとめて処理できるからです。
-120 トークンを 9.5 ミリ秒で読むので、読む時間は、1 トークンあたり $9.5\div120\approx0.08$ ミリ秒です。
+プリフィルは、プロンプトの全トークンを 1 回の順伝播でまとめて処理できるからです。
+120 トークンを 9.5 ミリ秒で処理するので、プリフィルの時間は、1 トークンあたり $9.5\div120\approx0.08$ ミリ秒です。
 一方、デコードは 1 個ずつしか進められず、1 トークンに約 2 ミリ秒かかります。
-1 トークンあたりで比べると、書くのは読むのの約 25 倍（$2\div0.08$）です。
-\textbf{読むのは安く、書くのは高い}のです。
+1 トークンあたりで比べると、デコードはプリフィルの約 25 倍（$2\div0.08$）です。
+\textbf{1 トークンあたりでは、プリフィルは安く、デコードは高い}のです。
+
+なぜ、まとめると 1 トークンあたりが安くなるのでしょうか。
+(b) の左端を見ると、4 トークンのプロンプトでも TTFT は 2.8 ミリ秒かかっています。
+モデルを 1 回呼ぶだけで、トークンの数によらず、2〜3 ミリ秒ほどの決まった時間がかかるのです。
+\chapref{ch:modern-arch}の\tabref{tab:ma-kv-count}の後で見た、Python や PyTorch の呼び出しの手間です。
+デコードの 1 ステップ（約 2 ミリ秒）も、その大半はこの手間なので、1 回で 120 トークンを処理するプリフィルのほうが、1 トークンあたりではずっと安くなります。
+なお、(b) の 8 トークンから 16 トークンの間の段差（3.2 → 5.7 ミリ秒）の理由は、この測定からは分かりません。全体の傾きを見てください。
+
+この 25 倍は、本書の小さなモデルを CPU で動かしたときの値です。
+大きなモデルを GPU で動かす場合は、本書では測っていません。
+ただ、1 トークンだけを処理する計算では、重みの 1 個 1 個を 1 回ずつしか使わないので、算術強度（\secref{sec:gpu-memory-bw}）が低く、メモリの運搬で速さが決まりやすくなります。
+理由も倍率も本書の測定とは違いますが、1 トークンあたりではまとめて処理するほうが安い、という向きは同じです。
+また、1 トークンあたりが安くても、プロンプトがとても長ければ、プリフィル全体の時間は長くなります（章末の演習 4）。
 
 この節をまとめます。
-1 回の生成は、プロンプトをまとめて読むプリフィルと、1 個ずつ書くデコードからなります。
+1 回の生成は、プロンプトをまとめて処理するプリフィルと、1 個ずつ生成するデコードからなります。
 KV キャッシュによって、デコードの 1 個あたりの時間は、列が伸びてもほぼ一定になります。
 
 \section{バッチ推論と連続バッチ処理}\label{sec:es-batch}
@@ -908,34 +1039,38 @@ KV キャッシュによって、デコードの 1 個あたりの時間は、�
   \fill[figblue] (0,-\s+0.1) rectangle (\np,-\s+0.9);
   \fill[figorange] (\np,-\s+0.1) rectangle (\len,-\s+0.9);
   \foreach \t in {0,...,13} \draw[black!45] (\t,-\s+0.1) rectangle (\t+1,-\s+0.9);
-  \node[anchor=west] at (14.2,-\s+0.5) {\code{length} $=$ \len\note};
+  \node[font=\scriptsize] at (14.6,-\s+0.5) {$\cdots$};
+  \node[anchor=west] at (15.3,-\s+0.5) {\code{length} $=$ \len\note};
 }
 \foreach \t in {0,5,10,13} \node[lbl,font=\scriptsize] at (\t+0.5,0.45) {\t};
 \node[lbl,anchor=east] at (-0.2,0.45) {位置};
 \draw[black!45,fill=figblue] (0.5,-5.05) rectangle (1.5,-4.35);
-\node[anchor=west] at (1.6,-4.7) {プリフィルで書いたマス};
+\node[anchor=west] at (1.6,-4.7) {プリフィルで計算して入れたマス};
 \draw[black!45,fill=figorange] (8.2,-5.05) rectangle (9.2,-4.35);
 \node[anchor=west] at (9.3,-4.7) {デコードで 1 個ずつ足したマス};
 \end{tikzpicture}
-\caption{エンジンの KV キャッシュ（4 スロットの例）。1 マスに、トークン 1 個のキーとバリューが入る。
+\caption{エンジンの KV キャッシュ（4 スロットの例。模式図）。1 マスに、トークン 1 個の、4 層すべて・4 ヘッドすべての分のキーとバリュー（本書のモデルで 6 KiB）が入る。
+\chapref{ch:modern-arch}の\figref{fig:ma-kvcache}の 1 マスは 1 つの層の分なので、ここでの 1 マスは、あの図の 1 マスを 4 層分重ねたものにあたる。
+位置は 14 個までを描いた。本書のエンジンは、スロットごとに 128 個の位置を最初に確保する。
 スロットごとに長さが違ってよい。\code{length} を 0 に戻せば、別の列に使い回せる。}
 \label{fig:es-slots}
 \end{figure}
 
-次のコードは、$n$ 本のプロンプト \code{prompts}（トークン番号のリスト）の続きを、同時に生成する関数の本体です。
+次のコードは、$n$ 本のプロンプト \code{prompts}（トークン番号のリスト）の続きを、同時に生成する関数の本体です（この $n$ はコードの変数 \code{n} で、前半の問題数 $n$ とは別です）。
 生成したトークンは、列ごとのリスト \code{outs} にためます。
 \code{stop_id} は終了のトークンの番号、\code{max_new_tokens} は生成する数の上限です。
 
 \snippet{バッチ推論：複数の列を同時に進める}{code:es-generate-batch}{ch19/engine.py}{batch-loop}
 
-2 行目の \code{engine.prefill} は、$n$ 本のプロンプトをそれぞれのスロットに読ませ、各列の最後の位置のロジットを返します。
+2 行目の \code{engine.prefill} は、$n$ 本のプロンプトをそれぞれのスロットでまとめて処理し（キーとバリューをスロットに入れ）、各列の最後の位置のロジットを返します。
 プロンプトの長さが違うときは、短い列の右側を詰め物で埋めて長方形にそろえます。
 詰め物は \code{length} に数えないので、あとで上書きされ、本物のトークンの計算には影響しません。
 \code{pick} は確率最大のトークンを選ぶ関数で、\code{last} に各列の最新のトークンが入ります。
 4 行目からのループが、デコードです。
 5〜6 行目で最新のトークンを各列の結果に足し、7 行目で、終了のトークンを出した列を \code{active} から外します。
 11 行目の \code{engine.forward} は、残っている列だけを、1 回の計算で 1 トークン進めます
-（\code{[:, None]} は、トークンの並びの形を $(B,)$ から、\code{forward} が受け取る「$B$ 列 $\times$ 1 トークン」の形 $(B, 1)$ に直しています）。
+（\code{[:, None]} は、トークンの並びの形を $(B,)$ から、\code{forward} が受け取る「$B$ 行 $\times$ 1 列」、つまり系列ごとに 1 行・トークン 1 個の形 $(B, 1)$ に直しています）。
+12 行目で、進めた列ごとに確率最大のトークンを選び、\code{last} の該当する列だけを書き換えます。
 この 1 回を、以下では 1 \textbf{ステップ}と呼びます。
 \tabref{tab:es-api}は、後半で使う関数の一覧です（下の二つは次の小節で使います）。
 
@@ -948,8 +1083,8 @@ KV キャッシュによって、デコードの 1 個あたりの時間は、�
 \toprule
 関数 & 受け取るもの & すること \\
 \midrule
-\code{engine.prefill} & スロット、プロンプト & 読ませて、次のトークンのロジットを返す \\
-\code{engine.forward} & スロット、足すトークン & 書き足して、次のトークンのロジットを返す \\
+\code{engine.prefill} & スロット、プロンプト & まとめて処理し、次のトークンのロジットを返す \\
+\code{engine.forward} & スロット、足すトークン & 足したトークンの分だけ計算し、次のトークンのロジットを返す \\
 \code{pick} & ロジット & 列ごとに、確率最大のトークンを返す \\
 \code{batcher.admit} & 待っていた仕事 & 空きスロットに入れ、プリフィルする \\
 \code{batcher.step} & （なし） & 実行中の全員を 1 トークン進める \\
@@ -991,8 +1126,12 @@ $B=64$ では、1 ステップは 15.4 ミリ秒（細かくは 15.36 ミリ秒�
 1,000 問を 64 問ずつまとめて解かせると、これまでの 40.3 秒が 2.2 秒、およそ 18 分の 1 になりました。
 応答は 1,000 問すべてで一致し、正答率も同じ 82.6\% です（\file{ch19/check_engine.py}）。
 18 倍がバッチの 9.1 倍より大きいのは、これまでの生成が KV キャッシュを使っていなかったからです。
-分けて測り直すと、キャッシュで約 2 倍、バッチでさらに約 9 倍でした（\file{ch19/speed_breakdown.py}）。
+分けて測り直すと、キャッシュで約 2 倍、バッチでさらに約 9 倍でした（\file{ch19/speed_breakdown.py}。
+この測り直しは、約 2 倍速い別の計算機で行ったので、時間は 19.7 秒 → 9.3 秒 → 1.0 秒と、上の 40.3 秒・2.2 秒より短く出ています。比だけを見てください）。
 $2\times9=18$ で、つじつまが合います。
+キャッシュの効果が、前節の 3.7 倍より小さい約 2 倍なのは、評価の応答が平均 4.46 トークンと短く、プロンプトも 8〜19 トークン（平均約 12 トークン）と短いからです。
+もともと計算し直す量が少ないので、省ける量も少ないのです。
+\chapref{ch:modern-arch}で見た「プロンプトも生成も短いときは、キャッシュの効果は小さい」（\figref{fig:ma-kv-when}の前後）の実例です。
 
 \begin{quiz}
 \figref{fig:es-batch-size}(a) の測定値は、$B=4$ で 3.8 ミリ秒、$B=8$ で 4.7 ミリ秒、$B=16$ で 7.7 ミリ秒でした。
@@ -1015,7 +1154,7 @@ $2\times9=18$ で、つじつまが合います。
 \begin{tikzpicture}[x=5.4mm,y=3.3mm]
 \foreach \yo/\ttl/\tend in {0/{静的バッチ：17 ステップ}/17, -6.0/{連続バッチ処理：12 ステップ}/12} {
   \foreach \s in {1,...,4} {
-    \fill[black!7] (0,\yo-\s+0.1) rectangle (17,\yo-\s+0.9);
+    \draw[black!30,dashed,fill=white] (0,\yo-\s+0.1) rectangle (\tend,\yo-\s+0.9);
     \node[lbl,anchor=east] at (-0.2,\yo-\s+0.5) {スロット \s};
   }
   \node[font=\footnotesize,anchor=west] at (0,\yo+0.6) {\textbf{\ttl}};
@@ -1024,15 +1163,17 @@ $2\times9=18$ で、つじつまが合います。
   \foreach \t in {0,5,10,15} \node[lbl,font=\scriptsize] at (\t,\yo-4.7) {\t};
 }
 \node[lbl,anchor=west] at (17.7,-10.1) {ステップ};
-\foreach \s/\a/\b/\n/\c in {1/0/3/A/figblue,2/0/12/B/figblue,3/0/2/C/figblue,4/0/4/D/figblue,
-    1/12/15/E/figorange,2/12/14/F/figorange,3/12/17/G/figorange,4/12/15/H/figorange}
-  \draw[draw=black!55,fill=\c] (\a,-\s+0.1) rectangle node[font=\scriptsize]{\n} (\b,-\s+0.9);
-\foreach \s/\a/\b/\n/\c in {1/0/3/A/figblue,2/0/12/B/figblue,3/0/2/C/figblue,4/0/4/D/figblue,
-    3/2/5/E/figorange,1/3/5/F/figorange,4/4/9/G/figorange,1/5/8/H/figorange}
-  \draw[draw=black!55,fill=\c] (\a,-6.0-\s+0.1) rectangle node[font=\scriptsize]{\n} (\b,-6.0-\s+0.9);
+\foreach \s/\a/\b/\n/\c in {1/0/3/A/bookblue!45,2/0/12/B/bookblue!45,3/0/2/C/bookblue!45,4/0/4/D/bookblue!45,
+    1/12/15/E/bookorange!55,2/12/14/F/bookorange!55,3/12/17/G/bookorange!55,4/12/15/H/bookorange!55}
+  \draw[draw=black!60,fill=\c] (\a,-\s+0.1) rectangle node[font=\scriptsize]{\n} (\b,-\s+0.9);
+\foreach \s/\a/\b/\n/\c in {1/0/3/A/bookblue!45,2/0/12/B/bookblue!45,3/0/2/C/bookblue!45,4/0/4/D/bookblue!45,
+    3/2/5/E/bookorange!55,1/3/5/F/bookorange!55,4/4/9/G/bookorange!55,1/5/8/H/bookorange!55}
+  \draw[draw=black!60,fill=\c] (\a,-6.0-\s+0.1) rectangle node[font=\scriptsize]{\n} (\b,-6.0-\s+0.9);
 \end{tikzpicture}
-\caption{静的バッチと連続バッチ処理。横軸はステップ。
-灰色は、スロットが空いている時間である。連続バッチ処理では、C が終わった直後に E が入る。}
+\caption{静的バッチと連続バッチ処理（模式図）。横軸はステップ。8 件の仕事 A〜H は、最初から全部が待ち行列にあるとした。
+青は最初に入れた 4 件（A〜D）、橙は待っていた 4 件（E〜H）で、箱の長さ（ステップ数）は上下で同じ。
+白い破線の枠は、スロットが空いている時間である。連続バッチ処理では、C が終わった直後に E が入る。
+新しい仕事のプリフィルにかかる時間と、その間ほかの列が待つ時間は省いた。}
 \label{fig:es-continuous}
 \end{figure}
 
@@ -1041,8 +1182,10 @@ $2\times9=18$ で、つじつまが合います。
 同じ 8 件が、17 ステップではなく 12 ステップで終わります。
 \coderef{code:es-generate-batch}は、終わった列を外すだけでした。
 連続バッチ処理は、空いたスロットに新しい列を\textbf{入れる}操作（\tabref{tab:es-api}の \code{admit}）を足したものです。
-各スロットが自分の KV キャッシュを持っているので、途中から別の列が加わっても、ほかの列の計算の\textbf{結果}は変わりません。
-ただし、新しい列にプロンプトを読ませる間、ほかの列はプリフィル 1 回分だけ待たされます。
+各スロットが自分の KV キャッシュを持っているので、途中から別の列が加わっても、ほかの列の計算の\textbf{結果}は、数式の上では変わりません。
+実際の計算では、まとめて計算する列の組み合わせが変わると、足し算の順序が変わり、ロジットが丸め誤差の分（本書のモデルで $10^{-6}$ 程度。\file{ch19/out/prefix_cache.txt}）だけ変わります。
+まれに、それで選ぶトークンが変わることもありえますが、本書の評価の 1,000 問では、応答はすべて一致しました（この節の前半、\file{ch19/check_engine.py}）。
+ただし、新しい列のプロンプトを処理する間、ほかの列はプリフィル 1 回分だけ待たされます（\figref{fig:es-continuous}では、この待ちを省いて描きました）。
 前節の測定では、120 トークンのプリフィルは約 9.5 ミリ秒で、1 ステップ（2.2 ミリ秒）の約 4 回分でした。
 
 実測します。
@@ -1050,6 +1193,81 @@ $2\times9=18$ で、つじつまが合います。
 連続バッチ処理は 222 ステップで済み、この割合は 77\% です。
 かかった時間は 2.09 秒から 1.54 秒に、16 トークン以下の短い仕事が終わるまでの平均時間は 0.67 秒から 0.45 秒に縮みました。
 ステップ数ほど時間が縮まないのは、働くスロットが多いステップほど時間がかかるからです（\figref{fig:es-batch-size}(a)）。
+
+\figref{fig:es-gantt}は、この実測で、8 個のスロットがいつどの仕事をしていたかを描いたものです（\file{ch19/sweep_batching.py} で、同じ 64 件をもう一度処理して記録しました）。
+橙が 96 トークンの長い仕事、青が 16 トークン以下の短い仕事で、横に並んだ 1 本の帯が 1 件の仕事です。
+上の静的バッチでは、8 件の組の中に長い仕事が 1 件でもあると、ほかの 7 個のスロットは、その仕事が終わるまで空いたままです（帯のない白い部分）。
+下の連続バッチ処理では、空いたスロットに次の仕事がすぐ入るので、白い部分が少なく、全体が 222 ステップで終わります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[name=st,width=\linewidth,height=38mm,xmin=-5,xmax=610,ymin=-0.7,ymax=7.7,
+  ytick={0,...,7},yticklabels={1,...,8},ylabel={スロット},y label style={font=\scriptsize},
+  yticklabel style={font=\tiny},xticklabels={},xmajorgrids=false,ymajorgrids=false,
+  title={\footnotesize 静的バッチ：600 ステップ},title style={yshift=-2mm}]
+\addplot[draw=none,mark=none,error bars/.cd,x dir=plus,x explicit,error mark=none,
+  error bar style={line width=2.4mm,line cap=butt,bookblue!50}]
+  table[col sep=comma,x=start,y=slot,x error expr=\thisrow{len}-1.5,
+  restrict expr to domain={\thisrow{long}}{0:0}]{code/ch19/out/sweep_batching_gantt_static.csv};
+\addplot[draw=none,mark=none,error bars/.cd,x dir=plus,x explicit,error mark=none,
+  error bar style={line width=2.4mm,line cap=butt,bookorange!80}]
+  table[col sep=comma,x=start,y=slot,x error expr=\thisrow{len}-1.5,
+  restrict expr to domain={\thisrow{long}}{1:1}]{code/ch19/out/sweep_batching_gantt_static.csv};
+\end{axis}
+\begin{axis}[at={(st.below south west)},anchor=north west,yshift=-2mm,width=\linewidth,height=38mm,
+  xmin=-5,xmax=610,ymin=-0.7,ymax=7.7,
+  ytick={0,...,7},yticklabels={1,...,8},ylabel={スロット},y label style={font=\scriptsize},
+  yticklabel style={font=\tiny},xlabel={ステップ},xmajorgrids=false,ymajorgrids=false,
+  title={\footnotesize 連続バッチ処理：222 ステップ},title style={yshift=-2mm}]
+\addplot[draw=none,mark=none,error bars/.cd,x dir=plus,x explicit,error mark=none,
+  error bar style={line width=2.4mm,line cap=butt,bookblue!50}]
+  table[col sep=comma,x=start,y=slot,x error expr=\thisrow{len}-1.5,
+  restrict expr to domain={\thisrow{long}}{0:0}]{code/ch19/out/sweep_batching_gantt_continuous.csv};
+\addplot[draw=none,mark=none,error bars/.cd,x dir=plus,x explicit,error mark=none,
+  error bar style={line width=2.4mm,line cap=butt,bookorange!80}]
+  table[col sep=comma,x=start,y=slot,x error expr=\thisrow{len}-1.5,
+  restrict expr to domain={\thisrow{long}}{1:1}]{code/ch19/out/sweep_batching_gantt_continuous.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{64 件の仕事（4〜96 トークン）を 8 スロットで処理したときの、スロットの使われ方（実測。\file{ch19/sweep_batching.py}、\file{base.pt}）。
+1 本の帯が 1 件の仕事で、橙は 96 トークンの長い仕事、青は 16 トークン以下の短い仕事。帯のない白い部分は、スロットが空いていた時間。
+帯どうしの境目が見えるように、各帯の右端を 1.5 ステップ分短く描いた。}
+\label{fig:es-gantt}
+\end{figure}
+
+スロットの数を変えると、二つの方法の差はどう変わるでしょうか。
+同じ 64 件を、スロット 1〜32 個で処理しました（\figref{fig:es-slots-sweep}）。
+スロットが 1 個なら、どちらの方法も 1 件ずつ順に処理するので、同じ 1,360 ステップです。
+スロットを増やすと、連続バッチ処理のステップ数のほうが速く減り、稼働率（スロットが働いていた割合）の差も開きます。
+ただし 32 個では、連続バッチ処理でも稼働率は 41\% に下がります。
+64 件しかないので、待っている仕事がすぐになくなり、最後は長い仕事だけが残るからです。
+かかった時間（\file{ch19/out/sweep_batching.csv}）も同じ傾向で、スロット 8 個では 1.97 秒と 1.32 秒でした（上の 2.09 秒・1.54 秒とは、別の時に測った値です）。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=35mm,xmode=log,log basis x=2,xtick={1,2,4,8,16,32},
+  xticklabels={1,2,4,8,16,32},xlabel={スロットの数},ylabel={ステップ数},ymin=0,ymax=1500,
+  scaled y ticks=false,/pgf/number format/1000 sep={\mathord{,}},
+  legend pos=north east,legend style={font=\scriptsize},title={\footnotesize (a)},title style={yshift=-1.5mm}]
+\addplot[bookgray,mark=square*,mark size=1.3pt] table[col sep=comma,x=slots,y=static_steps]{code/ch19/out/sweep_batching.csv};
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=slots,y=cont_steps]{code/ch19/out/sweep_batching.csv};
+\legend{静的バッチ,連続バッチ処理}
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[width=0.5\linewidth,height=35mm,xmode=log,log basis x=2,xtick={1,2,4,8,16,32},
+  xticklabels={1,2,4,8,16,32},xlabel={スロットの数},ylabel={稼働率（\%）},ymin=0,ymax=105,
+  title={\footnotesize (b)},title style={yshift=-1.5mm}]
+\addplot[bookgray,mark=square*,mark size=1.3pt] table[col sep=comma,x=slots,y=static_util]{code/ch19/out/sweep_batching.csv};
+\addplot[bookblue,mark=*,mark size=1.3pt] table[col sep=comma,x=slots,y=cont_util]{code/ch19/out/sweep_batching.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{スロットの数を 1〜32 個に変えたときの、静的バッチと連続バッチ処理（\file{ch19/sweep_batching.py}。仕事は\figref{fig:es-gantt}と同じ 64 件）。
+(a) 全部を終えるまでのステップ数。(b) スロットが働いていた割合。線の色と印は (a) と同じ。}
+\label{fig:es-slots-sweep}
+\end{figure}
 
 この節をまとめます。
 複数の列を 1 回の計算でまとめて進めると、スループットは大きく上がり、一人ひとりのトークン間時間は延びます。
@@ -1067,31 +1285,37 @@ $2\times9=18$ で、つじつまが合います。
 \textbf{JSON}：Python の辞書とリストを、ほぼそのままの見た目で文字列にした書式。
 \textbf{API}：プログラムどうしの約束。どこへ何を送ると何が返るかを決めたもの。
 \textbf{127.0.0.1}：「この計算機自身」を指す番号。
-\textbf{ポート}：計算機の中の窓口の番号（本章は 8019）。
+\textbf{ポート}：1 台の計算機の中で、通信の相手のプログラムを区別する番号（本章は 8019）。
 \textbf{curl}：HTTP の質問を 1 回送り、返事を表示するコマンド。
 \textbf{スレッド}：一つのプログラムの中で、並行して動く処理の流れ。
 \end{column}
 
 まず、利用者とサーバの間の API を決めます。
-LLM の世界では、会話を JSON にして \code{/v1/chat/completions} という宛先に送る形が、事実上の共通語になっています。
+LLM の世界では、会話を JSON にして \code{/v1/chat/completions} という宛先に送る形が、事実上の標準になっています。
 送るのは、\secref{sec:post-template}で使った「役割と内容」のメッセージの並びです
 （温度や生成するトークン数の上限も、質問ごとに指定できます）。
 サーバはそれをチャットテンプレートで 1 本のトークン列に直し、生成した応答を JSON で返します。
-サーバは会話を覚えないので、続きの質問では、利用者の側が、それまでの会話を全部付けて送り直します。
+この形の API では、サーバは会話の中身を保存しないので、続きの質問では、利用者の側が、それまでの会話を全部付けて送り直します（本書のサーバも同じです。\secref{sec:es-cache}では、会話の中身ではなく、計算の途中結果だけを取っておく工夫を見ます）。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\footnotesize,node distance=2mm and 11mm]
+\begin{tikzpicture}[font=\footnotesize,node distance=3mm and 11mm]
   \node[plainbox,minimum width=17mm] (c1) {利用者 1};
   \node[plainbox,minimum width=17mm,below=of c1] (c2) {利用者 2};
   \node[plainbox,minimum width=17mm,below=of c2] (c3) {利用者 3};
-  \foreach \i in {1,2,3} \node[box,minimum width=21mm,right=of c\i] (h\i) {受付スレッド};
-  \node[orangebox,minimum width=11mm,minimum height=23mm,right=9mm of h2] (q) {待ち\\行列};
-  \node[greenbox,minimum width=33mm,minimum height=23mm,right=9mm of q,align=center] (e)
+  \foreach \i in {1,2,3} \node[box,minimum width=21mm,minimum height=7mm,right=of c\i] (h\i) {受付スレッド};
+  \node[orangebox,minimum width=11mm,minimum height=25mm,right=11mm of h2] (q) {待ち\\行列};
+  \node[greenbox,minimum width=33mm,minimum height=25mm,right=9mm of q,align=center] (e)
     {\textbf{エンジンスレッド}\\[0.5mm]スロット 1〜16\\（KV キャッシュ）\\全員を 1 ステップで\\1 トークン進める};
-  \foreach \i in {1,2,3} { \draw[arr,<->] (c\i) -- (h\i); \draw[arr] (h\i.east) -- (q); }
+  \foreach \i in {1,2,3} \draw[arr,<->] (c\i) -- (h\i);
   \draw[arr] (q) -- (e);
-  \draw[darr,rounded corners=2pt] (e.south) -- ++(0,-4.5mm) -| node[pos=0.25,below,lbl]{生成したトークンを、質問ごとの通路で受付スレッドに返す} (h3.south);
+  \coordinate (bus) at ($(h1.east)+(5mm,0)$);
+  \draw[darr,-,rounded corners=2pt] (e.south) |- ([yshift=-5mm]bus |- h3.south) -- ([yshift=-1.4mm]bus |- h1.east);
+  \foreach \i in {1,2,3} \draw[darr] ([yshift=-1.4mm]bus |- h\i.east) -- ([yshift=-1.4mm]h\i.east);
+  % 受付→待ち行列の実線は水平にし、白い縁取りで破線の上を渡らせる（交差を追いやすくする）
+  \foreach \i in {1,2,3} \draw[arr,preaction={draw,white,line width=3pt,-}]
+    ([yshift=1.4mm]h\i.east) -- ([yshift=1.4mm]q.west |- h\i.east);
+  \node[lbl,anchor=north] at ([yshift=-5mm]$(bus |- h3.south)!0.5!(e.south |- h3.south)$) {生成したトークンを、質問ごとの待ち行列（\code{events}）で、それぞれの受付スレッドに返す};
   \node[lbl,above=0.3mm of c1] {HTTP};
 \end{tikzpicture}
 \caption{推論サーバ \file{ch19/mini_server.py} の構造。質問 1 件ごとに受付スレッドが立つが、モデルを動かすのはエンジンスレッドだけである。
@@ -1108,8 +1332,8 @@ Python の標準ライブラリ \code{http.server} は、質問が 1 件届く�
 \snippet{エンジンスレッド：連続バッチ処理を回しつづける}{code:es-engine-loop}{ch19/mini_server.py}{engine-loop}
 
 \code{inbox} が待ち行列、\code{batcher} が前節の連続バッチ処理の本体です。
-5〜6 行目は、動いている仕事がなければ、次の仕事が届くまで眠ります（\code{inbox.get()} は、待ち行列が空なら、何かが入るまでそこで止まります）。
-7〜8 行目で、空いているスロットの数だけ待ち行列から仕事を取り出し、10 行目でまとめてプリフィルします。
+5〜6 行目は、動いている仕事がなければ、次の仕事が届くまで待ちます（\code{inbox.get()} は、待ち行列が空なら、何かが入るまでそこで止まります）。
+7〜8 行目で、空いているスロットの数だけ待ち行列から仕事を取り出し、10 行目でまとめてプリフィルします（\code{batcher.free} は、空いているスロットの番号のリストです）。
 12 行目が、動いている全員を 1 トークン進める 1 ステップです。
 \figref{fig:es-continuous}の下段は、このループの動きそのものです。
 
@@ -1117,16 +1341,20 @@ Python の標準ライブラリ \code{http.server} は、質問が 1 件届く�
 トークンができるたびに送れば、最初の文字が見えるまでの待ち時間は TTFT で済みます。
 これを\term{ストリーミング}{streaming}と呼びます。
 対話型の AI の応答が少しずつ表示されるのは、このためです。
-エンジンスレッドは、トークンを 1 個出すたびに、質問ごとの通路（\figref{fig:es-server}の破線）に入れます。
+受付スレッドは、質問を受け付けるときに、その質問専用の小さな待ち行列 \code{events}（Python の \code{queue.Queue}）を作り、「トークンが出たら \code{events} に入れる」関数（\code{Job} の \code{on_token}）を仕事に付けて、待ち行列に入れます。
+エンジンスレッドは、トークンを 1 個出すたびに、そのトークンと「終わったか」の印の組を、その質問の \code{events} に入れます（\figref{fig:es-server}の破線）。
 受付スレッドは、次のループでそれを送り出します。
 
 \snippet{ストリーミング：トークンが届くたびに送り出す}{code:es-stream-loop}{ch19/mini_server.py}{stream-loop}
 
-2 行目の \code{events.get()} が、通路からトークンを 1 個受け取ります（まだなければ、届くまで待ちます）。
+2 行目の \code{events.get()} が、\code{events} からトークンを 1 個受け取ります（まだなければ、届くまで待ちます）。
+3〜4 行目で、終了のトークン（番号 \code{END_ID}）でなければ、受け取ったトークンを \code{tokens} に足します。終了のトークンは文字にしないからです。
 5 行目で、ここまでのトークン全部を文字列に戻します。
 1 文字が複数のトークンに分かれていると、途中では末尾が文字化けの印になるので、送らずに次を待ちます（6〜7 行目）。
 8〜11 行目で、まだ送っていない部分 \code{text[n_sent:]} を JSON に包み、「\code{data: }」で始まる 1 行にします。
-12〜13 行目で書き込み、\code{flush()} を呼びます。
+\code{n_sent} は、すでに送った文字の数です。
+「\code{data: }」で始めて空行で区切るのは、少しずつ届くデータを送るときの決まった書き方（Server-Sent Events と呼ばれる形式）で、受け取る側はこの形を前提に読みます。
+12〜13 行目で書き込み、\code{flush()} を呼びます。14 行目で、送った文字の数を更新します。
 出力をためるサーバでは、これを忘れるとまとめて届きます（\code{http.server} はためません）。
 
 サーバを \code{python ch19/mini_server.py} で起動し、別の端末（コマンドを打ち込む画面）から質問を送ります。
@@ -1155,7 +1383,7 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}
+\begin{tikzpicture}[baseline]
 \begin{axis}[width=0.5\linewidth,height=35mm,xmode=log,log basis x=2,xtick={1,2,4,8,16,32},
   xticklabels={1,2,4,8,16,32},xlabel={同時に使う人数},ylabel={スループット（件/秒）},ymin=0,ymax=215,
   legend pos=north west,legend style={font=\scriptsize},title={\footnotesize (a)},title style={yshift=-1.5mm}]
@@ -1164,14 +1392,14 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 \legend{スロット 1 個,スロット 16 個}
 \end{axis}
 \end{tikzpicture}\hfill
-\begin{tikzpicture}
+\begin{tikzpicture}[baseline]
 \begin{axis}[width=0.5\linewidth,height=35mm,xmode=log,log basis x=2,xtick={1,2,4,8,16,32},
-  xticklabels={1,2,4,8,16,32},xlabel={同時に使う人数},ylabel={レイテンシの中央値（ミリ秒）},ymin=0,ymax=600,title={\footnotesize (b)},title style={yshift=-1.5mm}]
+  xticklabels={1,2,4,8,16,32},xlabel={同時に使う人数},ylabel={中央値（ミリ秒）},ymin=0,ymax=600,title={\footnotesize (b)},title style={yshift=-1.5mm}]
 \addplot[bookgray,mark=square*,mark size=1.3pt,restrict expr to domain={\thisrow{slots}}{1:1}] table[col sep=comma,x=users,y=total_ms]{code/ch19/out/load_test.csv};
 \addplot[bookblue,mark=*,mark size=1.3pt,restrict expr to domain={\thisrow{slots}}{16:16}] table[col sep=comma,x=users,y=total_ms]{code/ch19/out/load_test.csv};
 \end{axis}
 \end{tikzpicture}
-\caption{負荷試験の結果。(a) サーバ全体のスループット。(b) 質問を送ってから応答が終わるまでの時間の中央値。線の色と印は (a) と同じ。}
+\caption{負荷試験の結果。(a) サーバ全体のスループット。(b) 質問を送ってから応答が終わるまでの時間（レイテンシ）の中央値。線の色と印は (a) と同じ。}
 \label{fig:es-load}
 \end{figure}
 
@@ -1189,36 +1417,71 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 スロット 1 個のサーバでは、100 人のとき、レイテンシの中央値は 923 ミリ秒でした。
 スロットを 16 個にすると 289 ミリ秒（約 3 分の 1）、64 個にすると 172 ミリ秒で、5 分の 1 以下になります（$923\div172\approx5.4$）。
 待ち時間はなくなりませんが、同じ計算機のまま、スロットを増やすだけで、ここまで縮みます。
+\figref{fig:es-load100}は、この三つの場合を棒で並べたものです。
+スロット 16 個から 64 個への変化を見ると、1 個目が届くまでの時間（TTFT）は 250 ミリ秒から 86 ミリ秒へ大きく縮む一方、応答が終わるまでの時間は 289 ミリ秒から 172 ミリ秒への縮みにとどまります。
+待ち行列で待つ時間は減りますが、一度にまとめる列が増えて 1 ステップが長くなる（\figref{fig:es-batch-size}(a)）ので、2 個目以降のトークンの間隔が延びるからです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar=1.5mm,width=0.62\linewidth,height=36mm,bar width=5mm,ymin=0,ymax=1180,
+  symbolic x coords={1,16,64},xtick=data,xlabel={スロットの数},ylabel={中央値（ミリ秒）},
+  enlarge x limits=0.3,xmajorgrids=false,scaled y ticks=false,
+  nodes near coords,nodes near coords style={font=\tiny,/pgf/number format/.cd,fixed,precision=0},
+  area legend,legend style={at={(0.98,0.97)},anchor=north east,font=\scriptsize}]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=slots,y=ttft_ms]{code/ch19/out/load_100.csv};
+\addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=slots,y=total_ms]{code/ch19/out/load_100.csv};
+\legend{1 個目まで（TTFT）,応答が終わるまで}
+\end{axis}
+\end{tikzpicture}
+\caption{同時に 100 人が使ったときの、待ち時間の中央値（\file{ch19/load_100.py} の出力から \file{ch19/fig_load100.py} で取り出した値。\figref{fig:es-load}とは別の、約 2 倍速い計算機での測定）。
+棒の上の数は、ミリ秒の単位に丸めた値である。}
+\label{fig:es-load100}
+\end{figure}
+
 また、評価の 1,000 問をこのサーバ（スロット 16 個）に同時 32 人分の質問として送っても、正答率は 82.6\% のままでした。
-かかった時間は、前節のようにエンジンを直接呼んで 64 問ずつ解く場合の約 3 倍です
+かかった時間は 3.1 秒です。
+同じ約 2 倍速い計算機で、エンジンを直接呼んで 64 問ずつ解くと 1.0 秒だったので（\file{ch19/speed_breakdown.py}）、サーバ経由ではその約 3 倍かかりました
 （スロットの数も、計算に使うスレッドの数も違う測定どうしの比なので、目安と考えてください）。
 
 この節をまとめます。
 推論サーバは、質問を受け付けるスレッドと、モデルを動かす 1 本のエンジンスレッドを、待ち行列でつないだものです。
 ストリーミングは体感の待ち時間を TTFT に縮め、連続バッチ処理は同時利用のスループットを上げます。
 
-\section{KV キャッシュを取っておく：書き込みと読み出し}\label{sec:es-cache}
+\section{KV キャッシュを取っておく：キャッシュの書き込みと読み出し}\label{sec:es-cache}
 \laterread{API のプロンプトキャッシュの料金を見積もるときや、\chapref{ch:agent}でエージェントが履歴を送り直す費用が気になったときに、戻ってくれば足ります。飛ばしても、章末のまとめは読めます。}
 
-前節のサーバは、応答を終えるとスロットを空け、続きの質問では、送り直された会話をはじめから読み直します。
-読むのは安いとはいえ、会話が長くなるほど積み重なります。
-前の回までの分の KV キャッシュ（層ごと・トークンごとのキーとバリュー。\figref{fig:es-slots}の 1 行分）を取っておけば、読み直しを省けるはずです。
+前節のサーバは、応答を終えるとスロットを空け、続きの質問では、送り直された会話をはじめからプリフィルし直します。
+プリフィルは 1 トークンあたりでは安いとはいえ、会話が長くなるほど、計算し直す量が増えます。
+前の回までの分の KV キャッシュ（トークンごとの、4 層すべてのキーとバリュー。\figref{fig:es-slots}の 1 行分）を取っておけば、計算し直しを省けるはずです。
+
+\chapref{ch:modern-arch}の\figref{fig:ma-kv-when}(b) では、すでに、プロンプトのキーとバリューを前もって計算して取っておき（「前置きを使い回す」）、生成が速くなることを見ました。
+この節では、そこから一歩進んで、次の三つを調べます。
+一つ目は、取っておいたキャッシュで 1 個目のトークンまでの時間（TTFT）がどれだけ縮むか。
+二つ目は、キャッシュをどこに置くか（メモリ、ディスク、ネットワーク越しのディスク）で、得がどう変わるか。
+三つ目は、新しい列が、取っておいた列とどこまで一致していれば使えるかです。
 
 あるトークンのキーとバリューは、そのトークンまでの列だけで決まるので（因果マスク）、使い回せるのは\textbf{先頭から完全に一致する部分だけ}です。
 途中の 1 個が変わると、後ろのキーとバリューはすべて変わるからです。
-この部分（プレフィックス。以下、\textbf{前置き}）の使い回しを\term{プレフィックスキャッシュ}{prefix caching}、最初に計算して保存することを\term{書き込み}{cache write}、後でそれを使うことを\term{読み出し}{cache read}と呼びます。
+この部分を\textbf{プレフィックス}、日本語で\textbf{前置き}と呼びます。
+\chapref{ch:modern-arch}では、プロンプトの全体を前置きと呼びました。
+ここでは、そのうち、取っておいた列と先頭から一致する部分を指します（\chapref{ch:modern-arch}の実験では、プロンプトの全体が一致していました）。
+前置きの使い回しを\term{プレフィックスキャッシュ}{prefix caching}と呼びます。
+また、最初に計算して保存することを\term{キャッシュの書き込み}{cache write}、後でそれを取り出して使うことを\term{キャッシュの読み出し}{cache read}と呼びます。
+\chapref{ch:modern-arch}の\figref{fig:ma-kvcache}で、デコードのたびに青のマスを「キャッシュから読む」と言ったのと、同じ向きの言葉です。
+この節の読み出しは、別の質問のために保存しておいたものを読む点が違います。
 
-この節では、まず、本書のエンジンで書き込みと読み出しを作り、速さを測ります。
+この節では、まず、本書のエンジンでキャッシュの書き込みと読み出しを作り、速さを測ります。
 続いて、実際のエンジンの保存のしかた、API の料金と損益、使う側の定石の順に見ます。
 
-\subsection*{実験：書き込みと読み出し}
+\subsection*{実験：キャッシュの書き込みと読み出し}
 
-書き込みと読み出しは、\coderef{code:es-prefix-cache}の三つの関数で書けます。
+キャッシュの書き込みと読み出しは、\coderef{code:es-prefix-cache}の三つの関数で書けます。
 
 \snippet{KV キャッシュの書き込みと読み出し}{code:es-prefix-cache}{ch19/prefix_cache.py}{prefix-cache}
 
 \code{write_cache} は、列 \code{ids} をスロット 0（\code{SLOT}）にプリフィルし、できたキーとバリューを、列の長さの分だけ、トークン列と一緒に保存します。
-\code{read_cache} は、読み込んだ \code{cache} の列と新しい列が先頭から何個一致するか（$n$）を \code{common_prefix} で数え、その分をスロットに写し、長さ \code{length} を $n$ にして、続きだけを計算させます。
+\code{read_cache} は、読み込んだ \code{cache} の列と新しい列が先頭から何個一致するか（コードの変数 \code{n}。以下、一致した長さ $n$）を \code{common_prefix} で数え、その分をスロットに写し、長さ \code{length} を $n$ にして、続きだけを計算させます。
 最後の 1 トークンは、次のロジットを得るために必ず計算します（$n$ は列の長さ $-1$ まで）。
 
 \file{ch19/prefix_cache.py} は、計算の会話 1〜8 往復（14〜112 トークン）を前置きとしてプリフィルし、キーとバリューをメモリ、手元のディスク、ネットワーク越しの共有ディスクに置きます。
@@ -1227,9 +1490,13 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 保存した分は、112 トークンで 688,128 バイトでした。
 1 トークンあたり $688{,}128\div112=6{,}144$ バイト（6 KiB）です。
 内訳は、キーとバリューの 2 種類 $\times$ 4 層 $\times$ 4 ヘッド $\times$ 48 次元 $\times$ 4 バイト（32 ビットの数 1 個）です。
+\chapref{ch:modern-arch}の式\eqref{eq:ma-kv-mem}に、本書のモデルの値（$L=4$、$H_{\mathrm{kv}}=4$、$\dhead=48$、$b=4$）を入れたものと同じで、同じ式で Llama 3 8B を計算すると 128 KiB になります（\secref{sec:ma-gqa}）。
 読み出しで得たロジットは、全部を計算した場合との差が 0 でした。
-メモリから読み出すと、112 トークンの前置きで、TTFT は 7.40 ミリ秒から 4.26 ミリ秒へ、4 割ほど縮みました（$(7.40-4.26)\div7.40\approx0.42$。\figref{fig:es-cache-exp}(b)）。
+メモリに置いたキャッシュを読み出してスロットに写すと、112 トークンの前置きで、TTFT は 7.40 ミリ秒から 4.26 ミリ秒へ、4 割ほど縮みました（$(7.40-4.26)\div7.40\approx0.42$。\figref{fig:es-cache-exp}(b)）。
 省けた時間は前置きの長さにほぼ比例し、2 個目以降の 1 トークンの時間（約 1.6 ミリ秒）は変わりません。
+\secref{sec:es-cost}では、120 トークンの TTFT が 9.5 ミリ秒、トークン間時間が約 2.1 ミリ秒でした。
+この節の値（122 トークンで 7.40 ミリ秒、約 1.6 ミリ秒）と違うのは、モデル（\secref{sec:es-cost}は \file{base.pt}、この節は \file{sft.pt}。大きさは同じ）と、測った時期が違うからです。
+計算機をほかの仕事と共有しているので、時間の絶対値は測るたびに変わります。ここでも、同じ実行の中の比を見てください。
 省けるのは、プリフィルだけです。
 
 置き場所が遠くなると、得は減ります。
@@ -1239,8 +1506,46 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 \figref{fig:es-cache-exp}(a) は、112 トークンを保存したあとの三つの質問です。
 5 往復目の応答の 2 文字目を変えると、使えるのは手前の 67 トークンだけ、先頭を変えると 0 個です。
 8 個の質問を、毎回それまでの会話（応答はモデルの出力）を付けて送ると、プリフィルはのべ 447 トークン、41.1 ミリ秒です。
-前の回の分をスロットに残せば、読むのは新しく足された分だけで、87 トークン（10＋11×7）、31.8 ミリ秒で済みます
-（続きの計算だけで、1 回に約 4 ミリ秒かかります。$31.8\div8\approx4$ です）。
+前の回の分をスロットに残せば、計算するのは新しく足された分だけで、87 トークン（10＋11×7）、31.8 ミリ秒で済みます。
+
+\figref{fig:es-chat-turns}は、この 8 回を 1 回ずつ並べたものです（\file{ch19/sweep_chat_turns.py} で、回ごとのトークン数を記録し直しました）。
+1 回目に送る列は、最初の質問の 10 トークンです。
+2 回目からは、前の回の列に、モデルの応答と、その後ろに付く終了のトークン 1 個と、新しい質問の 10 トークンが足されます。
+キャッシュなし (a) では、毎回、列の全体（10、24、37、\dots、100 トークン）を計算し直すので、合計は 447 トークンです。
+前の回の分を残す (b) では、スロットに残っているのは「前の回の列と、生成した応答」までです。
+応答の後ろの終了のトークンは、出しただけでモデルに通していないので、キーとバリューがありません。
+そのため、2 回目からは、終了のトークン 1 個と新しい質問 10 個の、11 トークンだけを計算します。
+これが「10＋11×7」の内訳です
+（2 回目からの応答はほとんど正しくなく、長さもまちまちですが、ここで見たいのはトークン数です。447 が、1 往復を 14 トークンとした計算より少ないのは、このためです）。
+
+計算するトークンは 5 分の 1 になったのに、時間は 4 分の 3 にしかなっていません。
+(b) でも 1 回に約 4 ミリ秒（$31.8\div8\approx4$）かかるのは、\secref{sec:es-cost}で見たとおり、モデルを 1 回呼ぶだけで、トークンの数によらない決まった時間がかかるからです。
+\figref{fig:es-cache-exp}(b) の青の線でも、前置きの長さによらず、10 トークンを足すだけの読み出しに約 4 ミリ秒かかっています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar stacked,width=0.5\linewidth,height=44mm,bar width=2.4mm,y dir=reverse,
+  ytick={1,...,8},ylabel={何回目の質問か},xmin=0,xmax=105,xlabel={送られた列（トークン）},
+  ymajorgrids=false,title={\footnotesize (a) キャッシュなし：のべ 447},title style={yshift=-1.5mm}]
+\addplot[fill=bookorange!45,draw=bookorange] table[col sep=comma,x=total,y=turn]{code/ch19/out/sweep_chat_turns.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[xbar stacked,width=0.5\linewidth,height=44mm,bar width=2.4mm,y dir=reverse,
+  ytick={1,...,8},xmin=0,xmax=105,xlabel={送られた列（トークン）},
+  ymajorgrids=false,title={\footnotesize (b) 前の回の分を残す：のべ 87},title style={yshift=-1.5mm},
+  legend style={at={(0.98,0.97)},anchor=north east,font=\scriptsize}]
+\addplot[fill=bookblue!40,draw=bookblue] table[col sep=comma,x=kept,y=turn]{code/ch19/out/sweep_chat_turns.csv};
+\addplot[fill=bookorange!45,draw=bookorange] table[col sep=comma,x=computed,y=turn]{code/ch19/out/sweep_chat_turns.csv};
+\legend{スロットに残っている,計算する}
+\end{axis}
+\end{tikzpicture}
+\caption{8 回の質問を、毎回それまでの会話を付けて送ったときの、回ごとのプリフィル（\file{ch19/sweep_chat_turns.py}）。上から下へ、1 回目から 8 回目。
+棒の長さが送られた列のトークン数で、色は\figref{fig:ma-kvcache}と同じ（橙はその回に計算する、青はキャッシュにあるものを使う）。
+(a) は毎回全部を計算し、(b) は 2 回目から 11 トークンだけを計算する。}
+\label{fig:es-chat-turns}
+\end{figure}
 
 \begin{figure}[htbp]
 \centering
@@ -1248,8 +1553,8 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 \foreach \row/\name/\ng/\nb/\ms in {1/書き込み/0/112/{--},2/続きを足す/112/10/4.22,3/途中を変える/67/55/5.46,4/先頭を変える/0/122/7.20} {
   \pgfmathtruncatemacro{\len}{\ng+\nb}
   \node[anchor=east] at (-2,-\row+0.5) {\name};
-  \fill[bookgreen!45] (0,-\row+0.14) rectangle (\ng,-\row+0.86);
-  \fill[figblue] (\ng,-\row+0.14) rectangle (\len,-\row+0.86);
+  \fill[bookblue!40] (0,-\row+0.14) rectangle (\ng,-\row+0.86);
+  \fill[bookorange!45] (\ng,-\row+0.14) rectangle (\len,-\row+0.86);
   \draw[black!45] (0,-\row+0.14) rectangle (\len,-\row+0.86);
   \node[anchor=west] at (124,-\row+0.5) {\ms};
 }
@@ -1261,26 +1566,28 @@ $ curl -s http://127.0.0.1:8019/v1/chat/completions \
 \node at (61,-3.5) {122};
 \node[anchor=west] at (122,0.4) {TTFT};
 \node[lbl] at (61,0.4) {トークン数};
-\draw[black!45,fill=bookgreen!45] (-40,-4.95) rectangle (-31,-4.4);
+\draw[black!45,fill=bookblue!40] (-40,-4.95) rectangle (-31,-4.4);
 \node[anchor=west] at (-30,-4.68) {保存済みを写す};
-\draw[black!45,fill=figblue] (50,-4.95) rectangle (59,-4.4);
+\draw[black!45,fill=bookorange!45] (50,-4.95) rectangle (59,-4.4);
 \node[anchor=west] at (60,-4.68) {計算する};
 \node at (61,1.45) {\footnotesize (a)};
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{axis}[width=0.5\linewidth,height=35mm,xlabel={前置きの長さ（トークン）},ylabel={TTFT（ミリ秒）},
-  ymin=0,ymax=8,xmin=0,xmax=120,xtick={0,28,56,84,112},
-  legend style={font=\scriptsize,at={(0.98,0.03)},anchor=south east,inner sep=1pt,row sep=-1.5pt},legend columns=2,
+  ymin=0,ymax=9,xmin=0,xmax=120,xtick={0,28,56,84,112},ytick={0,2,4,6,8},
+  legend style={font=\scriptsize,at={(0.5,-0.55)},anchor=north,inner sep=1pt,draw=none,/tikz/every even column/.append style={column sep=3mm}},legend columns=2,legend cell align=left,
   title={\footnotesize (b)},title style={yshift=-1.5mm}]
-\addplot[bookaccent,mark=*,mark size=1.3pt] table[col sep=comma,x=n_prefix,y=none_ms]{code/ch19/out/prefix_cache.csv};
 \addplot[bookblue,mark=square*,mark size=1.3pt] table[col sep=comma,x=n_prefix,y=mem_ms]{code/ch19/out/prefix_cache.csv};
 \addplot[bookgreen,mark=triangle*,mark size=1.6pt] table[col sep=comma,x=n_prefix,y=near_ms]{code/ch19/out/prefix_cache.csv};
-\addplot[bookgray,mark=diamond*,mark size=1.6pt,dashed] table[col sep=comma,x=n_prefix,y=far_ms]{code/ch19/out/prefix_cache.csv};
-\legend{キャッシュなし,メモリ,手元のディスク,共有ディスク}
+\addplot[bookorange,mark=diamond*,mark size=1.6pt,dashed] table[col sep=comma,x=n_prefix,y=far_ms]{code/ch19/out/prefix_cache.csv};
+% キャッシュなし（灰）は、ほかの点に隠れないよう最後に描く
+\addplot[bookgray,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=n_prefix,y=none_ms]{code/ch19/out/prefix_cache.csv};
+\legend{メモリ,手元のディスク,共有ディスク,キャッシュなし}
 \end{axis}
 \end{tikzpicture}
-\caption{(a) 計算する範囲と TTFT（ミリ秒。別に測定）。緑（保存済みを写すだけの部分）が長いほど、TTFT は短い。
-(b) 置き場所ごとの TTFT。メモリ（青）がいちばん速い。共有ディスク（灰色の破線）は、前置きが短いと、キャッシュなし（赤）より遅い。}
+\caption{(a) 計算する範囲と TTFT（ミリ秒。別に測定）。色は\figref{fig:ma-kvcache}と同じで、青は保存済みのキャッシュを写すだけの部分、橙はそのとき計算する部分。青が長いほど、TTFT は短い。
+「書き込み」の行は、112 トークンを計算して保存するだけなので TTFT はない（計算だけで 7.54 ミリ秒、手元のディスクへの保存まで含めて 8.18 ミリ秒）。
+(b) 置き場所ごとの TTFT。キャッシュなしは、\figref{fig:ma-kv-when}(b) と同じ灰。メモリ（青）がいちばん速い。共有ディスク（橙の破線）は、前置きが短いと、キャッシュなし（灰）より遅い。}
 \label{fig:es-cache-exp}
 \end{figure}
 
@@ -1295,32 +1602,107 @@ vLLM は、KV キャッシュを固定長のブロックに分け\cite{kwon2023e
 目印が同じブロックを共有し、最も長く使われていないものから追い出します。
 共有するのは満杯のブロックだけです（目印は、中身がそろって初めて決まります）。
 ブロックが 4 トークンで、先頭の 10 トークンが一致するなら、読み出せるのは 2 ブロック、8 トークンです。
+\figref{fig:es-blocks}が、この例です。
+保存した列と新しい列は、10 個目のトークンまで同じで、11 個目から違います。
+1 個目と 2 個目のブロックは中身も一つ前の目印も同じなので、目印 $h_1$、$h_2$ も同じになり、保存したものを使えます。
+3 個目のブロックは、中身の一部（11、12 個目）が違うので目印が変わり、計算し直します。
+一致している 9、10 個目のトークンも、同じブロックに違うトークンが入っているので使えません。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=6.2mm,y=1mm,font=\scriptsize,
+  tk/.style={cell,minimum width=5.6mm,minimum height=4.6mm,inner sep=0pt},
+  hs/.style={draw=black!60,rounded corners=1pt,minimum width=13mm,minimum height=4.2mm,inner sep=1pt,fill=white}]
+\foreach \row/\yy/\name in {0/0/保存した列,1/-25/新しい列} {
+  \node[anchor=east] at (-0.2,\yy) {\name};
+  \foreach \t in {1,...,12} {
+    \pgfmathtruncatemacro{\diff}{(\row==1 && \t>10) ? 1 : 0}
+    \ifnum\diff=1
+      \node[tk,fill=figred] at (\t,\yy) {$x'_{\t}$};
+    \else
+      \node[tk,fill=white] at (\t,\yy) {$x_{\t}$};
+    \fi
+  }
+  \foreach \b in {0,1,2} \draw[black!70,thick] (0.5+4*\b,\yy-3.4) rectangle (4.5+4*\b,\yy+3.4);
+}
+\foreach \b/\lab/\labn/\st in {0/$h_1$/$h_1$/1,1/$h_2$/$h_2$/1,2/$h_3$/$h'_3$/0} {
+  \node[hs] (a\b) at (2.5+4*\b,-6.9) {目印 \lab};
+  \node[hs] (b\b) at (2.5+4*\b,-18.1) {目印 \labn};
+  \draw[->,black!55] (2.5+4*\b,-3.4) -- (a\b.north);
+  \draw[->,black!55] (2.5+4*\b,-21.6) -- (b\b.south);
+  % 上下の目印を比べた結果を、その組の真ん中（縦の位置）に置く
+  \ifnum\st=1
+    \node[font=\scriptsize,text=bookblue!80!black,fill=white,inner sep=1pt] at (2.5+4*\b,-12.5) {＝ 同じ};
+  \else
+    \node[font=\scriptsize,text=bookaccent,fill=white,inner sep=1pt] at (2.5+4*\b,-12.5) {≠ 違う};
+  \fi
+}
+\draw[->,black!55] (a0.east) -- (a1.west); \draw[->,black!55] (a1.east) -- (a2.west);
+\draw[->,black!55] (b0.east) -- (b1.west); \draw[->,black!55] (b1.east) -- (b2.west);
+\fill[bookblue!25] (0.5,-30.5) rectangle (8.5,-32.5); \node at (4.5,-35) {保存したキャッシュを使う（2 ブロック、8 トークン）};
+\fill[bookorange!40] (8.5,-30.5) rectangle (12.5,-32.5); \node[align=center] at (10.5,-36.3) {計算し直す\\（4 トークン）};
+\end{tikzpicture}
+\caption{vLLM のブロックと目印（ブロックが 4 トークンの例。模式図）。太い枠が 1 ブロック。
+各ブロックの目印（ハッシュ）は、一つ前のブロックの目印と、そのブロックのトークンから作る（横の矢印は、一つ前の目印が次の目印の材料になることを示す）。
+上下の目印の間の「＝ 同じ」「≠ 違う」は、保存した列と新しい列の、同じ位置のブロックの目印を比べた結果である。
+新しい列は 10 個目まで保存した列と同じで、赤の 11・12 個目が違う。
+目印 $h_1$、$h_2$ が一致するので最初の 2 ブロックは使えるが、3 個目のブロックは目印が変わる（$h'_3$）ので、9 個目からを計算し直す。}
+\label{fig:es-blocks}
+\end{figure}
 
 SGLang は、前置きが共通する列を、枝分かれする木、\term{基数木}{radix tree}にまとめます\cite{zheng2023sglang}。
+木の根から枝をたどるとトークン列になり、枝ごとに、そのトークンのキーとバリューが付いています。
+共有の単位は 1 トークンで、あふれたら、最も長く使われていないものから追い出します。
 llama.cpp は本書に近く、スロットごとに前回の分を残し、ファイルにも保存できます\cite{llamacpp2026server}。
-ただし、まとめて読むときと 1 個ずつ生成するときで、ロジットがビット単位では一致するとは限らず、使い回すと結果が変わりうる、と文書は注意しています。
+ただし、プロンプトをまとめて処理するときと 1 個ずつ生成するときで、ロジットがビット単位では一致するとは限らず、使い回すと結果が変わりうる、と文書は注意しています。
+本書のエンジンでも、まとめて計算する列の組み合わせを変えると、ロジットが $10^{-6}$ 程度変わりました（\secref{sec:es-batch}）。
 
 KV キャッシュは大きいので、GPU メモリからあふれた分を CPU 側のメモリ、ディスク、ほかの機械へ退避させる仕組み（LMCache）もあります\cite{liu2025lmcache}（\figref{fig:es-cache-tiers}）。
-下の段ほど広く、読み込みが遅くなります（本書の実測も同じ順でした）。
+下の段ほど広く、読み込みが遅くなります（本書の実測も同じ順でした。ただし本書は CPU だけで動かしたので、右の値は、役割の近いものを並べた目安です）。
 実際の規模でも、文脈が短い、モデルが小さい、回線が細いと、計算し直すほうが速いこともあります\cite{liu2023cachegen,liu2025lmcache}。
 その論文（GPU は B200）では、回線が毎秒 32 ギガビットだと、約 26 万トークンを超える文脈でだけ読み込みが勝ち、64 と 128 ギガビットではどの長さでも勝ちました。
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[font=\scriptsize,x=1mm,y=1mm]
-\foreach \i/\name/\w/\note in {0/GPU メモリ/11/{スロットに残す（写さない）\quad --},1/CPU 側のメモリ/18/{メモリから写す\quad 4.26},2/ディスク/25/{手元のディスク\quad 4.92},3/ほかの機械/32/{共有ディスク\quad 7.33}} {
+\foreach \i/\name/\w/\note/\ms in {0/GPU メモリ/11/{スロットに残す（写さない）}/{--},1/CPU 側のメモリ/18/{メモリから写す}/4.26,2/ディスク/25/{手元のディスク}/4.92,3/ほかの機械/32/{共有ディスク}/7.33} {
   \draw[black!45,fill=figblue] (-\w,-4.6*\i) rectangle (\w,-4.6*\i-4);
   \node at (0,-4.6*\i-2) {\name};
   \node[anchor=west] at (36,-4.6*\i-2) {\note};
+  \node[anchor=east] at (76,-4.6*\i-2) {\ms};
 }
-\node[lbl,anchor=west] at (36,2.2) {本書の実測（TTFT、ミリ秒）};
+\node[lbl,anchor=south west,align=left] at (36,0.6) {本書の実験で、役割の近いもの\\（TTFT、ミリ秒）};
 \node[lbl] at (0,2.2) {実際のエンジンの置き場所};
 \draw[->,bookgray] (-36,0) -- (-36,-17.8);
 \node[lbl,anchor=east,align=right] at (-37,-8.9) {広いが\\読み込みが\\遅い};
 \end{tikzpicture}
-\caption{KV キャッシュの置き場所の階層と、本書の実測（112 トークン。計算し直すと 7.40）。}
+\caption{KV キャッシュの置き場所の階層と、本書の実測（112 トークン。計算し直すと 7.40）。
+本書は CPU だけで動かしたので、スロットも保存したテンソルも、同じ CPU のメモリにある。
+右の列は、役割が同じ段に並べた目安である（スロットに残すことが GPU メモリに残すことに当たり、別に保存したテンソルから写すことが CPU 側のメモリから写すことに当たる）。
+1 段目の「--」は、この実験では測っていないことを示す（スロットに残した分は写さない）。}
 \label{fig:es-cache-tiers}
 \end{figure}
+
+ここまでの保存のしかたを、\tabref{tab:es-prefix-impl}にまとめます。
+どれも「先頭から一致する部分だけを使う」点は同じで、違うのは、何を単位に共有するか、一致をどう探すか、どこに置くかです。
+
+\begin{table}[tbp]
+\centering
+\caption{前置きのキャッシュの、保存のしかたの比較（本文と引用した文献に書かれている範囲）。}
+\label{tab:es-prefix-impl}
+\small
+\begin{tabularx}{\linewidth}{@{}l*{3}{>{\raggedright\arraybackslash}X}@{}}
+\toprule
+ & 共有の単位 & 一致の探し方 & 置き場所・あふれたとき \\
+\midrule
+本書のエンジン & スロット（1 本の列） & 先頭から 1 トークンずつ比べる（\code{common_prefix}） & スロット、メモリ、ファイル。保存は 1 本だけで、追い出しはない \\ \addlinespace
+vLLM & 固定長のブロック & 一つ前の目印を含む目印（ハッシュ）を比べる & GPU メモリ。最も長く使われていないブロックから追い出す \\ \addlinespace
+SGLang & 1 トークン & 基数木を根からたどる & GPU メモリ。最も長く使われていないものから追い出す \\ \addlinespace
+llama.cpp & スロット & スロットに残した前回の列と比べる & スロット。ファイルにも保存できる。ロジットがビット単位で一致するとは限らない \\ \addlinespace
+LMCache & （ほかのエンジンのキャッシュを取り出す） & ― & CPU 側のメモリ、ディスク、ほかの機械へ退避する \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 サーバが複数台なら、キャッシュは機械ごとなので、前置きが同じ質問は同じ機械へ送ります。
 OpenAI の文書も、キャッシュは個々の機械にあり、利用者が振り分け用の鍵を付けても、同じ機械へ寄せるだけで、読み出せる保証はないとしています\cite{openai2026promptcaching}。
@@ -1334,7 +1716,7 @@ Anthropic の 5 分と OpenAI の 30 分は、読み出すたびに追加料金�
 
 \begin{table}[tbp]
 \centering
-\caption{API のプロンプトキャッシュ（2026 年 11 月時点\cite{anthropic2026promptcaching,openai2026promptcaching}。OpenAI は GPT-5.6 以降）。}
+\caption{API のプロンプトキャッシュ（2026 年 11 月時点\cite{anthropic2026promptcaching,openai2026promptcaching}。OpenAI は GPT-5.6 以降）。倍率は、通常の入力の単価に対するもの。\code{input_tokens} は、応答の \code{usage} に書かれる入力トークン数で、数え方が 2 社で違う。}
 \label{tab:es-cache-api}
 \small
 \begin{tabular}{lll}
@@ -1351,15 +1733,20 @@ Anthropic の 5 分と OpenAI の 30 分は、読み出すたびに追加料金�
 \end{table}
 
 何回使えば得かを計算します。
-書き込みが $w$ 倍、読み出しが $r$ 倍なら、前置きを $n$ 回使う費用は、1 回目が書き込み、残りが読み出しで、通常の $w+(n-1)\,r$ 回分です。
+書き込みが $w$ 倍、読み出しが $r$ 倍なら、前置きを $m$ 回使う費用は、1 回目が書き込み、残りが読み出しで、通常の $w+(m-1)\,r$ 回分です
+（$w$ を書き込みの倍率、$r$ を読み出しの倍率、$m$ を使う回数と呼びます。$m$ は、これまでの問題数 $n$ とは別の記号です）。
 
-キャッシュなしでは $n$ 回分なので、得になる条件は、次のとおりです。
+キャッシュなしでは $m$ 回分なので、得になる条件は、次のとおりです。
 \begin{equation}
-w+(n-1)\,r \;<\; n
+w+(m-1)\,r \;<\; m
 \qquad\text{すなわち}\qquad
-n \;>\; \frac{w-r}{1-r}
+m \;>\; \frac{w-r}{1-r}
 \label{eq:es-cache-breakeven}
 \end{equation}
+左の不等式から右へは、次のように変形します。
+左辺を展開すると $w+mr-r<m$ です。
+$m$ を含む項を右辺に集めると $w-r<m-mr=m(1-r)$ になります。
+読み出しは通常より安い（$r<1$）ので $1-r$ は正の数で、両辺をこれで割っても不等号の向きは変わらず、$m>(w-r)/(1-r)$ が得られます。
 
 $w=1.25$、$r=0.1$ なら、右辺は $(1.25-0.1)/(1-0.1)=1.15/0.9\approx1.28$ です。
 1 回きりでは 25\% の損、2 回で 1.35 対 2 と得です（$w=2$ なら $1.9/0.9\approx2.11$ で、3 回目から）。
@@ -1393,7 +1780,7 @@ OpenAI の文書も、割引されても、保存した分が使われて速く�
 \laterread{実際の推論エンジン（vLLM など）を選ぶときや、\appref{app:toolmap}を読むときに、戻ってくれば足ります。結論の「費用はスループットに反比例する」は、章末のまとめにあります。}
 
 \secref{sec:es-server}のサーバは 132 行です。
-実際のサービスで使われる推論エンジン（2026 年時点では、GPU サーバ向けの vLLM や SGLang、手元の PC 向けの llama.cpp など）は、同じ骨組みの上に、大規模ならではの工夫を重ねています。
+実際のサービスで使われる推論エンジン（2026 年時点では、GPU サーバ向けの vLLM や SGLang、手元の PC 向けの llama.cpp など）は、同じ作り（受付、待ち行列、連続バッチ処理を回すエンジン）に、大規模ならではの工夫を加えています。
 この節では、その工夫を本章の言葉で整理し、最後に費用を計算します。
 多くのエンジンが\secref{sec:es-server}と同じ \code{/v1/chat/completions} の形の API を備えているので、利用する側のプログラムは、エンジンを替えてもほぼそのまま使えます。
 エンジンの選び方と、その上に置く配信の層は、\appref{app:toolmap}にまとめました。
@@ -1405,18 +1792,58 @@ vLLM の PagedAttention\cite{kwon2023efficient}は、KV キャッシュを固定
 \item \textbf{プレフィックスキャッシュ}。
 \secref{sec:es-cache}で見たとおり、先頭の部分（前置き）が同じ質問のあいだで KV キャッシュを使い回し、プリフィルを省きます。
 \item \textbf{投機的デコーディング}\cite{leviathan2023fast}。
-小さくて速いモデルに数トークン先まで下書きをさせ、大きなモデルはそれを\textbf{読んで}、各位置で自分ならどう書くかを 1 回の計算で確かめます。
-貪欲法なら、下書きが自分の選ぶトークンと食い違った位置から先を捨てて、書き直します。
-だから、出力は、大きなモデルだけで書いた場合と同じです
-（くじ引きで選ぶ場合も、下書きの採否の決め方を工夫して、出力の分布を変えません）。
-「読むのは安い」ことを利用した方法です。
+小さくて速いモデルに数トークン先まで下書きをさせ、大きなモデルは、その下書きをプロンプトのように末尾に付けて\textbf{まとめて処理し}、各位置で自分ならどのトークンを選ぶかを 1 回の順伝播で確かめます（\figref{fig:es-spec}）。
+貪欲法なら、下書きが自分の選ぶトークンと食い違った位置から先を捨てて、そこに自分の選んだトークンを置きます。
+だから、出力は、数式の上では、大きなモデルだけで書いた場合と同じです（実際の計算では、まとめて処理するときの丸め誤差で、まれに食い違うことがありえます。\secref{sec:es-batch}）。
+サンプリングする場合も、下書きの採否の決め方を工夫して、出力の分布を変えません。
+「1 トークンあたりでは、まとめて処理するほうが安い」（\secref{sec:es-cost}）ことを利用した方法です。
 \item \textbf{構造化出力}と\textbf{量子化}。
 前者は、ロジットにマスクをかけ、JSON などの書式に合うトークンだけを選ばせます（\chapref{ch:agent}）。
 後者は、重みを少ないビット数で表して、メモリと計算を減らします（\secref{sec:distill-quant}）。
 \end{itemize}
 
+\figref{fig:es-spec}の例では、大きなモデルの順伝播 1 回で、3 トークンが確定しています。
+大きなモデルだけなら、3 トークンに順伝播が 3 回要ります。
+下書きが当たる割合が高いほど、1 回で確定するトークンが増え、速くなります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,font=\scriptsize,
+  tk/.style={cell,minimum width=11mm,minimum height=5mm,inner sep=0pt},
+  ctx/.style={tk,fill=black!8},
+  drf/.style={tk,fill=bookgreen!25},
+  ok/.style={tk,fill=bookblue!35},
+  ng/.style={tk,fill=figred},
+  big/.style={tk,fill=bookorange!45},
+  gone/.style={tk,fill=white,draw=black!30,text=black!35}]
+\node[anchor=west,font=\footnotesize\bfseries] at (-2,8) {(1) 小さなモデルが 4 トークンを下書きする（4 回の小さな順伝播）};
+\node[ctx] at (6,0) {吾輩は};
+\foreach \i/\t in {1/猫,2/で,3/す,4/。} \node[drf] at (6+12*\i,0) {\t};
+\node[anchor=west,font=\footnotesize\bfseries] at (-2,-10) {(2) 大きなモデルが、下書きを付けた列を 1 回の順伝播でまとめて処理する};
+\node[ctx] at (6,-18) {吾輩は};
+\foreach \i/\t in {1/猫,2/で,3/す,4/。} \node[drf] at (6+12*\i,-18) {\t};
+\foreach \i/\t/\st in {1/猫/1,2/で/1,3/ある/0} {
+  \node[big] (g\i) at (6+12*\i,-27) {\t};
+  \draw[->,black!50] (6+12*\i-12,-20.7) -- (g\i.north);
+}
+\node[anchor=west] at (68,-27) {← 各位置で、大きなモデルが選ぶトークン};
+\node[font=\tiny,text=bookblue!80!black] at (18,-31.8) {一致};
+\node[font=\tiny,text=bookblue!80!black] at (30,-31.8) {一致};
+\node[font=\tiny,text=bookaccent] at (42,-31.8) {食い違い};
+\node[anchor=west,font=\footnotesize\bfseries] at (-2,-39) {(3) 食い違った位置から先を捨て、大きなモデルのトークンを置く};
+\node[ctx] at (6,-47) {吾輩は};
+\node[ok] at (18,-47) {猫}; \node[ok] at (30,-47) {で}; \node[big] at (42,-47) {ある};
+\node[gone] at (54,-47) {。};
+\node[anchor=west] at (62,-47) {確定は 3 トークン。次の下書きはここから};
+\end{tikzpicture}
+\caption{投機的デコーディングの 1 回分（貪欲法の場合。模式図）。緑は小さなモデルの下書き、橙は大きなモデルが選んだトークン（(2) と (3) で同じ色）、青は大きなモデルの選んだトークンと一致して採用した下書き（(3) だけに出る）。
+(2) の下の「一致」「食い違い」は、真上の下書きと、大きなモデルが選んだトークンを比べた結果。(3) の白は、捨てた下書き。
+(2) の斜めの矢印は、その位置までの列から次のトークンを選ぶことを表す（食い違った位置より後の予測は使わないので、描いていない）。トークンの区切りと中身は説明のための例。}
+\label{fig:es-spec}
+\end{figure}
+
 \tabref{tab:es-scale}に、本書の実験と実際の規模の違いをまとめました。
-本書のモデルでは、KV キャッシュのメモリは気にもなりません。
+本書のモデルでは、KV キャッシュのメモリは問題になりません。
 8B のモデルでは、重みを載せた残りの GPU メモリを、同時に処理する会話の KV キャッシュで分け合います。
 だから、メモリの管理が、同時に何人を処理できるか、つまりスループットを決めます。
 
@@ -1432,7 +1859,7 @@ vLLM の PagedAttention\cite{kwon2023efficient}は、KV キャッシュを固定
 重みの大きさ & 約 10 MB（32 ビット） & 約 16 GB（16 ビット） \\
 KV キャッシュ（1 トークン） & 6 KiB & 128 KiB \\
 KV キャッシュ（文脈長いっぱい） & 0.75 MiB（128 トークン） & 1 GiB（8,192 トークン） \\
-計算機とサーバ & CPU 1 コア、自作の 132 行 & GPU、vLLM など \\
+計算機とサーバ & \begin{tabular}[t]{@{}l@{}}CPU（1〜2 スレッド）、\\ 自作の 132 行\end{tabular} & GPU、vLLM など \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1447,7 +1874,7 @@ KV キャッシュ（文脈長いっぱい） & 0.75 MiB（128 トークン） &
 1 時間に $2000\times3600=720$ 万トークンなので、100 万トークンあたり $3.99/7.2\approx0.55$ ドルです。
 質問がまばらで、スループットが 10 分の 1 しか出ていなければ、費用は 10 倍の 5.5 ドルになります。
 \textbf{費用はスループットに反比例します。}
-まとめて計算することと、サーバを空かせないことが、そのまま値段に効きます。
+まとめて計算することと、サーバを空かせないことが、そのまま値段を左右します。
 \secref{sec:es-cache}のキャッシュも、プリフィルを省いた分だけ、費用を下げます。
 
 この節をまとめます。
@@ -1458,9 +1885,9 @@ KV キャッシュ（文脈長いっぱい） & 0.75 MiB（128 トークン） &
 \item 評価の物差しは、損失・課題の正答率・人の好みの三つです。損失が小さくても、応答が丸ごと正しいとは限りません。
 \item 点数は、モデル・ハーネス・設定の組に付きます。質問に空白を入れるだけで、正答率は 82\% から 34\% に落ちました。
 \item $n$ 問で測った正答率の標準誤差は $\sqrt{\hat p(1-\hat p)/n}$、95\% 信頼区間はその $\pm1.96$ 倍です。1,000 問でも $\pm2$ ポイントの幅があり、20 回に 1 回ほどは外れます。
-\item 二つのモデルは同じ問題で比べ、食い違いを数えます。学習をやり直すだけでも、正答率は 0.7 ポイントほど動きました。
-\item ベンチマークは汚染・試験への過学習・飽和で狂います。正解が一つでない仕事は、人の対比較か LLM 審査員で測ります。
-\item 生成は、まとめて読むプリフィルと、1 個ずつ書くデコードからなります。バッチ推論でスループットは 9.1 倍になり、トークン間時間は 7 倍に延びました。
+\item 二つのモデルは同じ問題で比べ、食い違いを数えます。同じ手順で学習をやり直しただけで、正答率が 0.7 ポイント動いた例がありました。
+\item ベンチマークの点数は、汚染・試験への過学習・飽和で信頼できなくなります。正解が一つでない仕事は、人の対比較か LLM 審査員で測ります。
+\item 生成は、プロンプトをまとめて処理するプリフィルと、1 個ずつ生成するデコードからなります。1 トークンあたりでは、プリフィルが安く、デコードが高くつきます。バッチ推論でスループットは 9.1 倍になり、トークン間時間は 7 倍に延びました。
 \item 推論サーバは、連続バッチ処理で空いたスロットをすぐ埋め、ストリーミングでトークンを順に返します。費用はスループットに反比例します。
 \item KV キャッシュを取っておくと、先頭（前置き）が完全に一致する質問のプリフィルを省けます。API では、同じ前置きを 2〜3 回使えば元が取れます。
 \end{summary}
@@ -1471,7 +1898,7 @@ KV キャッシュ（文脈長いっぱい） & 0.75 MiB（128 トークン） &
 しかし、\file{sft.pt} の正答率は 8 割台のままで、誤答の 8 割は「1 文字違い」の惜しい間違いでした。
 手本をまねる学習では、「答えが合っているか」を直接には教えられません。
 一方、この章の採点のプログラムは、応答が正しいかどうかを、いくらでも自動で判定できます。
-この「結果の良し悪し」だけを手がかりにモデルを鍛えるのが、強化学習です。
+この「結果の良し悪し」だけを手がかりにモデルを改善するのが、強化学習です。
 次の\chapref{ch:rl-basics}では、まず言語モデルを離れ、小さな問題で強化学習の基礎を学びます。
 
 \section*{さらに学ぶために}

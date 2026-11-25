@@ -22,7 +22,7 @@
 \item[\rgmust] \secref{sec:ml-rules-vs-examples}〜\secref{sec:ml-autograd}：機械学習の 4 要素と、勾配降下法による線形回帰の学習。ここで作る学習のループを、本書の最後まで使います。
 \item[\rgskim] \secref{sec:ml-mle}：二乗誤差を選ぶ理由。節末の囲みの「損失は、負の対数尤度として作る」というレシピだけ押さえれば、先へ進めます。
 \item[\rgmust] \secref{sec:ml-classification}〜\secref{sec:ml-generalization}：交差エントロピー損失、ミニバッチ、過学習。言語モデルの損失と学習の進め方は、ここの言葉でできています。
-このうち、勾配の導出、実装の細部、過学習の対策の三つの小節は、流し読みで構いません（見出しの下に札があります）。
+このうち、勾配の導出、実装の細部、過学習の対策の三つの小節は、流し読みで構いません（見出しの下に、流し読みの印があります）。
 \item[\rgskim] \secref{sec:ml-map}：学習の種類の一覧。「言語モデルの事前学習は、文章自身から正解を作る自己教師あり学習である」という 1 点だけで十分です。
 \end{readingguide}
 
@@ -35,10 +35,10 @@
 あるのは数の計算だけです。
 だとすると、「学習」も何かの計算のはずです。
 
-この章では、その計算の正体を解き明かします。
-言語モデルの学習は大がかりですが、骨組みは単純で、部品は 4 つしかありません。
-その骨組みは、「点の集まりに直線を当てはめる」という小さな問題で、すべて見ることができます。
-次の章からは、この枠組みはそのままに、モデルだけを強力なものに取り替えていきます。
+この章では、その計算が何であるかを、順を追って説明します。
+言語モデルの学習は大がかりですが、枠組みは単純で、構成要素は 4 つしかありません。
+その枠組みは、「点の集まりに直線を当てはめる」という小さな問題で、すべて確かめられます。
+次の章からは、この枠組みはそのままに、モデルを表現力の高いものに取り替えていきます。
 
 \section{ルールを書くか、例から学ぶか}\label{sec:ml-rules-vs-examples}
 
@@ -62,7 +62,7 @@
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[node distance=6mm and 9mm,
-  io/.style={plainbox,minimum width=25mm,minimum height=10mm,font=\footnotesize}]
+  io/.style={plainbox,minimum width=31mm,minimum height=10mm,font=\footnotesize}]
   % 上段: ふつうのプログラム
   \node[io] (in1) {入力\\\texttt{12, 35}};
   \node[redbox,right=of in1,minimum width=34mm,minimum height=10mm,font=\footnotesize] (rule)
@@ -71,17 +71,18 @@
   \draw[arr] (in1) -- (rule); \draw[arr] (rule) -- (out1);
   \node[lbl,above=0.5mm of in1.north west,anchor=south west] {\textbf{ふつうのプログラム}：人がルールを書く};
   % 下段: 機械学習
-  \node[orangebox,below=12mm of in1,minimum width=25mm,minimum height=13mm,font=\footnotesize] (data)
+  % 下段の箱は、上段の箱の真下に置く（中心の x 座標を上段とそろえる。縦の矢印をまっすぐにするため）
+  \node[orangebox,below=9.5mm of in1,minimum width=31mm,minimum height=13mm,font=\footnotesize] (data)
     {\textbf{入力と正解の例}\\\texttt{(12, 35) → 47}\\\texttt{(5, 65) → 70}\ \ $\cdots$};
-  \node[box,right=of data,minimum width=34mm,minimum height=10mm,font=\footnotesize] (learn)
+  \node[box,minimum width=34mm,minimum height=10mm,font=\footnotesize] (learn) at (rule |- data)
     {\textbf{学習}\\例に合うように調整する};
   \draw[arr] (data) -- (learn);
-  \node[io,below=7mm of data] (in2) {新しい入力\\\texttt{123, 456}};
-  \node[greenbox,right=of in2,minimum width=34mm,minimum height=10mm,font=\footnotesize] (f)
+  \node[io,below=5.5mm of data] (in2) {新しい入力\\\texttt{123, 456}};
+  \node[greenbox,minimum width=34mm,minimum height=10mm,font=\footnotesize] (f) at (rule |- in2)
     {\textbf{できあがった関数} $f_\theta$};
-  \node[io,right=of f] (out2) {予測\\\texttt{579}};
+  \node[io] (out2) at (out1 |- in2) {予測\\\texttt{579}};
   \draw[arr] (in2) -- (f); \draw[arr] (f) -- (out2);
-  \draw[arr] (learn) -- node[right,lbl]{関数ができる} (f);
+  \draw[arr] (learn.south) -- node[right,lbl]{関数ができる} (f.north);
   \node[lbl,above=0.5mm of data.north west,anchor=south west] {\textbf{機械学習}：例を見せて、関数を作らせる};
 \end{tikzpicture}
 \caption{ふつうのプログラム（上段）と機械学習（下段）。機械学習では、人は「入力と正解の例」を用意するだけである。
@@ -90,34 +91,36 @@
 \end{figure}
 
 「関数を計算機に作らせる」と言っても、何もないところからプログラムが湧いてくるわけではありません。
-まず、\textbf{つまみの付いた関数}を人が用意します。
-つまみを回すと、関数のふるまいが変わります。
+まず、\textbf{調整できる数値を含んだ関数}を人が用意します。
+この数値を変えると、関数のふるまいが変わります。
+以下では、この数値を、機械の調整用のつまみにたとえます。
+人が用意するのは、\textbf{つまみの付いた関数}です。
 次に、例にいちばんよく合うように、つまみを回します。
 この「つまみを回す作業」が学習です。
 
-つまみにあたるのは、関数の中に含まれる数値です。
-これを\term{パラメータ}{parameter}と呼びます。
+つまみにたとえた数値の正式な名前は、\term{パラメータ}{parameter}です。
 パラメータをまとめて $\vtheta$（シータ）と書き、パラメータ $\vtheta$ を持つ関数を $f_\theta$ と書きます。
-この「つまみの付いた関数」を\term{モデル}{model}と呼びます。
-\chapref{ch:intro}の言語モデルは、つまみを約 260 万個持つ関数でした。
+この「つまみの付いた関数」、つまりパラメータを持つ関数を\term{モデル}{model}と呼びます。
+\chapref{ch:intro}の言語モデルは、パラメータを約 260 万個持つ関数でした。
 
-ただし、260 万個のつまみを、人が手で回すことはできません。
-回し方そのものを計算で決めるために、道具があと二つ必要です。
+ただし、260 万個のパラメータを、人が手で調整することはできません。
+調整のしかたそのものを計算で決めるために、道具があと二つ必要です。
 
 \subsection*{機械学習の 4 要素}
 
-つまみを自動で回すには、まず「いまの関数が、例にどれくらい合っていないか」を一つの数で測る必要があります。
+パラメータを自動で調整するには、まず「いまの関数が、例にどれくらい合っていないか」を一つの数で測る必要があります。
 この数を計算する関数を\term{損失関数}{loss function}と呼び、その値を\textbf{損失}と呼びます。
 損失が小さいほど、関数は例によく合っています。
 損失が決まれば、やるべきことは「損失が小さくなるようにパラメータを動かす」ことです。
 この作業を\term{最適化}{optimization}と呼びます。
 
-これで役者がそろいました。
+これで、必要なものが四つそろいました。
 機械学習は、\textbf{データ}（入力と正解の例）、\textbf{モデル}（パラメータを持つ関数 $f_\theta$）、
 \textbf{損失関数}（予測と正解のずれを一つの数で測る）、\textbf{最適化}（損失が小さくなるようにパラメータを動かす）の 4 要素からできています。
 \figref{fig:ml-four-elements}は、4 要素のつながりを示しています。
-図の矢印を一周するたびに、パラメータが少しだけ良くなります。
-学習とは、この輪を何百回、何万回と回すことです。
+図の矢印を「モデル → 損失関数 → 最適化 → モデル」とたどると、ひと回りして元に戻ります（予測する、損失を計算する、パラメータを更新する）。
+設定が適切なら、ひと回りするたびに、損失が少し小さくなる向きへパラメータが動きます。
+学習とは、このひと回り（\textbf{学習のループ}）を何百回、何万回と繰り返すことです。
 
 \begin{figure}[tbp]
 \centering
@@ -126,7 +129,7 @@
   \node[orangebox,el] (data) {\textbf{1.\ データ}\\入力 $x$ と正解 $y$};
   \node[box,el,right=of data] (model) {\textbf{2.\ モデル} $f_\theta$\\パラメータ $\vtheta$};
   \node[redbox,el,right=of model] (loss) {\textbf{3.\ 損失関数}\\ずれを数にする};
-  \node[greenbox,el,below=12mm of model] (opt) {\textbf{4.\ 最適化}\\$\vtheta$ を少し動かす};
+  \node[greenbox,el,below=9mm of model] (opt) {\textbf{4.\ 最適化}\\$\vtheta$ を少し動かす};
   \draw[arr] (data) -- node[above,lbl]{入力 $x$} (model);
   \draw[arr] (model) -- node[above,lbl]{予測} (loss);
   \draw[arr,rounded corners=3pt] (data.north) -- ++(0,6mm) -| node[pos=0.25,above,lbl]{正解 $y$} (loss.north);
@@ -134,7 +137,8 @@
   \draw[arr] (opt) -- node[right,lbl]{$\vtheta$ を更新} (model);
 \end{tikzpicture}
 \caption{機械学習の 4 要素。データから入力を取り出してモデルに入れ、予測を正解と比べて損失を計算する。
-最適化は、損失が小さくなる向きにパラメータ $\vtheta$ を動かす。この輪を繰り返し回すことが学習である。}
+最適化は、損失が小さくなる向きにパラメータ $\vtheta$ を動かす。
+「モデル → 損失関数 → 最適化 → モデル」のひと回りを繰り返すことが学習である。}
 \label{fig:ml-four-elements}
 \end{figure}
 
@@ -177,7 +181,7 @@
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.52\linewidth,height=0.365\linewidth,
+\begin{axis}[width=0.52\linewidth,height=0.315\linewidth,
   xlabel={文字数},ylabel={トークン数},xmin=0,xmax=210,ymin=0,ymax=150,
   tick label style={font=\scriptsize},label style={font=\footnotesize},
   legend style={font=\scriptsize,at={(0.03,0.97)},anchor=north west,draw=black!30},legend cell align=left]
@@ -193,7 +197,7 @@
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.48\linewidth,height=0.365\linewidth,
+\begin{axis}[width=0.48\linewidth,height=0.315\linewidth,
   xlabel={文字数 $x$（百字）},ylabel={トークン数 $y$（百）},
   xmin=0,xmax=2,ymin=0,ymax=1.2,
   tick label style={font=\scriptsize},label style={font=\footnotesize},
@@ -206,22 +210,23 @@
 \draw[bookorange,line width=1.6pt] (axis cs:0.8,0.40) -- (axis cs:0.8,0.42);
 \draw[bookorange,line width=1.6pt] (axis cs:1.6,0.80) -- (axis cs:1.6,1.01);
 \addplot[only marks,mark=*,mark size=1.5pt,bookblue] coordinates {(0.4,0.21) (0.8,0.42) (1.6,1.01)};
-\node[font=\scriptsize,text=bookorange,anchor=west] at (axis cs:1.63,0.87) {$-0.21$};
+\node[font=\scriptsize,text=bookorange,anchor=south east,inner sep=1pt] at (axis cs:1.55,1.0) {$-0.21$};
 \node[font=\scriptsize,text=bookorange,anchor=north west] at (axis cs:0.82,0.39) {$-0.02$};
 \node[font=\scriptsize,text=bookorange,anchor=north west] at (axis cs:0.42,0.19) {$-0.01$};
 \end{axis}
 \end{tikzpicture}
 \caption{左：文字数とトークン数の関係。青い点がデータ（100 件）で、1 点が 1 つの断片を表す。
 3 本の線は、傾き $w$ を変えた直線の候補（切片 $b$ は 0）。
-右：3 件のデータと直線。橙の縦の線分と数値が、$w=0.5$ の直線（灰色の破線）の誤差（予測 $-$ 正解）。
-1・2 件目の誤差は小さく、線分は点にほぼ隠れている。}
+右：3 件のデータ（青い点）と直線。橙の数値が、$w=0.5$ の直線（灰色の破線）の誤差（予測 $-$ 正解）で、橙の縦の線分の長さがその大きさを表す。
+3 点とも破線より上にあり（予測が正解より小さい）、誤差は負である。
+1・2 件目の線分は短く、点にほぼ隠れている。}
 \label{fig:ml-scatter}
 \end{figure}
 
 ここで、記号を決めておきます。
 モデルに入れる値（文字数）を\textbf{入力}と呼び、$x$ と書きます。
 当ててほしい値（トークン数）を\textbf{正解}と呼び、$y$ と書きます。
-正解のことを\term{ラベル}{label}とも呼びます。
+正解のことを、とくに分類では\term{ラベル}{label}とも呼びます。
 データは、入力と正解の組を $N$ 個集めたものです。
 $i$ 番目の組を $(x^{(i)}, y^{(i)})$ と書きます。
 肩の $(i)$ は「$i$ 番目のデータ」という印で、$i$ 乗という意味ではありません。
@@ -268,7 +273,8 @@ $w$ と $b$ を変えると、直線が変わります。
 $w=0.5$ のとき、モデルは 40 字（$x=0.4$）の断片に対して $0.5\times 0.4=0.20$、つまり 20 トークンと予測します。
 正解は 21 トークン（$y=0.21$）でした。
 予測と正解の差 $0.20-0.21=-0.01$ を\textbf{誤差}と呼びます。
-\figref{fig:ml-scatter}の右では、誤差は点と灰色の破線を結ぶ縦の線分の長さにあたります。
+誤差が負なのは、予測が正解より小さいからです。
+\figref{fig:ml-scatter}の右では、点と灰色の破線を結ぶ縦の線分の長さが、誤差の大きさ（絶対値）です。
 3 件の誤差は $-0.01$、$-0.02$、$-0.21$ です。
 3 件目だけが大きく外れています。
 
@@ -288,7 +294,7 @@ $w=0.6$ のほうが小さく、目で見た印象と合っています。
 \toprule
  & & \multicolumn{3}{c}{$w=0.5$} & \multicolumn{3}{c}{$w=0.6$} \\
 \cmidrule(lr){3-5}\cmidrule(lr){6-8}
-$x$ & $y$ & 予測 $wx$ & 誤差 & 誤差$^2$ & 予測 $wx$ & 誤差 & 誤差$^2$ \\
+入力 $x$ & 正解 $y$ & 予測 $wx$ & 誤差 & 誤差$^2$ & 予測 $wx$ & 誤差 & 誤差$^2$ \\
 \midrule
 0.4 & 0.21 & 0.20 & $-0.01$ & 0.0001 & 0.24 & $+0.03$ & 0.0009 \\
 0.8 & 0.42 & 0.40 & $-0.02$ & 0.0004 & 0.48 & $+0.06$ & 0.0036 \\
@@ -331,7 +337,7 @@ $w$ と $b$ を決めると直線が決まり、直線が決まると損失が�
 いまの例では $\ell(f_\theta(x), y) = (f_\theta(x) - y)^2$ です。
 全体の損失は、1 件ごとの損失の平均です。
 
-\begin{definition}[教師あり学習の目標]\label{def:ml-erm}
+\begin{definition}[教師あり学習で最小にする量]\label{def:ml-erm}
 データセット $\calD = \{(x^{(i)}, y^{(i)})\}_{i=1}^{N}$ と、モデル $f_\theta$ と、1 件ごとの損失 $\ell$ が与えられたとする。
 学習とは、損失の平均
 \begin{equation}
@@ -342,7 +348,9 @@ $w$ と $b$ を決めると直線が決まり、直線が決まると損失が�
 \end{definition}
 
 この方針には、\term{経験リスク最小化}{empirical risk minimization}という名前が付いています。
-「リスク」は損失の平均、「経験」は、手元にある $N$ 件のデータで測った、という意味です。
+「リスク」は、まだ見ていないデータも含めた、損失の平均です。
+これは計算できないので、手元の $N$ 件での平均で代用します
+（「経験」はこの代用を指します。どこまで通用するかは、\secref{sec:ml-generalization}で調べます）。
 本書に出てくる学習は、言語モデルの事前学習も含めて、ほとんどがこの形をしています。
 変わるのは、$f_\theta$ と $\ell$ の中身だけです。
 
@@ -353,7 +361,7 @@ $w$ と $b$ を決めると直線が決まり、直線が決まると損失が�
 
 \section{勾配降下法：損失の坂を下る}\label{sec:ml-gd}
 
-前節で、直線の良さを測る物差し（損失）ができました。
+前節で、直線の良さを測る数（損失）ができました。
 この節の問いは、「損失が最小になるパラメータを、計算機にどう探させるか」です。
 答えは\term{勾配降下法}{gradient descent}です。
 本書の最後まで、学習はすべてこの方法とその改良版で行います。
@@ -377,12 +385,13 @@ w\ \text{の係数} &= -(0.168 + 0.672 + 3.232)\div 3 = -4.072\div 3 = -1.3573\\
 \end{align*}
 $w$ の 2 次式なので、グラフは\figref{fig:ml-loss-1d}のような放物線です。
 $w^2$ の係数が正なので、谷の形をしています。
-求めたいのは、谷底の $w$ です。
+求めたいのは、損失がいちばん小さくなる $w$ です。
+グラフでいちばん低いこの点を、以下では\textbf{谷底}と呼びます。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.72\linewidth,height=0.325\linewidth,
+\begin{axis}[width=0.72\linewidth,height=0.29\linewidth,
   xlabel={重み $w$},ylabel={損失 $\calL(w)$},xmin=-0.15,xmax=1.35,ymin=-0.06,ymax=0.52]
 \addplot[bookblue,thick,domain=-0.15:1.35,samples=80] {1.12*x*x-1.3573*x+0.4135};
 \addplot[only marks,mark=*,mark size=1.6pt,bookblue] coordinates
@@ -392,40 +401,45 @@ $w^2$ の係数が正なので、谷の形をしています。
 \node[font=\footnotesize,text=bookaccent,anchor=west] at (axis cs:0.07,0.42) {傾き $-1.36$：$w$ を増やせば下がる};
 \node[font=\footnotesize,text=bookgreen,anchor=west] at (axis cs:0.2,0.29) {傾き $+0.66$：$w$ を減らせば下がる};
 \draw[bookgreen,thin] (axis cs:0.86,0.25) -- (axis cs:0.9,0.12);
-\node[font=\footnotesize,anchor=south] at (axis cs:0.55,0.03) {谷底 $w=0.606$};
+\draw[black,thin] (axis cs:0.606,0.075) -- (axis cs:0.606,0.018);
+\node[font=\footnotesize,anchor=south] at (axis cs:0.606,0.07) {谷底 $w=0.606$};
 \end{axis}
 \end{tikzpicture}
-\caption{3 件のデータに対する損失 $\calL(w)$。太い線分は接線で、その場所での傾き（微分）を表す。
+\caption{3 件のデータに対する損失 $\calL(w)$。青い点は、$w$ を 0.3 刻みで 5 通り試したときの損失。
+太い線分は、$w=0$（赤）と $w=0.9$（緑）での接線で、その場所での傾き（微分）を表す。
 傾きが負なら右へ、正なら左へ動けば、損失は下がる。}
 \label{fig:ml-loss-1d}
 \end{figure}
 
 いちばん素朴な探し方は、$w$ を細かく刻んで全部試すことです。
-しかし、この方法はパラメータが増えると破綻します。
+\figref{fig:ml-loss-1d}の青い点は、0.3 刻みで 5 通りを試した結果で、$w=0.6$ の損失がいちばん小さくなっています。
+しかし、この方法はパラメータが増えると使えなくなります。
 1 個あたり 100 通りを試すなら、2 個で $100^2 = 1$ 万通り、260 万個では $100^{2600000}$ 通りで、とても終わりません。
 
 そこで、\textbf{いまいる場所の傾き}だけを手がかりにします。
-霧の深い山で谷底を目指す場面を想像してください。
-遠くは見えませんが、足元がどちらに下っているかは分かります。
+この方法を、霧の深い山で谷底を目指す場面にたとえます（山の高さが損失、人の位置がいまの $w$、足元の傾きが微分）。
+霧で遠くは見えませんが、足元がどちらに下っているかは分かります。
+同じように、損失のグラフ全体を計算しなくても、いまの $w$ での傾きは計算できます。
 下っている向きに一歩進み、また足元を確かめる。
 これを繰り返せば、谷底に近づけます。
+節の題「損失の坂を下る」は、このたとえです（山と違い、パラメータが増えると位置は数の組です）。
 
 グラフの傾きとは、微分のことでした（\chapref{ch:math}）。
 \eqref{eq:ml-loss-1d}を $w$ で微分します。
 $w^2$ の微分は $2w$、$w$ の微分は $1$、定数の微分は $0$ です。
 したがって、$\dd{\calL}{w} = 1.12\times 2w - 1.3573 = 2.24\,w - 1.3573$ です。
 $w=0$ での傾きは $-1.3573$ です。
-傾きが負ということは、$w$ を増やすと損失が減るということです。
+傾きが負なので、$w$ を増やすと損失が減ります。
 $w=0.9$ での傾きは $2.24\times 0.9 - 1.3573 = +0.6587$ です。
 こんどは正なので、$w$ を減らすと損失が減ります。
-どちらの場合も、\textbf{傾きの符号と逆の向き}に動けば下れます。
+どちらの場合も、\textbf{傾きの符号と逆の向き}に少しだけ動けば、損失は下がります。
 これを一つの式にまとめたものが、次の更新の規則です。
 \begin{equation}
 w \leftarrow w - \eta\,\dd{\calL}{w}
 \label{eq:ml-gd-1d}
 \end{equation}
 矢印 $\leftarrow$ は、「右辺を計算して、その結果で $w$ を置き換える」という意味です。
-$\eta$（イータ）は、一歩の大きさを決める正の数で、\term{学習率}{learning rate}と呼びます。
+$\eta$（イータ）は、1 回の更新の幅を決める正の数で、\term{学習率}{learning rate}と呼びます。
 1 回の更新を 1 \term{ステップ}{step}と数えます。
 
 $\eta=0.4$ として、$w=0$ から手で計算してみます。
@@ -437,54 +451,69 @@ $w$ は $0.5429$、$0.5994$、$0.6053$、$0.6059$ と進み、$0.606$ のあた�
 この $0.606$ が、\figref{fig:ml-loss-1d}の谷底です。
 谷底では傾きが 0 なので、$2.24\,w - 1.3573 = 0$ を解くと、$w = 1.3573\div 2.24 = 0.606$ と確かめられます。
 この間、傾きは $-1.357$、$-0.141$、$-0.015$、$-0.002$ と、谷底に近づくほど 0 に近づいています。
-更新の幅は「学習率 $\times$ 傾き」なので、谷底に近づくと歩幅がひとりでに小さくなり、谷底で $w$ は止まります。
+更新の幅は「学習率 $\times$ 傾き」なので、谷底に近づくと更新の幅も自然に小さくなり、谷底で $w$ は止まります。
 
 学習率 $\eta$ は、人が決める数です。
 \figref{fig:ml-lr-1d}は、$\eta$ を変えて同じ計算を 5 ステップ行った様子です。
-$\eta=0.05$（左）では、一歩が小さすぎて、5 ステップではまだ坂の途中です。
+$\eta=0.05$（左）では、1 回の更新の幅が小さすぎて、5 ステップではまだ谷底まで半分も進んでいません。
 $\eta=0.4$（中央）では、2 ステップでほぼ谷底に着きます。
-$\eta=1.0$（右）では、谷底を飛び越えて反対側の斜面に着地し、しかも元より高い場所に登っています。
+$\eta=1.0$（右）では、谷底を飛び越えて放物線の反対側に移り、しかも元より損失の大きい場所に着いています。
 1 ステップ目は $w = 0 - 1.0\times(-1.3573) = 1.3573$ で、損失は $0.4135$ から $0.635$ に増えました。
 これを繰り返すので、損失は増え続けます。これを\textbf{発散}と呼びます。
 
 \begin{figure}[tbp]
 \centering
-\pgfplotsset{mlsmall/.style={width=0.385\linewidth,height=0.32\linewidth,
+\pgfplotsset{mlsmall/.style={width=0.385\linewidth,height=0.29\linewidth,
   title style={font=\footnotesize,yshift=-1.5mm},tick label style={font=\scriptsize},
   label style={font=\scriptsize},xlabel={$w$}}}
 \begin{tikzpicture}
 \begin{axis}[mlsmall,title={$\eta=0.05$：遅い},ylabel={損失},xmin=-0.2,xmax=1.4,ymin=0,ymax=0.6]
 \addplot[black!45,domain=-0.2:1.4,samples=50] {1.12*x*x-1.3573*x+0.4135};
 \addplot[bookaccent,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=w,y=loss]{code/ch03/out/hand_gd_eta0.05.csv};
+\node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.04,0.43) {出発点};
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{axis}[mlsmall,title={$\eta=0.4$：ちょうどよい},xmin=-0.2,xmax=1.4,ymin=0,ymax=0.6]
 \addplot[black!45,domain=-0.2:1.4,samples=50] {1.12*x*x-1.3573*x+0.4135};
 \addplot[bookaccent,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=w,y=loss]{code/ch03/out/hand_gd_eta0.4.csv};
+\node[font=\scriptsize,anchor=south west,inner sep=1pt] at (axis cs:0.04,0.43) {出発点};
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
 \begin{axis}[mlsmall,title={$\eta=1.0$：発散},xmin=-1.2,xmax=2.8,ymin=0,ymax=4]
 \addplot[black!45,domain=-1.2:2.8,samples=50] {1.12*x*x-1.3573*x+0.4135};
 \addplot[bookaccent,thick,mark=*,mark size=1.3pt] table[col sep=comma,x=w,y=loss]{code/ch03/out/hand_gd_eta1.0.csv};
+% ステップの番号（放物線の外側に置く）
+\node[font=\scriptsize,anchor=east,inner sep=1pt] at (axis cs:-0.12,0.42) {0};
+\node[font=\scriptsize,anchor=north west,inner sep=1pt] at (axis cs:1.43,0.58) {1};
+\node[font=\scriptsize,anchor=east,inner sep=2pt] at (axis cs:-0.3258,0.9746) {2};
+\node[font=\scriptsize,anchor=west,inner sep=2pt] at (axis cs:1.7613,1.4972) {3};
+\node[font=\scriptsize,anchor=east,inner sep=2pt] at (axis cs:-0.8266,2.3009) {4};
+\node[font=\scriptsize,anchor=west,inner sep=2pt] at (axis cs:2.3824,3.5367) {5};
+\node[font=\scriptsize,anchor=south,inner sep=1pt] at (axis cs:0.25,3.2) {0 が出発点};
 \end{axis}
 \end{tikzpicture}
-\caption{学習率 $\eta$ による違い。灰色の曲線が損失、赤い点が $w=0$ から始めた 5 ステップの動き。
+\caption{学習率 $\eta$ による違い。灰色の曲線が損失、赤い点が、出発点 $w=0$ とそこからの 5 ステップ（計 6 点）で、赤い線が進んだ順を表す。
+中央は、2 ステップ目以降の点が谷底でほぼ重なっている。右は、点の横の数字がステップの番号。
 右の図だけ、軸の範囲が広いことに注意。}
 \label{fig:ml-lr-1d}
 \end{figure}
 
 学習率は、大きすぎても小さすぎてもいけません。
 どこからが大きすぎるかは、谷の急さで決まり、問題ごとに違います。
+この例では、傾きが $2.24\,(w - 0.606)$ と書けるので、1 ステップで、谷底からの距離は $(1 - 2.24\,\eta)$ 倍になります。
+この倍率の絶対値が 1 を超える $\eta > 0.89$ で発散します。
+ふつうは、この境目を計算では求められません。
 そこで実際の学習では、いくつかの値を試して、損失がいちばん速く安定して下がるものを選びます。
 
 \subsection*{パラメータが 2 個のとき：勾配}
 
 100 件のデータと、$w$ と $b$ の両方を持つモデルに戻ります。
-パラメータが 2 個になると、損失は「$w$ と $b$ を決めると高さが決まる」地形になります。
-\figref{fig:ml-landscape}の左は、この地形を真上から見た地図です。
-楕円は等高線で、同じ損失になる $(w, b)$ をつないだものです。
+パラメータが 2 個になると、損失は、$w$ と $b$ の二つを決めると値が一つ決まる関数になります。
+損失の値を高さと考えると、$(w, b)$ の平面の上に、高い所と低い所のある地形ができます。
+\figref{fig:ml-landscape}の左は、この地形を真上から見て、地図と同じように等高線で描いたものです。
+楕円が等高線で、同じ損失になる $(w, b)$ をつないだものです。
 内側の楕円ほど損失が小さく、中心の $\times$ 印が谷底です。
 
 考え方は 1 個のときと同じです。
@@ -511,9 +540,9 @@ $b$ で微分すると 1 です。
 言葉で言えば、$\pd{\calL}{w}$ は「誤差 $\times$ 入力」の平均の 2 倍、$\pd{\calL}{b}$ は「誤差」の平均の 2 倍です。
 この「誤差 $\times$ 入力」という形は、このあと何度も現れます。
 
-二つの偏微分を並べたベクトルを\term{勾配}{gradient}と呼び、$\nabla_{\vtheta}\calL$ と書くのでした。
+二つの偏微分を並べたベクトルが、\term{勾配}{gradient} $\nabla_{\vtheta}\calL$ でした。
 勾配は、損失が最も急に\textbf{増える}向きを指します（\chapref{ch:math}）。
-損失を減らしたいので、その逆向きに進みます。
+損失を減らすには、その逆向きに進みます。
 
 \begin{definition}[勾配降下法]\label{def:ml-gd}
 損失 $\calL(\vtheta)$ を小さくするために、パラメータを適当な初期値から始めて、次の更新を繰り返す。
@@ -528,7 +557,8 @@ $w \leftarrow w - \eta\,\pd{\calL}{w}$ と $b \leftarrow b - \eta\,\pd{\calL}{b}
 
 パラメータが 260 万個になっても、式は\eqref{eq:ml-gd}のままです。
 勾配が 260 万個の成分を持つベクトルになるだけです。
-1 ステップで計算するのは勾配の成分だけなので、手間はパラメータの数にほぼ比例して増えるだけで済みます。
+勾配降下法の 1 ステップに要るのは、勾配一つです。
+その全成分は、損失を 1 回計算する手間の数倍で求まります（\chapref{ch:nn}の誤差逆伝播法）。
 
 ここまでを NumPy で実装します。
 100 件のデータを読み込み、100 で割った配列を \code{x}、\code{y} とします。
@@ -549,7 +579,6 @@ $w \leftarrow w - \eta\,\pd{\calL}{w}$ と $b \leftarrow b - \eta\,\pd{\calL}{b}
 点 $(w,b)=(0.3, 0.2)$ では、どちらの方法でも勾配は $(-0.503841, -0.279140)$ で、小数第 6 位まで一致しました。
 次が、勾配降下法の本体です。
 
-\par\ifdim\dimexpr\pagegoal-\pagetotal\relax<10\baselineskip \pagebreak\fi
 \snippet{勾配降下法}{code:ml-gd}{ch03/linreg_numpy.py}{gd}
 
 4 行目からのループが、\eqref{eq:ml-gd}の繰り返しです。
@@ -572,7 +601,7 @@ $(w,b)=(0,0)$ では予測がすべて 0 なので、誤差は $e^{(i)}=-y^{(i)}
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=0.365\linewidth,xlabel={重み $w$},ylabel={バイアス $b$},
+\begin{axis}[width=0.5\linewidth,height=0.315\linewidth,xlabel={重み $w$},ylabel={バイアス $b$},
   xmin=-0.25,xmax=1.25,ymin=-0.75,ymax=0.75,
   tick label style={font=\scriptsize},label style={font=\footnotesize}]
 \addplot[bookblue!55,thin,empty line=jump] table[col sep=comma,x=w,y=b]{code/ch03/out/loss_contours.csv};
@@ -582,39 +611,86 @@ $(w,b)=(0,0)$ では予測がすべて 0 なので、誤差は $e^{(i)}=-y^{(i)}
 \addplot[only marks,mark=x,mark size=3pt,thick,black] coordinates {(0.5906,0.0083)};
 \node[font=\scriptsize,anchor=north east] at (axis cs:0.02,-0.02) {出発点};
 \node[font=\scriptsize,anchor=south west] at (axis cs:0.62,0.03) {谷底};
-\node[font=\scriptsize,text=bookblue,anchor=south] at (axis cs:0.9,-0.72) {損失 0.1};
+\coordinate (ml-c01) at (axis cs:0.085,0.672);
 \end{axis}
+\draw[bookblue,thin] (ml-c01) -- ++(0,2.6mm)
+  node[above,font=\scriptsize,text=bookblue,inner sep=1pt] {損失 0.1};
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.46\linewidth,height=0.365\linewidth,xlabel={文字数},ylabel={トークン数},
+\begin{axis}[width=0.46\linewidth,height=0.315\linewidth,xlabel={文字数},ylabel={トークン数},
   xmin=0,xmax=210,ymin=0,ymax=150,clip=false,
   tick label style={font=\scriptsize},label style={font=\footnotesize}]
 \addplot[only marks,mark=*,mark size=0.8pt,bookblue!60] table[col sep=comma,x=chars,y=tokens]
   {code/ch03/out/char_token_train.csv};
 \addplot[black!50,domain=0:210,samples=2] {0.1931*x+13.63} node[pos=1,anchor=west,font=\scriptsize] {1};
 \addplot[black!50,domain=0:210,samples=2] {0.2926*x+20.13} node[pos=1,anchor=west,font=\scriptsize] {2};
-\addplot[black!50,domain=0:210,samples=2] {0.4252*x+22.37} node[pos=1,anchor=west,font=\scriptsize] {10};
+\addplot[black!50,domain=0:210,samples=2] {0.4252*x+22.37} node[pos=1,anchor=west,font=\scriptsize,yshift=-1.5pt] {10};
 \addplot[bookaccent,very thick,domain=0:210,samples=2] {0.5906*x+0.83}
-  node[pos=1,anchor=west,font=\scriptsize,text=bookaccent] {1000};
+  node[pos=1,anchor=west,font=\scriptsize,text=bookaccent,yshift=1.5pt] {1000};
 \end{axis}
 \end{tikzpicture}
-\caption{勾配降下法の二つの見方。左：損失の等高線と、パラメータ $(w,b)$ がたどった道（丸印は最初の 10 ステップ）。
-右：同じ学習を、データの上の直線として見たもの。右端の数字はステップ数で、赤い線が学習後の直線。}
+\caption{勾配降下法の二つの見方。左：損失の等高線（青）と、パラメータ $(w,b)$ が動いた跡（赤）。
+丸印は、出発点と最初の 10 ステップ（計 11 個。4 ステップ目より後の点は、間隔が丸印の大きさより狭く、重なって 1 つの塊に見える）で、$\times$ 印が谷底。
+等高線は、内側から損失 0.02、0.05、0.1、0.2、0.4、0.8、1.6（0.2 から外の線は、枠で切れている）。
+右：同じ学習を、データの上の直線で見たもの。右端の数字はステップ数で、赤い線が学習後（1000 ステップ後）。}
 \label{fig:ml-landscape}
 \end{figure}
 
-\figref{fig:ml-landscape}は、この学習を二つの見方で描いたものです。
-左の図では、パラメータは最初の数ステップで等高線を一気に横切ります。
+\figref{fig:ml-landscape}は、この学習を二つの見方で描きました。
+左の図では、パラメータは最初の数ステップで等高線を何本も横切り、損失の小さい側へ大きく動きます。
 そのあとは向きを変え、細長い谷に沿ってゆっくり谷底へ向かいます。
-右の図で同じ動きを見ると、意味が分かります。
+右の図で見ると、意味が分かります。
 最初の数ステップで、直線は点の集まりの真ん中まで持ち上がります。
 そのあとは、真ん中を通ったまま、傾きを少しずつ直しています。
 点の集まりの真ん中さえ通っていれば、傾きが多少違っても損失はあまり変わりません。
-地形の谷が細長いのは、このためです。
+谷が細長いのは、このためです。
 
 学習率を $\eta=0.42$ まで上げると、100 ステップ後の損失は $2.7\times 10^{7}$ になり、発散しました。
 パラメータが 2 個でも、\figref{fig:ml-lr-1d}と同じことが起きます。
-境目が 3 件のときと違うのは、データが変わって谷の急さが変わったからです。
+$\eta$ を細かく変えて試すと、収束と発散の境目は約 $0.40$ でした。
+3 件のときの境目（約 $0.89$）と違うのは、データとパラメータの数が変わって、谷の急さが変わったからです。
+
+% [figpass] 案 5
+学習率を細かく変えた結果を、\figref{fig:ml-sweep-lr}にまとめました。
+\file{code/ch03/sweep_lr.py} で、出発点（0）とステップ数を固定し、学習率だけを、3 件のデータでは 0.02 刻みで 55 通り、100 件のデータでは 0.01 刻みで 45 通りに変えて走らせたものです。
+どちらも、学習率が小さすぎる左端では損失が下がりきらず、中ほどに損失の低い広い範囲があり、境目を越えると損失が急に跳ね上がります。
+灰色の点線で示した境目（0.893 と 0.401）は、損失の式の 2 次の係数から計算した値で、跳ね上がる位置と一致します。
+左の図で、5 ステップ後の損失（赤）が境目の手前から上がり始めるのは、谷底をはさんで左右に行き来しながら近づくので、5 ステップでは足りないためです。
+50 ステップ後（青の破線）では、学習率 0.86 までは谷底に着いています。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{mlsweeplr/.style={height=0.33\linewidth,
+  ymin=3e-4,ymax=20,xlabel={学習率 $\eta$},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  title style={font=\footnotesize,yshift=-1.5mm},
+  legend style={font=\scriptsize,at={(0.03,0.97)},anchor=north west,draw=black!30},legend cell align=left}}
+\begin{tikzpicture}
+\begin{semilogyaxis}[mlsweeplr,width=0.53\linewidth,title={3 件のデータ（パラメータ $w$ だけ）},
+  ylabel={損失},xmin=0,xmax=1.1]
+\addplot[bookaccent,thick,mark=*,mark size=0.8pt] table[col sep=comma,x=eta,y=loss5]{code/ch03/out/sweep_lr_1d.csv};
+\addplot[bookblue,thick,densely dashed] table[col sep=comma,x=eta,y=loss50]{code/ch03/out/sweep_lr_1d.csv};
+\legend{5 ステップ後,50 ステップ後}
+\draw[black!50,thick,densely dotted] (axis cs:0.893,3e-4) -- (axis cs:0.893,20);
+\node[font=\scriptsize,anchor=south east,inner sep=1pt] at (axis cs:0.88,3.5e-4) {境目 0.893};
+\end{semilogyaxis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{semilogyaxis}[mlsweeplr,width=0.49\linewidth,title={100 件のデータ（$w$ と $b$）},
+  xmin=0,xmax=0.45,xtick={0,0.1,0.2,0.3,0.4}]
+\addplot[bookaccent,thick,mark=*,mark size=0.8pt] table[col sep=comma,x=eta,y=loss100]{code/ch03/out/sweep_lr_2d.csv};
+\legend{100 ステップ後}
+\draw[black!50,thick,densely dotted] (axis cs:0.401,3e-4) -- (axis cs:0.401,20);
+\node[font=\scriptsize,anchor=south east,inner sep=1pt] at (axis cs:0.395,3.5e-4) {境目 0.401};
+\end{semilogyaxis}
+\end{tikzpicture}
+\caption{学習率 $\eta$ だけを変えたときの、決まった回数の更新のあとの損失（縦軸は対数目盛り）。出発点は 0 に固定した。
+左は\figref{fig:ml-lr-1d}と同じ 3 件のデータ（0.02 刻み）、右は 100 件のデータ（0.01 刻み）。
+小さすぎると下がりきらず、境目（灰色の点線。損失の式から計算した値）を越えると発散して、損失が枠の上へ飛び出す。
+\figref{fig:ml-lr-1d}の 3 枚のうち、$\eta=0.4$ と $1.0$ は左の図の点にあたり、$\eta=0.05$ は $0.04$ と $0.06$ の 2 点の間にあたる（0.02 刻みなので、$0.05$ の点はない）。}
+\label{fig:ml-sweep-lr}
+\end{figure}
+% [/figpass]
 
 得られた直線は $y = 0.5906\,x + 0.0083$ です。
 $w = 0.59$ は、「1 文字あたり約 0.59 トークン」を意味します。
@@ -628,7 +704,7 @@ $\sqrt{0.01121} = 0.106$ 百トークン、つまり約 10 トークンです。
 この公式でも、同じ $w=0.5906$、$b=0.0083$ になります。
 それでも勾配降下法を使うのは、次章以降のモデルにはそのような公式がなく、勾配なら計算できるからです。
 
-この節では、損失の坂を下る方法を作りました。
+この節では、損失を少しずつ小さくしていく方法（損失の坂を下る方法）を作りました。
 勾配を求め、その逆向きに学習率の分だけ動く。これを繰り返すだけです。
 4 要素の最後の一つ、最適化がそろいました。
 
@@ -655,6 +731,7 @@ $\sqrt{0.01121} = 0.106$ 百トークン、つまり約 10 トークンです。
 更新は微分の対象ではないので、\code{torch.no_grad()} で囲みます。
 (4) 勾配を 0 に戻します（11〜12 行目）。
 \code{backward()} は勾配を前の値に足し込むからでした（\chapref{ch:pytorch}）。
+4〜6 行目は途中経過の表示です（繰り返しが 1001 回なのは、1000 回更新したあとの値も表示するためです）。
 
 実行すると、1000 ステップ後に $w=0.5906$、$b=0.0083$、損失 $0.01121$ となりました。
 NumPy 版とまったく同じ数値です。
@@ -694,6 +771,7 @@ loss = ((y_hat - y) ** 2).mean()
 \end{pycode}
 
 1 行目はループの前に置くパラメータの用意で、2〜3 行目がループの中の損失の計算です。
+バイアス \code{b} の用意は、これまでと同じなので省きました。
 \code{X @ w} は、1,000 件それぞれについて内積 $\vw^\T\vx$ を計算します。
 学習率 $0.5$ で 1000 ステップ学習した結果が次です
 （前節で見たとおり、ちょうどよい学習率は問題ごとに違うので、線形回帰のときとは別の値です）。
@@ -704,6 +782,8 @@ loss = ((y_hat - y) ** 2).mean()
 損失の \code{2.73e-01} は、$2.73\times10^{-1}$ という数の書き方です。
 重みは $(0,0)$ から始まり、10 ステップで $(0.5510, 0.5279)$、100 ステップで $(0.9993, 0.9991)$ になりました。
 バイアスは、10 ステップ目にいったん $0.1764$ まで増えますが、100 ステップ目には $0.0003$ に戻っています。
+最初は重みが小さく、予測が正解より小さいので、まずバイアスが増えて予測全体を持ち上げます。
+重みが 1 に近づくと、その分が要らなくなり、バイアスは 0 に戻ります（\figref{fig:ml-landscape}の右で、直線がまず持ち上がったのと同じです）。
 1000 ステップ後は $(1.0000, 1.0000)$ で、バイアスは $0.0000$、損失は $2\times10^{-14}$ です。
 モデルは $1\times x_1 + 1\times x_2 + 0$、つまり\textbf{足し算そのもの}になりました。
 学習データにない「$123+456$」を $(0.123, 0.456)$ として入れ、出力を 1000 倍すると、$579.0$ です（出力の最後の行）。
@@ -719,7 +799,7 @@ loss = ((y_hat - y) ** 2).mean()
 最後に、データを 100 や 1000 で割った理由を説明します。
 勾配は「誤差 $\times$ 入力」でした。
 割らずに使うと、入力も誤差も 1000 倍になり、勾配は 100 万倍になります。
-すると、同じ学習率では一歩が大きすぎて発散します（演習 \ref{ex:ml-scale}）。
+すると、同じ学習率では 1 回の更新の幅が大きすぎて発散します（演習 \ref{ex:ml-scale}）。
 入力と正解を 1 前後の大きさにそろえることは、学習を安定させる基本の工夫です。
 
 この節では、勾配の計算を自動微分に任せました。
@@ -739,11 +819,37 @@ loss = ((y_hat - y) ** 2).mean()
 コインを 10 回投げて表が 7 回出たなら、表の確率は 0.7 と考えるのが最も自然でした。
 データが起こる確率を、パラメータの関数として見たものが\textbf{尤度}（ゆうど）でした。
 
-この考え方を使うには、モデルが\textbf{確率}を出す必要があります。
+導出に入る前に、この節の議論の骨組みを示します（\figref{fig:ml-mle-skeleton}）。
+(a) 予測を、「一つの値」ではなく、正解 $y$ の確率分布 $p(y\mid x)$ として作ります（最尤推定は、モデルが確率を出さなければ使えません）。
+(b) その分布の形に、直線の値 $wx+b$ を中心とする正規分布を選びます。
+(c) この分布のもとで最尤推定をすると、(d) 二乗誤差を最小にする $w$ と $b$ が得られます。
+(a) と (b) は、データから導かれることではなく、モデルを作る人が選ぶ\textbf{設計}（仮定）です。
+(c) は計算の手順で、(d) だけが、そこから導かれる\textbf{結論}です。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[node distance=5mm,
+  st/.style={minimum width=27mm,minimum height=14mm,text width=25mm,inner sep=1mm,font=\footnotesize}]
+  \node[orangebox,st] (a) {\textbf{(a) 設計}\\予測を、値の確率分布\\$p(y\mid x)$ として作る};
+  \node[orangebox,st,right=of a] (b) {\textbf{(b) 設計}\\分布の形に\\正規分布を選ぶ};
+  \node[box,st,right=of b] (c) {\textbf{(c) 手順}\\最尤推定をする\\（尤度を最大にする）};
+  \node[greenbox,st,right=of c] (d) {\textbf{(d) 結論}\\二乗誤差が最小の\\$w,b$ と同じになる};
+  \draw[arr] (a) -- (b); \draw[arr] (b) -- (c); \draw[arr] (c) -- (d);
+  \node[lbl,anchor=north] at ($(a.south west)!0.5!(b.south east)+(0,-1mm)$) {\eqref{eq:ml-gauss-noise}、\eqref{eq:ml-gauss-density}};
+  \node[lbl,anchor=north] at ($(c.south)+(0,-1mm)$) {\eqref{eq:ml-likelihood}};
+  \node[lbl,anchor=north] at ($(d.south)+(0,-1mm)$) {\eqref{eq:ml-gauss-nll}、定理\ref{thm:ml-mse-mle}};
+\end{tikzpicture}
+\caption{この節の議論の骨組み。橙の 2 つは、人が選ぶ設計（仮定）である。
+そのもとで最尤推定（青）をすると、二乗誤差の最小化（緑）が結論として導かれる。箱の下は、対応する式の番号。}
+\label{fig:ml-mle-skeleton}
+\end{figure}
+
+まず、(a) と (b) を式にします。
 直線 $wx+b$ は、数を一つ出すだけです。
 一方、実際のデータは直線の上下にばらついていました（\figref{fig:ml-scatter}）。
-そこで、モデルにばらつきも語らせます。
-「正解 $y$ は、直線の値に、偶然のずれ $\varepsilon$ が加わってできた」と考えるのです。
+同じ文字数の断片でも、トークン数は一つに決まりません。
+そこで、このばらつきも含めてモデルにします。
+「正解 $y$ は、直線の値に、偶然のずれ $\varepsilon$ が加わってできた」と仮定するのです。
 \begin{equation}
 y = wx + b + \varepsilon,\qquad \varepsilon \sim \calN(0, \sigma^2)
 \label{eq:ml-gauss-noise}
@@ -751,24 +857,30 @@ y = wx + b + \varepsilon,\qquad \varepsilon \sim \calN(0, \sigma^2)
 $\calN(0,\sigma^2)$ は、平均 0、標準偏差 $\sigma$ の正規分布です（\chapref{ch:math}）。
 $\varepsilon \sim$ は「$\varepsilon$ がこの分布に従う」と読みます。
 ずれは 0 の近くが最も起こりやすく、大きなずれほど起こりにくい、という仮定です。
+$\varepsilon$ は「正解 $-$ 予測」で、\secref{sec:ml-supervised}の誤差とは符号が逆です（2 乗するので、結論は同じです）。
+$\sigma$ がどの入力 $x$ でも同じで、ずれがデータごとに無関係（独立）であることも仮定します。
+$\sigma$ は、学習で求めず、人が置く数として扱います。
 
 この仮定のもとでは、入力 $x$ を決めても $y$ は一つに決まりません。
 $y$ は、直線の値 $wx+b$ を中心とする正規分布に従います（\figref{fig:ml-gauss-noise}の左）。
+モデルの出力は、一つの値 $wx+b$ から、$y$ の確率分布 $p(y\mid x)$ に変わりました。
 その確率密度は、\chapref{ch:math}の正規分布の式で、平均を $wx+b$ に置き換えたものです。
 \begin{equation}
 p(y \mid x) = \frac{1}{\sqrt{2\pi}\,\sigma}\exp\!\left(-\frac{\bigl(y - (wx+b)\bigr)^2}{2\sigma^2}\right)
 \label{eq:ml-gauss-density}
 \end{equation}
+この式は、何かから導いたものではありません。
+「入力が $x$ なら、正解 $y$ はこのあたりになりやすい」という予測の分布を、(a) と (b) の設計どおりに書いたものです。
 \chapref{ch:math}では、係数を $\frac{1}{\sqrt{2\pi\sigma^2}}$ と書きました。
 $\sqrt{2\pi\sigma^2}=\sqrt{2\pi}\,\sigma$ なので、同じ式です。
-正解 $y$ が予測 $wx+b$ に近いほど、この値は大きくなります。
+正解 $y$ が分布の中心 $wx+b$ に近いほど、この値は大きくなります。
 指数関数の中身が 0 に近づき、$\exp$ の値が最大の 1 に近づくからです。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=0.365\linewidth,xlabel={文字数},ylabel={トークン数},
-  xmin=0,xmax=210,ymin=0,ymax=135,
+\begin{axis}[width=0.5\linewidth,height=0.315\linewidth,xlabel={文字数},ylabel={トークン数},
+  xmin=0,xmax=210,ymin=-8,ymax=135,ytick={0,50,100},
   tick label style={font=\scriptsize},label style={font=\footnotesize}]
 \addplot[bookaccent,thick,domain=0:210,samples=2] {0.6*x};
 \foreach \c/\m in {40/24,80/48,160/96} {
@@ -782,7 +894,7 @@ $\sqrt{2\pi\sigma^2}=\sqrt{2\pi}\,\sigma$ なので、同じ式です。
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=0.365\linewidth,xlabel={ずれ（正解 $-$ 予測、トークン）},ylabel={確率密度},
+\begin{axis}[width=0.5\linewidth,height=0.315\linewidth,xlabel={ずれ（正解 $-$ 予測、トークン）},ylabel={確率密度},
   xmin=-42,xmax=42,ymin=0,ymax=0.06,scaled y ticks=false,ytick={0,0.02,0.04,0.06},
   tick label style={font=\scriptsize,/pgf/number format/fixed,/pgf/number format/precision=2},
   label style={font=\footnotesize}]
@@ -790,19 +902,23 @@ $\sqrt{2\pi\sigma^2}=\sqrt{2\pi}\,\sigma$ なので、同じ式です。
 \addplot[bookaccent,thick,domain=-42:42,samples=80] {0.04182*exp(-x*x/182.02)};
 \end{axis}
 \end{tikzpicture}
-\caption{左：ばらつきを含めたモデル。入力 $x$ ごとに、直線の値を中心とする正規分布（緑、横向きに描いた）を考える。
-青い点が実際のデータで、分布の山に近いほど「起こりやすい」。
-右：断片を 1 万件に増やして測った、直線からのずれの分布（青い棒）と、同じ標準偏差の正規分布（赤い線）。}
+\caption{左：ばらつきを含めたモデル。入力 $x$ ごとに、直線の値（$w=0.6$、$b=0$）を中心とする正規分布を考える。
+緑の山は、3 つの文字数（40、80、160 字）での分布（$\sigma=10$ トークン）を横向きに描いたもので、右への出っ張りが大きいトークン数ほど起こりやすい（出っ張りの幅は、横軸の文字数とは無関係）。
+青い点が実際のデータ（3 件）で、山の中心（直線の値）に近いほど「起こりやすい」。
+右：断片を 1 万件に増やして測った、直線からのずれ（正解 $-$ 予測）の分布（青い棒）と、同じ標準偏差の正規分布（赤い線）。}
 \label{fig:ml-gauss-noise}
 \end{figure}
 
+次は (c) です。
 データは $N$ 件あります。
-それぞれのずれが互いに無関係（独立）なら、全部が同時に起こる確率は掛け算になります。
-$y$ は連続的な値なので、確率の代わりに確率密度（山の高さ）を掛け、これを尤度と呼びます。
+それぞれのずれは独立だと仮定したので、全部が同時に起こる確率は掛け算になります。
+$y$ は連続的な値として扱うので、確率の代わりに確率密度（分布の山の高さ）を掛け、これを尤度と呼びます。
 知りたいのは、どのパラメータで尤度が大きいかという大小だけなので、密度で足ります。
 \begin{equation}
 \text{尤度} = \prod_{i=1}^{N} p\bigl(y^{(i)} \mid x^{(i)}\bigr)
+\label{eq:ml-likelihood}
 \end{equation}
+最尤推定は、この尤度が最大になる $w$ と $b$ を選びます。
 \secref{sec:ml-supervised}の 3 件のデータで、実際に計算します。
 ここだけは、単位を百トークンから元のトークンに戻し、$b=0$ とします。
 ばらつきの幅 $\sigma$ は、仮に 10 トークンと置きます（\secref{sec:ml-gd}で見た典型的な誤差の大きさです）。
@@ -810,7 +926,7 @@ $y$ は連続的な値なので、確率の代わりに確率密度（山の高�
 3 通りの $w$ について、3 件それぞれの確率密度と、その積（尤度）を計算しました（\file{code/ch03/gauss_mle.py}）。
 尤度の対数を取って符号を変えたものも計算します。
 これを\term{負の対数尤度}{negative log-likelihood, NLL}と呼びます。
-右端の列は、誤差の 2 乗の和です（単位が違うので、\tabref{tab:ml-hand-loss}の値の $100^2$ 倍になります）。
+右端の列は、誤差の 2 乗の和です（\tabref{tab:ml-hand-loss}の「誤差$^2$」の 3 件の和を、トークン単位に戻すため $100^2$ 倍した値）。
 
 \outputfile{ch03/out/mle_table.txt}
 
@@ -831,7 +947,9 @@ $w=0.6$ の行を読みます。
 
 \subsection*{対数を取ると、二乗誤差が現れる}
 
-尤度は掛け算なので、件数が増えると、1 より小さい数を何度も掛けることになり、計算機では 0 につぶれてしまいます。
+最後に、(d) の結論を導きます。
+尤度は掛け算なので、件数が増えると、1 より小さい数を何度も掛けることになります。
+すると値が小さくなりすぎて、計算機の上では 0 になってしまいます（\chapref{ch:math}のアンダーフロー）。
 そこで対数を取ります。
 対数は掛け算を足し算に変え、しかも大小関係を変えません（\chapref{ch:math}）。
 尤度が最大になる場所と、対数尤度が最大になる場所は同じです。
@@ -853,29 +971,94 @@ $w=0.6$ の行を読みます。
 第 1 項は $w$ も $b$ も含まないので、どの直線を選んでも同じ値です。
 第 2 項は、二乗誤差の和に正の定数 $\frac{1}{2\sigma^2}$ を掛けたものです。
 したがって、$\sigma$ がいくつであっても、負の対数尤度を最小にする $(w,b)$ は、二乗誤差を最小にする $(w,b)$ と同じです。
+これが (d) の結論です。
+和を $N$ で割って平均にしても、最小になる場所は変わらないので、平均二乗誤差（\eqref{eq:ml-mse}）でも同じです。
 数値でも確かめましょう。
 $w=0.6$ では、第 1 項が $3\times\log(\sqrt{2\pi}\times 10) = 3\times3.2215 = 9.665$ です。
 第 2 項は、$2\sigma^2 = 2\times10^2 = 200$ なので、$70/200 = 0.35$ です。
 合計は $10.015$ で、出力の値と一致します。
+% [figpass] 案 3・4
+\figref{fig:ml-mle-numbers}の上は、ここまでの $w=0.6$ の計算（3 件の確率密度 → 尤度 → 負の対数尤度 → 二つの項への分解）を、左から順に並べたものです。
+\figref{fig:ml-mle-numbers}の下は、$\sigma$ を 5、10、20 トークンの 3 通りに変えて、3 件のデータの尤度を $w$ の関数として描いたものです（山の高さの最大を 1 にそろえた）。
+$\sigma$ を変えると山の幅は変わりますが、最大になる位置は 0.606 のまま動きません。
+係数 $\frac{1}{2\sigma^2}$ は山の鋭さを決めるだけで、どの $w$ で最大になるかは、二乗誤差の和だけで決まるからです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  c1/.style={plainbox,font=\scriptsize,minimum width=32mm,minimum height=5.5mm,inner sep=1pt},
+  c2/.style={plainbox,font=\scriptsize,minimum width=13mm,minimum height=5.5mm,inner sep=1pt},
+  c3/.style={greenbox,font=\scriptsize,minimum width=17mm,minimum height=5.5mm,inner sep=1pt},
+  big/.style={font=\footnotesize,minimum width=21mm,minimum height=11mm,align=center,inner sep=1pt},
+  sm/.style={font=\scriptsize,text=bookgray,inner sep=1pt}]
+  \foreach \yy/\a/\d/\pd [count=\k] in {0/{40 字：予測 24、正解 21}/{$-3$}/{0.0381},
+      -7/{80 字：予測 48、正解 42}/{$-6$}/{0.0333},
+      -14/{160 字：予測 96、正解 101}/{$+5$}/{0.0352}} {
+    \node[c1] (a\k) at (16,\yy) {\a};
+    \node[c2] (d\k) at (42,\yy) {ずれ \d};
+    \node[c3] (p\k) at (61.5,\yy) {密度 \pd};
+    \draw[arr] (a\k) -- (d\k); \draw[arr] (d\k) -- (p\k);
+  }
+  \node[sm,anchor=south] at (42,3) {正解 $-$ 予測};
+  \node[sm,anchor=south] at (61.5,3) {\eqref{eq:ml-gauss-density}、$\sigma=10$};
+  \draw[decorate,decoration={brace,amplitude=4pt}] (71,2.8) -- (71,-16.8);
+  \node[box,big] (lik) at (86,-7) {尤度（3 つの積）\\$4.47\times10^{-5}$};
+  \draw[arr] (73.5,-7) -- (lik.west);
+  \node[redbox,big] (nll) at (117,-7) {負の対数尤度\\$10.015$};
+  \draw[arr] (lik) -- node[above,sm]{$-\log$} (nll);
+  \node[font=\footnotesize,anchor=east] at (97,-16) {$10.015\ =$};
+  \node[font=\footnotesize] (t1) at (102,-16) {$9.665$};
+  \node[font=\footnotesize] at (108,-16) {$+$};
+  \node[font=\footnotesize] (t2) at (118,-16) {$0.35$};
+  \node[sm,anchor=north,align=center,xshift=-2.5mm] at (t1.south) {$w,b$ に\\関係しない};
+  \node[sm,anchor=north,align=center] at (t2.south) {二乗誤差の和 $\div\,2\sigma^2$\\$=70\div(2\times10^2)$};
+\end{tikzpicture}
+
+\vspace{2mm}
+\begin{tikzpicture}
+\begin{axis}[width=0.66\linewidth,height=0.3\linewidth,xlabel={重み $w$},ylabel={尤度（最大を 1 にそろえた）},
+  xmin=0.35,xmax=0.85,ymin=0,ymax=1.22,ytick={0,0.5,1},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend style={font=\scriptsize,at={(1.03,1)},anchor=north west,draw=black!30},legend cell align=left]
+% 3 件のデータの二乗誤差の和は 33600 w^2 - 40720 w + 12406（トークン単位）
+\addplot[bookaccent,very thick,domain=0.35:0.85,samples=121] {exp(-33600*(x-0.605952)^2/(2*5^2))};
+\addplot[bookblue,thick,densely dashed,domain=0.35:0.85,samples=121] {exp(-33600*(x-0.605952)^2/(2*10^2))};
+\addplot[bookgreen,thick,dashdotted,domain=0.35:0.85,samples=121] {exp(-33600*(x-0.605952)^2/(2*20^2))};
+\legend{$\sigma=5$,$\sigma=10$,$\sigma=20$}
+\draw[black!50,thin] (axis cs:0.606,0) -- (axis cs:0.606,1.22);
+\node[font=\scriptsize,anchor=south east,inner sep=1pt] at (axis cs:0.603,1.03) {$w=0.606$};
+\end{axis}
+\end{tikzpicture}
+\caption{最尤推定の計算（数値例）。上：$w=0.6$、$\sigma=10$ トークンのときの計算の順序（出力 \file{mle_table.txt} の $w=0.6$ の行）。
+3 件のずれから確率密度を求め、掛けて尤度に、負の対数を取って負の対数尤度にする。負の対数尤度は、$w,b$ に関係しない項と、二乗誤差の和に比例する項に分かれる。
+下：$\sigma$ を 3 通りに変えたときの、3 件のデータの尤度（\eqref{eq:ml-gauss-nll}から計算）。山の幅は $\sigma$ で変わるが、最大になる位置はどれも $w=0.606$ にある。}
+\label{fig:ml-mle-numbers}
+\end{figure}
+% [/figpass]
 
 \begin{theorem}[二乗誤差と最尤推定]\label{thm:ml-mse-mle}
 正解が「モデルの予測 $+$ 正規分布に従うずれ」でできていると仮定する。
+ずれの標準偏差 $\sigma$ はどの入力でも同じで、ずれはデータごとに独立であるとする。
 このとき、尤度を最大にすること（最尤推定）と、二乗誤差を最小にすることは、同じパラメータを与える。
 \end{theorem}
 
 二乗誤差は、気まぐれに選んだものではありませんでした。
-「ずれは正規分布に従う」という仮定から、自動的に出てくる損失だったのです。
+「ずれは正規分布に従う」という仮定を置いて最尤推定をすると、計算の結果として出てくる損失だったのです。
 
-では、その仮定は正しいのでしょうか。
+では、仮定は、このデータでどこまで成り立つのでしょうか。
 \figref{fig:ml-gauss-noise}の右は、同じ作り方で断片を 1 万件に増やし、直線からのずれを実際に調べたものです。
-山の形は正規分布に似ていますが、中央がやや尖っています。仮定は、おおよそ成り立つ近似です。
+山の形は正規分布に似ていますが、中央がやや尖っています。
+「どの入力でも同じ $\sigma$」も正確ではなく、文字数が多いほど、点の上下の広がりは大きくなります（\figref{fig:ml-scatter}の左）。
+仮定は、おおよそ成り立つ近似です。
+仮定が正確でなくても、二乗誤差を最小にする計算はでき、得られる直線も変わりません。
+変わるのは、「その直線が最尤推定と一致する」という意味づけです。
 ずれの分布が正規分布から大きく外れる問題では、別の損失のほうが合います（演習 \ref{ex:ml-laplace}）。
 
 \begin{intuition}{損失関数の作り方}
 この節の結論は、一つのレシピにまとめられます。
-(1) モデルの出力を、正解についての\textbf{確率分布}だと考える。
+(1) モデルを、正解についての\textbf{確率分布}を出力するように作る。分布の形は、人が選ぶ。
 (2) その分布のもとで、実際の正解が起こる確率の対数を取り、符号を変えたもの（負の対数尤度）を損失にする。
-正解が数なら、正規分布を選ぶと二乗誤差になります。
+正解が数なら、(1) で正規分布を選ぶと、損失は二乗誤差になります。
 正解が「種類」のときに同じレシピを使うと何が出てくるかを、次の節で見ます。
 \end{intuition}
 
@@ -884,7 +1067,7 @@ $w=0.6$ では、第 1 項が $3\times\log(\sqrt{2\pi}\times 10) = 3\times3.2215
 章の半分を過ぎました。ここまでを 3 行でまとめます。
 \begin{itemize}
 \item 機械学習は、データ・モデル・損失関数・最適化の 4 要素でできています。
-\item 線形回帰では、モデルは直線、損失は二乗誤差で、勾配降下法が損失の坂を下りました。
+\item 線形回帰では、モデルは直線、損失は二乗誤差で、勾配降下法によって損失を小さくしました。
 \item 損失は「負の対数尤度」として作れます。二乗誤差は、その一例でした。
 \end{itemize}
 残る話題は三つです。分類、データが大きいときの工夫、そして「学習に使っていないデータでも当たるか」です。
@@ -897,9 +1080,7 @@ $w=0.6$ では、第 1 項が $3\times\log(\sqrt{2\pi}\times 10) = 3\times3.2215
 正解が「種類」である問題を\term{分類}{classification}と呼び、種類のことを\term{クラス}{class}と呼びます。
 この節の問いは、「正解が種類のとき、モデルと損失をどう作るか」です。
 4 要素のうち、取り替えるのはモデルと損失関数だけで、作り方には前節のレシピがそのまま使えます。
-レシピは、二つの手順でした。
-(1) モデルの出力を、正解についての確率分布だと考えます。
-(2) 実際の正解が起こる確率の対数を取り、符号を変えたもの（負の対数尤度）を損失にします。
+レシピは、(1) モデルに、正解についての確率分布を出力させ、(2) 実際の正解が起こる確率の負の対数（負の対数尤度）を損失にする、の二つでした。
 
 \subsection*{2 クラスの分類：ロジスティック回帰}
 
@@ -911,21 +1092,21 @@ $w=0.6$ では、第 1 項が $3\times\log(\sqrt{2\pi}\times 10) = 3\times3.2215
 
 レシピの (1) に従い、モデルには「$y=1$ である確率 $p$」を出力させます。
 直線の値 $z = wx+b$ は、負にも、1 より大きくもなるので、そのままでは確率になりません。
-そこで、どんな実数も 0 と 1 の間に押し込める関数を通します。
+そこで、どんな実数も 0 と 1 の間の値に変える関数を通します。
 \begin{equation}
 p = \sigmoid(z) = \frac{1}{1+e^{-z}},\qquad z = wx+b
 \label{eq:ml-sigmoid}
 \end{equation}
-この $\sigmoid$ を\term{シグモイド関数}{sigmoid function}と呼びます（前節の標準偏差 $\sigma$ とは別物です）。
-\figref{fig:ml-sigmoid}の左がそのグラフです。
+この $\sigmoid$ を\term{シグモイド関数}{sigmoid function}と呼びます（前節の標準偏差 $\sigma$ とは別物）。
+\figref{fig:ml-sigmoid}の左がグラフです。
 $z=0$ で $0.5$、$z$ が大きいと 1 に、小さいと 0 に近づきます。
 確率に直す前の値 $z$ を\term{ロジット}{logits}と呼びます。
 このモデルを\term{ロジスティック回帰}{logistic regression}と呼びます。
-名前に「回帰」と付きますが、分類のためのモデルです。
+名前に「回帰」とありますが、分類のモデルです。
 
 \begin{figure}[tbp]
 \centering
-\pgfplotsset{mlthree/.style={width=0.385\linewidth,height=0.32\linewidth,
+\pgfplotsset{mlthree/.style={width=0.385\linewidth,height=0.29\linewidth,
   title style={font=\footnotesize,yshift=-1.5mm},tick label style={font=\scriptsize},
   label style={font=\scriptsize}}}
 \begin{tikzpicture}
@@ -938,7 +1119,7 @@ $z=0$ で $0.5$、$z$ が大きいと 1 に、小さいと 0 に近づきます�
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[mlthree,title={損失 $-\log p$},xlabel={正解の確率 $p$},
+\begin{axis}[mlthree,title={損失（負の対数）},xlabel={正解に割り当てた確率},
   xmin=0,xmax=1,ymin=0,ymax=5]
 \addplot[bookaccent,very thick,domain=0.006:1,samples=120] {-ln(x)};
 \addplot[only marks,mark=*,mark size=1.5pt,bookblue] coordinates {(0.9,0.105) (0.5,0.693) (0.1,2.303)};
@@ -948,7 +1129,7 @@ $z=0$ で $0.5$、$z$ が大きいと 1 に、小さいと 0 に近づきます�
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[mlthree,title={学習後の確率},xlabel={文字数},
+\begin{axis}[mlthree,title={学習後の確率 $p$},xlabel={文字数},
   xmin=10,xmax=210,ymin=-0.05,ymax=1.05,ytick={0,0.5,1}]
 \draw[black!50,densely dashed] (axis cs:98.2,-0.05) -- (axis cs:98.2,1.05);
 \addplot[only marks,mark=*,mark size=0.9pt,bookblue!70] table[col sep=comma,x=chars,y=y]
@@ -957,29 +1138,32 @@ $z=0$ で $0.5$、$z$ が大きいと 1 に、小さいと 0 に近づきます�
 \node[font=\scriptsize,anchor=west] at (axis cs:101,0.62) {98.2 字};
 \end{axis}
 \end{tikzpicture}
-\caption{左：シグモイド関数（数値は $z=\pm 2$ での値）。
-中央：負の対数尤度 $-\log p$（数値は $p=0.1, 0.5, 0.9$ での損失）。確率 $p$ が低いと、損失は急に大きくなる。
-右：学習後のロジスティック回帰。青い点は訓練データ（収まれば 1、収まらなければ 0）、赤い曲線はモデルが出す確率。}
+\caption{縦軸は、どの図も、上の題に書いた量。
+左：シグモイド関数（数値は $z=\pm 2$ での値）。
+中央：1 件の損失。横軸は、モデルが正解に割り当てた確率（$y=1$ なら $p$、$y=0$ なら $1-p$）で、数値は確率 $0.1$、$0.5$、$0.9$ での損失。確率が低いと、損失は急に大きくなる。
+右：学習後のロジスティック回帰。青い点は訓練データ（60 トークンに収まれば 1、収まらなければ 0）、赤い曲線はモデルが出す「収まる確率」$p$。
+破線は、$p$ が $0.5$ をまたぐ文字数（98.2 字）。}
 \label{fig:ml-sigmoid}
 \end{figure}
 
 次にレシピの (2) です。
 正解が起こる確率は、$y=1$ なら $p$、$y=0$ なら $1-p$ です。
-その対数を取り、符号を変えたものが損失です。
-二つの場合は、次の一つの式にまとめられます。
+その対数の符号を変えたものが損失です。
+二つの場合は、次の式にまとめられます。
 \begin{equation}
 \ell = -\bigl\{\,y\log p + (1-y)\log(1-p)\,\bigr\}
 \label{eq:ml-bce}
 \end{equation}
 $y=1$ なら第 2 項が消えて $-\log p$ が残り、$y=0$ なら第 1 項が消えて $-\log(1-p)$ が残ります。
-\figref{fig:ml-sigmoid}の中央は、$-\log p$ のグラフです。
+どちらの場合も、損失は「モデルが正解に割り当てた確率」の負の対数です。
+この損失は、あとで定義する交差エントロピー損失（定義\ref{def:ml-cross-entropy}）の、クラスが二つの場合にあたります。
+\figref{fig:ml-sigmoid}の中央は、正解に割り当てた確率を横軸に、損失を縦軸に取ったグラフです。
 正解に確率 $0.9$ を割り当てていれば、損失は $0.11$ です。
 $0.1$ しか割り当てていなければ $2.30$ で、0 に近づくと限りなく大きくなります。
-自信を持って間違えるほど、重く罰せられます。
+正解に低い確率しか割り当てないほど、つまり自信を持って間違えるほど、損失は大きくなります。
 
 あとは勾配降下法です。そのために、損失を $w$ と $b$ で微分します。
-損失は、$w$ から $z$、$z$ から $p$、$p$ から $\ell$ と、3 段の合成でできています。
-そこで、後ろから 1 段ずつ微分して掛け合わせます（合成関数の微分）。
+損失は、$w, b \to z \to p \to \ell$ という 3 段の合成なので、後ろ（$\ell$ の側）から 1 段ずつ微分して掛け合わせます（合成関数の微分）。
 まず、\eqref{eq:ml-bce}を $p$ で微分します。
 $\log p$ の微分は $\frac{1}{p}$ です。
 $\log(1-p)$ の微分は、中身 $1-p$ の微分 $-1$ が掛かって、$-\frac{1}{1-p}$ です。
@@ -1007,6 +1191,50 @@ $\pd{\ell}{p}$ と $\dd{p}{z}$ の二つを掛けると、分母がちょうど�
 \end{equation}
 線形回帰と同じ、「誤差 $\times$ 入力」の形です。ここでの誤差は「予測した確率 $-$ 正解」です。
 
+% [figpass] 案 1
+\figref{fig:ml-logistic-graph}は、この 3 段の計算を、数値例（50 字の断片 $x=0.5$、$w=-2$、$b=2$、正解 $y=1$）で描いた図です。
+箱の中の黒い数が、左から右へ順に計算した値です。
+矢印のそばの枠のない小さな赤い数は、各段の微分です。
+赤い枠で囲んだ数は、$\ell$ の側から 1 段ずつ、各段の微分を掛けていった値です。
+$\pd{\ell}{p}=-1.368$ に $\dd{p}{z}=0.197$ を掛けた $-0.269$ が、$p-y=0.731-1$ にちょうど一致しています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1cm,y=1cm,
+  inp/.style={plainbox,font=\footnotesize,minimum width=18mm,minimum height=7mm},
+  stg/.style={box,font=\footnotesize,minimum width=20mm,minimum height=13mm,align=center},
+  gr/.style={font=\footnotesize,text=bookaccent,align=center,inner sep=2pt,draw=bookaccent,rounded corners=1pt,fill=white},
+  loc/.style={font=\scriptsize,text=bookaccent,align=center,inner sep=1pt}]
+  \node[inp] (w) at (0,1.2) {重み $w=-2$};
+  \node[inp] (x) at (0,0) {入力 $x=0.5$};
+  \node[inp] (b) at (0,-1.2) {バイアス $b=2$};
+  \node[stg] (z) at (3.4,0) {ロジット\\$z=wx+b$\\$=1.00$};
+  \node[stg] (p) at (6.9,0) {確率\\$p=\sigmoid(z)$\\$=0.731$};
+  \node[redbox,stg] (l) at (10.4,0) {損失\\$\ell=-\log p$\\$=0.313$};
+  \node[orangebox,font=\footnotesize,minimum height=6mm] (y) at (10.4,1.6) {正解 $y=1$};
+  \draw[arr] (w.east) -- (z.west); \draw[arr] (x) -- (z); \draw[arr] (b.east) -- (z.west);
+  \draw[arr] (z) -- (p); \draw[arr] (p) -- (l); \draw[arr] (y) -- (l);
+  % 各段の微分（箱と箱の間の上）
+  \node[loc,anchor=south] at (5.15,0.72) {$\dd{p}{z}=p(1-p)$\\$=0.197$};
+  \node[loc,anchor=south] at (8.65,0.72) {$\pd{\ell}{p}=-\frac{1}{p}$\\[1.2mm]$=-1.368$};
+  \node[loc,anchor=south west] at (1.3,1.02) {$\pd{z}{w}=x$};
+  \node[loc,anchor=north west] at (1.3,-1.02) {$\pd{z}{b}=1$};
+  % 損失の側から掛け合わせた値（箱の下・入力の上下）
+  \node[gr,anchor=north] at (6.9,-0.8) {$\pd{\ell}{p}=-1.368$};
+  \node[gr,anchor=north west] at (2.5,-0.8) {$\pd{\ell}{z}=-1.368\times0.197$\\$=-0.269\ (=p-y)$};
+  \node[gr,anchor=south west] at (-0.9,1.7) {$\pd{\ell}{w}=-0.269\times0.5=-0.134$};
+  \node[gr,anchor=north west] at (-0.9,-1.7) {$\pd{\ell}{b}=-0.269\times1=-0.269$};
+  % 逆向きの矢印
+  \draw[->,thick,dashed,bookaccent] (10.4,-2.3) -- node[below,loc]{損失の側から、各段の微分を掛けていく（合成関数の微分）} (3.4,-2.3);
+\end{tikzpicture}
+\caption{ロジスティック回帰の損失を、計算の段ごとに描いた図（計算グラフ。数値例）。黒い矢印と箱の中の数は、入力から損失への計算。
+枠のない小さな赤字は各段の微分（箱と箱をつなぐ矢印のそば）、赤い枠で囲んだ値は、それを損失の側から掛け合わせた値。
+$\pd{\ell}{p}=\frac{p-y}{p(1-p)}$（$y=1$ では $-\frac{1}{p}$）と $\dd{p}{z}=p(1-p)$ の積で分母が消え、ロジットでの微分は $p-y$ になる。
+パラメータの勾配は、それに入力 $x$（$w$ の場合）か 1（$b$ の場合）を掛けたもの。}
+\label{fig:ml-logistic-graph}
+\end{figure}
+% [/figpass]
+
 これを実装して（\file{code/ch03/logistic_regression.py}）、学習率 $1.0$ で 5000 ステップ学習しました。
 最初の損失は $0.693$ です。
 $w=b=0$ では $z=0$ なので、モデルはどの断片にも $p=\sigmoid(0)=0.5$ を出し、損失が $-\log 0.5=0.693$ になるからです。
@@ -1014,7 +1242,7 @@ $w=b=0$ では $z=0$ なので、モデルはどの断片にも $p=\sigmoid(0)=0
 \figref{fig:ml-sigmoid}の右が、学習後のモデルです。
 短い断片では確率がほぼ 1、長い断片ではほぼ 0 で、その間を S 字の曲線がつないでいます。
 $0.5$ をまたぐ場所（破線）は 98.2 字で、\secref{sec:ml-gd}の「100 字で約 60 トークン」という結果と合っています。
-確率が $0.5$ より大きければ「収まる」と予測することにすると、学習に使っていない 100 件の 96\% で当たりました。
+確率が $0.5$ より大きければ「収まる」と予測することにすると、学習に使っていない別の 100 件の 96\% で当たりました。
 
 \subsection*{多クラスの分類：softmax 回帰}
 
@@ -1022,16 +1250,53 @@ $0.5$ をまたぐ場所（破線）は 98.2 字で、\secref{sec:ml-gd}の「10
 進め方は、2 クラスのときと同じ 3 手順です。
 確率を出力するモデルを作り、負の対数尤度を損失にし、その勾配を求めます。
 例には、境界を目で見られるように、人工的に作った平面上の点 $\vx=(x_1,x_2)^\T$ を使います。
-3 つの中心のまわりに 100 点ずつ散らした 300 件で、各点がどの中心のものかを当てます（\figref{fig:ml-blobs}の中央）。
+3 つの中心のまわりに 100 点ずつ散らした 300 件で、各点がどの中心のものかを当てます（点の散らばりは、あとの\figref{fig:ml-blobs}の中央）。
 
-まず、クラスごとに「そのクラスらしさ」の点数を、入力の重み付きの和で作ります。
-クラス $k$ の点数は $z_k = \vw_k^\T\vx + b_k$ です。
+まず、クラスごとに「そのクラスらしさ」を表す数を、入力の重み付きの和で作ります。
+この数を、\chapref{ch:math}と同じく\textbf{スコア}と呼びます。
+クラス $k$ のスコアは $z_k = \vw_k^\T\vx + b_k$ です。
+$\vw_k$ は\textbf{クラス $k$ の重みベクトル}、$b_k$ はクラス $k$ のバイアスで、\eqref{eq:ml-linear-multi}と同じ形の式を、クラスごとに一つずつ持ちます。
 $K$ 個をまとめると、行列とベクトルの積で書けます。
 \begin{equation}
 \vz = \mW\vx + \vb,\qquad \mW\in\R^{K\times 2},\quad \vb\in\R^{K}
 \label{eq:ml-logits}
 \end{equation}
-$\mW$ の $k$ 行目が $\vw_k^\T$ です。$\vz$ が $K$ 個のロジットです。
+$\mW$ を\textbf{重み行列}と呼びます。
+$k$ 行目に、クラス $k$ の重みベクトル $\vw_k$ の成分が横に並びます（\figref{fig:ml-weight-rows}）。
+$\vb$ は、バイアス $b_k$ を縦に並べたベクトルです。
+行列とベクトルの積の $k$ 番目の成分は、行列の $k$ 行目とベクトルの内積なので（\chapref{ch:math}）、$\mW\vx+\vb$ の $k$ 番目の成分が、クラス $k$ のスコア $z_k$ になります。
+$K$ 個のスコアを縦に並べた $\vz$ が、softmax に入れる前の値、つまりロジットです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=13mm,y=5.8mm,
+  c/.style={cell,minimum width=13mm,minimum height=5.8mm},
+  hl/.style={c,fill=figorange,draw=bookorange,thick},
+  hd/.style={font=\footnotesize,anchor=south}]
+  % 重み行列 W（3 行 2 列）
+  \node[c] at (0,-1) {$-1.60$}; \node[c] at (1,-1) {$-0.85$};
+  \node[c] at (0,-3) {$-0.16$}; \node[c] at (1,-3) {$1.86$};
+  \node[hl] at (0,-2) {$1.76$}; \node[hl] at (1,-2) {$-1.01$};
+  \node[hd] at (0.5,-0.45) {重み行列 $\mW$（3 行 2 列）};
+  \foreach \r in {1,2,3} \node[lbl,anchor=east] at (-0.6,-\r) {$\r$ 行目（クラス $\r$）};
+  % 入力 x
+  \node[c] at (2.45,-1.5) {$2$}; \node[c] at (2.45,-2.5) {$-1$};
+  \node[hd] at (2.45,-0.45) {入力 $\vx$};
+  \node[font=\small] at (3.3,-2) {$+$};
+  % バイアス b
+  \node[c] at (4.15,-1) {$-0.05$}; \node[hl] at (4.15,-2) {$0.15$}; \node[c] at (4.15,-3) {$-0.10$};
+  \node[hd] at (4.15,-0.45) {バイアス $\vb$};
+  \node[font=\small] at (5.0,-2) {$=$};
+  % スコア z
+  \node[c] at (5.85,-1) {$-2.40$}; \node[hl] at (5.85,-2) {$4.68$}; \node[c] at (5.85,-3) {$-2.28$};
+  \node[hd] at (5.85,-0.45) {スコア $\vz$};
+\end{tikzpicture}
+\caption{重み行列 $\mW$ の $k$ 行目が、クラス $k$ の重みベクトル $\vw_k$（を横に並べた $\vw_k^\T$）である。
+数値は、この節の最後に学習して得られる値（小数第 2 位まで）で、入力は例として $\vx=(2,-1)^\T$ とした。
+橙の 2 行目 $\vw_2^\T=(1.76,\ -1.01)$ と $\vx$ の内積にバイアス $b_2$ を足すと、クラス 2 のスコア $z_2=1.76\times 2+(-1.01)\times(-1)+0.15=4.68$ になる。ほかの行も同様。}
+\label{fig:ml-weight-rows}
+\end{figure}
+
 次に、ロジットを確率に直します。
 使うのは、\chapref{ch:math}で学んだ softmax 関数です。
 \begin{equation}
@@ -1039,10 +1304,10 @@ p_k = \frac{e^{z_k}}{\sum_{j=1}^{K} e^{z_j}}
 \label{eq:ml-softmax}
 \end{equation}
 各 $p_k$ は正で、合計は 1 になります。
-たとえば $\vz=(2,1,0)$ で計算してみます（\chapref{ch:math}と同じ例です）。
+たとえば $\vz=(2,1,0)$ で計算してみます（\chapref{ch:math}と同じ例。成分を横に並べて書きますが、列ベクトルです）。
 $e^2=7.389$、$e^1=2.718$、$e^0=1$ で、合計は $11.107$ です。
 それぞれを合計で割ると、$\vp=(7.389,\ 2.718,\ 1)\div 11.107=(0.665, 0.245, 0.090)$ です。
-点数が 1 だけ高いと、確率は $e\approx2.7$ 倍になっています。
+スコアが 1 だけ高いと、確率は $e\approx2.7$ 倍です。
 このモデルを \textbf{softmax 回帰}（softmax regression）と呼びます。
 $K=2$ のときは、ロジスティック回帰と同じものになります（演習 \ref{ex:ml-sigmoid}）。
 
@@ -1052,7 +1317,7 @@ $K=2$ のときは、ロジスティック回帰と同じものになります�
 この書き方を \textbf{one-hot 表現}と呼びます。
 これは、「クラス 2 である確率が 1」という確率分布と見ることもできます。
 
-損失は、レシピどおり、正解のクラスに割り当てた確率の対数に、マイナスを付けたものです。
+損失は、レシピどおり、正解のクラスに割り当てた確率の負の対数です。
 正解のクラスを $c$ とすると $\ell = -\log p_c$ です。
 one-hot 表現を使うと、和の形でも書けます。
 $y_k$ は $k=c$ のときだけ 1 なので、和を取っても $-\log p_c$ だけが残るからです。
@@ -1068,31 +1333,35 @@ $y_k$ は $k=c$ のときだけ 1 なので、和を取っても $-\log p_c$ だ
 \end{definition}
 
 右辺は、\chapref{ch:math}で学んだ交差エントロピー $H(\vy,\vp)$ の式そのものです。
-「交差エントロピー損失」と「負の対数尤度」は、同じものの二つの呼び名です。
+分類の問題で、正解を one-hot 表現で与えるとき、「交差エントロピー損失」と「負の対数尤度」は同じものになります。
+負の対数尤度のほうが広い言葉で、前節の二乗誤差も、正規分布を選んだときの負の対数尤度でした。
 先ほどの例で正解がクラス 2 なら、損失は $-\log 0.245 = 1.41$ です。
-\figref{fig:ml-softmax-flow}に、入力から損失までの流れをまとめました。
+\figref{fig:ml-softmax-flow}に、入力から損失までの計算の順序をまとめました。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[node distance=5mm and 7mm,
+\begin{tikzpicture}[node distance=5mm and 10mm,
   vec/.style={plainbox,font=\footnotesize,minimum height=14mm,minimum width=13mm}]
   \node[vec] (x) {入力 $\vx$};
-  \node[box,right=of x,font=\footnotesize,minimum height=10mm] (lin) {$\mW\vx+\vb$};
+  \node[box,right=of x,font=\footnotesize,minimum height=10mm] (lin) {$\mW\vx+\vb$\\重み行列 $\mW$\\バイアス $\vb$};
   \node[vec,right=of lin] (z) {ロジット $\vz$\\$2.0$\\$1.0$\\$0.0$};
   \node[box,right=of z,font=\footnotesize,minimum height=10mm] (sm) {softmax};
   \node[vec,right=of sm,fill=figgreen,draw=bookgreen] (p) {確率 $\vp$\\$0.665$\\$0.245$\\$0.090$};
   \node[vec,below=9mm of p,fill=figorange,draw=bookorange] (y) {正解 $\vy$\\$0$\\$1$\\$0$};
-  \node[redbox,left=of y,font=\footnotesize,minimum height=10mm] (loss) {損失 $-\log p_2$\\$=1.41$};
-  \node[vec,left=of loss,minimum width=24mm] (g) {勾配 $\vp-\vy$\\$+0.665$\\$-0.755$\\$+0.090$};
+  % 損失の箱は softmax の真下、勾配の箱はロジットの真下に置く（破線の矢印をまっすぐにするため）
+  \node[redbox,font=\footnotesize,minimum height=10mm] (loss) at (sm |- y) {損失 $-\log p_2$\\$=1.41$};
+  \node[vec,minimum width=19mm] (g) at (z |- y) {勾配 $\vp-\vy$\\$+0.665$\\$-0.755$\\$+0.090$};
   \draw[arr] (x) -- (lin); \draw[arr] (lin) -- (z); \draw[arr] (z) -- (sm); \draw[arr] (sm) -- (p);
   \draw[arr,rounded corners=3pt] ($(p.south)+(-3mm,0)$) -- ++(0,-4.5mm) -| (loss.north);
   \draw[arr] (y) -- (loss); \draw[darr] (loss) -- (g);
-  \draw[darr,rounded corners=3pt] (g.north) |- ($(z.south)+(0,-4.5mm)$) -- (z.south);
-  \node[lbl,anchor=north] at ($(g.south)+(0,-0.8mm)$) {ロジットをこの逆向きに動かす};
+  \draw[darr] (g.north) -- (z.south);
+  \node[lbl,anchor=north] at ($(g.south)+(0,-0.8mm)$) {損失をロジットで微分した値};
   \node[lbl,anchor=north] at ($(y.south)+(0,-0.8mm)$) {データから};
 \end{tikzpicture}
-\caption{softmax 回帰の流れと数値例。入力からロジット $\vz$ を作り、softmax で確率 $\vp$ に直す。
-損失は、モデルが出した $\vp$ と、データから与えられる正解 $\vy$ の二つから計算する。損失をロジットで微分すると、$\vp-\vy$ という簡単な形になる（破線）。}
+\caption{softmax 回帰の計算の順序と数値例。入力 $\vx$ に重み行列 $\mW$ を掛け、バイアス $\vb$ を足してロジット $\vz$ を作り、softmax で確率 $\vp$ に直す。
+損失は、モデルが出した $\vp$ と、データから与えられる正解 $\vy$ の二つから計算する。
+損失をロジットで微分すると、$\vp-\vy$ という簡単な形になる（破線）。
+学習で動かすのはパラメータ $\mW$ と $\vb$ で、その勾配は $\vp-\vy$ から求まる（\eqref{eq:ml-softmax-param-grad}）。}
 \label{fig:ml-softmax-flow}
 \end{figure}
 
@@ -1106,6 +1375,7 @@ $y_k$ は $k=c$ のときだけ 1 なので、和を取っても $-\log p_c$ だ
 何も学習していないモデルは、どのトークンにも、ほぼ同じ確率 $1/4096$ を割り当てます。
 このときの損失は $-\log\frac{1}{4096} = \log 4096 = 8.32$ です。
 実際、基盤モデルの学習は、ほぼこの値の $8.34$ から始まり、最後は $3.11$ まで下がりました（\chapref{ch:math}）。
+言語モデルでは、文章の中の 1 か所（そこまでのトークンの並びと、次に来るトークンの組）が、データ 1 件にあたります。
 言語モデルの学習とは、この交差エントロピー損失を、文章のあらゆる位置について平均し、小さくしていくことです。
 詳しくは\chapref{ch:lm}で扱います。
 
@@ -1127,8 +1397,8 @@ $y_k$ は $k=c$ のときだけ 1 なので、和を取っても $-\log p_c$ だ
 
 導出します。
 まず、損失をロジットで書き直します。
-\eqref{eq:ml-softmax}の対数を取ると、$\log p_c = z_c - \log\sum_j e^{z_j}$ です。商の対数は、対数の差だからです。
-したがって、損失は次の二つの項に分かれます。
+\eqref{eq:ml-softmax}の対数を取ると、商の対数は対数の差なので、$\log p_c = z_c - \log\sum_j e^{z_j}$ です。
+損失は、次の二つの項に分かれます。
 \begin{equation}
 \ell = -\log p_c = -z_c + \log\sum_{j=1}^{K} e^{z_j}
 \end{equation}
@@ -1137,16 +1407,18 @@ $k=c$ なら $-1$、そうでなければ $0$ です。これは $-y_k$ と書�
 第 2 項は、「和 $u=\sum_j e^{z_j}$ を作る」と「$\log u$ を取る」の合成です。
 $\log u$ の微分は $1/u$ です。
 $u$ を $z_k$ で微分すると、和の中で $z_k$ を含む項だけが残り、$e^{z_k}$ です。
-掛け合わせると $e^{z_k}/\sum_j e^{z_j}$ で、これは $p_k$ そのものです。
-二つを合わせて、$\pd{\ell}{z_k} = p_k - y_k$ が得られます。
+掛け合わせると $e^{z_k}/\sum_j e^{z_j}$ で、$p_k$ そのものです。
+二つを合わせると、$\pd{\ell}{z_k} = p_k - y_k$ です。
 
 数値例では $\vp-\vy = (0.665-0,\ 0.245-1,\ 0.090-0) = (0.665, -0.755, 0.090)$ です。
-勾配降下法はこの逆向きに動くので、正解のクラス 2 のロジットは上がり、ほかのクラスのロジットは下がります。
+動かすのはパラメータ $\mW$ と $\vb$ ですが、この 1 件で更新すると、ロジットは勾配の符号と逆の向きに動きます。
+正解のクラス 2 のロジットは上がり、ほかのクラスのロジットは下がります。
 下げ幅は、間違って割り当てた確率に比例します。
-予測が正解と完全に一致すれば、勾配は 0 になります。
+予測 $\vp$ が正解 $\vy$ に近づくほど、勾配は 0 に近づきます。
 
 パラメータについての勾配は、ここから 1 歩です。
-$z_k = \sum_j W_{kj}x_j + b_k$ を $W_{kj}$ で微分すると $x_j$、$b_k$ で微分すると 1 です。
+スコアの式を成分で書くと、$z_k = \sum_j W_{kj}x_j + b_k$ です（この $j$ は、入力の成分の番号です）。
+これを $W_{kj}$ で微分すると $x_j$、$b_k$ で微分すると 1 です。
 $W_{kj}$ と $b_k$ が入っているロジットは $z_k$ だけなので、ほかのロジットは関係しません。
 合成関数の微分により、次の式になります。
 \begin{equation}
@@ -1162,7 +1434,7 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
 
 平面上の点を 3 クラスに分けるモデルを、PyTorch で実装します。
 データは 300 件で、入力 \code{X} の形は $(300, 2)$、正解 \code{y} はクラスの番号を並べた形 $(300,)$ のテンソルです。
-数式ではクラスを 1 から数えましたが、コードでは 0 から数えます。数式のクラス 2 は、コードでは \code{1} です。
+数式ではクラスを 1 から、コードでは 0 から数えます。数式のクラス 2 は、コードの \code{1} です。
 
 \snippet{softmax 回帰のモデルと損失}{code:ml-softmax-model}{ch03/softmax_regression.py}{model}
 
@@ -1171,6 +1443,7 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
 8 行目は、$\log p_k = z_k - \log\sum_j e^{z_j}$ を全データ・全クラスについて計算します。
 \code{logsumexp} は、この対数と和と指数を、桁あふれを避けながら一度に計算する関数です（\chapref{ch:math}）。
 9 行目の \code{log_p[torch.arange(len(y)), y]} は、各行から正解クラスの列だけを取り出します。
+たとえば \code{y} が \code{[1, 0, 2]} なら、0 行目の 1 列目、1 行目の 0 列目、2 行目の 2 列目の 3 つを取り出します。
 マイナスを付けて平均すれば、\eqref{eq:ml-cross-entropy}の平均です。
 
 \snippet{手で導いた勾配 $\vp-\vy$}{code:ml-softmax-grad}{ch03/softmax_regression.py}{manual-grad}
@@ -1183,6 +1456,49 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
 その $(k, j)$ 成分は、\code{dz} の $k$ 列目と \code{X} の $j$ 列目の内積です。
 つまり、\eqref{eq:ml-softmax-param-grad}の $(p_k-y_k)\,x_j$ を、$N$ 件について足したものです。
 \code{dz.sum(dim=0)} も同じように、$p_k-y_k$ を $N$ 件について足したもので、$\vb$ の勾配になります。
+
+% [figpass] 案 2
+\figref{fig:ml-dz-shape}は、7 行目の行列積の形を描いたものです。
+\code{dz.T} の行（クラス）と \code{X} の列（入力の成分）を一つずつ選び、データの番号の向きに $N$ 個の積を足すので、$N$ の軸は消え、$(K,2)$ の形が残ります。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=1mm,y=1mm,
+  hd/.style={font=\footnotesize,align=center},
+  sm/.style={font=\scriptsize,text=bookgray,align=center,inner sep=1pt}]
+  % dz.T: (K, N) = (3, 300)。横の長さは縮めて描く
+  \fill[figorange] (0,-3) rectangle (40,-6);
+  \draw[black!60] (0,0) rectangle (40,-9);
+  \draw[black!40] (0,-3) -- (40,-3); \draw[black!40] (0,-6) -- (40,-6);
+  \draw[bookorange,thick] (0,-3) rectangle (40,-6);
+  \foreach \r in {1,2,3} \node[sm,anchor=east] at (-0.5,-3*\r+1.5) {$k=\r$};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (0,1) -- node[above=2pt,sm]{$N=300$（データの番号）} (40,1);
+  \node[hd,anchor=north] at (20,-10.5) {\code{dz.T}\\形 $(K,N)=(3,300)$\\$i$ 列目は $i$ 件目の $(\vp-\vy)/N$};
+  \node[font=\small] at (45,-4.5) {$@$};
+  % X: (N, 2)。縦の長さは縮めて描く
+  \fill[figblue] (50,10.5) rectangle (58,-19.5);
+  \draw[black!60] (50,10.5) rectangle (66,-19.5);
+  \draw[black!40] (58,10.5) -- (58,-19.5);
+  \draw[bookblue,thick] (50,10.5) rectangle (58,-19.5);
+  \node[sm,anchor=south] at (54,10.7) {$j=1$}; \node[sm,anchor=south] at (62,10.7) {$j=2$};
+  \draw[decorate,decoration={brace,amplitude=3pt}] (67,10.5) -- node[right=5pt,sm]{$N=300$} (67,-19.5);
+  \node[hd,anchor=north] at (58,-20.5) {\code{X}\\形 $(N,2)=(300,2)$};
+  \node[font=\small] at (88,-4.5) {$=$};
+  % 結果: (K, 2)
+  \fill[figpurple] (93,-3) rectangle (99,-6);
+  \draw[black!60] (93,0) rectangle (105,-9);
+  \draw[black!40] (93,-3) -- (105,-3); \draw[black!40] (93,-6) -- (105,-6); \draw[black!40] (99,0) -- (99,-9);
+  \draw[bookpurple,thick] (93,-3) rectangle (99,-6);
+  \node[hd,anchor=north] at (99,-10.5) {\code{dz.T @ X}\\形 $(K,2)=(3,2)$\\$\mW$ の勾配};
+  % 説明
+  \node[sm,anchor=north] at (48,-30) {橙の行と青の列の内積（$N$ 個の積の和）が、紫のマス 1 つになる。$N$ の軸は消え、$K$ と 2 の軸が残る。};
+\end{tikzpicture}
+\caption{\coderef{code:ml-softmax-grad}の 7 行目 \code{dz.T @ X} の形（模式図。$N$ の向きの長さは縮めて描いた）。
+紫のマスは、$\pd{\calL}{W_{21}}=\frac{1}{N}\sum_{i}(p_2^{(i)}-y_2^{(i)})\,x_1^{(i)}$ で、\eqref{eq:ml-softmax-param-grad}を $N$ 件について平均したもの。
+ほかのマスも同じで、行 $k$ と列 $j$ の組ごとに 1 つずつ計算される。}
+\label{fig:ml-dz-shape}
+\end{figure}
+% [/figpass]
 
 手で導いたこの勾配を、同じ損失から自動微分で求めた勾配と比べました。
 乱数で決めたパラメータで比べると、差は最大でも $1.2\times10^{-7}$ で、計算の丸め誤差の範囲でした。導出は正しいことが確かめられました。
@@ -1199,11 +1515,11 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
 \figref{fig:ml-blobs}の左が、学習中の損失の動きです。
 損失は最初の 10 ステップで $0.23$ まで急に下がり、そのあとはゆっくり下がって、300 ステップ後に $0.170$ になりました。
 確率が最大のクラスを予測とし、それが正解と一致した割合を\textbf{正解率}と呼びます。
-正解率は 93.7\% で、学習に使っていない新しい 300 点でも 94.3\% です。
+正解率は 93.7\% で、同じ作り方で新しく作った、学習に使っていない 300 点でも 94.3\% です。
 
 \begin{figure}[tbp]
 \centering
-\pgfplotsset{mlthree/.style={width=0.385\linewidth,height=0.34\linewidth,
+\pgfplotsset{mlthree/.style={width=0.385\linewidth,height=0.31\linewidth,
   title style={font=\footnotesize,yshift=-1.5mm},tick label style={font=\scriptsize},
   label style={font=\scriptsize}}}
 \begin{tikzpicture}
@@ -1216,7 +1532,7 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[mlthree,xlabel={$x_1$},
+\begin{axis}[mlthree,xlabel={$x_1$},ylabel={$x_2$},ylabel style={yshift=-2mm},
   xmin=-5,xmax=5,ymin=-4,ymax=5,grid=none,title={塊：正解率 93.7\%},
   colormap={cls}{color(0)=(figblue) color(1)=(figorange) color(2)=(figgreen)},point meta min=0,point meta max=2]
 \addplot[matrix plot*,mesh/cols=61,point meta=explicit,shader=flat corner]
@@ -1243,45 +1559,49 @@ PyTorch の \code{F.cross_entropy} は、ロジットと正解の番号を受け
   table[col sep=comma,x=x1,y=x2]{code/ch03/out/spiral_points.csv};
 \end{axis}
 \end{tikzpicture}
-\caption{左：塊のデータでの、最初の 100 ステップの損失（赤）と正解率（青の破線）。
-中央と右：softmax 回帰が学習した領域分け（縦軸は $x_2$）。点がデータで、背景の色が、モデルがその場所をどのクラスと予測するかを表す。
-渦を巻くデータは、直線の境界では分けられない。}
+\caption{左：塊のデータでの、最初の 100 ステップの損失（赤）と正解率（青の破線。0〜1 の割合）。縦軸は二つに共通。
+中央と右：softmax 回帰が学習した領域分け（横軸 $x_1$、縦軸 $x_2$）。点がデータで、クラス 1 が青の丸、クラス 2 が橙の四角、クラス 3 が緑の三角。
+背景の色（点と同じ系統の薄い色）は、モデルが予測するクラス（細かいマス目ごとに塗ったので境界が階段状に見えるが、実際の境界は直線）。
+渦を巻くデータ（右）は、直線の境界では分けられない。}
 \label{fig:ml-blobs}
 \end{figure}
 
 \figref{fig:ml-blobs}の中央が、学習したモデルの領域分けです。
-背景の色は、その場所の点をモデルがどのクラスと予測するかを表します。
+背景の色は、その場所をモデルがどのクラスと予測するかを表します。
 3 つの塊が、おおよそ正しく塗り分けられています。
-塊どうしが重なっている場所の点は、どんな境界を引いても間違えます。正解率が 100\% にならないのは、そのためです。
+塊どうしが重なっている場所では、違うクラスの点が入り混じっています。
+直線の境界をどう引いても、一部は間違えます。正解率が 100\% にならないのは、そのためです。
 
 境界が\textbf{まっすぐ}であることに注目してください。
-クラス $k$ とクラス $l$ の境界は、二つの点数が等しくなる場所 $z_k = z_l$ です。
+クラス $k$ とクラス $l$ の境界は、二つのスコアが等しくなる場所 $z_k = z_l$ です。
 $z_k$ も $z_l$ も $x_1, x_2$ の 1 次式なので、この条件は直線の式になります。
-softmax 回帰は、どれだけ学習しても、直線の境界しか引けません。
-\figref{fig:ml-blobs}の右は、3 本の腕が渦を巻くデータに、同じモデルを学習させた結果です。
+入力 $x_1, x_2$ をそのまま使うかぎり、softmax 回帰は、どれだけ学習しても、直線の境界しか作れません。
+\figref{fig:ml-blobs}の右は、別のデータに、同じモデルを学習させた結果です。
+このデータでは、3 つのクラスの点が、それぞれ中心から渦巻きの形に伸びる帯の上に並んでいます。
 正解率は 52.7\% にとどまります。
 3 クラスなので、でたらめに答えても約 33\% は当たります。
 そこから 20 ポイントほどしか上がらず、半分近くを間違えています。
-この限界を破ることが、次章の出発点になります。
+この限界を越えることが、次章の出発点になります。
 
 最後に、この章の三つのモデルを\tabref{tab:ml-reg-vs-cls}に並べます。
-どれも、出力を確率分布と考え、負の対数尤度を損失にしたものです。
-出力についての勾配は、どれも「予測 $-$ 正解」です。
+どれも、正解についての確率分布を出力するようにモデルを作り、負の対数尤度を損失にしたものです。
+損失を、線形回帰では予測 $\hat{y}$ で、分類ではロジットで微分すると、どれも「予測 $-$ 正解」の形になります。
 
 \begin{table}[tbp]
 \centering
-\caption{この章の三つのモデル。$\hat{y}$ は線形回帰の予測を表す。線形回帰の勾配には、2 乗の微分から来る 2 倍が付く。}
+\caption{この章の三つのモデル。$\hat{y}$ は線形回帰の予測。
+線形回帰の損失は、負の対数尤度（\eqref{eq:ml-gauss-nll}）から、パラメータに関係しない項と定数倍を除いたもので、微分には 2 乗から来る 2 倍が付く。}
 \label{tab:ml-reg-vs-cls}
 \small
-\begin{tabularx}{\linewidth}{lXXX}
+\begin{tabularx}{\linewidth}{l>{\hsize=.9\hsize}X>{\hsize=.95\hsize}X>{\hsize=1.15\hsize}X}
 \toprule
  & 線形回帰 & ロジスティック回帰 & softmax 回帰 \\
 \midrule
 正解 $y$ & 数 & 0 か 1 & $K$ 種類のどれか \\
-モデルの出力 & $\hat{y}=\vw^\T\vx+b$ & $p=\sigmoid(\vw^\T\vx+b)$ & $\vp=\softmax(\mW\vx+\vb)$ \\
-考える分布 & $\hat{y}$ を中心とする正規分布 & 確率 $p$ で 1、$1-p$ で 0 & クラス $k$ が確率 $p_k$ \\
-損失 $\ell$ & $(\hat{y}-y)^2$ & \eqref{eq:ml-bce} & $-\log p_c$ \\
-勾配 & $\pd{\ell}{\hat{y}}=2(\hat{y}-y)$ & $\pd{\ell}{z}=p-y$ & $\pd{\ell}{\vz}=\vp-\vy$ \\
+モデルの出力 & $\hat{y}=\vw^\T\vx+b$ & $p=\sigmoid(\vw^\T\vx+b)$ & \mbox{$\vp=\softmax(\mW\vx+\vb)$} \\
+人が選ぶ $y$ の分布 & $\hat{y}$ を中心とする正規分布 & 確率 $p$ で 1、$1-p$ で 0 & クラス $k$ が確率 $p_k$ \\
+損失 $\ell$ & $(\hat{y}-y)^2$ & \eqref{eq:ml-bce}（2 クラスの交差エントロピー損失） & $-\log p_c$（交差エントロピー損失） \\
+$\hat{y}$ かロジットでの微分 & $\pd{\ell}{\hat{y}}=2(\hat{y}-y)$ & $\pd{\ell}{z}=p-y$ & $\pd{\ell}{\vz}=\vp-\vy$ \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -1297,16 +1617,22 @@ softmax 回帰は、どれだけ学習しても、直線の境界しか引けま
 この節の問いは、「データが膨大なとき、1 ステップをどう軽くするか」です。
 4 要素のうち、こんどは最適化に手を入れます。
 
-世論調査は、全国民に尋ねません。
-無作為に選んだ千人ほどに尋ねて、全体の傾向を見積もります。
-勾配にも同じ考え方が使えます。
-損失はデータ 1 件ごとの損失の平均なので、勾配も 1 件ごとの勾配の平均です。
-和の微分は、項ごとの微分の和だからです。
-平均は、無作為に選んだ一部からでも見積もれます。
+\textbf{本来計算したいもの}は、\textbf{全データの平均の勾配}です。
+損失はデータ 1 件ごとの損失の平均なので（定義\ref{def:ml-erm}）、勾配も 1 件ごとの勾配の平均です（和の微分は、項ごとの微分の和だからです）。
+\textbf{それが難しい理由}は、手間です。
+これまでの勾配降下法は、1 回の更新のたびに、$N$ 件すべての勾配を計算して平均していました。
+データが 1 万件なら、1 万件分の計算をして、やっと 1 回の更新です。
 
+\textbf{代わりにすること}は、一部のデータでの代用です。
+平均は、無作為に選んだ一部からでも見積もれます。
+世論調査が、全国民には尋ねず、無作為に選んだ千人ほどの答えから全体の傾向を見積もるのと同じ考え方です（全国民が全データ、千人がその一部にあたります）。
+そこで、全データの平均の勾配の代わりに、無作為に選んだ一部のデータの平均の勾配を使います。
 選んだ一部のデータを\term{ミニバッチ}{minibatch}、その件数 $B$ を\term{バッチサイズ}{batch size}と呼びます。
-文字数とトークン数のデータを 1 万件に増やして、試してみます。
-$w=b=0$ の地点で、ミニバッチを 2000 回選び、毎回の勾配 $\pd{\calL}{w}$ を計算しました。
+
+\textbf{それでよい理由}は、一部の平均の勾配が、全データの平均の勾配の、偏りのない見積もりだからです。
+これを実験で確かめます。
+文字数とトークン数のデータを 1 万件に増やします。
+$w=b=0$ の地点で、1 万件の中から $B$ 件を無作為に選び、その $B$ 件だけで勾配 $\pd{\calL}{w}$ を計算することを、2000 回繰り返しました。
 結果が次です。「平均」と「標準偏差」は、2000 回分の勾配について求めたものです。
 
 \outputfile{ch03/out/sgd_noise.txt}
@@ -1315,32 +1641,135 @@ $w=b=0$ の地点で、ミニバッチを 2000 回選び、毎回の勾配 $\pd{
 $B=1$ のとき、2000 回の勾配の平均は $-1.776$、標準偏差は $1.446$ でした。
 $B=100$ では、平均が $-1.770$、標準偏差が $0.139$ です。
 平均は、どちらも全データの勾配とほぼ同じです。
-ミニバッチの勾配は、平均すれば正しい値になる、偏りのない見積もりです。
+ミニバッチの勾配は、1 回ごとには全データの勾配から外れますが、何回分も平均すれば、全データの勾配に近づいていきます。
+これが、偏りのない見積もり（統計の言葉では「不偏」）という意味です。
 一方、標準偏差は見積もりのばらつきを表します。
 $B$ を 1、10、100、1000 と増やすと、標準偏差は $1.446$、$0.459$、$0.139$、$0.045$ と減りました。
-出力の値で、隣どうしの比を取ってみます。
+出力の値で、隣どうしの比を取ります。
 $1.4460\div0.4586=3.15$、$0.4586\div0.1393=3.29$、$0.1393\div0.0445=3.13$ です。
 $B$ を 10 倍にするたびに約 $1/3.2$ 倍、100 倍にすると約 $1/10$ 倍です。
 $\sqrt{10}\approx 3.2$ なので、ばらつきは $1/\sqrt{B}$ に比例して減っています。
 ここに、ミニバッチを使う理由があります。
 計算量を 100 倍かけても、勾配の精度は 10 倍にしかなりません。
 それなら、粗い見積もりで何度も進むほうが得です。
+偏りがないので、更新を重ねれば、外れは打ち消し合います。
 
-そこで、各ステップで $B$ 件のミニバッチ $\mathcal{B}$ を無作為に選び、その平均の勾配でパラメータを更新します。
+% [figpass] 案 6
+\figref{fig:ml-grad-noise}は、この実験を、\file{code/ch03/sweep_grad_noise.py} で $B$ を 10 通りに増やして走らせ直したものです（地点 $w=b=0$ と、2000 回選び直すことは同じ）。
+上の 3 枚は、2000 個の勾配のヒストグラムです。
+どの $B$ でも、2000 個の勾配の平均は全データの勾配（赤い縦線）の位置にあり、$B$ を大きくするほど山が細くなって、縦線の近くに集まります。
+下の図では、標準偏差の点が、$1/\sqrt{B}$ に比例する直線にほぼ乗っています。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{mlhist/.style={width=0.37\linewidth,height=0.25\linewidth,
+  xmin=-6,xmax=0.5,ymin=0,xtick={-6,-4,-2,0},
+  tick label style={font=\scriptsize},label style={font=\scriptsize},
+  title style={font=\footnotesize,yshift=-1.5mm},xlabel={勾配 $\pd{\calL}{w}$}}}
+\begin{tikzpicture}
+\begin{axis}[mlhist,title={$B=1$},ylabel={確率密度},ymax=0.8]
+\addplot[ybar interval,fill=figblue,draw=bookblue,thin] table[col sep=comma,x expr=\thisrow{center}-0.05,y=b1]{code/ch03/out/sweep_grad_hist.csv};
+\draw[bookaccent,thick] (axis cs:-1.7766,0) -- (axis cs:-1.7766,0.8);
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[mlhist,title={$B=10$},ymax=0.9]
+\addplot[ybar interval,fill=figblue,draw=bookblue,thin] table[col sep=comma,x expr=\thisrow{center}-0.05,y=b10]{code/ch03/out/sweep_grad_hist.csv};
+\draw[bookaccent,thick] (axis cs:-1.7766,0) -- (axis cs:-1.7766,0.9);
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[mlhist,title={$B=100$},ymax=3.2]
+\addplot[ybar interval,fill=figblue,draw=bookblue,thin] table[col sep=comma,x expr=\thisrow{center}-0.05,y=b100]{code/ch03/out/sweep_grad_hist.csv};
+\draw[bookaccent,thick] (axis cs:-1.7766,0) -- (axis cs:-1.7766,3.2);
+\end{axis}
+\end{tikzpicture}
+
+\vspace{1mm}
+\begin{tikzpicture}
+\begin{loglogaxis}[width=0.6\linewidth,height=0.3\linewidth,xlabel={バッチサイズ $B$},ylabel={勾配の標準偏差},
+  xmin=0.7,xmax=1500,ymin=0.03,ymax=2.5,
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend style={font=\scriptsize,at={(0.98,0.97)},anchor=north east,draw=black!30},legend cell align=left]
+\addplot[black!50,thick,densely dashed] table[col sep=comma,x=B,y=ref]{code/ch03/out/sweep_grad_noise.csv};
+\addplot[only marks,mark=*,mark size=1.6pt,bookblue] table[col sep=comma,x=B,y=std]{code/ch03/out/sweep_grad_noise.csv};
+\legend{$1/\sqrt{B}$ に比例する線,実測（2000 回）}
+\end{loglogaxis}
+\end{tikzpicture}
+\caption{ミニバッチの勾配のばらつき（$w=b=0$ の地点、1 万件から $B$ 件を選ぶことを 2000 回）。
+上：2000 個の勾配のヒストグラム。赤い縦線は全データの勾配 $-1.777$。縦軸の範囲は 3 枚で違う（$B$ が大きいほど山が細く高い）。
+$B=1$ の山が左右対称でないのは、1 件の勾配 $-2x^{(i)}y^{(i)}$ が、長い断片ほど大きく負になるため。
+下：標準偏差（両対数目盛り）。破線は、$B=1$ の値を $\sqrt{B}$ で割った線。
+乱数の選び方が\file{code/ch03/sgd_minibatch.py}と違うので、$B=10$ などの値は、本文の出力と小数第 2 位で違う。}
+\label{fig:ml-grad-noise}
+\end{figure}
+% [/figpass]
+
+では、これは、データが大量にあるからこそ使える方法なのでしょうか。
+そうではありません。
+見積もりに偏りがないことは、データの件数 $N$ に関係なく成り立つので、データが 100 件でも同じように使えます。
+ただし、データが少なければ、全データで毎回計算しても手間は小さく、利点も小さくなります。
+データが大量にあるときは、この方法を使わなければ、学習を進められません。
+
+以上をまとめて、1 回の更新（1 ステップ）ごとに $B$ 件のミニバッチ $\mathcal{B}$ を取り出し、その平均の勾配でパラメータを更新します。
 \begin{equation}
 \vtheta \leftarrow \vtheta - \eta\,\nabla_{\vtheta}\Bigl(\frac{1}{B}\sum_{i\in\mathcal{B}} \ell\bigl(f_\theta(\vx^{(i)}),\, y^{(i)}\bigr)\Bigr)
 \label{eq:ml-sgd}
 \end{equation}
+$\mathcal{B}$ は、そのステップで使うミニバッチ（取り出した $B$ 件のデータの番号の集まり）で、件数の $B$ とは別の記号です。
+入力を太字の $\vx^{(i)}$ と書いたのは、入力が複数の数を並べたベクトルの場合も含めるためです。
+定義\ref{def:ml-erm}の全データの平均が、ミニバッチの中だけの平均 $\frac{1}{B}\sum_{i\in\mathcal{B}}$ に置き換わっています。
 この方法を\term{確率的勾配降下法}{stochastic gradient descent, SGD}と呼びます。
 
 「確率的」とは、データを無作為に選ぶので、進む向きが毎回偶然に左右される、という意味です。
 この考え方は 1951 年の論文\cite{robbins1951stochastic}にさかのぼります。
-実装では、データの順番を混ぜてから、先頭から $B$ 件ずつ取り出すのが普通です。
-全データを一巡することを 1 \term{エポック}{epoch}と呼びます。
-データが $N$ 件なら、1 エポックは $N/B$ ステップです。
-1 万件のデータを $B=10$ で一巡するなら、$10000\div10=1000$ ステップです。
 
-\par\ifdim\dimexpr\pagegoal-\pagetotal\relax<8\baselineskip \pagebreak\fi
+大事なのは、\textbf{ミニバッチをステップごとに取り替える}ことです。
+同じ $B$ 件だけを使い続けると、その $B$ 件だけに合ったパラメータになってしまいます。
+
+実際の学習では、ミニバッチを次の手順で作るのが普通です（\figref{fig:ml-minibatch-epoch}）。
+(1) 全データの順番を無作為に混ぜ、(2) 先頭から $B$ 件ずつに切り分け、(3) 切り分けた組を順に 1 つずつ使って、1 回ずつパラメータを更新します。
+すべての組を使い終えると、全データをちょうど 1 回ずつ使ったことになります。
+この一巡を 1 \term{エポック}{epoch}と呼び、次のエポックでは、順番を混ぜ直して同じことを繰り返します。
+つまり、データ全体を $B$ 件ずつの組に分け、1 回の更新では、全データの平均の代わりに、そのうち 1 組の平均を使います。
+組の一つ一つがミニバッチで、1 組の件数がバッチサイズです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[x=6.2mm,y=5.6mm,
+  c/.style={cell,minimum width=6.2mm,minimum height=5.6mm,inner sep=0pt},
+  note/.style={font=\footnotesize,align=center,inner sep=1pt}]
+  % 1 段目: 全データ 12 件（番号順）
+  \foreach \i in {1,...,12} \node[c] at (\i,0) {\i};
+  \node[lbl,anchor=east] at (0.3,0) {全データ（$N=12$ 件）};
+  \draw[arr] (6.5,-0.55) -- node[right,lbl]{(1) 順番を無作為に混ぜる} (6.5,-1.4);
+  % 2 段目: 混ぜたあと。4 件ずつ色分け
+  \foreach \v [count=\i from 1] in {7,2,11,5} \node[c,fill=figblue] at (\i,-2) {\v};
+  \foreach \v [count=\i from 5] in {9,1,12,4} \node[c,fill=figorange] at (\i,-2) {\v};
+  \foreach \v [count=\i from 9] in {3,10,6,8} \node[c,fill=figgreen] at (\i,-2) {\v};
+  \node[lbl,anchor=east,align=right] at (0.3,-2) {(2) $B=4$ 件ずつに\\切り分ける};
+  % 切れ目
+  \draw[very thick,black!70] (4.5,-1.4) -- (4.5,-2.6);
+  \draw[very thick,black!70] (8.5,-1.4) -- (8.5,-2.6);
+  % 3 段目: 各ミニバッチで 1 回ずつ更新
+  \draw[arr] (2.5,-2.6) -- (2.5,-3.3);
+  \draw[arr] (6.5,-2.6) -- (6.5,-3.3);
+  \draw[arr] (10.5,-2.6) -- (10.5,-3.3);
+  \node[note,anchor=north] at (2.5,-3.35) {1 回目の更新};
+  \node[note,anchor=north] at (6.5,-3.35) {2 回目の更新};
+  \node[note,anchor=north] at (10.5,-3.35) {3 回目の更新};
+  \node[lbl,anchor=east,align=right] at (0.3,-3.55) {(3) 1 組ずつ、その平均の\\勾配で更新する};
+\end{tikzpicture}
+\caption{ミニバッチの作り方と 1 エポック（模式図。データ 12 件、バッチサイズ 4 の例で、マスの中の数はデータの番号）。
+順番を混ぜて 4 件ずつに切り分けると、3 つのミニバッチができ（青、橙、緑）、1 回の更新にはその 1 つだけを使う。
+3 回更新すると、12 件すべてをちょうど 1 回ずつ使ったことになる（1 エポック）。次のエポックでは、(1) の混ぜ直しからやり直す。}
+\label{fig:ml-minibatch-epoch}
+\end{figure}
+
+データが $N$ 件なら、1 エポックは $N/B$ ステップです（割り切れなければ切り上げ）。
+1 万件を $B=10$ で一巡するなら、$10000\div10=1000$ ステップです。
+先ほどの実験では、毎回 $B$ 件を無作為に選び直しましたが、次の学習のコードは、「混ぜて、切り分けて、順に使う」手順です。
+
 \snippet{ミニバッチ SGD のループ}{code:ml-sgd-loop}{ch03/sgd_minibatch.py}{sgd-loop}
 
 2 行目で、0 から $N-1$ までのデータの番号を、無作為に並べ替えます。
@@ -1348,9 +1777,12 @@ $\sqrt{10}\approx 3.2$ なので、ばらつきは $1/\sqrt{B}$ に比例して�
 5 行目は、\coderef{code:ml-linreg-model}の \code{grad} に、選んだ $B$ 件だけを渡します。
 全データを渡していた\coderef{code:ml-gd}との違いは、ここだけです。6〜7 行目の更新は変わりません。
 3 行目からの内側のループを終えると 1 エポックで、1 行目の外側のループがそれを繰り返します。
+\code{rng} は乱数を作る NumPy の部品、\code{n_epochs} はエポックの数、\code{eta} は学習率 $\eta$ です。
+2 行目が外側のループの中にあるので、順番はエポックごとに混ぜ直されます。
 
 では、同じ計算量でどこまで進めるかを比べます。
 学習率を $0.1$ にそろえ、バッチサイズを変えて学習しました。
+ミニバッチを使う学習は、どのバッチサイズでも 3 エポック（3 万件の処理）です。$B=10$ なら 3,000 ステップにあたります。
 公平に比べるため、横軸をステップ数ではなく、\textbf{処理したデータの件数}にします（\figref{fig:ml-sgd}の左）。
 全データを使う勾配降下法は、1 万件を処理して、やっと 1 ステップです。
 1 万件を処理した時点の損失は $0.167$ でした。
@@ -1361,55 +1793,105 @@ $B=10$ の SGD は、同じ 1 万件で 1000 ステップ進み、損失は $0.0
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{loglogaxis}[width=0.52\linewidth,height=0.365\linewidth,xlabel={処理したデータの件数},ylabel={損失（1 万件で評価）},
-  xmin=1,xmax=3e6,ymin=0.007,ymax=2.5,
+\begin{loglogaxis}[width=0.52\linewidth,height=0.315\linewidth,xlabel={処理したデータの件数},ylabel={損失（1 万件で評価）},
+  xmin=1,xmax=3e6,ymin=0.007,ymax=9,
   tick label style={font=\scriptsize},label style={font=\footnotesize},
   legend columns=2,
   legend style={font=\scriptsize,at={(0.98,0.97)},anchor=north east,draw=black!30,/tikz/every even column/.append style={column sep=1.5mm}},legend cell align=left]
-\addplot[bookgray,very thick] table[col sep=comma,x=seen,y=loss]{code/ch03/out/sgd_curve_full.csv};
+\addplot[black,very thick] table[col sep=comma,x=seen,y=loss]{code/ch03/out/sgd_curve_full.csv};
 \addplot[bookgreen,thick] table[col sep=comma,x=seen,y=loss]{code/ch03/out/sgd_curve_b100.csv};
 \addplot[bookaccent,thick] table[col sep=comma,x=seen,y=loss]{code/ch03/out/sgd_curve_b10.csv};
 \addplot[bookblue,thin] table[col sep=comma,x=seen,y=loss]{code/ch03/out/sgd_curve_b1.csv};
 \legend{全データ,$B=100$,$B=10$,$B=1$}
-\addplot[only marks,mark=*,mark size=1.5pt,bookgray] coordinates {(10000,0.16717)};
+\addplot[only marks,mark=*,mark size=1.5pt,black] coordinates {(10000,0.16717)};
 \node[font=\scriptsize,anchor=west,align=left,inner sep=1.5pt] at (axis cs:15000,0.165) {全データの\\1 ステップ目};
 \end{loglogaxis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.48\linewidth,height=0.365\linewidth,xlabel={重み $w$},ylabel={バイアス $b$},
+\begin{axis}[width=0.48\linewidth,height=0.315\linewidth,xlabel={重み $w$},ylabel={バイアス $b$},
   xmin=-0.05,xmax=0.8,ymin=-0.12,ymax=0.3,
   tick label style={font=\scriptsize},label style={font=\footnotesize}]
-\addplot[bookblue!45,thin,empty line=jump] table[col sep=comma,x=w,y=b]{code/ch03/out/loss_contours_big.csv};
-\addplot[bookblue!70,very thin,restrict expr to domain={\thisrow{step}}{0:120}] table[col sep=comma,x=w,y=b]{code/ch03/out/sgd_path_b1.csv};
+\addplot[black!22,thin,empty line=jump] table[col sep=comma,x=w,y=b]{code/ch03/out/loss_contours_big.csv};
+\addplot[bookblue,thin,restrict expr to domain={\thisrow{step}}{0:120}] table[col sep=comma,x=w,y=b]{code/ch03/out/sgd_path_b1.csv};
 \addplot[bookaccent,thick] table[col sep=comma,x=w,y=b]{code/ch03/out/sgd_path_b10.csv};
 \addplot[black,very thick] table[col sep=comma,x=w,y=b]{code/ch03/out/sgd_path_full.csv};
 \addplot[only marks,mark=*,mark size=2.6pt,white] coordinates {(0.6033,-0.0046)};
 \addplot[only marks,mark=x,mark size=3.5pt,very thick,black] coordinates {(0.6033,-0.0046)};
+\addplot[only marks,mark=*,mark size=2pt,black,mark options={fill=white}] coordinates {(0.17766,0.13192)};
+\node[font=\scriptsize,anchor=south west,align=left,inner sep=1.5pt] (ml-sgd-first) at (axis cs:-0.045,0.2) {黒の 1 ステップ目\\（1 万件を処理）};
+\draw[black!60,thin] (axis cs:0.115,0.198) -- (axis cs:0.168,0.142);
 \end{axis}
 \end{tikzpicture}
-\caption{左：処理したデータの件数と損失（両軸とも対数目盛り）。
-右：最初の 300 ステップの道のり（$B=1$ は 120 ステップまで）。黒が全データ、赤が $B=10$、青が $B=1$。$\times$ 印が谷底。
-薄い青の線は等高線で、\figref{fig:ml-landscape}と同じ細長い谷の一部を拡大している。}
+\caption{左：処理したデータの件数と損失（両軸とも対数目盛り）。線の色は左右で共通で、黒が全データ、緑が $B=100$、赤が $B=10$、青が $B=1$。
+右：パラメータ $(w,b)$ が動いた跡。$(0,0)$ から始めた最初の 300 ステップを描いた（$B=1$ は 120 ステップまで。$B=100$ は描いていない）。$\times$ 印が谷底。
+右の図でそろえたのはステップ数で、処理したデータは、黒が 300 万件、赤が 3,000 件、青が 120 件である。
+灰色の細い線は等高線で、\figref{fig:ml-landscape}と同じ細長い谷の一部を拡大している。}
 \label{fig:ml-sgd}
 \end{figure}
 
-\figref{fig:ml-sgd}の右は、パラメータがたどった道です。
-全データの道（黒）はなめらかです。
-ミニバッチの道（赤と青）は、勾配の見積もりがぶれるので、ふらつきます。
+\figref{fig:ml-sgd}の右は、パラメータ $(w,b)$ が動いた跡（ステップごとの $(w,b)$ を順につないだ線）を、ステップ数をそろえて描いたものです。
+全データの跡（黒）はなめらかです。
+ミニバッチの跡（赤と青）は、勾配の見積もりがぶれるので、ふらつきます。
 それでも、平均すれば正しい向きなので、同じ谷底へ向かいます。
+赤は、黒の 1000 分の 1 のデータしか処理していないのに、谷底の近くまで来ています。
 ただし、谷底に着いても止まらず、見積もりのぶれのせいで、まわりを揺れ続けます。
-$B=1$ の損失が $0.01$ から $0.02$ のあたりで上下しているのは、このためです（左の図の青）。
-揺れは、バッチサイズを大きくするか、学習率を小さくすると収まります。
+左の図の青い線（$B=1$）が、おおむね $0.01$ から $0.02$ の間で上下し、ときには $0.04$ 近くまで上がるのは、このためです。ただし、この線は記録を間引いて描いたもので、毎ステップの損失はもっと高く上がることがあります（この節の少し先で見ます）。
+揺れは、バッチサイズを大きくするか、学習率を小さくすると、小さくなります。
+% [figpass] 案 7
+\figref{fig:ml-sgd-eta}は、これを確かめたものです。
+\file{code/ch03/sweep_sgd_eta.py} で、$B$ を 3 通り、学習率を 0.003〜0.3 の 5 通りに変え、乱数の種を 3 つずつ走らせました。
+右の図は、谷底から出発して 1 エポック走らせたときに、損失が最小値をどれだけ上回ったかで、谷底のまわりの揺れだけを表します。
+どの $B$ でも、学習率を下げるほど揺れは小さく、同じ学習率なら $B$ が大きいほど小さくなっています。
+左の図は、$(0,0)$ から 3 エポック（3 万件）走らせたあとの同じ量で、谷底まで進む速さと揺れの両方を含みます。
+$B=100$ で学習率を下げすぎると、3 エポックでは谷底に着かず、かえって損失が大きく残ります。
+揺れを抑えることと速く進むことは両立しないので、学習率と $B$ は組にして選びます。
+\figref{fig:ml-sgd}の左の青い線は、記録を間引いて描いたものでした。
+毎ステップで見ると、$B=1$・学習率 $0.1$ の損失は、3 エポック目の 1.4\% ほどのステップで 0.04 を超え、最大で 0.24 まで上がりました（\file{code/ch03/out/sweep_sgd_eta.txt}）。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{mlsgdeta/.style={height=0.33\linewidth,
+  xmin=0.002,xmax=0.45,xlabel={学習率 $\eta$},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  title style={font=\footnotesize,yshift=-1.5mm}}}
+\begin{tikzpicture}
+\begin{loglogaxis}[mlsgdeta,width=0.53\linewidth,title={$(0,0)$ から 3 エポック},
+  ylabel={損失 $-$ 最小値},ymin=1e-5,ymax=1,
+  legend to name=mlsgdetaleg,legend columns=3,legend style={font=\scriptsize,draw=black!30,/tikz/every even column/.append style={column sep=3mm}}]
+\addplot[bookblue,thick,mark=*,mark size=1.2pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_from0_b1.csv};
+\addplot[bookaccent,thick,mark=square*,mark size=1.2pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_from0_b10.csv};
+\addplot[bookgreen,thick,mark=triangle*,mark size=1.6pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_from0_b100.csv};
+\legend{$B=1$,$B=10$,$B=100$}
+\end{loglogaxis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{loglogaxis}[mlsgdeta,width=0.49\linewidth,title={谷底から 1 エポック（揺れ）},
+  ymin=3e-8,ymax=1]
+\addplot[bookblue,thick,mark=*,mark size=1.2pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_frombest_b1.csv};
+\addplot[bookaccent,thick,mark=square*,mark size=1.2pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_frombest_b10.csv};
+\addplot[bookgreen,thick,mark=triangle*,mark size=1.6pt,error bars/.cd,y dir=both,y explicit] table[col sep=comma,x=eta,y=excess,y error plus expr=\thisrow{hi}-\thisrow{excess},y error minus expr=\thisrow{excess}-\thisrow{lo}]{code/ch03/out/sweep_sgd_frombest_b100.csv};
+\end{loglogaxis}
+\end{tikzpicture}
+
+\vspace{1mm}
+\ref{mlsgdetaleg}
+\caption{ミニバッチ SGD で、バッチサイズ $B$ と学習率 $\eta$ を変えたときの、損失が最小値 $0.00909$ を上回る量（最後のエポックの毎ステップの損失の平均から最小値を引いた値。両軸とも対数目盛り）。
+データ（1 万件）、ミニバッチの作り方、評価のしかたは\figref{fig:ml-sgd}と同じ。点は種 3 つの中央値、縦の線は最小から最大まで（多くは点に隠れる）。線の色と印は左右で共通で（図の下の凡例）、青の丸が $B=1$、赤の四角が $B=10$、緑の三角が $B=100$。
+左：$(0,0)$ から 3 エポック。右：谷底から 1 エポック。右では、どの線も右上がりで、上から $B=1$、$10$、$100$ の順に並ぶ。}
+\label{fig:ml-sgd-eta}
+\end{figure}
+% [/figpass]
 学習の途中で学習率を下げていく工夫は、\chapref{ch:training}で扱います。
 
 バッチサイズは、小さければよいわけでもありません。
 計算機は、$B$ 件をまとめて行列の計算にすると、1 件ずつよりずっと速く処理できます（\chapref{ch:pytorch}）。
-そのため実際には、メモリに収まる範囲で大きめの $B$ を選びます。
-\tabref{tab:ml-scale}に、この章の実験と、実際の LLM の学習を並べました。
+そのため、メモリに収まる範囲で大きめの $B$ を選びます。
+\tabref{tab:ml-scale}は、この章の実験と実際の LLM の比較です。
 
 \begin{table}[tbp]
 \centering
-\caption{ミニバッチ学習の規模。言語モデルでは、データもバッチサイズもトークン数で数える。
+\caption{ミニバッチ学習の規模。言語モデルでは、文章の中の 1 か所がデータ 1 件にあたるので、データもバッチサイズもトークン数で数える。
+本書の基盤モデルの 4,096 トークンは、128 トークンの列 32 本分（トークンの種類の数 4096 と同じなのは偶然）。
 本書の基盤モデルの値は\chapref{ch:pretraining}の設定、LLaMA は\cite{touvron2023llama}、Llama 3.1 は\cite{dubey2024llama3}による。
 モデル名の 65B と 405B は、パラメータの数（650 億個と 4,050 億個）を表し、バッチサイズ $B$ とは関係がない。}
 \label{tab:ml-scale}
@@ -1431,8 +1913,35 @@ Llama 3.1 405B（2024 年） & 約 15.6 兆トークン & 400 万〜1,600 万ト
 実際の LLM は、データが膨大なので、ほぼ 1 周しかしません。
 LLaMA のステップ数は、データ量をバッチサイズで割って求めた概算です。
 
-この節では、勾配を一部のデータから見積もる確率的勾配降下法を学びました。
-見積もりはぶれますが、同じ計算量で何倍も多く進めるので、大きなデータでは必ずこちらを使います。
+% [figpass] 案 11
+最後に、全データを使う勾配降下法と、$B$ の両極端を含むミニバッチ SGD を、この節の実験の値で\tabref{tab:ml-gd-vs-sgd}に並べます。
+$B=N$ と $B=1$ は両端で、ふつうはその間の $B$ を使います。
+
+\begin{table}[tbp]
+\centering
+\caption{全データの勾配降下法と、ミニバッチ SGD の比較（データ 1 万件、学習率 0.1 の、この節の実験の値）。
+勾配のばらつきは $w=b=0$ の地点での $\pd{\calL}{w}$ の標準偏差、損失の最小値は $0.0091$。}
+\label{tab:ml-gd-vs-sgd}
+\small
+\begin{tabularx}{\linewidth}{l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X}
+\toprule
+ & 勾配降下法（$B=N$） & SGD（$B=1$） & ミニバッチ SGD（$1<B<N$） \\
+\midrule
+更新に使うデータ & 全 1 万件 & 1 件 & $B$ 件 \\
+1 エポックの更新回数 & 1 & 1 万 & $N/B$（$B=10$ なら 1000） \\
+勾配のばらつき & 0（毎回同じ） & 1.446 & $B=10$ で 0.459、$B=100$ で 0.139 \\
+1 万件処理後の損失 & 0.167 & 0.0106 & $B=10$ でも $100$ でも 0.0093 \\
+谷底のまわりの揺れ & なし & 最も大きい & $B$ が大きいほど小さい（\figref{fig:ml-sgd-eta}） \\
+まとめて計算 & できるが、1 回の更新に全データ分の時間とメモリが要る & できない（1 件ずつ） & できる（メモリに収まる $B$ を選ぶ） \\
+本書での使いどころ & 小さなデータ（\secref{sec:ml-gd}） & 比較のためだけ & 大きなデータの学習（\tabref{tab:ml-scale}） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% [/figpass]
+
+この節では、確率的勾配降下法を学びました。
+全データの平均の勾配を、ステップごとに取り替える一部のデータ（ミニバッチ）の平均の勾配で代用する方法です。
+見積もりはぶれますが、同じ計算量で何倍も多く進めるので、大きなデータでは、ほぼ必ず使います。
 
 \section{汎化：見たことのないデータで当てる}\label{sec:ml-generalization}
 
@@ -1451,41 +1960,48 @@ LLaMA のステップ数は、データ量をバッチサイズで割って求�
 訓練データに限らず、新しいデータでも正しく予測できることを\term{汎化}{generalization}と呼びます。
 汎化の程度を測るには、学習に使わなかったデータで損失を計算します。
 そのために、手元のデータを最初に三つに分けておきます。
-\term{訓練データ}{training data}は、パラメータの学習に使います。
-\term{検証データ}{validation data}は、学習の途中で汎化の程度を測り、設定を選ぶために使います。
-\term{テストデータ}{test data}は、最後に一度だけ使い、完成したモデルの成績を報告します。
-三つの役割を、\figref{fig:ml-data-split}に並べました。
-検証データとテストデータを分ける理由は、あとで述べます。
+\term{訓練データ}{training data}は、勾配を計算して、パラメータを更新するために使います。
+\term{検証データ}{validation data}は、学習の途中で汎化の程度を測るために使います。
+勾配は計算しないので、パラメータの更新には使いません。
+その代わり、測った結果を見て、人が設定（多項式の次数や学習率など）を選び、学習のやめどきを決めます。
+\term{テストデータ}{test data}は、最後に一度だけ使って、完成したモデルの成績を測ります。
+その結果は、どの判断にも使いません。
+三つの役割を\figref{fig:ml-data-split}に並べました（検証とテストを分ける理由は、節の最後で述べます）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize,
-  part/.style={minimum height=9mm,inner sep=0pt,rounded corners=0pt},
-  use/.style={font=\footnotesize,align=center,inner sep=1pt}]
+  part/.style={minimum height=8mm,inner sep=0pt,rounded corners=0pt},
+  use/.style={font=\footnotesize,align=right,inner sep=1.5pt}]
   \node[box,part,minimum width=64mm] (tr) {\textbf{訓練データ}};
   \node[orangebox,part,minimum width=30mm,anchor=west] (va) at ($(tr.east)+(1mm,0)$) {\textbf{検証データ}};
   \node[redbox,part,minimum width=30mm,anchor=west] (te) at ($(va.east)+(1mm,0)$) {\textbf{テストデータ}};
   \node[lbl,anchor=south west] at ($(tr.north west)+(0,0.8mm)$) {手元のデータ（学習の前に、三つに分けておく）};
-  \node[use,below=5.5mm of tr] (utr) {パラメータ $\vtheta$ を学習する\\（毎ステップ使う）};
-  \node[use,below=5.5mm of va] (uva) {汎化の程度を測り、\\設定を選ぶ\\（学習の途中で何度も）};
-  \node[use,below=5.5mm of te] (ute) {完成したモデルの\\成績を報告する\\（最後に一度だけ）};
-  \draw[arr] (tr) -- (utr); \draw[arr] (va) -- (uva); \draw[arr] (te) -- (ute);
+  % モデルへの影響（訓練は直接、検証は間接、テストは影響しない）
+  \node[greenbox,part,minimum width=95mm,anchor=north west] (mdl) at ($(tr.south west)+(0,-15mm)$)
+    {\textbf{モデル}（パラメータ $\vtheta$）と、\textbf{学習の設定}（ハイパーパラメータ）};
+  \draw[arr] (tr.south) -- node[left,use]{毎ステップ使う。\\勾配でパラメータを\\更新する（直接）} (tr.south |- mdl.north);
+  \draw[darr] (va.south) -- node[left,use]{損失を測るだけ（勾配なし）。\\結果を見て、人が設定を選び、\\やめどきを決める（間接）} (va.south |- mdl.north);
+  \node[use,align=center,anchor=north] at ($(te.south)+(0,-1.5mm)$) {最後に一度、成績を\\測るだけ。結果は、\\どの判断にも使わない};
 \end{tikzpicture}
-\caption{データの三つの役割。訓練データはパラメータの学習に、検証データは設定選びに、テストデータは最後の成績の報告に使う。
-右へ行くほど使う回数が少なく、テストデータは一度しか使わない。帯の幅は割合の一例で、決まった比率があるわけではない。}
+\caption{データの三つの役割と、モデルへの影響。訓練データは、勾配でパラメータを直接更新する（実線）。
+検証データは、パラメータを更新しないが、設定選びとやめどきの判断を通して、できあがるモデルに間接的に影響する（破線）。
+テストデータは、成績を測るだけで、モデルにも学習の進め方にも影響しない（モデルへ向かう矢印がない）。
+帯の幅は割合の一例。}
 \label{fig:ml-data-split}
 \end{figure}
 
 \secref{sec:ml-gd}の直線を、学習に使っていない 100 件で評価すると、損失は $0.0076$ でした。
 訓練データでの損失 $0.0112$ と同じ程度です\footnote{訓練データのほうが大きいのは、114 字で 120 トークンという極端な断片が 1 件含まれていたためです。
 珍しい文字は、1 文字が複数のトークンに分かれることがあります（\chapref{ch:tokenizer}）。}。
+この 100 件や、前節までの「学習に使っていない」データは、設定選びにも使っていないので、役割はテストデータにあたります。
 パラメータが 2 個しかないモデルは、100 件を丸暗記できないので、新しいデータでも同じように当たります。
 では、モデルをもっと柔軟にすると、何が起きるでしょうか。
 
 \subsection*{多項式回帰で過学習を見る}
 
 正解の曲線が分かっている人工データで実験します。
-$y=\sin(\pi x)$ に小さなずれを足した点を、10 件だけ訓練データにします。
+$y=\sin(\pi x)$ に、小さな偶然のずれを足した点を、10 件だけ訓練データにします。
 モデルは $M$ 次の多項式です。
 \begin{equation}
 f_\theta(x) = w_0 + w_1 x + w_2 x^2 + \dots + w_M x^M
@@ -1494,6 +2010,7 @@ f_\theta(x) = w_0 + w_1 x + w_2 x^2 + \dots + w_M x^M
 $M$ を\textbf{次数}と呼びます。$M=1$ なら直線で、$M$ が大きいほど、曲がりくねった曲線を表せます。
 パラメータは $w_0,\dots,w_M$ の $M+1$ 個です。
 $x^2$ や $x^3$ を「別の入力」と見れば、これは入力が複数ある線形回帰（\eqref{eq:ml-linear-multi}）です。
+グラフは曲線ですが、予測がパラメータ（重み）の 1 次式なので、「線形」と呼びます。
 損失は二乗誤差です。
 線形回帰なので、\secref{sec:ml-gd}の終わりで触れた公式で、損失が最小になる係数を直接求めました（\file{code/ch03/overfit_poly.py} の \code{fit} 関数）。
 勾配降下法の止めどきに左右されずに、次数の違いだけを比べるためです。
@@ -1504,18 +2021,19 @@ $x^2$ や $x^3$ を「別の入力」と見れば、これは入力が複数あ�
 \outputfile{ch03/out/poly_degree_odd.txt}
 
 訓練誤差は、次数を上げるほど下がり、$M=9$ で 0 になります。
-パラメータが 10 個あれば、10 個の点をすべて通る曲線を作れるからです。
+パラメータが 10 個あれば、10 個の点（$x$ の値はすべて違います）をすべて通る曲線を作れるからです。
 点を 1 つ通るごとに条件が 1 つ増えますが、調整できる数も同じ 10 個あるので、すべての条件を満たせます。
-ところが、検証誤差は $M=3$ の $0.290$ が最小で、そのあとは上がっていきます（全部の次数は\figref{fig:ml-poly-errors}の左）。
+ところが、検証誤差は $M=3$ の $0.290$ が最小です。
+そのあとは $M=7$ までほとんど変わらず、$M=8$ と $9$ で大きく上がります（全部の次数は\figref{fig:ml-poly-errors}の左）。
 \figref{fig:ml-poly-fits}で、3 つの次数の曲線を見比べてください。
 
 \begin{figure}[tbp]
 \centering
-\pgfplotsset{mlpoly/.style={width=0.385\linewidth,height=0.32\linewidth,
-  xmin=-1.05,xmax=1.05,ymin=-1.9,ymax=1.9,xtick={-1,0,1},ytick={-1,0,1},
-  tick label style={font=\scriptsize},title style={font=\footnotesize,yshift=-1.5mm}}}
+\pgfplotsset{mlpoly/.style={width=0.385\linewidth,height=0.29\linewidth,
+  xmin=-1.05,xmax=1.05,ymin=-1.9,ymax=1.9,xtick={-1,0,1},ytick={-1,0,1},xlabel={$x$},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},title style={font=\footnotesize,yshift=-1.5mm}}}
 \begin{tikzpicture}
-\begin{axis}[mlpoly,title={$M=1$：未学習}]
+\begin{axis}[mlpoly,title={$M=1$：未学習},ylabel={$y$},ylabel style={yshift=-2mm}]
 \addplot[bookgreen,dashed,thick] table[col sep=comma,x=x,y=true]{code/ch03/out/poly_curves.csv};
 \addplot[bookaccent,very thick] table[col sep=comma,x=x,y=m1]{code/ch03/out/poly_curves.csv};
 \addplot[only marks,mark=*,mark size=1.5pt,bookblue] table[col sep=comma,x=x,y=y]{code/ch03/out/poly_train.csv};
@@ -1536,12 +2054,13 @@ $x^2$ や $x^3$ を「別の入力」と見れば、これは入力が複数あ�
 \end{axis}
 \end{tikzpicture}
 \caption{10 件の訓練データ（青い点）に、次数の違う多項式（赤い線）を当てはめた。緑の破線が、データを作った本当の曲線。
-直線は単純すぎて、曲線を表せない。9 次式はすべての点を通るが、点と点の間で大きく暴れる。}
+直線は単純すぎて、曲線を表せない。9 次式は 10 個の点をすべて通るが、点と点の間で上下に大きく振れる（とくに左端の近く）。}
 \label{fig:ml-poly-fits}
 \end{figure}
 
 $M=1$ の直線は、訓練データにも合っていません。
-モデルが単純すぎて、データの形を表せない状態です。これを\term{未学習}{underfitting}と呼びます。
+このように、訓練データにさえ合っていない状態を\term{未学習}{underfitting}と呼びます（「まだ学習していない」という意味ではありません）。
+ここでの原因は、モデルが単純すぎて、データの形を表せないことです。
 $M=3$ は、本当の曲線（緑の破線）に近い形です。
 $M=9$ は、10 個の点を正確に通ります。
 しかし、点と点の間や両端で、大きく波打っています。
@@ -1550,28 +2069,31 @@ $M=9$ は、10 個の点を正確に通ります。
 丸暗記のモデルは、過学習の極端な例でした。
 
 \figref{fig:ml-poly-errors}の左は、次数と誤差の関係です。
-訓練誤差（青）は下がり続け、検証誤差（赤）は途中から上がります。
-二つの誤差の差が開き始めたら、過学習のしるしです。
+訓練誤差（青）は下がり続けます。
+検証誤差（赤）は、$M=3$ で最小になったあとは下がらなくなり、$M=8$ から大きく上がります。
+訓練誤差は下がり続けるのに、検証誤差が下がらなくなり、やがて上がり始めたら、過学習のしるしです。
+二つの誤差に差があること自体は、ふつうのことです（ちょうどよい $M=3$ でも、訓練誤差 $0.215$ に対して、検証誤差は $0.290$ です）。
 学習中に訓練損失と検証損失の両方を見るのは、このためです。
 本書の基盤モデルでは、学習の終わりの訓練損失が $3.11$、検証損失が $3.48$ でした。
-訓練損失のほうが $0.37$ だけ小さく、この差が過学習の程度の目安になります。
+この差（$0.37$）だけでは過学習とは言えず、検証損失が下がり続けているかどうかを合わせて見ます（\chapref{ch:pretraining}で実際に確かめます）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=0.365\linewidth,xlabel={次数 $M$},ylabel={誤差},
+\begin{axis}[width=0.5\linewidth,height=0.315\linewidth,xlabel={次数 $M$},ylabel={誤差},
   xmin=-0.3,xmax=9.3,ymin=0,ymax=0.85,xtick={0,1,...,9},
   tick label style={font=\scriptsize},label style={font=\footnotesize},
-  legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east,draw=black!30},legend cell align=left]
+  legend columns=2,
+  legend style={font=\scriptsize,at={(0.98,0.97)},anchor=north east,draw=black!30,/tikz/every even column/.append style={column sep=1.5mm}},legend cell align=left]
 \addplot[bookblue,thick,mark=*,mark size=1.4pt] table[col sep=comma,x=M,y=train]{code/ch03/out/poly_errors.csv};
 \addplot[bookaccent,thick,mark=square*,mark size=1.4pt] table[col sep=comma,x=M,y=val]{code/ch03/out/poly_errors.csv};
 \legend{訓練誤差,検証誤差}
-\node[font=\scriptsize,anchor=south] at (axis cs:1.7,0.62) {未学習};
+\node[font=\scriptsize,anchor=north] at (axis cs:1.4,0.52) {未学習};
 \node[font=\scriptsize,anchor=south] at (axis cs:8.2,0.47) {過学習};
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.5\linewidth,height=0.365\linewidth,xlabel={$x$},ylabel={$y$},
+\begin{axis}[width=0.5\linewidth,height=0.315\linewidth,xlabel={$x$},ylabel={$y$},
   xmin=-1.05,xmax=1.05,ymin=-1.9,ymax=1.9,
   tick label style={font=\scriptsize},label style={font=\footnotesize},
   legend style={font=\scriptsize,at={(0.03,0.97)},anchor=north west,draw=black!30},legend cell align=left]
@@ -1582,15 +2104,15 @@ $M=9$ は、10 個の点を正確に通ります。
 \legend{$\lambda=0$,$\lambda=0.001$}
 \end{axis}
 \end{tikzpicture}
-\caption{左：多項式の次数と誤差。訓練誤差は下がり続けるが、検証誤差は $M=3$ を境に上がる。
-右：同じ 9 次式に L2 正則化をかけた結果（赤）。正則化なし（灰色）の暴れが収まり、本当の曲線（緑の破線）に近づく。}
+\caption{左：多項式の次数と誤差。訓練誤差は下がり続ける。検証誤差は $M=3$ で最小になり、$M=7$ まではほぼ横ばいで、$M=8$ から急に上がる。
+右：同じ 9 次式に L2 正則化をかけた結果（赤）。正則化なし（灰色）の大きな振れが収まり、本当の曲線（緑の破線）に近づく。青い点は訓練データ。}
 \label{fig:ml-poly-errors}
 \end{figure}
 
 
 \subsection*{過学習を防ぐ}
-\skimread{「対策は三つある」という結論だけ押さえれば、先へ進めます。データを増やす、モデルを単純にする、重みが大きくなりすぎないように損失に罰を加える（L2 正則化）、の三つです。
-罰の強さを決める数を $\lambda$ と書きます。}
+\skimread{「対策は三つある」という結論だけ押さえれば、先へ進めます。データを増やす、モデルを単純にする、重みが大きくなりすぎないように、重みの 2 乗の和を損失に足す（L2 正則化）、の三つです。
+足す項の強さを決める数を $\lambda$ と書きます。}
 
 過学習への対策は、大きく三つあります。
 
@@ -1599,6 +2121,79 @@ $M=9$ は、10 個の点を正確に通ります。
 1000 件では $0.275$ です。
 データが多ければ、偶然のずれは打ち消し合い、柔軟なモデルでも本当の形を学べます。
 LLM が膨大な文章で学習するのは、巨大なモデルを過学習させないためでもあります。
+% [figpass] 案 9
+\figref{fig:ml-poly-sweeps}の左下は、\file{code/ch03/sweep_poly.py} で訓練データの件数を 10〜1000 件の 6 通りに変え、データを作る乱数の種も 10 通り変えて、3 次式と 9 次式の検証誤差を比べたものです。
+10 件では、9 次式の検証誤差は種によって 0.42 から 1.45 までばらつき、3 次式よりずっと悪くなります。
+件数が増えるほど 2 本の差は縮まり、300 件以上では、9 次式も 3 次式と同じ程度になります。
+どちらも、本当の曲線そのものの検証誤差（0.270。偶然のずれの分）より下には行きません。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{mllam/.style={width=0.3\linewidth,height=0.25\linewidth,
+  xmin=-1.05,xmax=1.05,ymin=-1.9,ymax=1.9,xtick={-1,0,1},ytick={-1,0,1},
+  tick label style={font=\scriptsize},label style={font=\scriptsize},title style={font=\footnotesize,yshift=-1.5mm}}}
+\begin{tikzpicture}
+\begin{axis}[mllam,title={$\lambda=0$},ylabel={$y$},ylabel style={yshift=-2mm}]
+\addplot[bookgreen,dashed,thick] table[col sep=comma,x=x,y=true]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[bookaccent,very thick] table[col sep=comma,x=x,y=lam0]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[only marks,mark=*,mark size=1.2pt,bookblue] table[col sep=comma,x=x,y=y]{code/ch03/out/poly_train.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[mllam,title={$\lambda=10^{-5}$},yticklabels={}]
+\addplot[bookgreen,dashed,thick] table[col sep=comma,x=x,y=true]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[bookaccent,very thick] table[col sep=comma,x=x,y=lam1e-5]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[only marks,mark=*,mark size=1.2pt,bookblue] table[col sep=comma,x=x,y=y]{code/ch03/out/poly_train.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[mllam,title={$\lambda=10^{-3}$},yticklabels={}]
+\addplot[bookgreen,dashed,thick] table[col sep=comma,x=x,y=true]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[bookaccent,very thick] table[col sep=comma,x=x,y=lam1e-3]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[only marks,mark=*,mark size=1.2pt,bookblue] table[col sep=comma,x=x,y=y]{code/ch03/out/poly_train.csv};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[mllam,title={$\lambda=1$},yticklabels={}]
+\addplot[bookgreen,dashed,thick] table[col sep=comma,x=x,y=true]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[bookaccent,very thick] table[col sep=comma,x=x,y=lam1]{code/ch03/out/sweep_poly_curves.csv};
+\addplot[only marks,mark=*,mark size=1.2pt,bookblue] table[col sep=comma,x=x,y=y]{code/ch03/out/poly_train.csv};
+\end{axis}
+\end{tikzpicture}
+
+\vspace{1mm}
+\begin{tikzpicture}
+\begin{semilogxaxis}[width=0.52\linewidth,height=0.33\linewidth,xlabel={訓練データの件数},ylabel={検証誤差},
+  xmin=7,xmax=1500,ymin=0.2,ymax=1.5,
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend style={font=\scriptsize,at={(0.97,0.97)},anchor=north east,draw=black!30},legend cell align=left]
+\addplot[bookaccent,thick,mark=square*,mark size=1.3pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=n,y=median,y error plus expr=\thisrow{hi}-\thisrow{median},y error minus expr=\thisrow{median}-\thisrow{lo}]{code/ch03/out/sweep_poly_n_m9.csv};
+\addplot[bookblue,thick,mark=*,mark size=1.3pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=n,y=median,y error plus expr=\thisrow{hi}-\thisrow{median},y error minus expr=\thisrow{median}-\thisrow{lo}]{code/ch03/out/sweep_poly_n_m3.csv};
+\addplot[bookgreen,thick,dashed] table[col sep=comma,x=x,y=true]{code/ch03/out/sweep_poly_lam0.csv};
+\legend{9 次式,3 次式,本当の曲線}
+\end{semilogxaxis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{semilogxaxis}[width=0.5\linewidth,height=0.33\linewidth,xlabel={正則化の強さ $\lambda$},ylabel={誤差},
+  xmin=3e-9,xmax=30,ymin=-0.03,ymax=1.2,xtick={1e-8,1e-6,1e-4,1e-2,1},ytick={0,0.2,0.4,0.6,0.8},
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend style={font=\scriptsize,at={(0.03,0.97)},anchor=north west,draw=black!30},legend cell align=left]
+\addplot[bookblue,thick,mark=*,mark size=1pt] table[col sep=comma,x=lam,y=train]{code/ch03/out/sweep_poly_lam.csv};
+\addplot[bookaccent,thick,mark=square*,mark size=1pt] table[col sep=comma,x=lam,y=val]{code/ch03/out/sweep_poly_lam.csv};
+\addplot[black!45,thin,densely dashed] table[col sep=comma,x=x,y=val0]{code/ch03/out/sweep_poly_lam0.csv};
+\legend{訓練誤差,検証誤差,$\lambda=0$ の検証誤差}
+\end{semilogxaxis}
+\end{tikzpicture}
+\caption{過学習の対策を、パラメータを変えて見る（\file{code/ch03/sweep_poly.py}）。
+上：9 次式に、強さ $\lambda$ を変えた L2 正則化をかけた曲線（赤）。青い点は訓練データ 10 件、緑の破線は本当の曲線。
+左下：訓練データの件数と検証誤差。点はデータの乱数の種 10 通りの中央値、縦の線は最小から最大まで。
+緑の破線は、本当の曲線そのものの検証誤差。右下：9 次式（訓練データ 10 件）で $\lambda$ を 19 通りに変えた誤差（横軸は対数目盛り）。
+灰色の破線は正則化なし（$\lambda=0$）の検証誤差 0.459。検証データは、どれも本文と同じ 200 件。}
+\label{fig:ml-poly-sweeps}
+\end{figure}
+% [/figpass]
 
 \textbf{第二に、モデルを単純にします。}
 次数を 9 から 3 に下げるのが、その例です。
@@ -1606,96 +2201,164 @@ LLM が膨大な文章で学習するのは、巨大なモデルを過学習さ�
 \textbf{第三に、パラメータが大きくなりすぎないようにします。}
 先ほどの出力の右端の列を見てください。
 $M=9$ では、係数の絶対値が最大で $136.8$ にもなっています。
-曲線が暴れるのは、大きな係数どうしが打ち消し合う形で、無理に点を通しているからです。
-そこで、損失に「パラメータの大きさ」の罰を加えます。
+曲線が大きく振れるのは、絶対値の大きな正の項と負の項を足し合わせて、点を通しているからです。
+点から少し離れると、この打ち消し合いがずれて、値が大きく振れます。
+% [figpass] 案 10
+\figref{fig:ml-poly-terms}は、その様子を数値で見たものです（\file{code/ch03/sweep_poly.py} の出力）。
+訓練データの点 $x=-0.778$ では、絶対値が 20 を超える項どうしが打ち消し合い、和は正解の $-0.396$ に一致します。
+隣の点との中間 $x=-0.889$ では、定数項を除く各項が 1.1〜3.3 倍に（次数が高い項ほど大きく）なり、打ち消し合いがずれて、和は $-1.603$ です。
+本当の曲線の値は $-0.342$ なので、1 以上も外れています。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[width=0.8\linewidth,height=0.32\linewidth,ybar,bar width=4.2pt,
+  xlabel={次数 $j$（項 $w_jx^j$ の番号）},ylabel={項の値 $w_jx^j$},
+  xmin=-0.6,xmax=9.6,xtick={0,1,...,9},ymin=-65,ymax=52,
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  legend style={font=\scriptsize,at={(0.5,1.03)},anchor=south,draw=black!30,legend columns=2,/tikz/every even column/.append style={column sep=2mm}},legend cell align=left]
+\addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=j,y=on]{code/ch03/out/sweep_poly_terms.csv};
+\addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=j,y=mid]{code/ch03/out/sweep_poly_terms.csv};
+\legend{$x=-0.778$（訓練データの点）：和 $-0.396$,$x=-0.889$（中間）：和 $-1.603$}
+\draw[black!50,thin] (axis cs:-0.6,0) -- (axis cs:9.6,0);
+\end{axis}
+\end{tikzpicture}
+\caption{正則化なしの 9 次式（\figref{fig:ml-poly-fits}の右）の 10 個の項 $w_jx^j$ を、2 つの $x$ で並べた棒グラフ。
+予測は 10 本の棒の和。訓練データの点（青）では、大きな正と負の項が打ち消し合って正解に一致する。
+中間の点（橙）では、どの項もさらに大きくなり、和は本当の曲線（$-0.342$）から 1 以上ずれる。}
+\label{fig:ml-poly-terms}
+\end{figure}
+% [/figpass]
+そこで、損失に、パラメータの大きさを表す項を足します。
+この項を\textbf{ペナルティ}（罰則）の項、または\textbf{正則化項}と呼びます。
 \begin{equation}
 \calL_{\text{正則化}}(\vtheta) = \calL(\vtheta) + \lambda \norm{\vw}^2,
 \qquad \norm{\vw}^2 = w_1^2 + w_2^2 + \dots + w_M^2
 \label{eq:ml-l2}
 \end{equation}
 第 2 項は、重みの 2 乗の和です。
-定数項 $w_0$ は曲線全体を上下にずらすだけなので、罰には入れません。$\vw$ は、$w_0$ 以外の重みを並べたベクトルです。
+定数項 $w_0$ は曲線全体を上下にずらすだけなので、ペナルティには入れません。$\vw$ は、$w_0$ 以外の重みを並べたベクトルです。
 重みが大きいほど損失が増えるので、最適化は「データに合わせつつ、重みは小さく」を目指します。
 この工夫を \textbf{L2 正則化}（L2 regularization）と呼びます。
-$\lambda$（ラムダ）は、罰の強さを決める数です。
+$\lambda$（ラムダ）は、ペナルティの強さを決める数です。
 
 9 次式に、$\lambda$ を変えながら L2 正則化をかけてみました。
 $\lambda=0.001$ では、係数の最大値は $136.8$ から $2.8$ に収まり、検証誤差は $0.459$ から $0.286$ に下がりました。
 次数 3 の多項式と同じ程度の成績です（\figref{fig:ml-poly-errors}の右）。
-一方、$\lambda=1$ では罰が強すぎて、訓練誤差が $0.645$、検証誤差が $0.700$ となり、未学習になりました。
+一方、$\lambda=1$ ではペナルティが強すぎて、訓練誤差が $0.645$、検証誤差が $0.700$ となり、未学習になりました。
 深層学習では、L2 正則化とほぼ同じ働きをする\textbf{重み減衰}（weight decay）がよく使われます（\chapref{ch:training}）。
 二つの違いも、そこで説明します。
 
+% [figpass] 案 8
+\figref{fig:ml-poly-sweeps}の上の 4 枚は、$\lambda$ を 4 通りに変えた 9 次式の曲線を並べたものです。
+$\lambda$ を大きくするほど振れが収まり、$\lambda=1$ では曲線がほぼ平らになります（未学習）。
+右下は、$\lambda$ を $10^{-8}$ から $10$ まで、10 の 0.5 乗倍ずつ 19 通りに変えた誤差です。
+訓練誤差は $\lambda$ とともに上がり続けますが、検証誤差は $10^{-5}$〜$10^{-3}$ のあたりで低くなり、その両側で上がります。
+$\lambda$ が小さすぎれば過学習、大きすぎれば未学習で、次数 $M$ を変えたとき（\figref{fig:ml-poly-errors}の左）と、左右を入れ替えた形です。
+
+
+三つの対策を\tabref{tab:ml-overfit-remedies}にまとめます。
+どの対策にも「行き過ぎ」があり（データを増やす場合は、その手間）、どこで止めるかは検証データで決めます。
+
+\begin{table}[tbp]
+\centering
+\caption{過学習の三つの対策。この章の結果は、9 次式・訓練データ 10 件（検証誤差 0.459）から始めたときの検証誤差。}
+\label{tab:ml-overfit-remedies}
+\small
+\begin{tabularx}{\linewidth}{l>{\raggedright\arraybackslash}Xl>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X}
+\toprule
+対策 & 変えるもの & 選ぶ値 & この章の結果 & 行き過ぎると・費用 \\
+\midrule
+データを増やす & 訓練データの件数 & --- & 100 件で 0.283、1000 件で 0.275 & 集める手間と、学習の計算が増える \\
+モデルを単純にする & モデルの形 & 次数 $M$ & $M=3$ で 0.290 & 単純すぎると未学習（$M=1$ で 0.564） \\
+L2 正則化 & 損失（ペナルティの項を足す） & 強さ $\lambda$ & $\lambda=0.001$ で 0.286 & 強すぎると未学習（$\lambda=1$ で 0.700） \\
+\bottomrule
+\end{tabularx}
+\end{table}
+% [/figpass]
+
 \subsection*{ハイパーパラメータと、データを三つに分ける理由}
 
-多項式の次数 $M$ や、正則化の強さ $\lambda$（損失に加える罰の強さ）は、勾配降下法では決まりません。
+多項式の次数 $M$ や、正則化の強さ $\lambda$ は、勾配降下法では決まりません。
 学習の前に、人が決める値です。
-このような値を\term{ハイパーパラメータ}{hyperparameter}と呼びます。
+このような値を\term{ハイパーパラメータ}{hyperparameter}と呼びます（ここまで「設定」と呼んできたものです）。
 学習率 $\eta$、バッチサイズ $B$、ステップ数もハイパーパラメータです。
 パラメータは訓練データで学習し、ハイパーパラメータは検証データで選びます。
-訓練誤差で選ぶと、いつも最も柔軟なモデル（$M=9$、罰なしの $\lambda=0$）が選ばれてしまうからです。
+モデルの柔軟さを決める設定（$M$ や $\lambda$）を訓練誤差で選ぶと、いつも最も柔軟なもの（$M=9$、正則化なしの $\lambda=0$）が選ばれてしまうからです。
+学習率も、最後は検証データで選びます（\secref{sec:ml-gd}で訓練データでの損失の下がり方を見たのは、発散しない範囲に絞るためです）。
 
-ここで、テストデータの役割が分かります。
-検証誤差が最小になる設定を選ぶと、その検証誤差は、偶然うまくいった分だけ甘い値になります。
-たくさんの設定を試すほど、その偏りは大きくなります。
-そこで、選ぶことに一度も使っていないテストデータで、最後に成績を測ります。
+ここで、検証データとテストデータの違いを整理します（\figref{fig:ml-data-split}）。
+どちらも、勾配を計算しないので、パラメータの更新には使いません。
+違いは、測った結果を、何かを決めることに使うかどうかです。
+検証データの結果は、ハイパーパラメータ選びと、学習のやめどきの判断に使います。
+つまり、検証データは、パラメータを直接は更新しませんが、これらの判断を通して、できあがるモデルに間接的に影響します。
+テストデータの結果は、どの判断にも使わないので、モデルにも学習の進め方にも影響しません。
+
+この違いから、テストデータが必要な理由が分かります。
+いくつもの設定の中から検証誤差が最小のものを選ぶと、その検証データにたまたま合っていた設定を選びやすくなります。
+そのため、選ばれた設定の検証誤差は、モデルの実力より少し良く見える値になりがちです。
+まだ見ていないデータでの実力を見積もるには、選ぶことに一度も使っていないテストデータが必要なのです。
 先ほどの実験では、検証誤差が最小の $M=3$ が選ばれ、その検証誤差は $0.290$ でした。
 この多項式を、さらに別の 200 件のテストデータで測ると、誤差は $0.332$ でした。
 差には偶然も含まれますが、成績として報告するのは、選ぶことに使った $0.290$ ではなく、この $0.332$ です。
-テストデータを見ながら設定を直してはいけません。それは、入試の本番の問題で練習するのと同じです。
+テストデータを見ながら設定を直してはいけません。
+テストデータも設定選びに使ったことになり、検証データと同じ役割になってしまうからです（入試の本番の問題で練習するのと同じです）。
 
 この節では、訓練データでの損失と新しいデータでの損失は別物だと学びました。
 柔軟すぎれば過学習、単純すぎれば未学習です。
-釣り合いは検証データで確かめます。
+釣り合いは検証データで確かめ、最後の成績は、どの判断にも使っていないテストデータで測ります。
 
-\section{学習の種類の地図}\label{sec:ml-map}
+\section{学習の種類を整理する}\label{sec:ml-map}
 \skimread{\tabref{tab:ml-map}を眺めて、「言語モデルの事前学習は、文章自身から正解を作る自己教師あり学習である」という 1 点だけ押さえれば十分です。
 \chapref{ch:lm}で、もう一度説明します。}
 
 最後に、この章で学んだ枠組みを、本書全体の中に位置づけます。
-この章の問題には、どれも人が用意した正解（ラベル）がありました。これが教師あり学習でした。
-機械学習には、正解の与え方が違う仲間があります（\tabref{tab:ml-map}）。
+この章の問題には、どれも、入力とは別に用意した正解がありました（トークン数はトークナイザで数え、足し算の答えは計算ドリルから取りました）。
+これが教師あり学習でした（正解は、人が 1 件ずつ付けることもあります）。
+機械学習には、正解の与え方が違う種類の学習もあります（\tabref{tab:ml-map}）。
 
 \begin{table}[tbp]
 \centering
-\caption{学習の種類。違いは「何を手がかりに学ぶか」にある。4 要素の枠組みは、どれにも共通する。}
+\caption{学習の種類。違いは「何を手がかりに学ぶか」にある。4 要素の枠組みは共通である。}
 \label{tab:ml-map}
 \small
 \begin{tabularx}{\linewidth}{llX}
 \toprule
 種類 & 学習の手がかり & 例と、本書で扱う場所 \\
 \midrule
-教師あり学習 & 人が付けた正解 & この章、事後学習（\chapref{ch:posttraining}） \\
-教師なし学習 & なし（データの構造だけ） & 似たデータをまとめる（本書の範囲外） \\
-自己教師あり学習 & データ自身から作った正解 & 事前学習（\chapref{ch:lm}、\chapref{ch:pretraining}） \\
-強化学習 & 行動の結果の良し悪し（報酬） & 正答率を上げる学習（\chapref{ch:rl-basics}以降） \\
+教師あり学習 & 入力とは別に用意した正解 & この章、事後学習（\chapref{ch:posttraining}） \\
+教師なし学習 & なし（データどうしの類似だけ） & 似たデータをまとめる（本書の範囲外） \\
+自己教師あり学習 & 入力データ自身の一部 & 事前学習（\chapref{ch:lm}、\chapref{ch:pretraining}） \\
+強化学習 & 良し悪しを表す数（報酬） & 迷路でゴールに着く学習（\chapref{ch:rl-basics}）、正解なら報酬 1 として計算問題の正答率を上げる学習（\chapref{ch:rl-llm}） \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\textbf{強化学習}（reinforcement learning）では、正解そのものは与えられず、答えの良し悪しの点数だけが返ってきます。
+\textbf{強化学習}（reinforcement learning）では、正解そのものは与えられず、答えの良し悪しを表す数（報酬）だけが返ってきます。
 LLM にとって最も重要なのは、\textbf{自己教師あり学習}（self-supervised learning）です。
 人が正解を付ける方法では、兆の単位のデータは用意できません。
 しかし、文章があれば、「途中まで」を入力、「その次のトークン」を正解とする組を、いくらでも自動で作れます。
-違うのは正解の作り方だけで、モデル・損失・最適化は、この章の softmax 回帰と同じ形です。
+正解を、入力と同じデータ（文章）の中から取り出すところが、教師あり学習との違いです。
+この章の softmax 回帰と違うのは、正解の作り方と、ロジットを作る部分です（次章から、$\mW\vx+\vb$ より表現力の高いものに取り替えます）。
+softmax で確率に直すこと、交差エントロピー損失、勾配を使った最適化は、この章と同じ形です。
 
 \begin{summary}
 \item 機械学習は、規則を書く代わりに、パラメータを持つ関数（モデル）を、例に合うように調整します。
 枠組みは、データ・モデル・損失関数・最適化の 4 要素です。
-教師あり学習の目標は、訓練データでの損失の平均を最小にすることです（経験リスク最小化）。
+教師あり学習では、訓練データでの損失の平均を最小にします（経験リスク最小化）。本当に小さくしたいのは、まだ見ていないデータでの損失です。
 \item 勾配降下法は、勾配の逆向きにパラメータを少しずつ動かします。学習率が小さすぎると遅く、大きすぎると発散します。
-\item 損失は、モデルの出力を確率分布と見たときの負の対数尤度として作れます。正規分布を仮定すると二乗誤差になります。
+\item 損失は、正解についての確率分布を出力するようにモデルを作れば、その負の対数尤度として作れます。分布に正規分布を選ぶと、二乗誤差になります。
 \item 分類では、ロジットを softmax で確率に直し、交差エントロピー損失を使います。ロジットについての勾配は $\vp-\vy$ です。
-\item 確率的勾配降下法は、ミニバッチで勾配を見積もります。ぶれはありますが、同じ計算量でずっと速く進みます。
-\item 訓練データに合うことと、新しいデータで当たること（汎化）は別です。検証データで過学習を見張り、ハイパーパラメータを選びます。
+\item 確率的勾配降下法は、全データの平均の勾配を、毎回取り替えるミニバッチで見積もります。ぶれますが、偏りはなく、同じ計算量でずっと速く進みます。
+\item 訓練データに合うことと、新しいデータで当たること（汎化）は別です。検証データで過学習を見張り、ハイパーパラメータを選びます。テストデータは、最後に成績を測るためだけに使い、どの判断にも使いません。
 \end{summary}
 
 \section*{次の章へ}
 
 この章のモデルは、どれも「入力に重みを掛けて足す」形でした。
 この形には限界があります。
-\figref{fig:ml-blobs}の右で見たとおり、softmax 回帰は直線の境界しか引けず、渦巻きのデータでは正解率が 52.7\% にとどまりました。
-言葉の規則は、渦巻きよりはるかに込み入っています。曲がった境界を引けるモデルが必要です。
+\figref{fig:ml-blobs}の右で見たとおり、入力をそのまま使う softmax 回帰は直線の境界しか作れず、渦巻きのデータでは正解率が 52.7\% にとどまりました。
+言葉の規則は、渦巻きよりはるかに込み入っています。曲がった境界を作れるモデルが必要です。
 次の\chapref{ch:nn}では、線形モデルを何層も積み重ねた\textbf{ニューラルネットワーク}を作ります。
 \secref{sec:ml-autograd}の 4 手順のループはそのまま使い（次章では、5 行のコードに整理します）、勾配を自動で求める仕組みを、自分の手で実装します。
 なお、次章では渦巻きのデータを作り直すので、線形モデルの正解率は 54\% と、少し違う値になります。

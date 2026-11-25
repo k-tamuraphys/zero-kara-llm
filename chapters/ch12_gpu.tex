@@ -1,10 +1,10 @@
-\chapter{なぜ GPU が必要か：計算の正体と高速化}\label{ch:gpu}
+\chapter{なぜ GPU が必要か：計算の仕組みと高速化}\label{ch:gpu}
 \bookmap{4}
 
 \begin{chapterlead}
 \textbf{ここまで}: 注意機構を部品に Transformer を組み立て（\chapref{ch:transformer}）、
 現代の LLM の設計（RMSNorm、RoPE、SwiGLU、KV キャッシュ、MoE）まで学びました（\chapref{ch:modern-arch}）。
-設計図はそろいました。本物との違いは「大きさ」だけです。\\[1mm]
+モデルの構造は、これでひととおりそろいました。本物との違いは主に「大きさ」です。\\[1mm]
 \textbf{この章の問い}: では、なぜ大きくできないのでしょうか。
 LLM の学習はなぜ CPU では終わらず、GPU だと終わるのでしょうか。
 GPU の性能を引き出すには、どう書けばよいのでしょうか。\\[1mm]
@@ -19,7 +19,7 @@ GPU の性能を引き出すには、どう書けばよいのでしょうか。\
 \end{chapterlead}
 
 \begin{readingguide}
-\item[\rgpre] 2 周目の章です。初めて読む人は、\chapref{ch:transformer}から\chapref{ch:pretraining}へ進んでかまいません。
+\item[\rgpre] 2 周目の章です。初めて読む人は、この章を飛ばして\chapref{ch:pretraining}へ進んでかまいません。
 ただし、\textbf{\secref{sec:gpu-flops}（計算量 $6ND$）だけは、1 周目のうちに読んでおくことを勧めます}。
 \chapref{ch:pretraining}の後半と、費用の見積もり（\chapref{ch:infra}、\chapref{ch:capstone}）が、この式を使うからです。
 前提は、\chapref{ch:nn}の線形層と誤差逆伝播だけです。
@@ -27,8 +27,8 @@ GPU の性能を引き出すには、どう書けばよいのでしょうか。\
 学習時間の見積もりの土台で、\chapref{ch:pretraining}・\chapref{ch:infra}・\chapref{ch:capstone}が使います。
 \item[\rgmust] \secref{sec:gpu-memory-bw}〜\secref{sec:gpu-precision}と、\secref{sec:gpu-speedup}の「勾配累積」：メモリ帯域、メモリの見積もり、BF16 の混合精度。
 \chapref{ch:distributed}以降の大きな学習の前提です。
-\item[\rgskim] 見出しに札のある 6 つの小節（ミニGPT の内訳、スレッド数と型、ルーフライン、\code{torch.compile} など）：実測と仕組みの細部です。
-札に書いた結論だけ押さえれば、先へ進めます。
+\item[\rgskim] 見出しの下に「流し読み可」の印が付いた 6 つの小節（ミニGPT の内訳、スレッド数と型、ルーフライン、\code{torch.compile} など）：実測と仕組みの細部です。
+印の横に書いた結論だけ押さえれば、先へ進めます。
 \item[\rglater] \secref{sec:gpu-speedup}の「データローダと、速さの正しい測り方」：GPU で実際に学習を回すときに戻れば足ります。
 \end{readingguide}
 
@@ -42,13 +42,15 @@ CPU で 30〜40 分かけて学習しました（\chapref{ch:pretraining}でそ�
 
 2 年半は約 131 万分です。
 90 分で割ると、約 1 万 5 千倍になります。
-この 1 万倍を超える差は、どこから来るのでしょうか。
+このうち 8 倍は GPU の枚数によるものです。
+GPU 1 枚と CPU を比べても、約 2,000 倍の差が残ります（\secref{sec:gpu-cpu-speed}で確かめます）。
+この差は、どこから来るのでしょうか。
 「GPU は速いから」では答えになっていません。
 何が、なぜ速いのかが分かると、二つのことができるようになります。
 一つは、学習を始める前に「何日かかるか」「何 GB のメモリが要るか」を見積もること。
 もう一つは、同じ GPU から何倍もの速さを引き出す書き方を選ぶことです。
 
-この章の道筋は\figref{fig:gpu-map}のとおりです。
+この章の構成は\figref{fig:gpu-map}のとおりです。
 学習時間は「総計算量 ÷ 速さ」で決まります。
 まず、学習の計算の中身を数えます（ほとんどが\textbf{行列積}です）。
 次に、CPU で行列積の速さを実測し、GPU の構造と比べます。
@@ -59,28 +61,32 @@ CPU で 30〜40 分かけて学習しました（\chapref{ch:pretraining}でそ�
 \centering
 \begin{tikzpicture}[font=\small]
 \node[graybox,minimum width=18mm,minimum height=9mm] (t) at (0,0) {学習時間};
-\node at (1.35,0) {$=$};
-\node[box,minimum width=25mm,minimum height=9mm] (c) at (3.05,0) {総計算量 $6ND$};
-\node at (4.75,0) {$\div$};
-\node[redbox,minimum width=23mm,minimum height=9mm] (s) at (6.35,0) {公称の速さ};
-\node at (7.95,0) {$\times$};
-\node[orangebox,minimum width=27mm,minimum height=9mm] (u) at (9.75,0) {引き出せた割合};
-\draw[black!50] (5.05,-0.62) -- (5.05,-0.75) -- (11.2,-0.75) -- (11.2,-0.62);
-\node[lbl,align=center,below=2.5mm of c] {\secref{sec:gpu-flops}\\何回計算するのか};
-\node[lbl,align=center,below=4mm of s] {\secref{sec:gpu-cpu-speed}・\secref{sec:gpu-arch}\\CPU と GPU の速さ};
-\node[lbl,align=center,below=4mm of u] {\secref{sec:gpu-memory-bw}〜\secref{sec:gpu-speedup}\\出し切れない理由と対策};
+\node at (1.45,0) {$\approx$};
+\node[box,minimum width=34mm,minimum height=8mm] (c) at (6.2,0.75) {総計算量 $6ND$};
+\node[lbl,above=1mm of c] {$N$：パラメータ数、$D$：学習に使うトークン数};
+\node[lbl,align=left,anchor=west] at (8.1,0.75) {\secref{sec:gpu-flops}\\何回計算するのか};
+\draw[thick] (1.95,0) -- (10.5,0);
+\node[redbox,minimum width=26mm,minimum height=8mm] (s) at (3.3,-0.75) {公称の速さ};
+\node at (4.9,-0.75) {$\times$};
+\node[graybox,minimum width=13mm,minimum height=8mm] (g) at (5.95,-0.75) {枚数};
+\node at (7.0,-0.75) {$\times$};
+\node[orangebox,minimum width=30mm,minimum height=8mm] (u) at (8.9,-0.75) {引き出せた割合};
+\node[lbl,align=center,below=2mm of s] {\secref{sec:gpu-cpu-speed}・\secref{sec:gpu-arch}\\CPU と GPU の速さ};
+\node[lbl,align=center,below=2mm of g] {\chapref{ch:distributed}};
+\node[lbl,align=center,below=2mm of u] {\secref{sec:gpu-memory-bw}〜\secref{sec:gpu-speedup}\\出し切れない理由と対策};
 \end{tikzpicture}
-\caption{この章の地図。学習時間は、総計算量を「公称の速さ $\times$ 引き出せた割合（MFU）」で割ったものである。
-箱の下は、その項を調べる節（\secref{sec:gpu-memory}は「メモリに載るか」も調べる）。}
+\caption{この章の構成。学習時間は、総計算量 $6ND$ を、分母の「公称の速さ $\times$ GPU の枚数 $\times$ 引き出せた割合」で割ったものである。
+引き出せた割合は MFU と呼び、\secref{sec:gpu-arch}で定義する。
+箱の横と下は、その項を調べる節（\secref{sec:gpu-memory}は「メモリに載るか」も調べる。枚数を増やす話は\chapref{ch:distributed}）。}
 \label{fig:gpu-map}
 \end{figure}
 
-\section{学習の計算の正体：何回掛け算するのか}\label{sec:gpu-flops}
+\section{学習の計算の中身：何回掛け算するのか}\label{sec:gpu-flops}
 
-「速さ」を比べるには、まず「仕事の量」を測る物差しが要ります。
+「速さ」を比べるには、まず「仕事の量」を測る尺度が要ります。
 この節の問いは、「ミニGPT の学習の 1 ステップでは、何回の計算をしているのか。そのうち何が重いのか」です。
 
-\subsection*{物差しとしての FLOPs}
+\subsection*{仕事の量の尺度としての FLOPs}
 
 計算機の仕事の量は、浮動小数点数（小数を含む数）の足し算と掛け算の回数で測るのが標準です。
 この回数を\term{浮動小数点演算数}{floating-point operations, FLOPs}と呼びます。
@@ -103,7 +109,7 @@ $\mA\in\R^{m\times k}$ と $\mB\in\R^{k\times n}$ の積 $\mC=\mA\mB$ の成分�
 です。
 小さな行列で確かめます。
 $2\times3$ と $3\times2$ の積の成分 $C_{11}=A_{11}B_{11}+A_{12}B_{21}+A_{13}B_{31}$ は、掛け算 3 回と足し算 2 回です。
-「掛けて足す」3 組と数えて 6 FLOPs、成分は 4 個なので、全体で $2\cdot2\cdot3\cdot2=24$ FLOPs です（正確には各成分の足し算が 1 回少ない 20 回ですが、$k$ が大きければこの差は無視できます）。
+「掛けて足す」3 組と数えて 6 FLOPs、成分は 4 個なので、全体で $2\cdot2\cdot3\cdot2=24$ FLOPs です（正確には各成分の足し算が 1 回少ないので、全部で 20 FLOPs〔掛け算 12 回、足し算 8 回〕ですが、$k$ が大きければこの差は無視できます）。
 
 \subsection*{線形層 1 枚の計算量}
 
@@ -121,7 +127,9 @@ Transformer のパラメータのほとんどは線形層の重みです（\chap
   \label{eq:gpu-forward-2n}
 \end{equation}
 となるはずです。
-例外は、掛け算をしない埋め込みの表（行を引くだけ）と、パラメータを持たないのに計算はする注意のスコア $\mQ\mK^\T$ と重み付きの和です。
+例外は、掛け算をしない位置埋め込みの表（行を引くだけ）と、パラメータを持たないのに計算はする注意のスコア $\mQ\mK^\T$ と重み付きの和です。
+トークン埋め込みの表は、本書のミニGPT では出力ヘッドと重みを共有している（\chapref{ch:transformer}）ので、出力ヘッドの掛け算に使われます。
+共有しないモデルでは、トークン埋め込みの表も「掛け算をしないパラメータ」になります。
 
 \subsection*{ミニGPT の内訳を数える}
 \skimread{押さえる結論は 3 つです。部品ごとに数えた順伝播は、$2N$ と 6\% しか違いません。
@@ -137,7 +145,7 @@ Transformer のパラメータのほとんどは線形層の重みです（\chap
 \code{attn} は、長さ $T$ の文脈のすべての位置とのスコア（$d$ 次元の内積が $T$ 個）と、重み付きのバリューの和（同じく $T\times d$）の 2 つで、$2\cdot T\cdot d\cdot 2$ です。
 ヘッドに分けても、この数は変わりません。
 $H$ 個のヘッドがそれぞれ $d/H$ 次元の内積を計算するので、合わせると $d$ 次元ぶんになるからです。
-ここでは因果マスクで捨てる半分も数えています（実装も、マスクの前にすべて計算するからです）。
+ここでは因果マスクで捨てる半分も数えています（本書の素朴な実装は、マスクの前にすべて計算するからです。FlashAttention（\secref{sec:gpu-speedup}）のように、捨てる部分を計算しない実装もあります）。
 \code{proj} は、ヘッドの出力をまとめ直す $d\times d$ の線形層です。
 \code{mlp} は $d\to4d\to d$ の 2 枚の線形層、\code{head} は $d$ 次元から $V$ 個のロジットを作る出力ヘッドです。
 ブロックの中の部品は $L$ 倍します。
@@ -146,13 +154,16 @@ $H$ 個のヘッドがそれぞれ $d/H$ 次元の内積を計算するので、
 \outputfile{ch12/out/flops_count.txt}
 
 最初の 7 行を見てください（8・9 行目は後で読みます）。合計は約 551 万 FLOPs/トークンで、$2N$ の約 517 万と 6\% しか違いません。
-差は、埋め込み（掛け算をしないのに $N$ には入っている）と注意のスコア（$N$ に入っていないのに計算する）の出入りです。
+差は、掛け算をしない位置埋め込みと LayerNorm のパラメータ（$N$ には入っている）と、注意のスコア（$N$ に入っていないのに計算する）の出入りです。
+実際、$5{,}505{,}024-2N=337{,}152$ は、注意のスコアの $393{,}216$ から、位置埋め込みと LayerNorm のパラメータの合計 $28{,}032$ 個の 2 倍を引いた値にちょうど一致します。
 \figref{fig:gpu-flops-parts}は内訳を棒グラフにしたものです。
 MLP が 43\%、出力ヘッドが 29\% を占めます。
 出力ヘッドが重いのは、このモデルが小さい割に語彙が大きいからです。
 出力ヘッドの計算量 $2dV$ は $d$ に比例し、ブロックの線形層の計算量は $d^2$ に比例します。
 $d$ を 2 倍にすると、前者は 2 倍、後者は 4 倍になります。
-そのため $d$ が大きい本物の LLM では、$12Ld^2$（\chapref{ch:transformer}の式\eqref{eq:tf-params}。1 ブロックの注意 $4d^2$ と MLP $8d^2$）に比例するブロックの部分（MLP と注意の線形層）が大半になります（演習 1）。
+そのため $d$ が大きい本物の LLM では、$12Ld^2$（\chapref{ch:transformer}の式\eqref{eq:tf-params}。1 ブロックの注意 $4d^2$ と MLP $8d^2$）に比例するブロックの部分（MLP と注意の線形層）が大半になります。
+ただし、$d$ と一緒に語彙 $V$ や文脈長 $T$ も大きくなることが多いので、すぐにそうなるとは限りません。
+GPT-2 の最小版（$d=768$）では出力ヘッドがまだ約 27\% を占め、最大版（$d=1{,}600$）で約 5\% まで下がります（演習 1）。
 
 \begin{figure}[!tbp]
 \centering
@@ -168,8 +179,8 @@ $d$ を 2 倍にすると、前者は 2 倍、後者は 4 倍になります。
 \end{axis}
 \end{tikzpicture}
 \caption{ミニGPT（$V=4096,T=128,L=4,d=192$）の順伝播の計算量の内訳（\coderef{code:gpu-theory}）。
-ここに挙げた 5 つはすべて行列積で、LayerNorm・GELU・softmax などの要素ごとの計算は合わせても 1〜2\% ほどにすぎない。
-計算の正体は行列積だと読み取ってほしい。}
+ここに挙げた 5 つはすべて行列積である。LayerNorm・GELU・softmax などの要素ごとの計算はこのコードでは数えていないが、1 要素あたりの演算の回数から概算すると、合わせても 1〜2\% ほどにすぎない。
+計算のほとんどは行列積だと読み取ってほしい。}
 \label{fig:gpu-flops-parts}
 \end{figure}
 
@@ -192,9 +203,18 @@ LayerNorm、GELU、softmax も計算はしますが、1 要素あたり数回か
   \pd{\calL}{\vx} &= \mW^\T\vg && \text{（下の層へ渡す勾配。$(n\times m)(m\times1)$ で $2mn$ FLOPs）}\label{eq:gpu-back-x}\\
   \pd{\calL}{\mW} &= \vg\,\vx^\T && \text{（重みの勾配。$(m\times1)(1\times n)$ で $mn$ 回の掛け算）}\label{eq:gpu-back-w}
 \end{align}
-式\eqref{eq:gpu-back-w}は 1 トークンだと掛け算だけですが、バッチの全トークンについて足し合わせるので、トークンあたり「掛けて足す」1 組、つまり $2mn$ FLOPs になります。
+式\eqref{eq:gpu-back-w}は、1 トークンだけなら掛け算 $mn$ 回です。
+ところが、同じ $\mW$ をバッチの全トークンが使っています。
+そのため $\mW$ の勾配は、トークンごとの $\vg\vx^\T$ を、バッチの全トークンについて足し合わせたものになります。
+足し算が加わるので、トークンあたり「掛けて足す」$mn$ 組、つまり $2mn$ FLOPs です。
 順伝播 $2mn$、逆伝播 $2mn+2mn$ で、合計 $6mn$ です。
-\figref{fig:gpu-6n}にこの 3 つの行列積を並べました。
+
+\figref{fig:gpu-6n}は、この 3 つを形の図で並べたものです。
+バッチの $B$ 本の系列の $T$ 個ずつのトークン、合わせて $BT$ 個を行に並べると（コードでは 1 データが 1 行）、3 つとも 1 回の行列積になります。
+橙の辺が、掛けて足し合わせる軸（積をとると消える軸）です。
+右端の重みの勾配では、消える軸がトークンの軸 $BT$ です。
+「全トークンについて足し合わせる」とは、この軸での足し合わせのことです。
+3 つとも式\eqref{eq:gpu-matmul-flops}で $2\cdot BT\cdot m\cdot n$ FLOPs になり、トークンあたりでは $2mn$ ずつです。
 重み 1 個につき 1 トークンあたり 6 FLOPs なので、
 \begin{equation}
   \text{学習の計算量} \approx 6N \ \text{FLOPs / トークン}, \qquad
@@ -207,20 +227,52 @@ LayerNorm、GELU、softmax も計算はしますが、1 要素あたり数回か
 
 \begin{figure}[!tbp]
 \centering
-\begin{tikzpicture}[font=\small]
-\node[box,minimum width=30mm] (f) at (0,0) {$\vy=\mW\vx$};
-\node[redbox,minimum width=30mm] (bx) at (4.6,0) {$\pd{\calL}{\vx}=\mW^\T\vg$};
-\node[redbox,minimum width=30mm] (bw) at (9.2,0) {$\pd{\calL}{\mW}=\vg\vx^\T$};
-\node[lbl,below=1mm of f] {$2mn$ FLOPs};
-\node[lbl,below=1mm of bx] {$2mn$ FLOPs};
-\node[lbl,below=1mm of bw] {$2mn$ FLOPs};
-\node[above=1mm of f,font=\footnotesize] {順伝播};
-\node[above=1mm of bx,font=\footnotesize] {逆伝播：下の層へ};
-\node[above=1mm of bw,font=\footnotesize] {逆伝播：重みの勾配};
-\draw[decorate,decoration={brace,mirror,amplitude=5pt}] (-1.6,-0.9) -- (10.8,-0.9)
-  node[midway,below=6pt] {合計 $6mn$ = 重み 1 個あたり 6 FLOPs / トークン};
+\begin{tikzpicture}[font=\footnotesize,x=0.82cm,y=0.82cm]
+% 順伝播 Y = X W^T
+\node[font=\small] at (1.7,2.05) {順伝播};
+\draw[black!60] (0,0) rectangle (1.0,1.4); \node at (0.5,0.7) {$\mY$};
+\node[anchor=east] at (0,0.7) {$BT$}; \node[anchor=south] at (0.5,1.4) {$m$};
+\node at (1.2,0.7) {$=$};
+\draw[fill=figblue,draw=bookblue] (1.4,0) rectangle (2.2,1.4); \node at (1.8,0.7) {$\mX$};
+\draw[bookorange,line width=1.6pt] (1.4,1.4) -- (2.2,1.4); \node[anchor=south,text=bookorange] at (1.8,1.4) {$n$};
+\draw[fill=figgreen,draw=bookgreen] (2.35,0.6) rectangle (3.35,1.4); \node at (2.85,1.0) {$\mW^\T$};
+\draw[bookorange,line width=1.6pt] (3.35,0.6) -- (3.35,1.4); \node[anchor=west,text=bookorange] at (3.35,1.0) {$n$};
+\node[anchor=south] at (2.85,1.4) {$m$};
+\node at (1.7,-0.35) {$2\,BT\,mn$ FLOPs};
+% 逆伝播：下の層へ dX = G W
+\begin{scope}[shift={(5.05,0)}]
+\node[font=\small] at (1.6,2.05) {逆伝播：下の層へ};
+\draw[fill=figred!40,draw=bookaccent] (0,0) rectangle (0.8,1.4); \node at (0.4,0.7) {$\partial\mX$};
+\node[anchor=east] at (0,0.7) {$BT$}; \node[anchor=south] at (0.4,1.4) {$n$};
+\node at (1.0,0.7) {$=$};
+\draw[fill=figred,draw=bookaccent] (1.2,0) rectangle (2.2,1.4); \node at (1.7,0.7) {$\bm{G}$};
+\draw[bookorange,line width=1.6pt] (1.2,1.4) -- (2.2,1.4); \node[anchor=south,text=bookorange] at (1.7,1.4) {$m$};
+\draw[fill=figgreen,draw=bookgreen] (2.35,0.4) rectangle (3.15,1.4); \node at (2.75,0.9) {$\mW$};
+\draw[bookorange,line width=1.6pt] (3.15,0.4) -- (3.15,1.4); \node[anchor=west,text=bookorange] at (3.15,0.9) {$m$};
+\node[anchor=south] at (2.75,1.4) {$n$};
+\node at (1.6,-0.35) {$2\,BT\,mn$ FLOPs};
+\end{scope}
+% 逆伝播：重みの勾配 dW = G^T X
+\begin{scope}[shift={(10.0,0)}]
+\node[font=\small] at (1.75,2.05) {逆伝播：重みの勾配};
+\draw[fill=figred!40,draw=bookaccent] (0,0.4) rectangle (0.8,1.4); \node at (0.4,0.9) {$\partial\mW$};
+\node[anchor=east] at (0,0.9) {$m$}; \node[anchor=south] at (0.4,1.4) {$n$};
+\node at (1.0,0.9) {$=$};
+\draw[fill=figred,draw=bookaccent] (1.2,0.4) rectangle (2.6,1.4); \node at (1.9,0.9) {$\bm{G}^\T$};
+\draw[bookorange,line width=1.6pt] (1.2,1.4) -- (2.6,1.4); \node[anchor=south,text=bookorange] at (1.9,1.4) {$BT$};
+\draw[fill=figblue,draw=bookblue] (2.75,0) rectangle (3.55,1.4); \node at (3.15,0.7) {$\mX$};
+\draw[bookorange,line width=1.6pt] (3.55,0) -- (3.55,1.4); \node[anchor=west,text=bookorange] at (3.55,0.7) {$BT$};
+\node[anchor=south] at (3.15,1.4) {$n$};
+\node at (1.75,-0.35) {$2\,BT\,mn$ FLOPs};
+\end{scope}
+\draw[decorate,decoration={brace,mirror,amplitude=5pt}] (-0.4,-0.65) -- (13.3,-0.65)
+  node[midway,below=6pt] {合計 $6\,BT\,mn$ = 重み 1 個あたり、1 トークンあたり 6 FLOPs};
 \end{tikzpicture}
-\caption{線形層 1 枚の学習に必要な 3 つの行列積。逆伝播は順伝播の 2 倍の計算をするので、学習全体は順伝播の 3 倍、$6N$ FLOPs/トークンになる。}
+\caption{線形層 1 枚の学習に必要な 3 つの行列積（形の図。長方形の辺の長さは模式的）。
+バッチの $BT$ 個のトークンを行に並べた入力 $\mX$（$BT\times n$）、重み $\mW$（$m\times n$。$m$ は出力の次元、$n$ は入力の次元）、上の層から届く勾配 $\bm{G}$（$BT\times m$。各行が 1 トークンの $\vg$）で描いた。
+$\partial\mX$, $\partial\mW$ は $\pd{\calL}{\mX}$, $\pd{\calL}{\mW}$ の略。
+橙の辺が掛けて足し合わせる軸で、重みの勾配（右）ではトークンの軸 $BT$ で足し合わせる。
+3 つとも同じ計算量なので、学習全体は順伝播の 3 倍、$6N$ FLOPs/トークンになる。}
 \label{fig:gpu-6n}
 \end{figure}
 
@@ -230,7 +282,8 @@ PyTorch には、実行された演算の FLOPs を数える道具 \code{FlopCou
 
 \snippet{順伝播と逆伝播の FLOPs を実測する}{code:gpu-measure}{ch12/flops_count.py}{measure}
 
-\code{with counter:} の中で実行した演算が、すべて数えられます。
+\code{with counter:} の中で実行した行列積（と注意の計算）の FLOPs が数えられます。
+コードのコメントに「行列積など」と書いたとおり、LayerNorm や GELU のような要素ごとの演算は数えません。
 \code{display=False} は、数えた結果の表を画面に出さないための指定です。
 入力はバッチ $B=32$、長さ $T=128$ の乱数のトークン列で、合計 4,096 トークンです。
 \code{get_total_flops()} が合計を返すので、\code{B * T} で割って 1 トークンあたりに直します。
@@ -238,6 +291,8 @@ PyTorch には、実行された演算の FLOPs を数える道具 \code{FlopCou
 1 トークンあたり 16,515,072 FLOPs でした。
 部品ごとに数えた順伝播の 5,505,024 FLOPs（同じ出力の 7 行目）で割ると、ちょうど 3.00 倍です。
 導出どおりです。
+ただし、ここで確かめたのは「行列積については、逆伝播が順伝播の 2 倍」ということです。
+要素ごとの演算が小さいことは、この実験では確かめていません（\figref{fig:gpu-flops-parts}の概算に頼っています）。
 
 \begin{quiz}
 基盤モデルの学習（\file{base.pt}）は 4,000 ステップ、1 ステップ 4,096 トークンでした。
@@ -260,14 +315,15 @@ $6ND$ で見積もっても $6\times2.58\times10^{6}\times1.64\times10^{7}\appro
 これを \code{torch.matmul} と比べるときの時間は、同じファイルの関数 \code{bench} で測ります。
 1 回目は準備運動として捨て（初回だけメモリの確保などが入るため）、残りの複数回の\textbf{中央値}をとります。
 中央値なのは、ほかの作業に CPU を取られて 1 回だけ遅くなった、といった外れ値に引きずられないためです。
+ただし for 文は遅いので、準備運動のあとに 1 回だけ測りました（リストへの変換 \code{tolist()} の時間も含みます）。
 速さは、$n\times n$ の行列積の計算量 $2n^3$（式\eqref{eq:gpu-matmul-flops}で $m=k=n$）を秒数で割って GFLOP/s に直します。
 
 \begin{figure}[!b]
 \centering
 \begin{tikzpicture}
-\begin{axis}[xbar,xmode=log,log origin=infty,width=0.78\linewidth,height=35mm,xmin=0.01,xmax=3000,
+\begin{axis}[xbar,xmode=log,log origin=infty,width=0.6\linewidth,height=35mm,xmin=0.01,xmax=3000,
   symbolic y coords={loop,b1,b4},ytick={loop,b1,b4},
-  yticklabels={{for 文（1 スレッド, fp64）},{torch（1 スレッド, fp64）},{torch（4 スレッド, fp32）}},
+  yticklabels={{for 文（$n=128$, 1 スレッド, fp64）},{torch（$n=128$, 1 スレッド, fp64）},{torch（$n=2048$, 4 スレッド, fp32）}},
   y tick label style={font=\small},bar width=4mm,
   xlabel={GFLOP/s（対数目盛）},xmajorgrids=true,ymajorgrids=false,
   nodes near coords,nodes near coords style={font=\footnotesize,anchor=west},
@@ -278,7 +334,8 @@ $6ND$ で見積もっても $6\times2.58\times10^{6}\times1.64\times10^{7}\appro
 \end{tikzpicture}
 \caption{同じ CPU での行列積の速さ（\file{ch12/out/matmul_bench.txt}）。
 for 文（$n=128$）から BLAS（$n=128$）で約 540 倍、4 スレッド・float32（$n=2048$）では for 文の約 6,000 倍になる。
-目盛が 1 つ進むごとに 10 倍であることに注意。}
+いちばん上の torch（$n=2048$, 4 スレッド, fp32）の棒は、いちばん下の for 文の棒とは書き方・大きさ・型・スレッド数の 4 つの条件が違う。約 6,000 倍は、その 4 つの倍率、つまり書き方の約 540 倍、行列の大きさの約 1.4 倍（fp64・1 スレッドで $n=128$ の 22.6 から $n=2048$ の 32.2 へ）、型の約 2 倍（32.2 から fp32 の 63.8 へ）、スレッド数の約 3.9 倍（63.8 から 4 スレッドの 246.3 へ）の積である。
+目盛が 1 つ進むごとに 10 倍なので、棒の長さの比は値の比を表さないことに注意。}
 \label{fig:gpu-loop-blas}
 \end{figure}
 
@@ -305,7 +362,7 @@ for 文の速さは 0.04 GFLOP/s、つまり 1 秒に 4,000 万回です。
 同じ CPU、同じコア 1 つ、同じ計算なのに、なぜこれほど違うのでしょうか。
 
 理由は、for 文の 1 回の掛け算のたびに、Python が「この変数の型は何か」「リストのこの位置には何があるか」を調べているからです。
-\code{torch.matmul} は、この手続きを 1 回で済ませ、あとは \term{BLAS}{Basic Linear Algebra Subprograms}と呼ばれる、行列計算のために磨き抜かれたライブラリに仕事を渡します。
+\code{torch.matmul} は、この手続きを 1 回で済ませ、あとは \term{BLAS}{Basic Linear Algebra Subprograms}と呼ばれる、行列計算のために高度に最適化されたライブラリに仕事を渡します。
 BLAS は、CPU の\textbf{ベクトル命令}（1 命令で 4〜16 個の数をまとめて掛ける命令）を使い、
 さらに一度読み込んだ数を何度も使い回すように計算の順番を並べ替えます（\secref{sec:gpu-arch}）。
 \figref{fig:gpu-loop-blas}は、この差を対数目盛で表したものです。
@@ -332,13 +389,15 @@ BLAS の速さは、条件によっても変わります。
 \addplot[bookgray,thick,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=f32t1]{code/ch12/out/matmul_wide.csv};
 \addplot[bookblue,thick,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=f32t2]{code/ch12/out/matmul_wide.csv};
 \addplot[bookaccent,thick,mark=*,mark size=1.5pt] table[col sep=comma,x=n,y=f32t4]{code/ch12/out/matmul_wide.csv};
-\addplot[bookaccent,thick,dashed,mark=o,mark size=1.5pt] table[col sep=comma,x=n,y=f64t4]{code/ch12/out/matmul_wide.csv};
+\addplot[bookgreen,thick,dashed,mark=square,mark size=2.8pt,mark options={solid,fill=white}] table[col sep=comma,x=n,y=f64t4]{code/ch12/out/matmul_wide.csv};
 \legend{fp32・1 スレッド,fp32・2 スレッド,fp32・4 スレッド,fp64・4 スレッド}
 \end{axis}
 \end{tikzpicture}
 \caption{行列の大きさ・スレッド数・型と、行列積の速さ（\file{ch12/out/matmul_wide.csv}）。
 大きな行列ではスレッド数にほぼ比例して速くなり、float64 は float32 のほぼ半分になる。
-小さな行列（左端）ではスレッドを増やしても速くならない。}
+小さな行列（$n\le64$）ではスレッドを増やしても速くならない。
+float64 は 4 スレッドだけを描いた（緑の破線と白抜きの四角。1・2 スレッドの値は\coderef{code:gpu-naive}の下の出力の表にある）。
+$n\ge1024$ では、fp64・4 スレッド（約 125）と fp32・2 スレッド（123〜127、紺の線と丸）がほぼ重なる。}
 \label{fig:gpu-matmul-size}
 \end{figure}
 
@@ -355,7 +414,8 @@ float32、$n=2048$ で、1 スレッドの 63.8 GFLOP/s が、2 スレッドで 
 
 第三に、\textbf{float64 は float32 のほぼ半分の速さ}です（4 スレッドの $n=2048$ で 125.5 と 246.3）。
 ベクトル命令は一度に処理するバイト数が決まっているので、4 バイトの float32 なら 8 バイトの float64 の 2 倍の個数を一度に計算できます。
-深層学習で float64 を使わないのはこのためで、同じ理屈で\secref{sec:gpu-precision}で扱う 2 バイトの形式はさらに速くなります。
+深層学習で float64 を使わないのはこのためです。
+同じ理屈で、2 バイトの形式（\secref{sec:gpu-precision}）を直接計算する命令がある計算機では、さらに速くなります。
 
 \subsection*{小さな計算はまとめる}
 \skimread{結論は「小さな行列積は 1 つずつ呼ばず、まとめて 1 回で呼ぶ」です（実測で 7.4 倍）。}
@@ -374,8 +434,11 @@ CPU はほかの作業と共有なので 2 スレッドに抑えて測ると、1
 この速さは、次のように出します。
 1 ステップの計算量は、実測の $1.65\times10^{7}$ FLOPs/トークンに 4,096 トークンを掛けて、約 $6.8\times10^{10}$ FLOPs です。
 これを 0.731 秒で割ると約 $9.25\times10^{10}$ FLOP/s、つまり 92.5 GFLOP/s になります。
-\figref{fig:gpu-matmul-size}の行列積単体（2 スレッドで約 127 GFLOP/s）の 7 割ほどです（$92.5\div127\approx0.73$）。
-残りの 3 割は、行列積以外の要素ごとの計算や、メモリの読み書きに使われています。
+\figref{fig:gpu-matmul-size}の行列積単体（2 スレッド、$n=2048$ で約 127 GFLOP/s）の 7 割ほどです（$92.5\div127\approx0.73$）。
+残りの 3 割の理由は、主に三つ考えられます。
+ミニGPT の行列は小さい（$d=192$）ので、行列積そのものも 127 GFLOP/s までは出ないこと（\figref{fig:gpu-matmul-size}）。
+行列積以外の要素ごとの計算があること。
+そしてメモリの読み書きです。
 
 この速さで、いくつかの学習にかかる時間を計算したのが\tabref{tab:gpu-cpu-years}です。
 総計算量は式\eqref{eq:gpu-6n}の $6ND$ で求め、92.5 GFLOP/s で割りました。
@@ -399,7 +462,8 @@ Llama 3.1 405B & $4.05\times10^{11}$ & $1.56\times10^{13}$ & $3.8\times10^{25}$ 
 \end{tabular}
 \end{table}
 
-1 行目の 49 分は、実際にかかった 30〜40 分（条件が少し違う別の実行）と同じ程度で、見積もりが桁を外さないことを手元で確かめられました。
+1 行目の 49 分は、実際にかかった 30〜40 分と同じ程度で、見積もりが桁を外さないことを手元で確かめられました。
+実際の学習（\chapref{ch:pretraining}）は 4 コアで走らせたので、2 スレッドの速さで割ったこの見積もりより短く済んだと考えられます。
 2 行目は、GPT-2 の最小版を 100 億トークンで学習させる再現実験です。
 総計算量は $6ND=6\times1.24\times10^{8}\times1.0\times10^{10}\approx7.4\times10^{18}$ FLOPs です。
 $9.25\times10^{10}$ FLOP/s で割ると、約 $8.0\times10^{7}$ 秒です。
@@ -411,25 +475,31 @@ A100 の行列積の公称性能は 312 TFLOP/s（BF16 という 2 バイトの�
 $7.4\times10^{18}$ をこれで割ると約 5,000 秒、つまり約 83 分です。
 報告の 90 分とよく合います。
 CPU の 92.5 GFLOP/s と比べると、$1.5\times10^{15}\div9.25\times10^{10}$ で\textbf{約 16,000 倍}の速さです。
+このうち 8 倍は GPU の枚数です。
+GPU 1 枚あたり（約 187 TFLOP/s）でも、$1.87\times10^{14}\div9.25\times10^{10}$ で\textbf{約 2,000 倍}です。
 
 この節で分かったのは、速さは書き方で桁が変わり、まとめて大きく計算するほど速いこと、そして CPU では GPT-2 級の学習ですら現実的ではないことです。
-では、GPU はなぜ 1 万倍以上も速いのでしょうか。
+では、GPU は 1 枚でも、なぜ 2,000 倍も速いのでしょうか。
 
 \section{CPU と GPU の構造の違い}\label{sec:gpu-arch}
 
 前節で、行列積は「成分ごとに独立に計算できる」ので、コアを増やすほど速くなることを見ました（\figref{fig:gpu-matmul-size}。4 スレッドでは 1 スレッドの約 3.9 倍）。
 この節の問いは、「では、コアを極端に増やした計算機を作ればよいのではないか。GPU とはまさにそれなのか」です。
 
-\subsection*{少数の賢いコアと、大量の単純なコア}
+\subsection*{少数の高機能なコアと、大量の単純な演算器}
 
 CPU は、どんなプログラムでも速く動かすように作られています。
 「もし〜なら」の分岐を先読みしたり、命令の順番を入れ替えたり、よく使うデータを手元に置いたり（キャッシュ）する仕掛けに、チップの面積の多くを使います。
-そのぶん、1 つのチップに載るコアは数個から百数十個です（この環境では 4 個）。
+そのぶん、1 つのチップに載るコアは数個から、サーバー向けの大きなもので 256 個ほどです（この環境では 4 個）。
 
 \term{GPU}{graphics processing unit}は、もともと画面の画素の色を計算するために作られました。
 画素の計算は、何百万もの画素について同じ式を独立に計算する仕事です。
-そこで GPU は、分岐の先読みのような賢さを捨て、\textbf{単純な演算器を数千〜数万個並べる}設計を選びました。
+そこで GPU は、分岐の先読みのような仕掛けを省き、\textbf{単純な演算器を数千〜数万個並べる}設計を選びました。
 たとえば家庭用の RTX 5090 には、CUDA コアと呼ばれる演算器が 21,760 個あります~\cite{nvidia2026rtx5090}。
+ただし、CUDA コアは CPU のコアとは違う単位です。
+1 個の CUDA コアは 1 回に 1 組の掛け算と足し算をする演算器で、CPU のベクトル命令（1 命令で 4〜16 個の数をまとめて掛ける）の 1 列に近いものです。
+CPU の 1 コアの中にも、こうした列が何本もあります。
+ですから「4 個対 21,760 個」は、演算器の数の比をそのまま表してはいません。
 \figref{fig:gpu-cpu-vs-gpu}は、この違いを模式的に描いたものです。
 
 \begin{figure}[!tbp]
@@ -441,9 +511,12 @@ CPU は、どんなプログラムでも速く動かすように作られてい�
 \foreach \i/\x/\y in {1/0.2/1.6,2/2.1/1.6,3/0.2/0.2,4/2.1/0.2}{
   \node[box,minimum width=17mm,minimum height=11mm,anchor=south west] at (\x,\y) {};
   \node[anchor=south west,font=\tiny] at (\x+0.05,\y+0.05) {制御・キャッシュ};
-  \node[redbox,minimum width=6mm,minimum height=4mm,anchor=north east,inner sep=0pt] at (\x+1.65,\y+1.05) {\scriptsize 演算};
+  \foreach \k in {0,...,3}{
+    \fill[figred,draw=bookaccent,line width=0.3pt] (\x+1.06+\k*0.15,\y+0.62) rectangle ++(0.12,0.4);
+  }
+  \node[anchor=east,font=\scriptsize,inner sep=1pt] at (\x+1.04,\y+0.82) {演算};
 }
-\node[lbl,below] at (2,-0.05) {賢いコアが数個〜百数十個};
+\node[lbl,below] at (2,-0.05) {高機能なコアが数個〜256 個ほど};
 % GPU
 \node[font=\small\bfseries] at (7.6,3.3) {GPU};
 \draw[black!50,rounded corners=2pt] (5.2,0) rectangle (10,3);
@@ -456,13 +529,19 @@ CPU は、どんなプログラムでも速く動かすように作られてい�
 \node[lbl,below] at (7.6,-0.05) {単純な演算器が数千〜数万個};
 \end{tikzpicture}
 \caption{CPU と GPU の面積の使い方（模式図）。CPU は制御とキャッシュ（青）に面積を使い、少数のコアをそれぞれ速くする。
-GPU は小さな制御部（灰）ごとに多数の演算器（赤）を並べ、同じ計算を大量のデータに一斉に行う。}
+GPU は小さな制御部（灰）ごとに多数の演算器（赤）を並べ、同じ計算を大量のデータに一斉に行う。
+CPU の各コアの「演算」の赤い細い列は、ベクトル命令（1 命令で 4〜16 個の数をまとめて掛ける）の列を表す。
+個数は実際よりずっと少なく描いた（GPU の 1 行は、同じ命令を一斉に実行する 1 組を表すが、実際の 1 組は 32 個）。
+GPU の中の小さく速いメモリと、外側の大きなメモリ（\figref{fig:gpu-host-device}）は省いた。}
 \label{fig:gpu-cpu-vs-gpu}
 \end{figure}
 
-たとえるなら、CPU は少数の熟練の職人、GPU は同じ作業を一斉にこなす大人数の作業員です。
-ただし GPU の作業員は、32 人ほどの組ごとに\textbf{同じ命令を同時に}実行します（たとえの限界）。
-組の中で処理が分岐すると両方を順にやることになるので、GPU が得意なのは分岐の少ない、揃った計算です。
+人の仕事にたとえると、CPU のコアは、どんな作業でも 1 人で手早くこなす少数の熟練者です。
+GPU の演算器は、言われた同じ作業を一斉にこなす大人数の作業員です。
+このたとえには合わない点が 1 つあります。
+GPU の演算器は、1 人ずつ別の作業をするのではなく、32 個ずつの組で\textbf{同じ命令を同時に}実行します。
+組の中で処理が分岐すると、両方の分岐を順に実行することになります。
+そのため GPU が得意なのは、分岐の少ない、揃った計算です。
 
 \subsection*{行列積はなぜ GPU に向いているか}
 
@@ -477,26 +556,31 @@ $\mA$ の 1 行は、$\mC$ のその行の $n$ 個すべての成分の計算に
 そこで GPU（と BLAS）は、\figref{fig:gpu-tiling}のように $\mC$ を小さな\textbf{タイル}に分け、
 タイルの計算に必要な $\mA$ の行の帯と $\mB$ の列の帯を、演算器のすぐそばの小さく速いメモリに一度だけ読み込みます。
 読み込んだ数は、タイルの中で何度も使われます。
-この「読み込み 1 回あたり何回計算できるか」が、次節で扱う速さの鍵になります。
+何回使われるかを数えてみましょう。
+タイルが $b\times b$ なら、読み込んだ $\mA$ の 1 個の数は、そのタイルの $b$ 個の列の計算に使われます（図では $b=2$）。
+タイルに分けずに $\mC$ の成分を 1 個ずつ計算すると、$\mA$ の 1 個の数は、$n$ 個の列のたびに読み直されます（図の $6\times6$ なら 6 回）。
+$b\times b$ のタイルに分けると、読み直しは $n/b$ 回（図では 3 回）で済みます。
+タイルを大きくするほど、使い回しの回数が増え、読み込みが減ります。
+この「読み込み 1 回あたり何回計算できるか」が、次節で扱う速さを大きく左右します。
 
 \begin{figure}[!tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize]
 \def\s{0.32}
 % A
-\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!30] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \fill[figblue,draw=bookblue] (0,-2*\s) rectangle (6*\s,-4*\s);
+\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!45] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \node at (3*\s,0.3) {$\mA$};
 % B
 \begin{scope}[xshift=28mm]
-\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!30] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \fill[figgreen,draw=bookgreen] (2*\s,0) rectangle (4*\s,-6*\s);
+\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!45] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \node at (3*\s,0.3) {$\mB$};
 \end{scope}
 % C
 \begin{scope}[xshift=56mm]
-\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!30] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \fill[figred,draw=bookaccent] (2*\s,-2*\s) rectangle (4*\s,-4*\s);
+\foreach \i in {0,...,5}{\foreach \j in {0,...,5}{\draw[black!45] (\j*\s,-\i*\s) rectangle ++(\s,-\s);}}
 \node at (3*\s,0.3) {$\mC=\mA\mB$};
 \end{scope}
 \node at (24mm,-3*\s) {$\times$};\node at (52mm,-3*\s) {$=$};
@@ -506,7 +590,8 @@ $\mA$ の 1 行は、$\mC$ のその行の $n$ 個すべての成分の計算に
 \node[lbl,align=left,anchor=west] at (86mm,-4.6*\s) {別の演算器の組に配る};
 \end{tikzpicture}
 \caption{行列積のタイル分割。$\mC$ の各タイルは $\mA$ の行の帯と $\mB$ の列の帯だけから計算でき、タイル同士は独立である。
-帯の数は速いメモリに一度読めば、タイルの中で何度も使い回せる。}
+帯の数は速いメモリに一度読めば、タイルの中で $b$ 回（図では $b=2$）使い回せる。
+模式図であり、実際は $\mA$ の行の方向（$\mB$ の列の方向）にも帯を区切って、少しずつ読み込む。}
 \label{fig:gpu-tiling}
 \end{figure}
 
@@ -524,7 +609,7 @@ Tensor Core は 2 バイトや 1 バイトの数の形式で最も速く動き�
 \centering
 \caption{代表的な GPU の仕様（各社の製品ページ~\cite{nvidia2026h100,nvidia2026h200,amd2026mi300x}などによる。2026 年 11 月時点の公表値）。
 行列積の速さは密行列の BF16 の値（「疎行列なら 2 倍」という表記の値ではない）。
-B200 の値は FP8 の値の半分として求めた推定。最下行は本章の CPU の実測。}
+B200 の値は FP8 の値の半分として求めた推定。Rubin は Vera Rubin NVL72 の製品ページの 1 GPU あたりの値。最下行は本章の CPU の実測（4 スレッドの行列積）。}
 \label{tab:gpu-specs}
 \small
 \begin{tabular}{lrrr}
@@ -545,6 +630,27 @@ AMD MI300X & 1,307 & 192 & 5.3 \\
 \end{table}
 
 H100 の約 989 TFLOP/s は、本章の CPU（4 スレッドで約 0.25 TFLOP/s）の約 4,000 倍です（$989\div0.25$）。
+これは、GPU の公称値（上限）と、CPU の行列積単体の実測値の比です。
+冒頭の約 1 万 5 千倍や、前節の約 16,000 倍・約 2,000 倍とは、比べているものが違います。
+\tabref{tab:gpu-ratios}に、本章に出てくる倍率を、何と何を比べたかと一緒に並べました。
+
+\begin{table}[!tbp]
+\centering
+\caption{本章に出てくる「GPU は CPU の何倍か」の倍率と、その比べ方。同じ「何倍」でも、枚数・公称か実効か・CPU のスレッド数が違う。}
+\label{tab:gpu-ratios}
+\small
+\begin{tabular}{@{}r>{\raggedright\arraybackslash}p{42mm}>{\raggedright\arraybackslash}p{40mm}l@{}}
+\toprule
+倍率 & GPU の側 & CPU の側 & 出てくる所 \\
+\midrule
+約 15,000 倍 & A100 8 枚の学習時間（90 分） & 2 スレッドの見積もり、\newline \mbox{2.5 年} & 章の冒頭 \\
+約 16,000 倍 & A100 8 枚、\newline 実効 \mbox{$1.5\times10^{15}$ FLOP/s} & 2 スレッド、\newline 実効 \mbox{92.5 GFLOP/s} & \secref{sec:gpu-cpu-speed} \\
+約 2,000 倍 & A100 1 枚、\newline 実効 \mbox{187 TFLOP/s} & 2 スレッド、\newline 実効 \mbox{92.5 GFLOP/s} & \secref{sec:gpu-cpu-speed} \\
+約 4,000 倍 & H100 1 枚、\newline 公称 \mbox{989 TFLOP/s} & 4 スレッド、\newline 行列積単体 \mbox{0.25 TFLOP/s} & \tabref{tab:gpu-specs} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 注意してほしいのは、NVIDIA の一部の仕様表が「疎行列の場合」の 2 倍の値を大きく載せていることです。
 \textbf{疎行列}は、成分の多くが 0 の行列です。
 LLM の学習で掛けるのは、ほとんどの成分が 0 でない\textbf{密}な行列なので、見積もりには密の値を使います。
@@ -561,13 +667,14 @@ LLM の学習で掛けるのは、ほとんどの成分が 0 でない\textbf{�
 実効の速さは、1 トークンあたりの計算量 $6N$（式\eqref{eq:gpu-6n}）に、実際に 1 秒で進んだトークン数を掛けたものです。
 前節の llm.c の例では、実効が約 187 TFLOP/s、公称が 312 TFLOP/s でした。
 MFU は $187\div312\approx0.6$、つまり約 60\% です。
-本章の CPU で見た「行列積単体の 7 割」（$92.5\div127$）も、同じ種類の数字です。
+本章の CPU で見た「行列積単体の 7 割」（$92.5\div127$）は、分母が公称値ではなく、実測した行列積の速さです。
+そのため MFU そのものではありませんが、「理想の何割が出たか」という意味では似た数字です。
 MFU を使うと、学習時間の見積もりは次の 1 本の式になります。
 \begin{equation}
   \text{学習時間} \approx \frac{6ND}{\text{公称の速さ}\times\text{枚数}\times\text{MFU}}
   \label{eq:gpu-train-time}
 \end{equation}
-\figref{fig:gpu-map}の地図を、式に直したものです。
+\figref{fig:gpu-map}の構成図を、式に直したものです。
 \chapref{ch:infra}と\chapref{ch:capstone}の見積もりは、この式を使います（演習 2 で練習します）。
 
 GPU 以外にも、Google の TPU（Google のクラウドでのみ使え、主に JAX から使う）や AWS の Trainium など、行列積に特化した\term{アクセラレータ}{accelerator}があります。
@@ -593,21 +700,21 @@ $4096\times4096$ の行列（約 1,678 万要素、float32 で 64 MiB）の全�
 
 ほかの行（SDPA、\code{torch.compile}、勾配累積）は\secref{sec:gpu-speedup}で読みます。
 いまは 2 行目を見てください。
-1.4 ms かかりました。
-掛け算は 1,678 万回なので、$1.678\times10^{7}$ を 0.0014 秒で割って、約 $1.2\times10^{10}$ FLOP/s、つまり 12.0 GFLOP/s です。
+1.3 ms かかりました。
+掛け算は 1,678 万回なので、$1.678\times10^{7}$ を約 0.0013 秒で割って、約 $1.3\times10^{10}$ FLOP/s です（出力の 12.5 GFLOP/s は、丸める前の時間で割った値です）。
 2 スレッドの行列積（127 GFLOP/s）の 10 分の 1 です。
 計算は掛け算 1 回だけなのに、なぜこんなに遅いのでしょうか。
 
 この計算では、1 要素につき、メモリから 4 バイトを読み、4 バイトを書く必要があります。
 運んだ量は、全部で $1.678\times10^{7}\times8\approx1.34\times10^{8}$ バイトです。
-これを 0.0014 秒で割ると、1 秒あたり約 96 GB になります（出力の 2 行目の 95.8 GB/s）。
+これを約 0.0013 秒で割ると、1 秒あたり約 100 GB になります（出力の 2 行目の 100.0 GB/s）。
 これは、この計算機のメモリが 1 秒に運べる量の目安とみてよい値です。
-つまり、演算器は暇で、\textbf{メモリとの往復が速さを決めていた}のです。
+つまり、演算器はほとんど待っているだけで、\textbf{メモリとの往復が速さを決めていた}のです。
 このような計算を\term{メモリ律速}{memory-bound}、計算が速さを決めるものを\term{計算律速}{compute-bound}と呼びます。
 
 \subsection*{算術強度とルーフライン}
 \skimread{結論は次のとおりです。運ぶ 1 バイトあたりの計算回数（算術強度）が少ない計算は、メモリ律速になります。
-行列積はこれが多いので、計算律速です。速い GPU ほど、メモリ律速の計算で演算器を遊ばせます。}
+行列積はこれが多いので、計算律速です。速い GPU ほど、メモリ律速の計算では演算器の能力を使い切れません。}
 
 どちらになるかは、「運んだ 1 バイトあたり何回計算するか」で決まります。
 この比を\term{算術強度}{arithmetic intensity}と呼びます。
@@ -619,6 +726,9 @@ $4096\times4096$ の行列（約 1,678 万要素、float32 で 64 MiB）の全�
 $n\times n$ の行列積（float32）は、$\mA$, $\mB$ を読み $\mC$ を書くので $3\times4n^2$ バイト、計算は $2n^3$ なので、
 算術強度は $2n^3/(12n^2)=n/6$ です。
 $n=4096$ なら約 683 で、要素ごとの演算の 5,000 倍以上です。
+ただし、これは各行列を 1 回だけ運べた理想の場合の値（上限）です。
+実際には速いメモリが小さいので、タイル（\figref{fig:gpu-tiling}）の大きさに応じて同じ数を何度か読み直し、算術強度はこれより下がります。
+それでも、要素ごとの演算より桁違いに高いことは変わりません。
 行列積は、数を一度運べば何度も使い回せる（\figref{fig:gpu-tiling}）ので、算術強度が高いのです。
 
 計算機の側にも、同じ単位の数があります。
@@ -640,18 +750,21 @@ H100 なら、BF16 の行列積が約 989 TFLOP/s、メモリ帯域が 3.35 TB/s
   xlabel={算術強度（FLOP/バイト）},ylabel={達成できる FLOP/s の上限},
   legend style={font=\footnotesize,cells={anchor=west},at={(0.5,-0.3)},anchor=north,legend columns=2}]
 \addplot[bookaccent,very thick,domain=0.05:5000,samples=200] {min(3.35e12*x,989e12)};
-\addplot[bookblue,very thick,domain=0.05:5000,samples=200] {min(96e9*x,246e9)};
-\addplot[only marks,mark=*,bookgreen,mark size=2pt] coordinates {(0.125,12.0e9)};
+\addplot[bookblue,very thick,domain=0.05:5000,samples=200] {min(100e9*x,246e9)};
+\addplot[only marks,mark=*,bookgreen,mark size=2pt] coordinates {(0.125,12.5e9)};
 \addplot[only marks,mark=square*,bookgreen,mark size=2pt] coordinates {(341,246e9)};
-\legend{H100（公称値）,本章の CPU（実測から）,\code{x*2}（CPU 実測）,行列積 $n=2048$（CPU 実測）}
-\draw[densely dotted,black!50] (axis cs:295,1e9) -- (axis cs:295,989e12);
-\node[font=\footnotesize,anchor=west] at (axis cs:300,3e9) {295};
+\legend{H100（公称値）,本章の CPU（実測から）,\code{x*2}（CPU、縦が実測）,行列積 $n=2048$（CPU、縦が実測）}
+\draw[dashed,black!60] (axis cs:295,1e9) -- (axis cs:295,989e12);
+\node[font=\footnotesize,anchor=north east,align=right] at (axis cs:285,3e13) {H100 の曲がり角\\295 FLOP/バイト};
 \end{axis}
 \end{tikzpicture}
 \caption{ルーフライン。斜めの部分ではメモリ帯域が、水平の部分では演算器が速さの上限を決める。
-H100 の曲がり角（989/3.35 ≈ 295 FLOP/バイト）は CPU（246/96 ≈ 2.6）よりずっと右にあり、GPU では要素ごとの演算（左端）が演算器の能力の 1\% も使えない。
-緑の点は本章の CPU での実測で、それぞれ屋根の近くにある。
-CPU の線は目安で、斜めの部分は 2 スレッドの \code{x*2} の実測（96 GB/s）、水平の部分は 4 スレッドの行列積の実測（246 GFLOP/s）から引いた。}
+H100 の曲がり角（989/3.35 ≈ 295 FLOP/バイト）は CPU（246/100 ≈ 2.5）よりずっと右にあり、GPU では要素ごとの演算（左端）が演算器の能力の 1\% も使えない。
+緑の 2 点は本章の CPU での測定で、縦位置（速さ）が実測、横位置は計算で求めた算術強度である。
+行列積（四角）の横位置は、各行列を 1 回だけ運べた理想の場合の $n/6\approx341$ で、実際の算術強度はこれより低い。
+この四角が H100 の曲がり角の破線のすぐ右にあるのはたまたまで、H100 とは関係がない。
+CPU の線は目安で、この 2 点の実測から引いた（斜めの部分は 2 スレッドの \code{x*2} の 100 GB/s、水平の部分は 4 スレッドの行列積の 246 GFLOP/s）。
+したがって、点が屋根の上にあるのは線の引き方による。CPU の公称の帯域と性能から引いた屋根ではなく、ルーフラインの正しさを確かめたものでもない。}
 \label{fig:gpu-roofline}
 \end{figure}
 
@@ -659,15 +772,22 @@ CPU の線は目安で、斜めの部分は 2 スレッドの \code{x*2} の実�
 要素ごとの演算（算術強度 0.1 前後）は、H100 でも数百 GFLOP/s しか出ません。
 \code{x * 2.0} なら、上限は $3.35\times10^{12}\times0.125\approx4.2\times10^{11}$ FLOP/s、つまり約 420 GFLOP/s です。
 公称の 989 TFLOP/s の約 0.04\% で、演算器の能力の 1\% 未満です。
-曲がり角が右にある GPU ほど、メモリ律速の計算が「もったいない」のです。
-LLM の中の LayerNorm、GELU、softmax、残差の足し算などは、FLOPs ではわずか 1〜2\% ほどでしたが（\figref{fig:gpu-flops-parts}）、GPU では\textbf{時間}の 1\% では済みません。
+（要素ごとの演算は Tensor Core を使わないので、本当の水平の線はもっと低い所にあります。それでも、斜めの線の方がずっと低いことは変わりません。）
+曲がり角が右にある GPU ほど、メモリ律速の計算では演算器の能力の大部分が使われずに残ります。
+LLM の中の LayerNorm、GELU、softmax、残差の足し算などは、FLOPs ではわずか 1〜2\% ほどでした（\figref{fig:gpu-flops-parts}）。
+しかし GPU では、\textbf{時間}の 1〜2\% では済みません。
+大まかに見積もってみます。
+行列積が公称の 6 割（約 600 TFLOP/s）で動き、要素ごとの演算は算術強度 1 程度で 3.35 TFLOP/s しか出ないとします。
+速さの比は約 180 倍です。
+FLOPs の 1.5\% の計算が 180 倍遅く進むと、その時間は行列積の時間の $0.015\times180\approx2.7$ 倍になります。
+これは演算を 1 つずつ実行した場合の粗い見積もりですが、行列積より長くかかってもおかしくないことが分かります。
 この問題への答えが、\secref{sec:gpu-speedup}の演算の融合と FlashAttention です。
 
 \subsection*{CPU と GPU の間の転送}
 
 メモリの問題はもう一段あります。
 GPU は、CPU とは別に自分専用のメモリ（\term{VRAM}{video RAM}。データセンター向けの GPU では HBM と呼ばれる種類）を持っています。
-\figref{fig:gpu-host-device}のように、CPU 側の主記憶と GPU のメモリは PCIe（計算機の部品どうしをつなぐ標準の通路）でつながっていて、
+\figref{fig:gpu-host-device}のように、CPU 側の主記憶と GPU のメモリは PCIe（計算機の部品どうしをつなぐ標準の接続方式）でつながっていて、
 その速さは H100 で 128 GB/s です。
 GPU のメモリの中の帯域（3.35 TB/s）の約 26 分の 1 しかありません。
 
@@ -700,16 +820,16 @@ PyTorch でテンソルを GPU に運ぶのが \code{.to(device)} です。
 \draw[<->,thick,dashed] (ram.east) -- node[above,font=\footnotesize]{PCIe 128 GB/s} node[below,font=\footnotesize]{\code{.to(device)}} (hbm.west);
 \end{tikzpicture}
 \caption{CPU 側と GPU 側のメモリ（数値は H100 SXM）。重みもデータも、計算の前に \code{.to(device)} で GPU のメモリへ運ぶ必要がある。
-PCIe（点線）は GPU のメモリの中の帯域よりずっと細いので、学習の途中で何度も往復させてはいけない。}
+PCIe（破線）は GPU のメモリの中の帯域よりずっと細いので、学習の途中で何度も往復させてはいけない。}
 \label{fig:gpu-host-device}
 \end{figure}
 
 この節で分かったのは、速さを決めるのは計算の量だけでなく運搬の量でもあることです。
-要素ごとの演算のように、運ぶ量のわりに計算が少ない（算術強度の低い）計算は、GPU の演算器を遊ばせてしまいます。
+要素ごとの演算のように、運ぶ量のわりに計算が少ない（算術強度の低い）計算では、GPU の演算器の能力のほとんどが使われずに終わります。
 
-\subsection*{ここまでの道のり}
+\subsection*{ここまでのまとめ}
 学習の計算はほぼ行列積で、量は $6ND$ FLOPs です（\secref{sec:gpu-flops}）。
-行列積は独立な成分が多く数を使い回せるので、演算器を大量に並べた GPU で CPU の数千倍速く計算できます（\secref{sec:gpu-cpu-speed}, \secref{sec:gpu-arch}）。
+行列積は独立な成分が多く数を使い回せるので、演算器を大量に並べた GPU で、1 枚でも CPU の数千倍速く計算できます（\secref{sec:gpu-cpu-speed}, \secref{sec:gpu-arch}）。
 ただし、要素ごとの演算のように、運ぶ量のわりに計算が少ないものは、メモリ帯域で頭打ちになります（本節）。
 残る問いは、メモリに何が載り切らないのか、そして同じ GPU からもっと速さを引き出すにはどうするか、です。
 
@@ -731,6 +851,7 @@ CPU の主記憶のように後から増やすことはできません。
 \end{itemize}
 すべて float32（4 バイト）なら $4+4+8=16$ バイト/パラメータです。
 \secref{sec:gpu-precision}で扱う混合精度では、重みと勾配を 2 バイトで持つ代わりに、正確な更新のための 4 バイトの「主重み」を別に持つので、やはり $2+2+4+8=16$ バイトになります\cite{rajbhandari2020zero}。
+（\secref{sec:gpu-precision}で使う \code{torch.autocast} では内訳が違い、重み 4・勾配 4・Adam 8 で、合計は同じ 16 バイトです。）
 この式（\file{ch12/memory_estimate.py} の \code{state_bytes}）を公開モデルの大きさに当てはめたのが\figref{fig:gpu-mem-models}です。
 
 \begin{figure}[!tbp]
@@ -738,19 +859,24 @@ CPU の主記憶のように後から増やすことはできません。
 \begin{tikzpicture}
 \begin{axis}[xbar stacked,width=0.8\linewidth,height=39mm,xmode=normal,xmin=0,
   symbolic y coords={GPT-2 124M,1B,Llama 3 8B},ytick=data,y tick label style={font=\small},
-  bar width=4.5mm,extra x ticks={80},extra x tick labels={80},extra x tick style={grid=major,major grid style={densely dashed,black!70,thick}},xlabel={GB（活性化を除く）},xmajorgrids=true,ymajorgrids=false,
+  bar width=4.5mm,xtick={0,20,40,60,100,120,140,160},extra x ticks={80},extra x tick labels={80},extra x tick style={grid=major,major grid style={densely dashed,black!70,thick}},xlabel={GB（活性化を除く）},xmajorgrids=true,ymajorgrids=false,
   legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,legend columns=4},
-  enlarge y limits=0.25]
+  enlarge y limits=0.25,xmax=165]
 \addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=weights,y=name]{code/ch12/out/memory_models_small.csv};
 \addplot[fill=figgreen,draw=bookgreen] table[col sep=comma,x=grads,y=name]{code/ch12/out/memory_models_small.csv};
 \addplot[fill=figorange,draw=bookorange] table[col sep=comma,x=master,y=name]{code/ch12/out/memory_models_small.csv};
 \addplot[fill=figred,draw=bookaccent] table[col sep=comma,x=adam,y=name]{code/ch12/out/memory_models_small.csv};
 \legend{重み（bf16）,勾配（bf16）,主重み（fp32）,Adam の $\vm$ と $\vv$（fp32）}
+\node[font=\footnotesize,anchor=west] at (axis cs:3,GPT-2 124M) {2.0 GB};
+\node[font=\footnotesize,anchor=west] at (axis cs:17,1B) {16.0 GB};
+\node[font=\footnotesize,anchor=west,fill=white,inner sep=1pt] at (axis cs:82,1B) {H100 1 枚（80 GB）};
+\node[font=\footnotesize,anchor=west] at (axis cs:129.5,Llama 3 8B) {128.5 GB};
 \end{axis}
 \end{tikzpicture}
 \caption{混合精度＋AdamW の学習で常に載るメモリ（\file{ch12/out/memory_estimate.txt}）。
 1 パラメータあたり 16 バイトで、そのうち半分を Adam の状態が占める。
-8B のモデル（128 GB）は、活性化を数える前に H100 1 枚（破線）に載らない。70B なら 1,129 GB になる。}
+8B のモデル（128 GB）は、活性化を数える前に H100 1 枚（破線）に載らない。70B なら 1,129 GB になる。
+棒の右の数字は合計（GB）。内訳は重みと勾配を BF16 で持つ大規模学習の方式のもの。}
 \label{fig:gpu-mem-models}
 \end{figure}
 
@@ -759,7 +885,7 @@ $8.0\times10^{9}\times16$ バイト $=1.28\times10^{11}$ バイトで、約 128 
 H100 1 枚の 80 GB を超えます。
 70B なら 1,129 GB です。
 $1{,}129\div80\approx14.1$ なので、H100 が 15 枚要ります。
-推論だけなら重み（bf16 で 2 バイト/パラメータ）と KV キャッシュ（\chapref{ch:modern-arch}）で済むので、学習はその約 8 倍（$16\div2$）のメモリを食うことになります。
+推論だけなら重み（bf16 で 2 バイト/パラメータ）と KV キャッシュ（\chapref{ch:modern-arch}）で済むので、学習にはその約 8 倍（$16\div2$）のメモリが要ることになります。
 
 \begin{quiz}
 GPT-2 の最小版（1.24 億パラメータ）を AdamW で学習するとき、重み・勾配・オプティマイザの状態は、合わせて何 GB になるでしょうか。
@@ -774,7 +900,7 @@ GPT-2 の最小版（1.24 億パラメータ）を AdamW で学習するとき�
 
 \subsection*{バッチとともに増えるもの：活性化}
 
-もう一つの大きな消費者が\term{活性化}{activation}です。
+メモリを大きく使うもう一つのものが、\term{活性化}{activation}です。
 逆伝播で勾配を計算するには、順伝播の途中の値が必要でした。
 たとえば式\eqref{eq:gpu-back-w}の $\pd{\calL}{\mW}=\vg\vx^\T$ には、順伝播で層に入ってきた $\vx$ が要ります。
 そのため PyTorch は、順伝播のあいだに、こうした途中の値をメモリに保存しておきます。
@@ -800,37 +926,83 @@ $B=32$, $T=128$ なら 4,096 トークンなので、$97.6$ KiB $\times4{,}096\a
 重み・勾配・Adam の状態の合計（1 行目、39.4 MiB）の\textbf{約 10 倍}です（$390\div39.4\approx9.9$）。
 
 1 トークンあたりの量は、$T$ を増やしても増えます（$B=32$ の 7〜9 行目で 85.6 → 89.6 → 97.6 KiB）。
-増えた量は、$T$ が 32 から 64 で 4.0 KiB、64 から 128 で 8.0 KiB です。
-$T$ の増え方が 2 倍になると、量の増え方も 2 倍になっています。
-1 トークンあたりの量の中に、$T$ に比例する部分があるということです。
-その正体は注意の重みです（1 つのトークンが、$T$ 個の位置それぞれへの重みを持ちます）。
-バッチ全体では形 $(B,H,T,T)$ になり、$T^2$ に比例します。
+増えた量は、$T$ が 32 から 64（32 増えた）で 4.0 KiB、64 から 128（64 増えた）で 8.0 KiB です。
+$T$ を 2 倍の量だけ増やすと、増えた量も 2 倍になっています。
+つまり、1 トークンあたりの量は $T$ の 1 次式で、3 つの点にちょうど合う式は次のとおりです。
+\begin{equation}
+  \text{1 トークンあたりの活性化} \approx 81.6\ \text{KiB} + 0.125\ \text{KiB}\times T
+  \label{eq:gpu-act-per-token}
+\end{equation}
+（$T=32$ で $81.6+4=85.6$、$T=128$ で $81.6+16=97.6$。）
+$T$ に比例する部分は、注意の重みです（1 つのトークンが、$T$ 個の位置それぞれへの重みを持ちます）。
+全体の量は、これにトークン数 $BT$ を掛けたものです。
+したがって、活性化の全体は $B$ に比例し、$T$ については「$T$ に比例する部分（$81.6\,BT$ KiB）」と「$T^2$ に比例する部分（$0.125\,BT^2$ KiB）」の和になります。
+後者が、形 $(B,H,T,T)$ の注意の重みです。
+\figref{fig:gpu-activation}の右は、式\eqref{eq:gpu-act-per-token}を実測の点と並べたものです。
+$B=1$ でも $B=32$ でも同じ線に乗ることから、1 トークンあたりの量は $B$ によらないことも分かります。
 
 \begin{figure}[!tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[bookplot,width=0.7\linewidth,height=0.3\linewidth,xlabel={バッチサイズ $B$},ylabel={MiB},xtick={1,2,4,8,16,32},
+\begin{axis}[bookplot,width=0.5\linewidth,height=0.4\linewidth,xlabel={バッチサイズ $B$（$T=128$）},ylabel={MiB},xtick={1,4,8,16,32},
   legend pos=north west,legend style={font=\footnotesize,cells={anchor=west}},ymin=0]
 \addplot[bookblue,thick,mark=*] table[col sep=comma,x=B,y=mib]{code/ch12/out/activation_T128.csv};
 \addplot[bookgray,thick,dashed,domain=1:32] {39.4};
-\legend{{活性化（$T=128$, 実測）},{重み・勾配・Adam（fp32）}}
+\legend{{活性化（実測）},{重み・勾配・Adam}}
+\end{axis}
+\begin{axis}[bookplot,xshift=0.53\linewidth,width=0.5\linewidth,height=0.4\linewidth,xlabel={文脈長 $T$},ylabel={KiB / トークン},
+  xtick={32,64,128},xmin=20,xmax=140,ymin=80,ymax=100,
+  legend pos=south east,legend style={font=\footnotesize,cells={anchor=west}}]
+\addplot[bookgray,thick,dashed,domain=20:140] {81.6+0.125*x};
+\addplot[only marks,mark=*,bookblue,mark size=2pt] table[col sep=comma,x=T,
+  y expr=\thisrow{mib}*1024/(\thisrow{B}*\thisrow{T}),
+  restrict expr to domain={\thisrow{B}}{32:32}]{code/ch12/out/activation.csv};
+\addplot[only marks,mark=o,bookaccent,mark size=3pt,thick] table[col sep=comma,x=T,
+  y expr=\thisrow{mib}*1024/(\thisrow{B}*\thisrow{T}),
+  restrict expr to domain={\thisrow{B}}{1:1}]{code/ch12/out/activation.csv};
+\legend{{$81.6+0.125\,T$},{$B=32$（実測）},{$B=1$（実測）}}
 \end{axis}
 \end{tikzpicture}
-\caption{ミニGPT の活性化のメモリとバッチサイズ（\coderef{code:gpu-activations}）。活性化は $B$ に比例して増え、$B=32$ では重みなどの 10 倍になる。}
+\caption{ミニGPT の活性化のメモリ（\coderef{code:gpu-activations}。\file{ch12/out/activation.csv}）。
+左: $T=128$ でバッチサイズ $B$ を変えた。活性化は $B$ に比例して増え、$B=32$ では重みなどの 10 倍になる。
+右: 1 トークンあたりの量を、文脈長 $T$ を変えて見た。$T$ に比例して増え（注意の重みの分）、$B$ によらず同じ線（式\eqref{eq:gpu-act-per-token}）に乗る。}
 \label{fig:gpu-activation}
 \end{figure}
 
 \subsection*{メモリが足りないとき}
 
 GPU のメモリが足りなくなると、PyTorch は \code{torch.OutOfMemoryError}（\term{OOM}{out of memory}）で止まります。
-対処の定石は次のとおりです。
+対処の定石は次の 5 つです。
 (1) \textbf{バッチを小さくし、勾配累積で補う}（活性化は $B$ に比例。実質のバッチサイズは\secref{sec:gpu-speedup}の勾配累積で戻せる）。
 (2) \textbf{混合精度にする}（\secref{sec:gpu-precision}。活性化の多くが 2 バイトになる）。
 (3) \textbf{活性化を捨てて逆伝播のときに計算し直す}勾配チェックポインティング（計算は増えるが活性化が大きく減る。\chapref{ch:distributed}）。
 (4) \textbf{FlashAttention を使う}（$T\times T$ の注意の重みを保存しない）。
 (5) それでも足りなければ、重み・勾配・状態を\textbf{複数の GPU に分けて持つ}（ZeRO/FSDP\cite{rajbhandari2020zero}。\chapref{ch:distributed}）。
+\tabref{tab:gpu-oom}は、それぞれで何が減り、代わりに何が増えるかを並べたものです。
+上から順に、代わりに払うものが少ない対処です。
+ふつうは (1)・(2)・(4) を先に使い、それでも足りなければ (3)、(5) へ進みます。
 
-この節で分かったのは、学習のメモリは「16 バイト $\times$ パラメータ数」と「バッチと文脈長に比例する活性化」の和であり、小さなモデルでも後者が支配的になりうることです。
+\begin{table}[!tbp]
+\centering
+\caption{メモリが足りないときの対処の比較。「増えるもの」は、メモリを減らす代わりに払うもの。
+行は代わりに払うものが少ない順に並べた。番号は本文の (1)〜(5) と同じなので、(4) が (3) より上に来る。}
+\label{tab:gpu-oom}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{30mm}>{\raggedright\arraybackslash}p{40mm}l@{}}
+\toprule
+対処 & 減るもの & 代わりに増えるもの & 本書 \\
+\midrule
+(1) 小さなバッチ＋勾配累積 & 活性化（$B$ に比例） & 時間が少し延びることがある（小さな行列積は遅い） & \secref{sec:gpu-speedup} \\
+(2) 混合精度（BF16） & 活性化の多く（半分） & 丸め誤差（足し上げと更新を FP32 で行って抑える） & \secref{sec:gpu-precision} \\
+(4) FlashAttention（SDPA） & 注意の重み（$T^2$ の部分） & ほとんど無し（GPU と形式の条件がある） & \secref{sec:gpu-speedup} \\
+(3) 勾配チェックポインティング & 活性化（大きく） & 計算（約 1.33 倍） & \chapref{ch:distributed} \\
+(5) ZeRO / FSDP & 重み・勾配・状態（GPU の数で割る） & GPU の枚数と通信 & \chapref{ch:distributed} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+この節で分かったのは、学習のメモリは「16 バイト $\times$ パラメータ数」と活性化の和であり、小さなモデルでも後者が支配的になりうることです。
+活性化はバッチ $B$ に比例し、文脈長 $T$ については $T$ に比例する部分と、注意の重みの $T^2$ に比例する部分を持ちます。
 
 \section{数の形式と混合精度}\label{sec:gpu-precision}
 
@@ -850,19 +1022,25 @@ $1.0110_2$ は $1+\tfrac14+\tfrac18=1.375$ なので、この数は $1.375\times
 
 \begin{figure}[!tbp]
 \centering
-\begin{tikzpicture}[font=\footnotesize,x=3.6mm,y=5mm]
+\begin{tikzpicture}[font=\footnotesize,x=3.5mm,y=5mm]
 \foreach \name/\e/\m/\y in {FP32/8/23/0,FP16/5/10/-1.6,BF16/8/7/-3.2}{
-  \node[anchor=east] at (-0.4,\y) {\name};
+  \node[anchor=east] at (-0.3,\y) {\name};
   \fill[figgray,draw=black!50] (0,\y-0.4) rectangle ++(1,0.8);
   \fill[figorange,draw=bookorange] (1,\y-0.4) rectangle ++(\e,0.8);
-  \fill[figblue,draw=bookblue] (1+\e,\y-0.4) rectangle ++(\m*0.5,0.8);
-  \node at (1+\e/2,\y) {指数 \e};
-  \node at (1+\e+\m/4,\y) {仮数 \m};
+  \fill[figblue,draw=bookblue] (1+\e,\y-0.4) rectangle ++(\m,0.8);
+  \pgfmathtruncatemacro{\nb}{\e+\m}
+  \foreach \k in {1,...,\nb}{\draw[black!35] (\k,\y-0.4) -- (\k,\y+0.4);}
+  \draw[black!60] (0,\y-0.4) rectangle ++(\nb+1,0.8);
+  \node[fill=white,inner sep=1pt,font=\scriptsize] at (1+\e/2,\y) {指数 \e};
+  \node[fill=white,inner sep=1pt,font=\scriptsize] at (1+\e+\m/2,\y) {仮数 \m};
 }
-\node[anchor=west,lbl] at (14,-1.6) {範囲が狭い（最大 65,504）};
-\node[anchor=west,lbl] at (14,-3.2) {範囲は FP32 と同じ、粗い};
+\foreach \x/\l in {0/0,16/16,32/32}{\node[font=\scriptsize,black!60] at (\x,0.75) {\l};}
+\draw[densely dashed,black!40] (16,0.55) -- (16,-3.65);
+\node[anchor=west,lbl] at (17,-1.6) {範囲が狭い（最大 65,504）};
+\node[anchor=west,lbl] at (17,-3.2) {範囲は FP32 と同じ、粗い};
 \end{tikzpicture}
-\caption{浮動小数点数の形式（灰 = 符号 1 ビット、橙 = 指数部、青 = 仮数部。仮数部は半分の幅で描いた）。
+\caption{浮動小数点数の形式（1 マス = 1 ビット。灰 = 符号 1 ビット、橙 = 指数部、青 = 仮数部。上の数字はビットの位置）。
+FP16 と BF16 は同じ 16 ビット（破線まで）で、指数部と仮数部の境目の位置だけが違う。
 BF16 は FP32 の指数部をそのまま残し、仮数部を 7 ビットに切り詰めた形式である。}
 \label{fig:gpu-float-formats}
 \end{figure}
@@ -872,7 +1050,7 @@ FP16 は仮数部を多めに取り、範囲を狭くしました。
 \term{BF16}{bfloat16, brain floating point}は Google が深層学習のために考えた形式で、範囲は FP32 と同じにして、細かさを捨てました。
 PyTorch で性質を確かめます（\file{ch12/precision.py}）。
 
-\code{torch.finfo} は、形式の最大値、最小の正の正規化数（仮数部のビットをすべて使って表せる、いちばん小さな正の数）、\code{eps}（1 と、その次に大きい数との差）を返します。
+\code{torch.finfo} は、形式の最大値、最小の正の正規化数（仮数部の桁を全部使って表せる、いちばん小さな正の数。これより小さい数は、桁を減らして粗く表すか、0 になる）、\code{eps}（1 と、その次に大きい数との差）を返します。
 後半のループは、3 つの値（1.001、70,000、$10^{-6}$）をそれぞれの形式で表そうとします。
 
 \begin{figure}[!b]
@@ -885,10 +1063,12 @@ PyTorch で性質を確かめます（\file{ch12/precision.py}）。
 \addplot[bookblue,thick] table[col sep=comma,x=i,y=float16]{code/ch12/out/accumulate.csv};
 \addplot[bookaccent,thick] table[col sep=comma,x=i,y=bfloat16]{code/ch12/out/accumulate.csv};
 \legend{FP32,FP16,BF16}
+\node[font=\footnotesize,text=bookaccent,anchor=south east,inner sep=1pt] at (axis cs:10000,0.5) {BF16: 0.5};
 \end{axis}
 \end{tikzpicture}
 \caption{0.001 を足し続けたときの合計（\coderef{code:gpu-accumulate}）。FP32 は正しく 10 に届くが、FP16 は 4、BF16 は 0.5 で止まる。
-合計が大きくなるほど刻みが粗くなり、小さな数を足しても変わらなくなる。}
+合計が大きくなるほど刻みが粗くなり、小さな数を足しても変わらなくなる。
+FP16 は止まる手前（2〜4）で、丸めの切り上げのために正しい値を上回っている。}
 \label{fig:gpu-accumulate}
 \end{figure}
 
@@ -897,17 +1077,24 @@ PyTorch で性質を確かめます（\file{ch12/precision.py}）。
 \outputfile{ch12/out/precision.txt}
 
 1〜3 行目から、FP16 の最大値は 65,504 しかなく、BF16 は FP32 と同じ $3.4\times10^{38}$ まで表せます。
-FP16 は指数部が 5 ビットしかなく、$2^{16}=65{,}536$ の少し手前までしか表せないのです。
+なぜ 65,504 なのかを、約束と計算に分けて確かめます。
+約束（IEEE 754 という標準の決まり）は、FP16 の 5 ビットの指数部で表す $2^{-14}$〜$2^{15}$ の 30 通りです。
+5 ビットの 32 通りのうち、両端の 2 通りは 0 や無限大などの特別な数のために取っておきます。
+計算すると、いちばん大きな数は、仮数部の 10 ビットを全部 1 にした $1.1111111111_2\times2^{15}=(2-2^{-10})\times2^{15}=65{,}504$ です。
+$2^{16}=65{,}536$ のわずか手前です。
+FP32 と BF16 は指数部が 8 ビットあり、同じ約束で最大の指数が $2^{127}$ になるので、最大値は $2^{128}\approx3.4\times10^{38}$ の少し手前です。
 一方、\code{eps} は仮数部のビット数で決まります。
 仮数部が 23 ビットの FP32 は $2^{-23}\approx1.2\times10^{-7}$、10 ビットの FP16 は $2^{-10}\approx9.8\times10^{-4}$、7 ビットの BF16 は $2^{-7}\approx7.8\times10^{-3}$ です。
-BF16 は、数を約 0.8\% 刻みでしか表せません。
+BF16 は、数の大きさの 0.4〜0.8\% ほどの刻みでしか表せません（2 の累乗の区間の中で、刻みの幅は一定で、数の方が大きくなるため）。
 有効桁は 10 進で 2〜3 桁しかないことになります。
 4〜6 行目がその帰結です。
 FP16 では 70,000 が \code{inf}（無限大）になり、\textbf{あふれ}ました。
 BF16 では 1.001 が 1.0 に丸められ、70,000 は 70,144 になりました。
 BF16 で 1 の隣にある数は $1+2^{-7}\approx1.0078$ で、1.001 は 1 のほうに近いからです。
-3 列目の $10^{-6}$ は、どの形式でもほぼそのまま残りました。
-小さな数そのものは表せるのです。
+3 列目の $10^{-6}$ は、FP32 と BF16 ではほぼそのまま残りました。
+FP16 では、$10^{-6}$ は最小の正規化数（$6.1\times10^{-5}$）より小さいので、桁を減らした粗い刻み（$2^{-24}\approx6\times10^{-8}$ 刻み）で表され、1.01e-06 と 1\% ほどずれました。
+FP16 で約 $3\times10^{-8}$ より小さい数は 0 になります（あとの GradScaler が要る理由です）。
+BF16 と FP32 では、小さな数そのものは十分に表せます。
 困るのは、次に見るように、大きな数に小さな数を足すときです。
 
 \subsection*{足し算の誤差が積み重なる}
@@ -921,47 +1108,71 @@ BF16 で 1 の隣にある数は $1+2^{-7}\approx1.0078$ で、1.001 は 1 の�
 足すたびに、結果はその形式で表せる数に丸められます。
 6〜7 行目は、250 回ごとに途中の値を控えています（図に使います）。
 
-出力の 7〜9 行目のとおり、FP32 は 10.0004 とほぼ正しく、FP16 は 4.0、BF16 はなんと 0.5 で止まりました。
+出力の 7〜9 行目のとおり、FP32 は 10.0004 とほぼ正しく、FP16 は 4.0、BF16 は 0.5 で止まりました。
 \figref{fig:gpu-accumulate}が途中の経過です。
 BF16 で合計が 0.5 に達すると、隣の数との間隔が $0.5\times2^{-7}\approx0.0039$ になります。
 0.001 はその半分より小さいので、足しても丸めで元の 0.5 に戻ってしまうのです。
-0.5 の手前では間隔が約 0.0020 で、0.001 はその半分より少し大きいので、ここまでは進めました。
+0.5 の手前（0.25〜0.5）では間隔が約 0.0020 で、0.001 はその半分より少し大きいので、ここまでは進めました。
+ただし、正しく進んだのではありません。
+間隔の半分より少し大きい数を足すと、丸めで間隔 1 つぶん（約 0.0020）に切り上がるので、0.001 を足すたびに約 0.0020 ずつ増えます。
 FP16 でも、合計が 4 に達したところで同じことが起きました。
 4 での間隔は $4\times2^{-10}\approx0.0039$ で、BF16 の 0.5 での間隔と同じだからです。
+その手前の 2〜4 では、FP16 の間隔が約 0.0020 で、BF16 の 0.25〜0.5 と同じ切り上げが起きます。
+\figref{fig:gpu-accumulate}で、FP16 の線が 2,000 回目あたりから FP32（正しい値）より上に出て、3,000 回目に 3.86（正しくは 3.00）になっているのはこのためです。
+丸めの誤差は、足し算を消す向きにも、大きくしすぎる向きにも出ます。
 
 
 これは学習でそのまま起きる問題です。
-重みの更新 $\vtheta\leftarrow\vtheta-\eta\nabla\calL$ では、大きさ 1 程度の重みに、$10^{-4}$ 程度の小さな更新を何千回も足します。
+重みの更新 $\vtheta\leftarrow\vtheta-\eta\nabla\calL$ では、重みに小さな更新を何千回も足します。
+たとえば大きさ 1 の重みに $10^{-4}$ の更新を足す場合を考えます。
 BF16 では、1 の隣の数は約 1.0078 でした。
 $10^{-4}$ は、その間隔の半分（約 0.0039）よりずっと小さいので、足しても 1 のままです。
+消えるかどうかを決めるのは、更新と重みの大きさの\textbf{比}です。
+BF16 では、更新が重みの約 0.2〜0.4\% より小さいと、丸めで消えます（重み 1 に $10^{-4}$ なら 0.01\%）。
 重みを BF16 で持つと、更新が丸めで消えてしまいます。
-行列積の中の長い足し算（$k$ 個の積の和）も同じです。
-最後の 3 行のように、$512\times512$ の行列積の相対誤差は FP32 で $4\times10^{-7}$、BF16 で $3\times10^{-3}$ でした。
+行列積の中の長い足し算（$k$ 個の積の和）も、2 バイトの形式で足せば同じことが起きます。
+そのため実装は、2 バイトの積を FP32 で足し上げます。
+最後の 3 行の $512\times512$ の行列積の相対誤差（FP32 で $4\times10^{-7}$、BF16 で $3\times10^{-3}$）は、足し算で積み重なった誤差ではありません。
+入力と結果を BF16 に丸めたことによる誤差です（入力と結果だけを BF16 に丸めて、計算は FP64 で行った値と、4 桁まで一致しました）。
 
-\subsection*{混合精度：速い形式で計算し、正確な形式で溜める}
+\subsection*{混合精度：速い形式で計算し、正確な形式で足し上げる}
 
 そこで考えられたのが\term{混合精度}{mixed precision}の学習です\cite{micikevicius2018mixed}。
-\figref{fig:gpu-amp}のように、時間のかかる行列積は 2 バイトの形式で計算し、誤差が溜まる場所は FP32 で守ります。
+\figref{fig:gpu-amp}のように、時間のかかる行列積の掛け算は 2 バイトの形式で行い、誤差が積み重なる計算（行列積の中の足し上げと、重みの更新）は FP32 で行います。
 
 \begin{figure}[!tbp]
 \centering
-\begin{tikzpicture}[font=\footnotesize,node distance=11mm]
-\node[orangebox,align=center] (m) {主重み\\FP32};
-\node[box,align=center,right=of m] (c) {重みの写し\\BF16};
-\node[redbox,align=center,right=of c] (mm) {行列積\\BF16 で掛け\\FP32 で足す};
-\node[box,align=center,right=of mm] (g) {勾配};
+\begin{tikzpicture}[font=\scriptsize]
+\node[lbl,anchor=west] at (-0.75,0.95) {順伝播};
+\node[lbl,anchor=west] at (-0.75,-2.95) {逆伝播・更新};
+\node[orangebox,align=center,minimum height=10mm] (m) at (0,0) {重み FP32\\（主重みを\\兼ねる）};
+\node[box,align=center,minimum height=10mm] (c) at (2.35,0) {重みの写し\\BF16};
+\node[redbox,align=center,minimum height=10mm] (mm) at (5.0,0) {行列積\\BF16 で掛け\\FP32 で足す};
+\node[box,align=center,minimum height=10mm] (z) at (7.6,0) {ロジット\\BF16};
+\node[greenbox,align=center,minimum height=10mm] (loss) at (10.1,0) {softmax・損失\\FP32};
+\node[box,align=center] (x) at (5.0,1.45) {入力の活性化（BF16）};
+\node[redbox,align=center,minimum height=10mm] (bw) at (8.5,-2.1) {逆伝播の行列積\\BF16 で掛け\\FP32 で足す};
+\node[orangebox,align=center,minimum height=10mm] (g) at (5.0,-2.1) {勾配 \code{.grad}\\FP32};
+\node[orangebox,align=center,minimum height=10mm] (up) at (2.35,-2.1) {AdamW で更新\\FP32（状態も）};
 \draw[arr] (m) -- node[above]{変換} (c);
 \draw[arr] (c) -- (mm);
-\draw[arr] (mm) -- node[above]{逆伝播} (g);
-\draw[arr] (g.south) -- ++(0,-0.6) -| node[pos=0.25,below]{FP32 で更新（AdamW の状態も FP32）} (m.south);
+\draw[arr] (x) -- (mm);
+\draw[arr] (mm) -- (z);
+\draw[arr] (z) -- (loss);
+\draw[arr] (loss.south) |- (bw.east);
+\draw[arr] (bw) -- node[above,align=center]{FP32 に\\して足す} (g);
+\draw[arr] (g) -- (up);
+\draw[arr] (up.west) -| node[pos=0.75,left]{書き換え} (m.south);
 \end{tikzpicture}
-\caption{BF16 の混合精度学習の流れ。行列積は速い BF16 で行い、更新は FP32 の主重みに対して行う。
-\code{torch.autocast} は、どの演算を BF16 にするかを自動で選ぶ。}
+\caption{\code{torch.autocast} を使う BF16 混合精度学習の流れ（箱の中は、その値を持つ形式）。上の段が順伝播、下の段が逆伝播と更新。
+行列積は速い BF16 で行い、誤差に弱い softmax・損失と、勾配・更新は FP32 で行う。
+重みの写しは行列積の直前に一時的に作られる。どの演算を BF16 にするかは autocast が自動で選ぶ。
+重みと勾配を BF16 で持つ大規模学習の方式（\figref{fig:gpu-mem-models}）では、勾配の箱が BF16 になり、FP32 の主重みを別に持つ。}
 \label{fig:gpu-amp}
 \end{figure}
 
 GPU の Tensor Core は、BF16 の数を掛けたあとの足し算を FP32 で行います。
-そのため、行列積の誤差は入力の丸めの分だけに抑えられます。
+そのため、行列積の誤差は入力と結果を BF16 に丸めた分だけに抑えられます。
 PyTorch では、\code{torch.autocast} の中で順伝播を実行するだけです。
 
 \snippet{BF16 の混合精度の学習ループ}{code:gpu-amp}{ch12/amp_train.py}{amp-loop}
@@ -970,8 +1181,27 @@ PyTorch では、\code{torch.autocast} の中で順伝播を実行するだけ�
 softmax や損失のように誤差に弱い演算は FP32 のまま計算されます。
 モデルの重み自体は FP32 のままで、これが主重みの役割をします。
 \figref{fig:gpu-amp}の BF16 の「重みの写し」は、autocast が行列積の直前に一時的に作るものです。
-勾配も FP32 で持つので、メモリの勘定は重み 4・勾配 4・Adam 8 の 16 バイトになり、\secref{sec:gpu-memory}の 16 バイト（重みと勾配を BF16 で持ち、FP32 の主重みを別に置く大規模学習の方式）と合計は同じです。
-\code{loss.backward()} の勾配も FP32 の重みに対して溜まり、\code{opt.step()} は FP32 で更新します。
+勾配も FP32 で持つので、メモリの勘定は重み 4・勾配 4・Adam 8 の 16 バイトになります。
+\secref{sec:gpu-memory}の 16 バイト（重みと勾配を BF16 で持ち、FP32 の主重みを別に置く大規模学習の方式）とは、内訳は違いますが合計は同じです。
+\tabref{tab:gpu-amp-bytes}に 2 つの方式を並べました。
+
+\begin{table}[!tbp]
+\centering
+\caption{混合精度の 2 つの方式の、パラメータ 1 個あたりのバイト数（活性化を除く）。合計は同じ 16 バイトになる。
+\code{torch.autocast} では FP32 の重みそのものが主重みの役をする（\figref{fig:gpu-amp}）ので、主重みの列を「---」とし、その 4 バイトは重みの列に入れた。}
+\label{tab:gpu-amp-bytes}
+\small
+\begin{tabular}{@{}lrrrrrl@{}}
+\toprule
+方式 & 重み & 勾配 & 主重み & Adam & 合計 & 本書 \\
+\midrule
+\code{torch.autocast} & 4 (FP32) & 4 (FP32) & --- & 8 & 16 & \coderef{code:gpu-amp} \\
+重み・勾配が BF16 & 2 (BF16) & 2 (BF16) & 4 (FP32) & 8 & 16 & \figref{fig:gpu-mem-models}\cite{rajbhandari2020zero} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\code{loss.backward()} の勾配も FP32 の重みの \code{.grad} に足し込まれ、\code{opt.step()} は FP32 で更新します。
 \code{device_type=device} なので、このコードは GPU でも CPU でも動きます。
 \code{enabled=use_bf16} は切り替え用の引数で、\code{False} にすると autocast が働かず、すべて FP32 で計算されます（あとの比較に使います）。
 \code{zero_grad(set_to_none=True)} は、前のステップの勾配を消します（0 で埋めずに「無し」にする指定です）。
@@ -983,21 +1213,77 @@ CPU で BF16 で実行した結果が次です（\code{python ch12/amp_train.py 
 
 ロジットが \code{torch.bfloat16} になり、重みは \code{torch.float32} のままです。
 引数を \code{fp32} にして autocast を切ると（\file{ch12/out/amp_fp32.txt}）、60 ステップ後の損失は 5.2586 で、BF16 の 5.2571 とほぼ同じでした
-（20 ステップ目では 5.92 と 5.70 で差がありますが、丸めの違いで経路が少しずれただけで、その後は揃います）。
+（20 ステップ目では 5.92 と 5.70 で差があります）。
+この差が大きいのかどうかは、4 つの数字だけでは判断できません。
+そこで \file{ch12/sweep_amp.py} で、同じ学習を FP32 と BF16、乱数の種 0 と 1 の 4 通りで走らせ、61 ステップの損失を毎ステップ記録しました（\file{ch12/out/sweep_amp.txt}。種 0 の 2 本は、上の出力と同じ値になります）。
+\figref{fig:gpu-amp-curves}がその結果です。
+種を変えると、重みの初期値と、毎ステップ選ばれるバッチが変わります。
+
+\begin{figure}[!tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[bookplot,width=0.82\linewidth,height=0.4\linewidth,xlabel={ステップ},ylabel={損失},
+  xmin=0,xmax=60,ymin=4.2,ymax=8.5,
+  legend pos=north east,legend style={font=\footnotesize,cells={anchor=west}}]
+\addplot[bookgray!70,very thick,dashed] table[col sep=comma,x=step,y=fp32_s1]{code/ch12/out/sweep_amp.csv};
+\addplot[bookblue,thick] table[col sep=comma,x=step,y=fp32_s0]{code/ch12/out/sweep_amp.csv};
+\addplot[bookaccent,very thick,densely dotted] table[col sep=comma,x=step,y=bf16_s0]{code/ch12/out/sweep_amp.csv};
+\addplot[black!80,thick,densely dotted] table[col sep=comma,x=step,y=bf16_s1]{code/ch12/out/sweep_amp.csv};
+\legend{{FP32、種 1},{FP32、種 0},{BF16、種 0},{BF16、種 1}}
+\draw[black!70,thick] (axis cs:20,5.81) circle[radius=5pt];
+\draw[black!70] (axis cs:20,6.0) -- (axis cs:20,7.25);
+\node[font=\footnotesize,anchor=south,fill=white,inner sep=1pt] at (axis cs:20,7.25) {20 ステップ目};
+\end{axis}
+\end{tikzpicture}
+\caption{FP32 と BF16 の混合精度で、ミニGPT を 61 ステップ学習させたときの毎ステップの損失（\file{ch12/out/sweep_amp.csv}。$B=32$, $T=128$、2 スレッドの CPU）。
+同じ種 0 の FP32（青の実線）と BF16（赤の点線）はほぼ重なり、離れるのは 20 ステップ目（丸）だけである。
+種 1 の FP32（灰の破線）と BF16（黒の点線）も、ほぼ重なる。
+種 0 と種 1 の線どうしは、毎ステップ大きく違う。}
+\label{fig:gpu-amp-curves}
+\end{figure}
+
+同じ種どうしでは、BF16 と FP32 の線はほぼ重なっています。
+10〜60 ステップ目の損失の差の平均は、種 0 で 0.008、種 1 で 0.005 でした。
+20 ステップ目の 0.22 の差はその 1 歩だけで、ほかの歩では 0.03 以下です。
+一方、同じ FP32 のまま種を変えると、損失は平均で 0.52 違いました。
+損失は、その歩でどのバッチを引いたかで大きく上下するからです。
+BF16 にしたことによる違いは、乱数の種による違いの 50 分の 1 ほどで、この小さな実験では学習の進み方を変えていないと言えます
+（20 ステップ目の差は、丸めの違いで重みの値がわずかに変わり、そのバッチの損失に表れたものと考えられます）。
+ただし、61 ステップの小さなモデルでの結果で、大きなモデルの長い学習でも同じだと保証するものではありません。
+
 時間は 46.1 秒が 24.3 秒になり、約 1.9 倍速くなりました。
 この CPU が、BF16 を直接計算する命令を持っているためと考えられます。
 CPU 一般で速くなるとは限りません。
-GPU では、\tabref{tab:gpu-specs}の BF16 の性能は FP32 の数倍以上で、メモリの運搬も半分になります。
+GPU では、BF16 の行列積は FP32 よりずっと速く（たとえば Rubin の公称値は、Tensor Core を使う BF16 が 4,000 TFLOP/s、FP32 の演算が 130 TFLOP/s）、メモリの運搬も半分になります。
 
 \begin{practice}{FP16 を使うなら GradScaler が要る}
-FP16 は範囲が狭いので、小さな勾配が 0 に潰れ（アンダーフロー）、大きな値はあふれます。
+FP16 は範囲が狭いので、小さな勾配が 0 になり（アンダーフロー）、大きな値はあふれます。
 そこで損失を数万倍（PyTorch の既定では 65,536 倍から始めます）に拡大してから逆伝播し、更新の前に戻す「損失スケーリング」を使います。
 PyTorch では \code{torch.amp.GradScaler("cuda")} を使います。
 BF16 は範囲が FP32 と同じなので不要で、A100 以降の GPU では BF16 が標準です。
 古いチュートリアルの \code{torch.cuda.amp.autocast} は非推奨なので、\code{torch.amp.autocast} を使います。
 \end{practice}
 
-この節で分かったのは、2 バイトの形式は速く小さいが粗く、混合精度は「計算は粗く速く、溜めるのは正確に」と役割を分けて両方の利点を得ることです。
+この節で見た 3 つの形式の性質と使いどころを、\tabref{tab:gpu-format-compare}にまとめます。
+数値はどれも、\file{ch12/out/precision.txt} とこの節の本文で確かめたものです。
+
+\begin{table}[!tbp]
+\centering
+\caption{3 つの浮動小数点数の形式の比較。指数部のビット数が範囲（最大値）を、仮数部のビット数が細かさ（\code{eps}）を決める。}
+\label{tab:gpu-format-compare}
+\small
+\begin{tabular}{@{}lccrrl>{\raggedright\arraybackslash}p{34mm}@{}}
+\toprule
+形式 & 指数部 & 仮数部 & 最大値 & \code{eps} & GradScaler & 本章での使いどころ \\
+\midrule
+FP32 & 8 & 23 & $3.4\times10^{38}$ & $1.2\times10^{-7}$ & 不要 & 主重み・Adam の状態・足し上げ \\
+FP16 & 5 & 10 & 65,504 & $9.8\times10^{-4}$ & 要る & 混合精度（範囲に注意） \\
+BF16 & 8 & 7 & $3.4\times10^{38}$ & $7.8\times10^{-3}$ & 不要 & 混合精度の行列積（A100 以降の標準） \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+この節で分かったのは、2 バイトの形式は速く小さいが粗く、混合精度は「掛け算は粗く速く、足し上げと重みの更新は正確に」と役割を分けて両方の利点を得ることです。
 
 \section{高速化の定石と、正しい測り方}\label{sec:gpu-speedup}
 
@@ -1006,7 +1292,7 @@ BF16 は範囲が FP32 と同じなので不要で、A100 以降の GPU では B
 答えの多くは、前の節の理屈から出てきます。
 
 \subsection*{演算の融合と torch.compile}
-\skimread{結論は「要素ごとの演算をいくつも続けると、そのたびにメモリを往復する。1 つにまとめる（融合する）と往復が減る。\code{torch.compile} がそれを自動で行う」です。}
+\skimread{結論は「要素ごとの演算をいくつも続けると、そのたびにメモリを往復する。1 つにまとめる（融合する）と往復が減る。\code{torch.compile} がそれを自動で行う。ただし、計算そのものが重い演算には効かない」です。}
 
 \secref{sec:gpu-memory-bw}で、要素ごとの演算はメモリ律速でした。
 GELU の近似式 $0.5x(1+\tanh(0.798(x+0.0447x^3)))$ を PyTorch でそのまま書くと、内側から $x^3$、$0.0447\times$、$x+$、$0.798\times$、$\tanh$、$1+$、$0.5x\times$ の順に、およそ 7 つの演算が実行されます。
@@ -1017,20 +1303,20 @@ GELU の近似式 $0.5x(1+\tanh(0.798(x+0.0447x^3)))$ を PyTorch でそのま�
 \begin{figure}[!tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize]
-\node[lbl,anchor=east] at (-0.7,0.6) {融合なし};
-\foreach \i in {0,...,6}{
-  \node[redbox,minimum width=6mm,minimum height=5mm,inner sep=0pt] (o\i) at (\i*1.3,0.6) {op};
+\node[lbl,anchor=east] at (-0.75,0.6) {融合なし};
+\foreach \i/\op in {0/$x^3$,1/$0.0447\times$,2/$x+$,3/$0.798\times$,4/tanh,5/$1+$,6/$0.5x\times$}{
+  \node[redbox,minimum width=11mm,minimum height=5mm,inner sep=1pt,font=\scriptsize] (o\i) at (\i*1.3,0.6) {\op};
   \draw[<->,bookgray] (o\i.south) -- ++(0,-0.45);
 }
-\draw[orangebox] (-0.4,-0.25) rectangle (8.2,0.0);
+\draw[orangebox] (-0.6,-0.25) rectangle (8.4,0.0);
 \node[font=\scriptsize] at (3.9,-0.12) {メモリ（読み書き 7 往復）};
-\node[lbl,anchor=east] at (-0.7,-1.0) {融合あり};
-\node[redbox,minimum width=86mm,minimum height=5mm,font=\footnotesize] (f) at (3.9,-1.0) {op → op → op → op → op → op → op};
+\node[lbl,anchor=east] at (-0.75,-1.0) {融合あり};
+\node[redbox,minimum width=90mm,minimum height=5mm,font=\footnotesize] (f) at (3.9,-1.0) {\scriptsize $x^3$ → $0.0447\times$ → $x+$ → $0.798\times$ → tanh → $1+$ → $0.5x\times$};
 \draw[<->,bookgray] (f.south) -- ++(0,-0.45);
-\draw[orangebox] (-0.4,-1.85) rectangle (8.2,-1.6);
+\draw[orangebox] (-0.6,-1.85) rectangle (8.4,-1.6);
 \node[font=\scriptsize] at (3.9,-1.72) {メモリ（1 往復）};
 \end{tikzpicture}
-\caption{演算の融合。要素ごとの演算を 1 つずつ実行すると毎回メモリを往復する（上）。
+\caption{演算の融合（GELU の近似式の 7 つの演算の場合）。要素ごとの演算を 1 つずつ実行すると、演算ごとにメモリとの間で読み書きする（上）。
 1 つにまとめると、途中の数は演算器のそばに置いたままになり、往復は 1 回で済む（下）。メモリ律速の計算では、往復の回数がそのまま時間になる。}
 \label{fig:gpu-fusion}
 \end{figure}
@@ -1038,10 +1324,64 @@ GELU の近似式 $0.5x(1+\tanh(0.798(x+0.0447x^3)))$ を PyTorch でそのま�
 これを自動でやるのが \code{torch.compile} です。
 \code{model = torch.compile(model)} と 1 行書くと、最初の実行時にモデルの計算を調べ、融合した演算のプログラムを生成します。
 \file{ch12/speedup.py} では GELU の近似式を関数 \code{gelu_chain} に書き、\code{torch.compile(gelu_chain)} を試しました。
-ところが、この環境には CPU 用のプログラムを作るための C++ コンパイラが無く、実行できませんでした（\secref{sec:gpu-memory-bw}の出力の 3 行目。結果を偽らずにそのまま載せています）。
-また、2 行目の \code{gelu_chain} は 76.7 ms で、\code{x*2} の 7 倍の 10 ms よりずっと遅くなりました。
-CPU では tanh や累乗そのものが重く、純粋なメモリ律速ではないからです。
-GPU では演算器が十分に速いので、この種の計算はメモリ律速になり、融合がよく効きます。
+CPU 用の \code{torch.compile} は、融合したプログラムを C++ で書き出し、C++ コンパイラで機械語に直して使います。
+そのため、CPU で試すには C++ コンパイラが要ります（入れ方は\appref{app:setup}の\secref{sec:setup-device}、動かないときの対処は\tabref{tab:setup-trouble}）。
+コンパイラが無いと \code{torch.compile} の所で例外が起き、\file{ch12/speedup.py} は「torch.compile は使えませんでした」と表示して先へ進みます。
+\secref{sec:gpu-memory-bw}の出力の 2・3 行目が結果です。
+そのままの \code{gelu_chain} は 76.3 ms、\code{torch.compile} 後は 78.9 ms で、\textbf{この CPU では速くなりませんでした}。
+
+なぜでしょうか。
+まず、そのままの \code{gelu_chain} の 76.3 ms は、\code{x*2} の 7 倍（約 9 ms）よりずっと長い時間です。
+もし 7 つの演算がどれも \code{x*2} と同じくメモリ律速なら、7 回の往復で 9 ms ほどになるはずです。
+実際はその 8 倍以上かかったので、時間の大半は運搬ではなく、計算そのものに使われています。
+どの演算が重いのかを確かめるため、\file{ch12/sweep_fusion.py} で、GELU の式を部品に分けて、そのまま（融合なし）と \code{torch.compile} 後の時間を比べました（\file{ch12/out/sweep_fusion.txt}）。
+部品は、\code{x*2}（演算 1 回）、GELU の式から tanh を除いた多項式の部分（演算 6 回）、tanh だけ（演算 1 回）、GELU の近似式全体（演算 7 回）の 4 つです。
+大きさはどれも $4096\times4096$、2 スレッドで、10 回の中央値を 5 回測り、その中央値をとりました（5 回の幅は 2\% 以内でした）。
+結果が\figref{fig:gpu-fusion-sweep}です。
+
+\begin{figure}[!tbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[xbar,width=0.72\linewidth,height=52mm,xmin=0,xmax=100,
+  symbolic y coords={mul2,poly,tanh,gelu},ytick={mul2,poly,tanh,gelu},
+  yticklabels={{\code{x*2}（1 回）},{多項式の部分（6 回）},{tanh だけ（1 回）},{GELU の近似式（7 回）}},
+  y tick label style={font=\small,align=right},bar width=3.2mm,
+  enlarge y limits=0.18,
+  xlabel={時間（ms、短いほど速い）},xmajorgrids=true,ymajorgrids=false,
+  nodes near coords,nodes near coords style={font=\footnotesize,anchor=west},
+  point meta=x,
+  every node near coord/.append style={/pgf/number format/.cd,fixed,precision=1},
+  area legend,
+  legend style={font=\footnotesize,at={(0.5,1.03)},anchor=south,legend columns=2}]
+\addplot[fill=figgray,draw=black!60] table[col sep=comma,x=tmed,y=name,
+  skip coords between index={1}{2},skip coords between index={3}{4},
+  skip coords between index={5}{6},skip coords between index={7}{8}]{code/ch12/out/sweep_fusion.csv};
+\addplot[fill=figred,draw=bookaccent] table[col sep=comma,x=tmed,y=name,
+  skip coords between index={0}{1},skip coords between index={2}{3},
+  skip coords between index={4}{5},skip coords between index={6}{7}]{code/ch12/out/sweep_fusion.csv};
+\legend{そのまま（融合なし）,\code{torch.compile} 後}
+\end{axis}
+\end{tikzpicture}
+\caption{要素ごとの計算の時間を、そのままと \code{torch.compile} 後で比べたもの。$4096\times4096$ の float32、2 スレッドの CPU で、括弧は演算の回数（\file{ch12/sweep_fusion.py}）。
+融合が効くのは、軽い演算が何回も続く多項式の部分（約 3.4 倍速い）だけである。
+融合するものが無い \code{x*2} と、計算の重い tanh は変わらない。tanh を含む GELU 全体も、時間の大半が tanh なので速くならない。}
+\label{fig:gpu-fusion-sweep}
+\end{figure}
+
+図の読み方は、灰（そのまま）と赤（\code{torch.compile} 後）の棒の長さを、部品ごとに見比べることです。
+いちばん下の \code{x*2} は、演算が 1 回だけで融合するものが無いので、どちらも 1.4 ms です。
+下から 2 番目の多項式の部分は、軽い演算が 6 回続き、そのままでは 11.2 ms かかりました。
+\code{x*2} の約 8 倍で、ほぼ 6 回の往復の分です。
+融合すると 3.2 ms になり、約 3.4 倍速くなりました。
+往復が 1 回になり、\figref{fig:gpu-fusion}のとおりに効いたのです。
+一方、tanh だけの計算は、1 回の演算なのに 64.4 ms かかり、融合しても 63.8 ms でほとんど変わりません。
+CPU では tanh の計算そのものが重く、運搬ではなく計算が時間を決めているからです。
+GELU の近似式全体（76.7 ms）の時間の大半は、この tanh です。
+融合で減らせるのは多項式の部分の運搬だけなので、全体はほとんど変わりません
+（融合後の方がわずかに遅かった理由は、この実験では切り分けていません）。
+まとめると、融合が効くのは「軽い演算が何回も続き、運搬が時間を決めている」ときです。
+GPU では演算器が十分に速く、tanh を含む GELU のような計算もメモリ律速になるので、融合がよく効きます。
+なお、\code{torch.compile} は最初の呼び出しのときに変換を行うので、その 1 回だけは遅くなります（この実験では、最初の関数で約 9 秒かかりました）。
 \file{ch12/amp_train.py} では、GPU のときだけ \code{torch.compile(model)} と \code{torch.set_float32_matmul_precision("high")} を実行するように書いてあります（この部分は実行していません）。
 後者は、FP32 の行列積に TF32（仮数部を 10 ビットに縮めた Tensor Core 用の形式）を使ってよいという指定です。
 
@@ -1051,7 +1391,50 @@ GPU では演算器が十分に速いので、この種の計算はメモリ律�
 注意機構には、さらに大きな無駄があります。
 素朴な実装（\chapref{ch:attention}）は、形 $(B,H,T,T)$ の注意の重みをメモリに書き出してから、softmax をかけ、バリューと掛けます。
 $T$ が大きいと、この行列は巨大です。
-FlashAttention\cite{dao2022flashattention}は、\chapref{ch:modern-arch}で見たように、クエリとキーを小さなブロックに分けて softmax を少しずつ更新し、$T\times T$ の行列を書き出さずに数学的に同じ結果を得ます。
+FlashAttention\cite{dao2022flashattention}は、\chapref{ch:modern-arch}で一言触れたように、クエリとキーを小さなブロックに分けて softmax を少しずつ更新し、$T\times T$ の行列を書き出さずに数学的に同じ結果を得ます。
+「softmax を少しずつ更新する」とは、次のことです。
+1 つのクエリについて、スコア $s_1,\dots,s_T$ の softmax $p_j=e^{s_j}/\sum_k e^{s_k}$ は、分母に全部の和が要るので、本来はスコアが全部そろうまで計算できません。
+ところが、出力 $\vo=\sum_j p_j\vv_j$ は、分子の和 $\sum_j e^{s_j}\vv_j$ を分母の和 $\sum_j e^{s_j}$ で割ったものです。
+どちらも和なので、キーとバリューをブロックごとに読みながら、少しずつ足していけます。
+最後に分子の和を分母の和で割れば、一度に計算したのと同じ出力になります。
+（実際には、$e^{s_j}$ があふれないよう、それまでの最大値 $m$ を引いた $e^{s_j-m}$ を足していきます。新しいブロックで最大値が大きくなったら、それまでの 2 つの和を $e^{m_{\text{旧}}-m_{\text{新}}}$ 倍して合わせ直します。）
+\figref{fig:gpu-flash-frames}は、この手順を 1 つのクエリのブロックについてコマ送りにしたものです。
+一度に持つのはスコアの 1 ブロックだけで、$T\times T$ の行列全体は一度も作られません。
+
+\begin{figure}[!tbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize]
+\foreach \f in {1,2,3,4}{
+\begin{scope}[xshift={(\f-1)*3.05cm}]
+  \draw[black!40,rounded corners=2pt] (0,0) rectangle (2.8,3.4);
+  \node[font=\footnotesize] at (1.4,3.15) {コマ \f};
+  \node[font=\tiny] at (1.6,2.85) {キー・バリューのブロック →};
+  \foreach \r in {1,2,3}{\foreach \c in {1,2,3}{
+    \ifnum\c>\r \fill[black!8] ({1.0+(\c-1)*0.4},{1.45+(3-\r)*0.4}) rectangle ++(0.4,0.4); \fi
+  }}
+  \foreach \c in {1,2,3}{
+    \ifnum\c<\f \fill[black!35] ({1.0+(\c-1)*0.4},1.45) rectangle ++(0.4,0.4); \fi
+    \ifnum\c=\f \fill[figred] ({1.0+(\c-1)*0.4},1.45) rectangle ++(0.4,0.4); \fi
+  }
+  \draw[step=0.4,black!22,shift={(1.0,1.85)}] (0,0) grid (1.2,0.8);
+  \draw[step=0.4,black!60,shift={(1.0,1.45)}] (0,0) grid (1.2,0.4);
+  \node[font=\tiny,anchor=east] at (0.97,1.74) {$\mQ$ の};
+  \node[font=\tiny,anchor=east] at (0.97,1.56) {ブロック};
+\end{scope}}
+\node[align=center] at (1.4,0.5) {ブロック 1 を計算し\\$m$, $\ell$, $\vo$ を作る};
+\node[align=center] at (4.45,0.5) {ブロック 2 を計算し\\$m$, $\ell$, $\vo$ を更新};
+\node[align=center] at (7.5,0.5) {ブロック 3 を計算し\\$m$, $\ell$, $\vo$ を更新};
+\node[align=center] at (10.55,0.5) {$\vo\div\ell$ を\\出力に書き出す};
+\fill[figgreen,draw=bookgreen] (10.15,1.0) rectangle ++(0.8,0.3);
+\node[font=\tiny,anchor=east] at (10.12,1.15) {出力の行};
+\end{tikzpicture}
+\caption{FlashAttention の計算のコマ送り（模式図。$T\times T$ のスコアを $3\times3$ のブロックに分け、計算の様子はいちばん下の行のクエリのブロックについてだけ描いた）。
+上の 2 行（線の淡いマス）は、ここでは描いていないほかのクエリのブロックである。
+赤がそのコマで計算するブロック、濃い灰は計算を終えて捨てたブロック、薄い灰は因果マスクで使わないブロック。
+$m$ はそれまでのスコアの最大値、$\ell$ は分母の和、$\vo$ は分子の和（バリューの重み付きの和）で、どれもクエリのブロックの大きさだけの小さな量である。
+コマ 4 の緑の帯は出力の行で、スコアの格子とは別の小さな行列である（行数はクエリのブロックと同じで、幅は 1 つのヘッドのベクトルの次元。$T$ とは関係がない）。}
+\label{fig:gpu-flash-frames}
+\end{figure}
 メモリの往復が減るので速く、活性化も $T$ に比例する量で済みます。
 PyTorch では \code{F.scaled_dot_product_attention}（SDPA）を呼ぶと、GPU と形式に応じて FlashAttention などの最適な実装が自動で選ばれます。
 
@@ -1061,15 +1444,25 @@ y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # (B, H, T, Dh)
 \code{is_causal=True} は、未来の位置を見ないための因果マスク（\chapref{ch:attention}）を、関数の中でかけてもらう指定です。
 \file{ch12/speedup.py} では、形 $(8,4,512,48)$ の $\vq,\vk,\vv$ について、\chapref{ch:attention}と同じ素朴な実装（途中に $(8,4,512,512)$、32 MiB の注意の重みを作る）とこの 1 行を比べました。
 \secref{sec:gpu-memory-bw}の出力の 1 行目のとおり、両者の差は $9.2\times10^{-7}$ で、同じ計算です。
-ただし、この CPU では SDPA の方が少し遅くなりました（24.1 ms と 28.1 ms）。
+ただし、この CPU では、時間はほとんど変わりませんでした（素朴な実装 29.9 ms、SDPA 28.4 ms）。
+この程度の差は測るたびに入れ替わることがあり、SDPA が CPU で速いとは言えません。
 SDPA の速さの利点は主に GPU の FlashAttention の実装から来るもので、CPU では速くなるとは限りません。
 それでも、メモリを節約でき、GPU でそのまま速くなるので、注意は SDPA で書くのが標準です。
 
 \subsection*{勾配累積}
 
 メモリが足りずバッチを小さくしたいが、学習に使うバッチの大きさは変えたくない。
+なぜ変えたくないのでしょうか。
+ミニバッチの勾配は、全データの勾配の代わりに使う見積もりで、件数が少ないほどぶれが大きくなります（\secref{sec:ml-sgd}）。
+また、学習率などの設定は、決めたバッチの大きさを前提に選んであります。
+メモリの都合だけでバッチを小さくすると、学習の進み方が変わってしまうのです。
 そのときに使うのが\term{勾配累積}{gradient accumulation}です。
-損失は「バッチの平均」なので、バッチを 4 つに分け、それぞれの損失を 4 で割って逆伝播すれば、勾配は足し込まれて（PyTorch は \code{.grad} に足していく）一括の場合と同じになります。
+骨組みは次のとおりです。
+本来は 32 個のデータで 1 回勾配を求めたい。
+ところが、32 個ぶんの活性化はメモリに載らない。
+そこで 8 個ずつ 4 回に分けて勾配を求め、足し合わせる。
+損失は「バッチの平均」なので、それぞれの損失を 4 で割っておけば、足した勾配は一括の場合と同じになる。
+分けた 1 回分（ここでは 8 個）を\term{マイクロバッチ}{micro-batch}と呼びます。
 
 式で確かめます。
 32 個のデータの損失を $\ell_1,\dots,\ell_{32}$ とし、8 個ずつ 4 組に分けます。
@@ -1084,58 +1477,182 @@ $\tfrac14\times\tfrac18=\tfrac1{32}$ なので、両辺は同じ和を並べ替�
 和の微分は微分の和なので、勾配についても同じ式が成り立ちます。
 足し合わせは、\code{backward()} が勾配を \code{.grad} に上書きせず足し込むので（\chapref{ch:pytorch}）、自動で行われます。
 
+この等式が成り立つのは、4 つの組の大きさが同じで、損失が全データの単純な平均のときです。
+LLM で、組ごとに損失を数えるトークンの数が違うとき（詰め物のトークンを損失から除く場合など）は、各組の平均を 4 で割っても全体の平均になりません。
+そのときは、各組の損失の和を、全体のトークン数で割ります。
+本書の設定は $T$ が固定で詰め物が無いので、そのまま一致します。
+
 \snippet{勾配累積は一括と同じ勾配を与える}{code:gpu-accum}{ch12/speedup.py}{accum}
 
 モデルは、16 次元の入力を 1 個の数に写す線形層 1 枚、損失は平均 2 乗誤差です（確かめるにはこれで十分です）。
 3〜5 行目で、32 個を一度に流したときの勾配を \code{g_full} に控えます。
 6 行目で勾配を 0 に戻し、7〜9 行目で 8 個ずつ 4 回に分けて流します。
 9 行目で、損失を 4 で割ってから \code{backward()} を呼ぶのが要点です。
-結果は、\secref{sec:gpu-memory-bw}に載せた出力（\file{speedup.txt}）の最後の行にあります。
+結果は、\secref{sec:gpu-memory-bw}に載せた出力（\file{speedup.txt}）の最後の行「勾配累積: 一括との最大差 6.0e-08」です。
 一括との差は $6\times10^{-8}$（FP32 の丸めの範囲）でした。
-本物の学習では、4 回の逆伝播のあとに 1 回だけ \code{opt.step()} を呼びます。
+
+本物の学習ループでは、累積の回数 \code{accum} ぶん逆伝播してから、1 回だけ更新します。
+
+\begin{pycode}
+for step in range(steps):
+    for i in range(accum):                 # マイクロバッチを accum 回
+        x, y = get_batch(data, B_micro, T)
+        _, loss = model(x, y)
+        (loss / accum).backward()          # .grad に足し込む
+    opt.step(); opt.zero_grad()            # まとめて 1 回だけ更新
+\end{pycode}
+内側のループで、マイクロバッチ（\code{B_micro} 個）を \code{accum} 回流し、損失を \code{accum} で割って逆伝播します。
+外側の最後の行で、たまった勾配で 1 回だけ更新し、\code{.grad} を空にします。
+\figref{fig:gpu-accum-frames}は、この 1 周を、\code{.grad} の中身がたまる様子に注目してコマ送りにしたものです。
 計算量は変わらず、減るのは一度に載せる活性化のメモリだけです。
 これが、\secref{sec:gpu-memory}の「メモリが足りないとき」の (1) の中身です。
+
+\begin{figure}[!tbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize]
+\foreach \k in {1,...,4}{
+\begin{scope}[xshift={(\k-1)*2.5cm}]
+  \draw[black!40,rounded corners=2pt] (0,0) rectangle (2.3,2.9);
+  \node[font=\footnotesize] at (1.15,2.62) {コマ \k};
+  \foreach \j in {1,...,4}{\draw[fill=black!6,draw=black!40] ({0.15+(\j-1)*0.5},1.95) rectangle ++(0.5,0.32);}
+  \draw[fill=figblue,draw=bookblue] ({0.15+(\k-1)*0.5},1.95) rectangle ++(0.5,0.32);
+  \node at (1.15,1.72) {組 \k（8 個）を流す};
+  \draw[arr] (0.7,1.55) -- node[right,font=\tiny,align=left]{逆伝播\\（損失 ÷ 4）} (0.7,1.05);
+  \fill[figorange] (0.15,0.5) rectangle ++({0.5*\k},0.36);
+  \draw[black!60] (0.15,0.5) rectangle (2.15,0.86);
+  \foreach \j in {1,...,3}{\draw[black!30] ({0.15+\j*0.5},0.5) -- ++(0,0.36);}
+  \node at (1.15,0.25) {\code{.grad}：\k/4 ぶん};
+\end{scope}}
+\begin{scope}[xshift=10cm]
+  \draw[black!40,rounded corners=2pt] (0,0) rectangle (2.6,2.9);
+  \node[font=\footnotesize] at (1.3,2.62) {コマ 5};
+  \node[redbox,inner sep=1.5pt,minimum height=4mm,font=\tiny] at (1.3,2.15) {\code{opt.step()}};
+  \node[font=\tiny] at (1.3,1.75) {たまった勾配で 1 回更新};
+  \node[box,inner sep=1.5pt,minimum height=4mm,font=\tiny] at (1.3,1.3) {\code{opt.zero_grad()}};
+  \draw[black!60] (0.3,0.5) rectangle (2.3,0.86);
+  \node at (1.3,0.25) {\code{.grad}：空に戻す};
+\end{scope}
+\node[draw=bookgreen,dashed,rounded corners=2pt,align=left,anchor=north west,text width=118mm,inner sep=3pt] at (0,-0.2)
+  {データ並列で複数の GPU を使うときは、各 GPU が自分のデータでコマ 1〜4 を進め、コマ 4 のあとに 1 回だけ GPU の間で勾配を平均する（コマ 1〜3 では通信しない）。全体のバッチは（GPU の枚数）$\times8\times4$ 個になる（\chapref{ch:distributed}）。};
+\end{tikzpicture}
+\caption{勾配累積の 1 周のコマ送り（32 個のバッチを 8 個ずつ 4 組に分けた場合）。上の 4 つの箱が 4 つの組で、青がそのコマで流す組。
+橙の帯が \code{.grad} にたまった勾配で、コマごとに 4 分の 1 ずつ増える。
+コマ 4 で一括の勾配と同じになり、コマ 5 で 1 回だけ更新して空に戻す。}
+\label{fig:gpu-accum-frames}
+\end{figure}
+
+勾配累積は、複数の GPU で学習するとき（\textbf{データ並列}〔data parallel〕）にもふつうに使います。
+データ並列では、各 GPU が別々のデータで勾配を求め、GPU の間で平均をとってから、全員が同じ更新をします（\chapref{ch:distributed}）。
+勾配累積と組み合わせると、各 GPU がマイクロバッチの勾配を何回か足し込み、最後の 1 回だけ GPU の間で平均をとります（\figref{fig:gpu-accum-frames}の下の枠）。
+GPU の間の通信は、マイクロバッチのたびではなく累積の最後だけなので、通信の回数が減ります。
+1 回の更新に使う全体のバッチの大きさは、次のとおりです。
+\begin{equation}
+  \text{全体のバッチ} = \text{GPU の数}\times\text{マイクロバッチの大きさ}\times\text{累積の回数}
+  \label{eq:gpu-global-batch}
+\end{equation}
+たとえば GPU 8 枚、マイクロバッチ 8 系列、累積 4 回なら、全体のバッチは $8\times8\times4=256$ 系列です。
+この場合も、一括と同じ勾配になる条件は上と同じで、すべてのマイクロバッチの大きさ（損失を数えるトークンの数）がそろっていることです。
+複数の GPU での実際の書き方（\code{no_sync}）は、\chapref{ch:distributed}の\secref{sec:dist-torchrun}で扱います。
 
 \subsection*{データローダと、速さの正しい測り方}
 \laterread{GPU で実際に学習を回して、速さを測るときに戻ってくれば足ります。いまは、\tabref{tab:gpu-checklist}（定石のまとめ）だけ見てください。}
 
 GPU がいくら速くても、次のバッチが届かなければ待つしかありません。
 バッチの準備（ファイルから読み、テンソルにする）は CPU の仕事だからです。
-「準備 → 計算 → 準備 → 計算」と交互に行うと、GPU は準備のあいだ遊んでしまいます。
+「準備 → 計算 → 準備 → 計算」と交互に行うと、GPU は準備のあいだ何もせずに待つことになります（\figref{fig:gpu-timeline}の (a)）。
 これを防ぐ工夫は 3 つあります。
 第一に、データを事前にトークン化して、バイナリのファイルにしておきます（\chapref{ch:pretraining}）。
 学習中の準備が軽くなります。
-第二に、PyTorch の読み込み係 \code{DataLoader} に \code{num_workers=4} などを指定します。
+第二に、PyTorch でデータを読み込むクラス \code{DataLoader} に \code{num_workers=4} などを指定します。
 すると、次のバッチを別の\textbf{プロセス}（並行して動く別のプログラム）が先に準備してくれます。
 第三に、転送を計算と重ねます。
-\code{pin_memory=True} は、バッチを転送しやすい場所に置く指定です。
+\code{pin_memory=True} は、バッチを、OS が別の場所へ動かさないよう固定した主記憶（ページ固定メモリ）に置く指定です。
+GPU がそこから CPU を介さずに直接読み出せるので、転送を計算と並行して進められます。
 \code{.to(device, non_blocking=True)} は、転送の完了を待たずに先へ進む指定です。
-こうすると、GPU が計算しているあいだに、次のバッチの準備と転送が進みます。
+こうすると、GPU が計算しているあいだに、次のバッチの準備と転送が進みます（\figref{fig:gpu-timeline}の (b)）。
+(a) と (b) を見比べてください。
+同じ時間で、(a) は 3 ステップ、(b) は 5 ステップ進んでいます。
+1 ステップの計算の時間は同じで、違うのは GPU が待っている時間（灰の斜線）だけです。
+
+\begin{figure}[!tbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize,x=0.7cm,y=1cm]
+% (a) 交互に行う
+\node[anchor=west,font=\footnotesize] at (-2.6,1.45) {(a) 準備と計算を交互に行う};
+\foreach \l/\y in {CPU（準備）/0.9,転送/0.45,GPU（計算）/0}{\node[anchor=east] at (-0.15,\y) {\l};}
+\foreach \k in {0,1,2}{
+  \pgfmathsetmacro{\st}{\k*4.4}
+  \draw[fill=figblue,draw=bookblue] (\st,0.74) rectangle ++(1.6,0.32);
+  \draw[fill=figorange,draw=bookorange] (\st+1.6,0.29) rectangle ++(0.6,0.32);
+  \draw[fill=figred,draw=bookaccent] (\st+2.2,-0.16) rectangle ++(2.2,0.32);
+  \fill[pattern=north east lines,pattern color=black!45] (\st,-0.16) rectangle ++(2.2,0.32);
+  \draw[black!45] (\st,-0.16) rectangle ++(2.2,0.32);
+}
+\node[anchor=west] at (13.3,0) {3 ステップ};
+% (b) 先に準備し、転送を重ねる
+\begin{scope}[yshift=-2.1cm]
+\node[anchor=west,font=\footnotesize] at (-2.6,1.45) {(b) \code{num_workers} で先に準備し、転送を計算と重ねる};
+\foreach \l/\y in {CPU（準備）/0.9,転送/0.45,GPU（計算）/0}{\node[anchor=east] at (-0.15,\y) {\l};}
+\fill[pattern=north east lines,pattern color=black!45] (0,-0.16) rectangle ++(2.2,0.32);
+\draw[black!45] (0,-0.16) rectangle ++(2.2,0.32);
+\foreach \k in {0,...,4}{
+  \pgfmathsetmacro{\st}{\k*2.2}
+  \draw[fill=figblue,draw=bookblue] (\st,0.74) rectangle ++(1.6,0.32);
+  \draw[fill=figorange,draw=bookorange] (\st+1.6,0.29) rectangle ++(0.6,0.32);
+  \draw[fill=figred,draw=bookaccent] (\st+2.2,-0.16) rectangle ++(2.2,0.32);
+}
+\node[anchor=west] at (13.3,0) {5 ステップ};
+\end{scope}
+% (c) 非同期実行と待ち
+\begin{scope}[yshift=-4.0cm]
+\node[anchor=west,font=\footnotesize] at (-2.6,1.3) {(c) 非同期の実行と、\code{.item()} で待つ所};
+\foreach \l/\y in {Python（CPU）/0.45,GPU（計算）/0}{\node[anchor=east] at (-0.15,\y) {\l};}
+\foreach \k in {0,1,2}{\draw[fill=figblue,draw=bookblue] (\k*0.5,0.29) rectangle ++(0.5,0.32);}
+\node[font=\tiny] at (0.75,0.86) {命令を出す};
+\fill[pattern=north east lines,pattern color=black!45] (1.5,0.29) rectangle (6.3,0.61);
+\draw[black!45] (1.5,0.29) rectangle (6.3,0.61);
+\node[font=\tiny,inner sep=1pt] at (3.9,0.86) {\code{.item()} で GPU の完了を待つ};
+\draw[fill=figblue,draw=bookblue] (6.3,0.29) rectangle ++(0.5,0.32);
+\foreach \a/\w in {0.5/1.8,2.3/1.8,4.1/2.2}{\draw[fill=figred,draw=bookaccent] (\a,-0.16) rectangle ++(\w,0.32);}
+\draw[densely dashed,black!70] (1.5,-0.45) -- (1.5,0.75);
+\draw[densely dashed,black!70] (6.3,-0.45) -- (6.3,0.75);
+\node[anchor=north,align=center,font=\tiny] at (1.5,-0.45) {ここで時計を止めると\\「頼んだ時刻」しか測れない};
+\node[anchor=north,align=center,font=\tiny] at (6.3,-0.45) {\code{synchronize()} や \code{.item()} は\\ここまで待つ};
+\end{scope}
+\draw[->,black!60] (0,-5.15) -- (14.2,-5.15) node[anchor=north east,font=\scriptsize] {時刻};
+\end{tikzpicture}
+\caption{GPU での学習の時間の流れ（模式図。横軸が時刻で、箱の長さは仮の値）。青はバッチの準備や命令の発行、橙は CPU から GPU への転送、赤は GPU の計算、灰の斜線は待っている時間。
+(a) 準備と計算を交互に行うと、GPU は準備と転送のあいだ待つ。(b) 次のバッチを先に準備し、転送を重ねると、GPU は計算を続けられる。
+(c) Python は命令を出すとすぐ次へ進み、GPU があとから実行する。\code{.item()} などで値を取り寄せると、そこで GPU の完了を待つ。}
+\label{fig:gpu-timeline}
+\end{figure}
 
 
 最後に、速さの測り方の落とし穴です。
 GPU の命令は\textbf{非同期}に実行されます。
-\code{y = A @ B} と書くと、Python は GPU に「計算せよ」と頼んだだけで、計算の完了を待たずに次の行へ進みます。
-そのため、GPU で時間を測るときは、止める前に \code{torch.cuda.synchronize()} で完了を待たなければなりません（\file{ch12/matmul_bench.py} の \code{bench} のコメント）。
+\code{y = A @ B} と書くと、Python は GPU に「計算せよ」と頼んだだけで、計算の完了を待たずに次の行へ進みます（\figref{fig:gpu-timeline}の (c)）。
+そのため、\code{time.perf_counter()} で時計を止めても、測れるのは「頼み終えた時刻」までです。
+GPU で時間を測るときは、止める前に \code{torch.cuda.synchronize()} で完了を待たなければなりません（\file{ch12/matmul_bench.py} の \code{bench} のコメント）。
+逆に、\code{loss.item()} のように GPU の値を取り寄せる命令は、そこで GPU の完了を待つので、毎ステップ呼ぶと (c) の待ち時間が毎回生じます。
 また、最初の数回は準備（\code{torch.compile} の変換など）で遅いので捨て、複数回の中央値をとります。
 
 \begin{table}[!tbp]
 \centering
-\caption{1 枚の GPU から速さを引き出す定石。左から、何をするか、なぜ効くか（本章のどこで見たか）。}
+\caption{1 枚の GPU から速さを引き出す定石。左から、何をするか、なぜ効くか（本章のどこで見たか）、代わりに払うものや効かない場面。}
 \label{tab:gpu-checklist}
 \small
-\begin{tabular}{@{}p{42mm}p{70mm}@{}}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{48mm}>{\raggedright\arraybackslash}p{42mm}@{}}
 \toprule
-定石 & なぜ効くか \\
+定石 & なぜ効くか & 代償・効かない場面 \\
 \midrule
-テンソル単位でまとめて書く & for 文は BLAS の数百倍遅い（\figref{fig:gpu-loop-blas}） \\
-バッチ・行列を大きくする & 小さな行列積は演算器を使い切れない（\figref{fig:gpu-matmul-size}） \\
-BF16 の混合精度 & Tensor Core が速く、運搬もメモリも半分（\secref{sec:gpu-precision}） \\
-\code{torch.compile} & 要素ごとの演算を融合し運搬を減らす（\figref{fig:gpu-fusion}） \\
-SDPA & FlashAttention で $T\times T$ を書き出さない \\
-勾配累積 & 小さなバッチで大きなバッチと同じ勾配（\coderef{code:gpu-accum}） \\
-データを先に準備・転送を重ねる & GPU を待たせない \\
-\code{fused=True} の AdamW & 更新の多数の要素ごとの演算を融合 \\
+テンソル単位でまとめて書く & for 文は BLAS の数百倍遅い（\figref{fig:gpu-loop-blas}） & 特になし \\
+バッチ・行列を大きくする & 小さな行列積は演算器を使い切れない（\figref{fig:gpu-matmul-size}） & 活性化のメモリが増える（\figref{fig:gpu-activation}） \\
+BF16 の混合精度 & Tensor Core が速く、運搬と活性化の多くが半分（\secref{sec:gpu-precision}。重みなどの 16 バイトは同じ。\tabref{tab:gpu-amp-bytes}） & 丸め誤差。BF16 の命令が無い計算機では速くならない \\
+\code{torch.compile} & 要素ごとの演算を融合し運搬を減らす（\figref{fig:gpu-fusion}） & 初回の変換に時間がかかる。計算の重い演算が多いと効果が小さい（\figref{fig:gpu-fusion-sweep}） \\
+SDPA & FlashAttention で $T\times T$ を書き出さない（\figref{fig:gpu-flash-frames}） & CPU では速くなるとは限らない \\
+勾配累積 & 小さなバッチで大きなバッチと同じ勾配（\coderef{code:gpu-accum}） & 速くはならない（メモリを減らす技） \\
+データを先に準備・転送を重ねる & GPU を待たせない（\figref{fig:gpu-timeline}） & 準備のプロセスの分、CPU とメモリを使う \\
+\code{fused=True} の AdamW & 更新の多数の要素ごとの演算を融合 & GPU でだけ使う \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1166,9 +1683,9 @@ SDPA & FlashAttention で $T\times T$ を書き出さない \\
 \begin{summary}
 \item 学習の計算のほとんどは行列積で、$(m\times k)(k\times n)$ の積は $2mkn$ FLOPs。順伝播は約 $2N$、学習は約 $6N$ FLOPs/トークン、総計算量は $C\approx6ND$。
 \item 同じ CPU でも、for 文と BLAS では数百倍、スレッド数と数の形式でさらに数倍、速さが変わる。CPU の約 0.1 TFLOP/s では GPT-2 級の学習に年単位かかる。
-\item GPU は単純な演算器を大量に並べた計算機で、独立な成分が多く数を使い回せる行列積を、Tensor Core で CPU の数千倍速く計算する。
-\item 運ぶ量のわりに計算が少ない（算術強度が低い）計算は、メモリ帯域で頭打ちになる（ルーフライン）。学習のメモリは「16 バイト $\times$ パラメータ数」＋活性化。活性化はバッチと文脈長に比例し、小さなモデルでも支配的になりうる。
-\item BF16 は FP32 と同じ範囲で粗い形式。混合精度は BF16 で計算し、FP32 で更新を溜める。\code{torch.autocast} で書ける。
+\item GPU は単純な演算器を大量に並べた計算機で、独立な成分が多く数を使い回せる行列積を、Tensor Core で、1 枚でも CPU の数千倍速く計算する。
+\item 運ぶ量のわりに計算が少ない（算術強度が低い）計算は、メモリ帯域で頭打ちになる（ルーフライン）。学習のメモリは「16 バイト $\times$ パラメータ数」＋活性化。活性化はバッチ $B$ に比例し、文脈長 $T$ については $T$ に比例する部分と $T^2$ に比例する部分（注意の重み）を持ち、小さなモデルでも支配的になりうる。
+\item BF16 は FP32 と同じ範囲で粗い形式。混合精度は BF16 で掛け算をし、足し上げと重みの更新は FP32 で行う。\code{torch.autocast} で書ける。
 \item 定石は \code{torch.compile}（融合）、SDPA（FlashAttention）、勾配累積、データの先読み。GPU の計測には \code{torch.cuda.synchronize()} が要る。
 \end{summary}
 
@@ -1194,7 +1711,7 @@ SDPA & FlashAttention で $T\times T$ を書き出さない \\
 
 \begin{exercises}
 \exfirst[2 は、$6ND$ と MFU の見積もりの練習です。]{2 と 4}
-\item （手計算）GPT-2 最小（$V=50257$, $T=1024$, $L=12$, $d=768$）について、\coderef{code:gpu-theory}の式で 1 トークンあたりの順伝播の FLOPs を部品ごとに計算し、ブロックの部分の割合がミニGPT より大きいことを確かめなさい。
+\item （手計算）GPT-2 の最小版（$V=50257$, $T=1024$, $L=12$, $d=768$）と最大版（$L=48$, $d=1600$。$V$ と $T$ は最小版と同じ）について、\coderef{code:gpu-theory}の式で 1 トークンあたりの順伝播の FLOPs を部品ごとに計算しなさい。出力ヘッドの割合はミニGPT（28.6\%）と比べてどうなるか。$d$ が大きくなると、ブロックの線形層（MLP と注意の線形層）が大半になることを確かめなさい。
 \item （手計算）H100 の 8 枚（BF16 で各 989 TFLOP/s、MFU 40\%）で、10 億パラメータのモデルを 200 億トークンで学習させると何時間かかるか。
 \item （コード）\file{ch12/matmul_bench.py} を改造し、$m\times k$ と $k\times n$ の長方形の行列積（$m=4096$, $k=n=192$）の GFLOP/s を測り、正方形の場合と比べなさい。
 \item （考察）0.001 を BF16 で 1 万回足して正しい合計を得るには、どうすればよいか。

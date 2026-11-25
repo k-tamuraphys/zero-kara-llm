@@ -19,7 +19,7 @@
 \begin{readingguide}
 \item[\rgpre] 2 周目の最後に読む章ですが、その前に、3 周目の\chapref{ch:infra}のうち\secref{sec:infra-pipeline}（GPU 時間と費用の見積もり）と\secref{sec:infra-memory}（メモリの見積もり）だけは、必ず読んでください。ほかの 3 周目の章の言葉（蒸留と量子化、DDP、FSDP、Agentic RL など）には、出てくる場所で 1 文の説明を添えるので、名前だけ受け取って進めます。
 \item[\rgmust] \secref{sec:cap-map}〜\secref{sec:cap-mini}：全工程の地図と、それを数分で通す縮小版。自分のデータで回す出発点になります。\secref{sec:cap-mini}の小節「強化学習と量子化の関数」だけは、見出しの下の札の結論を押さえれば流し読みで構いません。
-\item[\rgskim] \secref{sec:cap-replay}：既存の成果物を測り直して、本書の物語を数字でたどります。「同じ物差しで測ると各章の数値が再現し、最も効いたのは SFT と Agentic RL だった」という結論と、\figref{fig:cap-replay}だけ押さえれば先へ進めます。
+\item[\rgskim] \secref{sec:cap-replay}：既存の成果物を測り直して、本書の物語を数字でたどります。「同じ物差しで測ると各章の数値が再現し、最も効いたのは SFT で、次が電卓を使うエージェントの経路だった」という結論と、\figref{fig:cap-replay}だけ押さえれば先へ進めます。
 \item[\rgmust] \secref{sec:cap-scale}〜\secref{sec:cap-next}：規模を上げる手引きと、次の一歩。本を閉じた後に何をするかが決まります。
 \item[\rglater] \secref{sec:cap-project}：プロジェクトの進め方と責任ある開発。自分のプロジェクトを始めるときに戻ってください。
 \item[\rgskim] \secref{sec:cap-learn}：本書の外の話題と、論文・講義の案内。表と資料の一覧は「こういう話題がある」と眺めるだけで構いません。最後の小節「本書の中へ戻る」だけは読んでください。
@@ -32,7 +32,7 @@
 24 の章を経て、この問いには答えが出ています。
 続きを予測する練習（事前学習）で言葉と計算の型を覚え、
 お手本をまねる練習（SFT）で質問に答える振る舞いを覚え、
-正誤の報酬（強化学習）で正しい答えを選ぶ癖を強め、
+正誤の報酬（強化学習）で正しい答えを選ぶ確率を高め、
 道具を呼ぶ書式（エージェント）で自分にはできない計算を外に任せる。
 どの段も、中身は「次のトークンの確率を、ある目標に向けて動かす」ことでした。
 
@@ -41,61 +41,73 @@
 そこでこの章では、全工程を\textbf{1 本のパイプライン}としてつなぎ、最初から最後まで走らせます。
 走らせてみると、二つのことがはっきりします。
 一つは、全工程が手元の CPU で\textbf{数分}で通ることです。
-もう一つは、本物の LLM 開発との差が、ほとんど\textbf{規模}（データの量、モデルの大きさ、GPU の枚数）だけだということです。
+もう一つは、本物の LLM 開発との差の大部分が\textbf{規模}（データの量、モデルの大きさ、GPU の枚数）だということです。
+残りは、規模に合わせた部品の改良（\chapref{ch:modern-arch}の GQA や RoPE など）と、規模が大きくなって初めて起きる問題への対処です（\secref{sec:cap-scale}）。
 では、その規模の差をどう埋めればよいでしょうか。
 それがこの章の後半の主題であり、本を閉じたあなたが最初に取り組む仕事です。
 
 \section{全工程の地図}\label{sec:cap-map}
 
-まず、24 の章で作ったものを 1 枚の地図に並べます。
+まず、24 の章で作ったものを 1 枚の図に並べます。
+ここで「全工程の地図」と呼ぶのは、開発の各段を箱にして、データとモデルが渡る順に矢印でつないだ図のことです。
 問いは「LLM 開発の工程は何段あり、各段は何を受け取って何を渡すのか」です。
 
 \figref{fig:cap-pipeline}が全工程です。
 \chapref{ch:intro}の全工程の図（\figref{fig:intro-pipeline}）を、もう一度描き直したものです。
 あのときは、箱の中身をまだ何も知りませんでした。
 いまは、どの箱にも、自分で作った成果物のファイル名を書き込めます。
-上の段が「モデルを作る」工程、下の段が「モデルを使えるようにする」工程です。
-矢印に沿って、左上の生のテキストから、右下の評価まで進みます。
-各箱の下の小さな字は、本書の章と、その段で作った成果物です。
+いちばん上の段が「モデルを作る」工程で、ここで基盤モデル \file{base.pt} ができます。
+点線より下の 2 段が「モデルを使えるようにする」工程です。
+矢印に沿って、左上の生のテキストから右へ進み、事前学習のところで下へ折り返します。
+中の段で質問に答える形にし（SFT か LoRA）、下の段で目的に合わせて伸ばし、左下の評価に着きます。
+各箱の中の小さな字は、本書の章と、その段で作った成果物です。
 下の段の箱には、3 周目の章（第 18・24 章）の言葉が三つあります。
 \textbf{蒸留}は、大きなモデル（教師）の出力をまねさせて、小さなモデル（生徒）を学習する方法です。\textbf{量子化}は、重みを 8 ビットなどの少ないビット数の整数に丸めて、ファイルを小さくする方法です（どちらも\chapref{ch:distillation}）。
-\textbf{Agentic RL} は、道具を使う複数ステップの仕事を、強化学習で鍛える方法です（\chapref{ch:agentic-rl}）。
+\textbf{Agentic RL} は、道具を使う複数ステップの仕事を、強化学習で訓練する方法です（\chapref{ch:agentic-rl}）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize,
-  st/.style={box,minimum width=19mm,minimum height=9mm,align=center,inner sep=2pt},
-  nt/.style={font=\scriptsize,text=black!65,align=center}]
-  \node[graybox,minimum width=15mm,minimum height=9mm,align=center] (raw) at (0,0) {生の\\テキスト};
-  \node[st] (data) at (2.4,0) {データ\\整形};
-  \node[st] (tok) at (4.8,0) {トークナイザ};
-  \node[st] (pre) at (7.2,0) {事前学習};
-  \node[st,fill=figgreen,draw=bookgreen] (sft) at (9.6,0) {SFT};
-  \node[nt,below=0.5mm of data] {13 章\\\file{soseki.txt}};
-  \node[nt,below=0.5mm of tok] {7 章\\\file{bpe4096.json}};
-  \node[nt,below=0.5mm of pre] {10・13 章\\\file{base.pt}};
-  \node[nt,below=0.5mm of sft] {16 章\\\file{sft.pt}};
-  \node[st,fill=figgreen,draw=bookgreen] (lora) at (9.6,-2.6) {LoRA};
-  \node[st,fill=figorange,draw=bookorange] (rl) at (7.2,-2.6) {強化学習};
-  \node[st,fill=figpurple,draw=bookpurple] (agent) at (4.8,-2.6) {エージェント\\＋Agentic RL};
-  \node[st,fill=figorange,draw=bookorange] (dist) at (2.4,-2.6) {蒸留・\\量子化};
-  \node[redbox,minimum width=15mm,minimum height=9mm,align=center] (eval) at (0,-2.6) {評価・\\推論};
-  \node[nt,below=0.5mm of lora] {17 章\\\file{ch17_lora_*.pt}};
-  \node[nt,below=0.5mm of rl] {22 章\\\file{ch22_rl.pt}};
-  \node[nt,below=0.5mm of agent] {23・24 章\\\file{ch24_agentic_rl.pt}};
-  \node[nt,below=0.5mm of dist] {18 章\\int8・int4};
-  \node[nt,below=0.5mm of eval] {19 章\\1,000 問};
+  st/.style={box,minimum width=21mm,minimum height=11mm,align=center,inner ysep=2pt,inner xsep=3.5pt},
+  nt/.style={font=\scriptsize,text=black!65}]
+  % 上の段：基盤モデルを作る
+  \node[graybox,minimum width=16mm,minimum height=11mm,align=center] (raw) at (0,0) {生の\\テキスト};
+  \node[st] (data) at (2.7,0) {データ整形\\{\scriptsize\color{black!65}13 章}\\{\scriptsize\color{black!65}\file{soseki.txt}}};
+  \node[st] (tok) at (5.4,0) {トークナイザ\\{\scriptsize\color{black!65}7 章}\\{\scriptsize\color{black!65}\file{bpe4096.json}}};
+  \node[st] (pre) at (8.1,0) {事前学習\\{\scriptsize\color{black!65}10・13 章}\\{\scriptsize\color{black!65}\file{base.pt}}};
+  % 中の段：質問に答える形にする
+  \node[st,fill=figgreen,draw=bookgreen] (sft) at (8.1,-2.3) {SFT\\{\scriptsize\color{black!65}16 章}\\{\scriptsize\color{black!65}\file{sft.pt}}};
+  \node[st,fill=figgreen,draw=bookgreen] (lora) at (10.8,-2.3) {LoRA\\{\scriptsize\color{black!65}17 章}\\{\scriptsize\color{black!65}\file{ch17_lora_*.pt}}};
+  % 下の段：目的に合わせて伸ばし、小さくし、測る
+  \node[st,fill=figorange,draw=bookorange] (rl) at (8.1,-4.6) {強化学習\\{\scriptsize\color{black!65}22 章}\\{\scriptsize\color{black!65}\file{ch22_rl.pt}}};
+  \node[st,fill=figorange,draw=bookorange] (agent) at (5.4,-4.6) {エージェント\\＋Agentic RL\\{\scriptsize\color{black!65}23・24 章}\\{\scriptsize\color{black!65}\file{ch24_agentic_rl.pt}}};
+  \node[st,fill=figpurple,draw=bookpurple] (dist) at (2.7,-4.6) {蒸留・量子化\\{\scriptsize\color{black!65}18 章}\\{\scriptsize\color{black!65}int8・int4}};
+  \node[redbox,minimum width=16mm,minimum height=11mm,align=center] (eval) at (0,-4.6) {評価・推論\\{\scriptsize\color{black!65}19 章}\\{\scriptsize\color{black!65}1,000 問}};
   \draw[arr] (raw) -- (data); \draw[arr] (data) -- (tok);
-  \draw[arr] (tok) -- (pre); \draw[arr] (pre) -- (sft);
-  \draw[thick,bookblue] (sft.east) -- ++(4mm,0) |- (4.8,-1.75);
-  \foreach \n in {lora,rl,agent} \draw[arr] (\n.north|-0,-1.75) -- (\n.north);
-  \draw[arr] (agent) -- (dist); \draw[arr] (dist) -- (eval);
-  \draw[darr] (eval.north) -- node[right,font=\scriptsize]{測った結果で前の段を直す} (raw.south);
-  \node[font=\scriptsize\bfseries,text=bookblue,anchor=west] at (-0.8,1.0) {モデルを作る（第 III・IV 部）};
-  \node[font=\scriptsize\bfseries,text=bookblue,anchor=west] at (-0.8,-4.05) {使えるようにする（第 V〜VII 部）};
+  \draw[arr] (tok) -- (pre);
+  \draw[arr] (pre) -- (sft);
+  \draw[arr] (pre.east) -| (lora.north);
+  \draw[arr] (sft) -- (rl);
+  \draw[arr] (sft.west) -| (agent.north);
+  % SFT・LoRA・強化学習・エージェントのどれからも、蒸留・量子化へ進める
+  \draw[thick,draw=black!70] (lora.south) |- (2.7,-6.05);
+  \draw[thick,draw=black!70] (sft.east) -- (9.45,-2.3) -- (9.45,-6.05);
+  \draw[thick,draw=black!70] (rl.south) -- (rl.south|-0,-6.05);
+  \draw[thick,draw=black!70] (agent.south) -- (agent.south|-0,-6.05);
+  \draw[arr] (2.7,-6.05) -- (dist.south);
+  \draw[arr] (dist) -- (eval);
+  \draw[darr] (eval.north) -- (raw.south);
+  \node[nt,anchor=west,align=left] at (0.12,-2.6) {評価の結果で\\前の段に戻って直す};
+  \draw[black!30,densely dotted] (-0.9,-1.15) -- (12.05,-1.15);
+  \node[font=\scriptsize\bfseries,text=bookblue,anchor=west] at (-0.85,0.95) {モデルを作る（第 III・IV 部）};
+  \node[font=\scriptsize\bfseries,text=bookblue,anchor=north west] at (0.9,-1.25) {使えるようにする（第 V〜VII 部）};
 \end{tikzpicture}
-\caption{LLM 開発の全工程と、本書で各段を扱った章・作った成果物。上の段で基盤モデルを作り、下の段で役に立つ形に整える。
-点線は「評価の結果を見て前の段に戻る」流れで、実際の開発では何度も回る。SFT の後は枝分かれし、LoRA（安く済ませる SFT。第 17 章では基盤モデルから学習）・強化学習・エージェントのどれを作るかを目的で選ぶ。蒸留と量子化は、できたモデルを配る前に小さくする段である。}
+\caption{LLM 開発の全工程と、本書で各段を扱った章・作った成果物。上の段で基盤モデル \file{base.pt} を作り、点線より下で使える形にする。
+基盤モデルからは、SFT と、安く済ませる SFT である LoRA の 2 本が出る（第 17 章の LoRA は、\file{base.pt} に直接アダプタを載せて学習した）。
+SFT の後は、強化学習とエージェントのどちらを作るかを目的で選ぶ。蒸留と量子化は、できたモデルを配る前に小さくする段で、どの段のモデルにも使える（本章の int8 は \file{sft.pt} を丸めた）。
+評価・推論へは蒸留・量子化からの矢印だけを描いたが、評価はどの段のモデルにも行う（\secref{sec:cap-replay}では、量子化していない各段のモデルも測った）。
+箱の色は段の役割を表す。灰は材料、青は基盤モデルを作る段、緑は質問に答える形にする段、橙は目的に合わせて伸ばす段、紫は小さくする段、赤は測る段である。
+破線は「評価の結果を見て前の段に戻る」流れの一例で、実際の開発では、どの段にも戻り、何度も回る（第 24 章では SFT に戻った）。}
 \label{fig:cap-pipeline}
 \end{figure}
 
@@ -104,16 +116,18 @@
 一つ目は、\textbf{上の段が一度きりの大仕事だ}ということです。
 データを整え、トークナイザを決め、事前学習をする。
 本書ではここに 30〜40 分（\file{base.pt} の学習）かかり、全工程で最も重い段でした。
-本物の開発でも同じで、計算の大部分は事前学習に使われます（\chapref{ch:infra}）。
+本物の開発でも、事前学習は最も大きな計算を使う段の一つです。その計算量と費用の見積もり方は\chapref{ch:infra}で扱いました。
 
-二つ目は、\textbf{下の段は付け替えができる}ということです。
-同じ \file{sft.pt} から、LoRA でニャ調のアダプタを作ることも（\chapref{ch:lora}）、強化学習で正答率を上げることも（\chapref{ch:rl-llm}）、電卓を使うエージェントにすることも（\chapref{ch:agent}）できました。
-基盤モデルは一つで、用途ごとに下の段を作り替えるのが、現在の LLM 開発の基本の形です。
+二つ目は、\textbf{点線より下は付け替えができる}ということです。
+同じ基盤モデル \file{base.pt} に、LoRA で「です調」と「ニャ調」のアダプタを付け替えることができました（\chapref{ch:lora}）。
+同じ \file{sft.pt} から、強化学習で正答率を上げることも（\chapref{ch:rl-llm}）、電卓を使うエージェントにすることも（\chapref{ch:agent}）できました。
+基盤モデルは一つで、用途ごとに点線より下を作り替えるのが、現在の LLM 開発の基本の形です。
 
-三つ目は、\textbf{点線の矢印}です。
+三つ目は、評価から上へ戻る\textbf{破線の矢印}です。
 評価の結果は、前の段に戻って直すために使います。
-第 24 章では、電卓を持たせたエージェントの加減算が 31.6\% に下がることを評価で見つけました（足し算の式を \code{*} で書き誤るためでした）。そこで、式の正しい書き方のお手本で短い SFT をやり直してから、強化学習をしました。
-強化学習の前に SFT で下地を作るこの手順を、コールドスタートと呼びます。
+戻る先は生のテキストとは限らず、どの段にも戻ります。
+第 24 章では、電卓を持たせたエージェントの加減算が 31.6\% に下がることを評価で見つけました（言い回しを変えた足し算の式を、\code{*} を使って書き誤るためでした）。そこで、式の正しい書き方のお手本で短い SFT をやり直してから、強化学習をしました。
+強化学習の前に、正しい振る舞いを SFT で先に教えておくこの手順を、コールドスタートと呼びます。
 工程は一方通行ではなく、測っては戻る輪です。
 
 \subsection*{各段の入力・出力・指標}
@@ -125,7 +139,7 @@
 \begin{table}[tbp]
 \centering
 \caption{全工程の表。所要時間と測定値は各章の実測（arm64 の CPU 4 コア、共有）。正答率は特に断らない限り対話形式の加減算 1,000 問（種 777、貪欲）。
-「本物では」の列は\chapref{ch:infra}の見積もりと、公開された事例のおおよその規模。}
+トークン数の「延べ」は学習中に読んだ数で、同じデータをくり返し読んだ分も数える。「本物では」の列は\chapref{ch:infra}の見積もりと、公開された事例のおおよその規模。}
 \label{tab:cap-stages}
 \footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{6mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{31mm}>{\raggedright\arraybackslash}p{31mm}@{}}
@@ -134,24 +148,48 @@
 \midrule
 データ & 13 & 生の文章 → 整形済みテキスト & 漱石 241 万字＋ドリル 12 万行、数分 & 数兆〜数十兆トークン、重複除去・品質の選別 \\
 トークナイザ & 7 & テキスト → 語彙 & BPE 語彙 4,096、1.68 字/トークン、約 5 分 & 語彙 3 万〜26 万 \\
-事前学習 & 10, 13 & トークン列 → \file{base.pt} & 260 万パラメータ、1,640 万トークン、30〜40 分。検証損失 3.48、ドリル 86.5\%（200 問） & $10^{9}$〜$10^{12}$ パラメータ、GPU 数千〜数万枚で数週間〜数か月 \\
-SFT & 16 & 基盤＋お手本 → \file{sft.pt} & 3,000 件・600 ステップ、約 1 分 40 秒。0\% → 82.6\% & 数万〜数百万件の対話 \\
-LoRA & 17 & 基盤＋お手本 → アダプタ & $r=8$、9.8 万個（394 KB）、81.7\% & 公開モデルを GPU 1 枚で適応 \\
+事前学習 & 10, 13 & トークン列 → \file{base.pt} & 260 万パラメータ、延べ 1,640 万トークン（データは 248 万トークン）、30〜40 分。検証損失 3.48（小説 4.86 とドリル 1.31 の平均）、ドリル形式 86.5\%（200 問。訓練に出た 131 問を含む。初出の 69 問では 78.3\%） & $10^{9}$〜$10^{12}$ パラメータ、GPU 数千〜数万枚で数週間〜数か月 \\
+SFT & 16 & 基盤＋お手本 → \file{sft.pt} & 3,000 件・600 ステップ、約 1 分 40 秒。0\%（200 問）→ 82.6\% & 数万〜数百万件の対話 \\
+LoRA & 17 & \file{base.pt}＋お手本 → アダプタ & $r=8$、9.8 万個（394 KB）、81.7\% & 公開モデルを GPU 1 枚で適応 \\
 強化学習 & 22 & \file{sft.pt}＋報酬 → \file{ch22_rl.pt} & GRPO 250 ステップ、82.6\% → 84.7\% & 数千〜数万ステップ、生成が計算の大半 \\
 エージェント & 23, 24 & \file{sft.pt}＋電卓 → エージェント & ツール SFT → コールドスタート → GRPO、92.8\%（電卓 100\%） & 実行環境（サンドボックス）を数千並列 \\
 蒸留・量子化 & 18 & 大きいモデル → 小さく速いモデル & int8 で 10.3 → 2.6 MB、82.4\% & 大きな教師から 1/10 規模の生徒、4 ビットで配信 \\
-評価・推論 & 19 & モデル → 正答率・区間 & 1,000 問で標準誤差 約 1.2 ポイント、KV キャッシュ（第 19 章）で 3.7 倍 & 多数のベンチマーク（\appref{app:benchmarks}）と推論エンジン \\
+評価・推論 & 19 & モデル → 正答率とそのぶれの幅 & 1,000 問で標準誤差 約 1.2 ポイント。KV キャッシュで 100 トークンの生成が 3.7 倍速い & 多数のベンチマーク（\appref{app:benchmarks}）と推論エンジン \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 表を縦に読むと、本書の物語がそのまま数字で見えます。
-事前学習だけのモデルは、対話形式の質問に 0\% しか答えられませんでした。
+事前学習だけのモデルは、対話形式の質問に 0\%（200 問）しか答えられませんでした。
 SFT で 82.6\% になり、強化学習で 84.7\% に、電卓を使いこなすことで 92.8\% になりました。
-伸び方が段ごとに違うことにも気づくでしょう。
-能力そのものを鍛える強化学習（第 22 章）の伸びは 2.1 ポイントで、評価のぶれ（標準誤差 約 1.2 ポイント）の 2 倍にわずかに届きません。この 1,000 問だけでは、偶然の差と言い切れないほどの小さな伸びです。
-一方、「いつ電卓を使うか」という振る舞いを変える強化学習（第 24 章）は約 29 ポイント効きました。出発点はコールドスタート後の 63.9\% で、これは式の書き方だけを教え、電卓と暗算を半々に使うモデルの値です。強化学習が「加減算でも必ず電卓を使う」ことを選ばせて、92.8\% まで上がりました。
-260 万パラメータの小さなモデルでは、新しい能力を覚えさせるより、道具の使い方を教えるほうがずっと効くのです。
+ただし、二つの強化学習の伸びを、そのまま並べて比べることはできません。
+出発点も、測る条件も違うからです（\figref{fig:cap-replay}に、二つの経路を並べました）。
+
+第 22 章の強化学習は、\file{sft.pt}（82.6\%）から始めて、暗算のまま 84.7\% にしました。伸びは 2.1 ポイントです。
+1 つのモデルの正答率の標準誤差は約 1.2 ポイントでした。
+二つのモデルの\textbf{差}の標準誤差は、別々の問題で測ったとすれば $\sqrt2\times1.2\approx1.7$ ポイントです（\chapref{ch:rl-llm}）。
+同じ 1,000 問で比べているので実際はもう少し小さくなりえますが、それは\chapref{ch:eval-serving}の対応ありの式\eqref{eq:es-paired}で測ります。
+2.1 ポイントは 1.7 ポイントの約 1.2 倍で、偶然の差と区別しきれない小さな伸びです。
+
+第 24 章の強化学習は、63.9\% から 92.8\% へ、約 29 ポイント伸びました。
+ただし出発点の 63.9\% は、\file{sft.pt} の 82.6\% より低い値です。
+電卓を持たせたツール SFT の後（\chapref{ch:agent}）に、式を書き誤って 31.6\% まで下がり、式の書き方を教える短い SFT（コールドスタート）で 63.9\% まで戻した値だからです。
+このモデルは、約 6 割の問題で電卓を使っていました。
+強化学習は「加減算でも必ず電卓を使う」ことを選ばせて、92.8\%（電卓を使う割合 100\%）まで上げました。
+\file{sft.pt} の 82.6\% から比べれば、エージェントの工程全体（ツール SFT → コールドスタート → 強化学習）の伸びは約 10 ポイントです。
+しかも 92.8\% は電卓を使った結果で、暗算の 84.7\% とは測る条件が違います。
+
+では、二つの強化学習は何が違ったのでしょうか。
+どちらも同じ GRPO で、答えが正しければ報酬 1 という点も同じです。
+違いは二つあります。
+一つは、正解に届く行動が、学習の前からモデルの中にあったかどうかです。
+第 24 章では、電卓を正しく呼ぶ書き方をコールドスタートで覚えていたので、強化学習は「それを選ぶ確率」を上げるだけでよかったのです。
+第 22 章では、間違える問題を解くには、暗算の力そのものを伸ばす必要がありました。
+もう一つは出発点の低さで、63.9\% からは伸びる余地が大きく残っていました。
+なお第 22 章では、正解のお手本で SFT を続けるほうが、強化学習より伸びました（88.6\%）。
+本書の 2 つの実験（どちらも 1 回ずつ）から言えるのは、次のことまでです。
+260 万パラメータのモデルでは、強化学習で暗算の正しさを直接上げるより、すでに覚えた道具の使い方を選ばせるほうが、大きく効きました。
+規模を大きくしても同じかどうかは、本書では確かめていません（演習 6）。
 
 表を横に読むと、本物との差が見えます。
 どの段でも、やっていることは同じで、数字の桁が違います。
@@ -159,7 +197,7 @@ SFT で 82.6\% になり、強化学習で 84.7\% に、電卓を使いこなす
 その前に、この表の全工程を、本当に 1 本のスクリプトで通してみましょう。
 
 この節で分かったことを言い直します。
-LLM 開発は「モデルを作る」上の段と「使えるようにする」下の段からなり、評価の結果で前の段に戻る輪になっています。
+LLM 開発は「モデルを作る」上の段と、「使えるようにする」点線より下の段からなり、評価の結果で前の段に戻る輪になっています。
 本書の 24 章は、その輪の各段を一つずつ実装したものでした。
 
 \section{縮小版を最初から最後まで走らせる}\label{sec:cap-mini}
@@ -198,7 +236,7 @@ $V=512$、$T_{\max}=64$、$L=2$、$d=96$ を代入します。
 \snippet{1. データ：文章とドリルを混ぜる}{code:cap-data}{ch25/pipeline.py}{stage-data}
 
 \code{path} にテキストファイルを渡すと、漱石の代わりにそのファイルを使います。
-\textbf{ここが題材の差し替え口です}。
+\textbf{題材を差し替えるときは、この引数を使います}。
 自分の書いた文章、著作権の切れた別の作家の作品、技術文書など、どんなテキストでも同じ工程が回ります。
 ドリルの行と文章の行を混ぜてから（\code{shuffle}）、末尾の 5\% を検証用に取り分けます。
 \chapref{ch:pretraining}の「インターネットには小説も算数もある」の縮小版を、行の単位で作っているわけです。
@@ -214,7 +252,7 @@ $V=512$、$T_{\max}=64$、$L=2$、$d=96$ を代入します。
 
 テキストを \code{tok.encode} でトークン列にし、乱数の種を固定してからモデルを作ります。
 学習率は \file{base.pt} の 1e-3 より高い 3e-3 にしました。
-小さなモデルは大きな学習率に耐えやすく、短いステップ数で損失を下げたいからです（\chapref{ch:pretraining}の学習率の実験でも、小さなモデルでは 1e-3〜1e-2 がよく下がりました）。
+小さなモデルは大きな学習率に耐えやすく、短いステップ数で損失を下げたいからです（\chapref{ch:pretraining}の学習率の実験でも、2 層の小さなモデルでは 1e-3〜1e-1 がほぼ同じ所まで下がり、遅すぎたのは 1e-4 だけでした）。
 100 ステップごとに検証損失を測り、CSV に書きます。
 
 SFT（\coderef{code:cap-sft}）は、\chapref{ch:posttraining}の手順を 10 行に縮めたものです。
@@ -226,7 +264,7 @@ SFT（\coderef{code:cap-sft}）は、\chapref{ch:posttraining}の手順を 10 �
 あとは 32 件ずつ取り出し（\code{collate} が長さをそろえます）、損失を計算し、勾配で更新する、を繰り返すだけです。
 繰り返す回数は \code{CFG} の \code{sft_steps}、つまり 1,000 ステップです。
 $1{,}000\times32=32{,}000$ 件ぶんを学習するので、2,000 件の手本を $32{,}000\div2{,}000=16$ 周します。
-学習率は 1e-3 のまま変えません。
+学習率は 1e-3 で一定です（ウォームアップも減衰もしません）。
 \chapref{ch:posttraining}の本番（手本 3,000 件、600 ステップ、最大学習率 3e-4）と比べると、手本は少なく、学習率は高い設定です。事前学習の段と同じく、小さなモデルなので高めの学習率にしてあります。
 関数が返すのは、最後のステップの損失（32 件の平均）です。
 
@@ -245,15 +283,15 @@ $1{,}000\times32=32{,}000$ 件ぶんを学習するので、2,000 件の手本�
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\scriptsize,c/.style={cell,minimum width=11mm,minimum height=5mm}]
+\begin{tikzpicture}[font=\scriptsize,c/.style={cell,minimum width=12.5mm,minimum height=5mm}]
   \node[anchor=east] at (-0.2,0) {\code{gen}};
   \node[anchor=east] at (-0.2,-0.6) {\code{cumsum}};
   \node[anchor=east] at (-0.2,-1.2) {\code{mask}};
-  \foreach \t/\c/\m [count=\i] in {答1/0/1,答2/0/1,答3/0/1,{<|end|>}/1/1,余分/1/0,余分/1/0,{<|end|>}/2/0,余分/2/0} {
-    \node[c] at (\i*1.15-0.6,0) {\t};
-    \node[c] at (\i*1.15-0.6,-0.6) {\c};
-    \ifnum\m=1 \node[c,fill=figgreen] at (\i*1.15-0.6,-1.2) {1};
-    \else \node[c,fill=figgray] at (\i*1.15-0.6,-1.2) {0};\fi
+  \foreach \t/\c/\m [count=\i] in {答1/0/1,答2/0/1,答3/0/1,{\texttt{<|end|>}}/1/1,余分/1/0,余分/1/0,{\texttt{<|end|>}}/2/0,余分/2/0} {
+    \node[c] at (\i*1.3-0.6,0) {\t};
+    \node[c] at (\i*1.3-0.6,-0.6) {\c};
+    \ifnum\m=1 \node[c,fill=figgreen] at (\i*1.3-0.6,-1.2) {1};
+    \else \node[c,fill=figgray] at (\i*1.3-0.6,-1.2) {0};\fi
   }
 \end{tikzpicture}
 \caption{\coderef{code:cap-rl}の \code{mask} の作り方。\code{cumsum} は各位置までに出た \code{<|end|>} の個数。
@@ -266,18 +304,99 @@ $1{,}000\times32=32{,}000$ 件ぶんを学習するので、2,000 件の手本�
 $\bar r$ は 8 本の報酬の平均、$\sigma_r$ は標準偏差です（\code{r.std()} は、第 22 章と同じく $G-1$ で割る標準偏差です）。
 たとえば 8 本のうち 1 本だけが正解なら、$\bar r = 1/8 = 0.125$ です。正解の 1 本は $r_i-\bar r=0.875$ で正、残りの 7 本は $-0.125$ で負になります。
 
-次の 3 行で、各トークンの対数確率を計算します。
+次の 4 行（21〜24 行目）で、各トークンの対数確率を計算します。
 まず \code{model.train()} で学習用のモードに戻し、今度は勾配を記録しながら、問題と答えの列をモデルに通します。
 \code{out[:, :-1]} と最後の 1 トークンを落とすのは、最後のトークンの「次」は生成しておらず、予測させても比べる相手がないからです。
-位置 $t$ のロジットは「位置 $t+1$ のトークン」の予測なので、答えの 1 個目（位置 \code{len(p)}）の確率は、1 つ手前の位置 \code{len(p) - 1} のロジットから取り出します。\code{gather} は、語彙 512 個の対数確率の中から、実際に生成したトークンの値だけを拾う操作です。損失は $-\sum A_i \log\pitheta(\text{トークン})$ を、答えのトークン数（\code{mask.sum()}）で割ったものです。
+位置 $t$ のロジットは「位置 $t+1$ のトークン」の予測なので、答えの 1 個目（位置 \code{len(p)}）の確率は、1 つ手前の位置 \code{len(p) - 1} のロジットから取り出します。
+\figref{fig:cap-grpo-flow}の (a) が、このずれを描いたものです。緑のロジットから出る矢印が、1 つ右のトークンを指していることを確かめてください。
+\code{gather} は、語彙 512 個の対数確率の中から、実際に生成したトークンの値だけを拾う操作です。
+1 問ぶんの損失を式で書きます。
+$i$ 本目の答えの $t$ 番目のトークンを $o_{i,t}$、問題を $q$、\code{mask} の値を $m_{i,t}$（0 か 1）とすると、
+\begin{equation}
+\calL_q = -\frac{1}{\sum_{i,t} m_{i,t}}\sum_{i=1}^{G}\sum_{t=1}^{8} m_{i,t}\,A_i\,\log\pitheta(o_{i,t}\mid q,o_{i,<t})
+\label{eq:cap-grpo-loss}
+\end{equation}
+です（記号は\chapref{ch:rl-llm}の式\eqref{eq:rl-grpo}に合わせました）。
+分母の $\sum m_{i,t}$ がコードの \code{mask.sum()}、つまり答えのトークン数です。
 これを 8 問ぶん足しながら \code{Q} で割って 8 問の平均にし、1 ステップにつき 1 回だけ重みを更新します。
+\figref{fig:cap-grpo-flow}の (b) は、この 1 問ぶんの計算を、形を書き込んだ流れの図にしたものです。
+赤い太い矢印が、勾配を記録しながら計算する経路です。\code{loss.backward()} は、この経路を損失からモデルへ逆向きにたどって勾配を求めます。
+灰色の段（答えの生成、報酬、アドバンテージ、\code{mask}、モデルに入れるトークン列）は勾配を持たず、損失の中では決まった数として掛かるだけです。
+
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[font=\scriptsize,
+  c/.style={draw=black!45,minimum width=8.2mm,minimum height=5.5mm,inner sep=0pt},
+  x=8.8mm]
+  \node[anchor=west,font=\footnotesize\bfseries] at (-1.9,1.25) {(a) どのロジットで、どのトークンの確率を測るか（\code{len(p)} = 4 の例）};
+  \node[anchor=east] at (-0.6,0.05) {位置};
+  \node[anchor=east] at (-0.6,-0.55) {\code{out}};
+  \node[anchor=east,align=right] at (-0.6,-1.85) {ロジット\\（モデルの出力）};
+  \foreach \i in {0,...,11} \node[text=black!60] at (\i,0.05) {\i};
+  \foreach \t [count=\i from 0] in {$p_1$,$p_2$,$p_3$,$p_4$} \node[c,fill=figgray] (t\i) at (\i,-0.55) {\t};
+  \foreach \t [count=\i from 4] in {4,7,です,。,{\tiny\texttt{<|end|>}},余分,余分,余分} \node[c,fill=figorange] (t\i) at (\i,-0.55) {\t};
+  \foreach \i in {0,1,2} \node[c,fill=white] (z\i) at (\i,-1.85) {$\vz_{\i}$};
+  \foreach \i in {3,...,10} \node[c,fill=figgreen] (z\i) at (\i,-1.85) {$\vz_{\i}$};
+  \node[c,dashed,draw=black!35,text=black!45] at (11,-1.85) {なし};
+  \foreach \i [evaluate=\i as \j using int(\i+1)] in {0,1,2} \draw[->,black!35] (z\i.north) -- (t\j.south);
+  \foreach \i [evaluate=\i as \j using int(\i+1)] in {3,...,10} \draw[->,thick,bookgreen] (z\i.north) -- (t\j.south);
+  \draw[decorate,decoration={brace,amplitude=3pt}] (-0.45,0.35) -- node[above=2pt] {プロンプト $p$} (3.45,0.35);
+  \draw[decorate,decoration={brace,amplitude=3pt}] (3.55,0.35) -- node[above=2pt] {\code{gen = out[:, len(p):]}：答えの 8 トークン $(G,8)$} (11.45,0.35);
+  \draw[decorate,decoration={brace,amplitude=3pt,mirror}] (2.55,-2.2) -- node[below=2pt] {\code{logits[:, len(p)-1:]}：8 個のロジット $(G,8,512)$} (10.45,-2.2);
+\end{tikzpicture}
+
+\vspace{4mm}
+\begin{tikzpicture}[font=\scriptsize,
+  ng/.style={draw=black!45,fill=figgray,rounded corners=2pt,minimum width=20mm,minimum height=9mm,align=center,inner sep=1.5pt},
+  wg/.style={draw=bookaccent,fill=figred,rounded corners=2pt,minimum width=20mm,minimum height=9mm,align=center,inner sep=1.5pt},
+  na/.style={->,draw=black!45},
+  wa/.style={->,very thick,draw=bookaccent}]
+  \node[anchor=west,font=\footnotesize\bfseries] at (-0.2,1.0) {(b) 1 問ぶんの計算の流れ（$G=8$ 本、答えは 8 トークン、語彙 512）};
+  \node[ng] (idx) at (0.9,0) {$p$ を $G$ 回並べた\\\code{idx}：$(G,\abs{p})$};
+  \node[ng] (out) at (3.4,0) {生成した列 \code{out}\\$(G,\abs{p}+8)$};
+  \node[ng] (gen) at (5.9,0) {\code{gen}・\code{mask}\\各 $(G,8)$};
+  \node[ng] (r) at (8.4,0) {報酬 \code{r}\\$(G)$};
+  \node[ng] (A) at (10.9,0) {アドバンテージ \code{A}\\$(G)$};
+  \node[ng] (inp) at (0.9,-2.0) {入力\\\code{out[:, :-1]}\\$(G,\abs{p}+7)$};
+  \node[wg] (mdl) at (3.4,-2.0) {モデル\\（勾配を記録）};
+  \node[wg] (lg) at (5.9,-2.0) {切り出した\\ロジット\\$(G,8,512)$};
+  \node[wg] (lp) at (8.4,-2.0) {\code{log_softmax}\\と \code{gather}\\\code{lp}：$(G,8)$};
+  \node[wg] (L) at (10.9,-2.0) {損失 $\calL_q$\\（数 1 個）};
+  \draw[na] (idx) -- node[above,font=\tiny]{生成} (out);
+  \draw[na] (out) -- (gen);
+  \draw[na] (gen) -- node[above,font=\tiny]{採点} (r);
+  \draw[na] (r) -- (A);
+  \draw[na] (out.south) -- (inp.north);
+  \draw[na] (inp) -- (mdl);
+  \draw[wa] (mdl) -- (lg);
+  \draw[wa] (lg) -- (lp);
+  \draw[wa] (lp) -- (L);
+  \draw[na] (gen.south east) -- node[right,font=\tiny,pos=0.45]{拾う位置・\code{mask}} (lp.north west);
+  \draw[na] (A) -- node[right,font=\tiny]{$\times A_i$} (L);
+  \node[anchor=west,text=black!65,align=left] at (-0.15,-3.35) {灰：\code{torch.no_grad()} の中で作る値か、勾配を持たない値。\\赤の太い矢印：勾配を記録して計算する経路（\code{loss.backward()} はこれを逆向きにたどる）。};
+\end{tikzpicture}
+\caption{\coderef{code:cap-rl}の強化学習の 1 問ぶんの計算。
+(a) ロジットは、最後の 1 トークンを落とした \code{out[:, :-1]} をモデルに通した出力である。位置 $t$ のロジット $\vz_t$ は、位置 $t+1$ のトークンの予測である。答えの 1 個目（位置 \code{len(p)} = 4）の確率は、1 つ手前の $\vz_3$ から取り出す。最後の位置 11 の次は生成していないので、入力から落とす。
+(b) 形を書き込んだ流れ。$\abs{p}$ はプロンプトのトークン数（問題ごとに違う）。\code{lp} に \code{mask} と $A_i$ を掛けて足し、答えのトークン数で割ったものが式\eqref{eq:cap-grpo-loss}の $\calL_q$ である。}
+\label{fig:cap-grpo-flow}
+\end{figure}
 \code{1e-4} は、8 本がすべて同じ報酬で標準偏差が 0 のときに、0 で割らないための小さな数です。
 
 最適化は AdamW で、学習率は 1e-4 です。
-\chapref{ch:rl-llm}の本番（$3\times10^{-5}$ で 250 ステップ）より高く、第 22 章では正答率が崩れた値です。
+\chapref{ch:rl-llm}の本番（$3\times10^{-5}$ で 250 ステップ）より高い値です。
+第 22 章では、この学習率で、正答率が 10 ステップ目に 0.87 から 0.715 まで下がりました（200 問）。
 ただし縮小版は、モデルの大きさも、1 ステップの答えの本数（$8\times8=64$ 本。本番は 256 本）も違います。
-縮小版がこの値で崩れるかどうかは、後の「走らせた結果」で確かめます。
-\chapref{ch:rl-llm}の本格版にあった重要度比のクリップと参照モデルへの KL は、ロールアウト 1 回につき 1 回しか更新しない縮小版では、更新前と更新後の方策がほとんど同じなので省きました。
+縮小版でもこの値で正答率が下がるかどうかは、後の「走らせた結果」で確かめます。
+
+\chapref{ch:rl-llm}の本格版にあった二つの仕組みは、別々の理由で省きました。
+一つ目の重要度比のクリップは、同じ答えの集まりで 2 回以上更新するとき、2 回目以降の動きを抑える仕組みです。
+縮小版はロールアウト 1 回につき 1 回しか更新しないので、確率比はいつも 1 で、クリップは働きません（第 22 章の \code{mu=1} と同じです）。
+二つ目の参照モデルへの KL は、何ステップもかけて方策が出発点から離れていくのを抑える罰です。
+1 回の更新の大きさとは関係がないので、「1 回しか更新しない」ことは、KL を省く理由になりません。
+縮小版で KL を省いたのは、コードを短くするためです。
+40 ステップと短いので、出発点から大きく離れる前に終わる、と見込みました。
+その見込みが当たったかどうかも、後の「走らせた結果」で正答率を見て確かめます。
+長く回すときは、KL の罰を足し、KL の値を毎ステップ記録してください。第 22 章では、学習率 1e-4 で KL が急に大きくなったことが、正答率が下がった目印になりました。
 
 最後の量子化（\coderef{code:cap-quant}）は、\chapref{ch:distillation}の 8 ビット量子化を、その場で丸めて戻す形にしたものです。
 
@@ -296,15 +415,15 @@ $\bar r$ は 8 本の報酬の平均、$\sigma_r$ は標準偏差です（\code{
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}[font=\footnotesize,
-  st/.style={minimum width=17mm,minimum height=8mm,align=center,inner sep=2pt},
+  st/.style={minimum width=16.5mm,minimum height=8mm,align=center,inner ysep=2pt,inner xsep=3pt},
   v/.style={font=\scriptsize,align=center},
   tm/.style={font=\scriptsize,text=black!65}]
   \node[graybox,st] (d) at (0,0) {データ};
-  \node[box,st] (t) at (2.1,0) {トークナイザ};
-  \node[box,st] (p) at (4.2,0) {事前学習};
-  \node[greenbox,st] (s) at (6.3,0) {SFT};
-  \node[orangebox,st] (r) at (8.4,0) {強化学習};
-  \node[orangebox,st] (q) at (10.5,0) {量子化};
+  \node[box,st] (t) at (2.25,0) {トークナイザ};
+  \node[box,st] (p) at (4.5,0) {事前学習};
+  \node[greenbox,st] (s) at (6.75,0) {SFT};
+  \node[orangebox,st] (r) at (9.0,0) {強化学習};
+  \node[orangebox,st] (q) at (11.25,0) {量子化};
   \foreach \a/\b in {d/t,t/p,p/s,s/r,r/q} \draw[arr] (\a) -- (\b);
   \node[v,below=0.5mm of d] {訓練 34.5 万字\\検証 1.8 万字};
   \node[v,below=0.5mm of t] {語彙 512\\1.19 字/トークン};
@@ -312,20 +431,40 @@ $\bar r$ は 8 本の報酬の平均、$\sigma_r$ は標準偏差です（\code{
   \node[v,below=0.5mm of s] {損失 0.541\\対話 \textbf{11.0\%}};
   \node[v,below=0.5mm of r] {40 ステップ\\対話 \textbf{10.0\%}};
   \node[v,below=0.5mm of q] {int8\\対話 \textbf{10.0\%}};
-  \draw[->,black!40] (-0.8,-1.75) -- (11.35,-1.75);
-  \foreach \x/\s in {0/0.1,2.1/0.3,4.2/56.5,6.3/89.6,8.4/106.5,10.5/109.5} {
-    \draw[black!40] (\x,-1.68) -- (\x,-1.82);
-    \node[tm] at (\x,-2.05) {\s 秒};
-  }
+  % 下の帯：経過時間に比例した長さ（1 秒 = 1.1 mm）。左端が開始、右端が 109.5 秒
+  \begin{scope}[shift={(-0.85,-2.6)},x=1.1mm]
+    \fill[bookblue!45] (0.3,0) rectangle (41.5,0.4);
+    \fill[black!18] (41.5,0) rectangle (56.5,0.4);
+    \fill[bookgreen!45] (56.5,0) rectangle (89.6,0.4);
+    \fill[bookorange!45] (89.6,0) rectangle (106.5,0.4);
+    \fill[bookorange!25] (106.5,0) rectangle (109.5,0.4);
+    \draw[black!45] (0,0) rectangle (109.5,0.4);
+    \foreach \t in {0,41.5,56.5,89.6,106.5,109.5} \draw[black!45] (\t,0) -- (\t,-0.12);
+    \node[tm,anchor=north] at (0,-0.12) {0};
+    \node[tm,anchor=north] at (41.5,-0.12) {41.5};
+    \node[tm,anchor=north] at (56.5,-0.12) {56.5};
+    \node[tm,anchor=north] at (89.6,-0.12) {89.6};
+    \node[tm,anchor=north east] at (106.5,-0.12) {106.5};
+    \node[tm,anchor=north west] at (106.6,-0.12) {109.5 秒};
+    \node[font=\scriptsize] at (20.9,0.2) {事前学習 41.2 秒};
+    \node[font=\tiny] at (49,0.2) {評価 15.0 秒};
+    \node[font=\scriptsize] at (73,0.2) {SFT と評価 33.1 秒};
+    \node[font=\tiny] at (98,0.2) {RL と評価 16.9 秒};
+    \draw[black!55] (0.15,0.4) -- (0.15,0.75) node[tm,anchor=south west,xshift=-1mm] {データとトークナイザ 0.3 秒};
+    \draw[black!55] (108,0.4) -- (108,0.75) node[tm,anchor=south east,xshift=1mm] {量子化と評価 3.0 秒};
+  \end{scope}
 \end{tikzpicture}
 \caption{縮小版の 6 段と、各段を終えた時点の数字（\file{ch25/out/mini.txt}）。太字は対話形式の正答率（200 問）。
 SFT で 0\% から 11.0\% に上がり、強化学習と量子化の後は 10.0\% のままで、評価のぶれ（約 2.1 ポイント）の範囲で変わらない。
-下の軸は開始からの経過時間で、その段と直後の評価を終えた時点。全工程が約 110 秒で通る。}
+下の帯は、各段にかかった時間を、長さを時間に比例させて並べたもの（目盛りは開始からの経過秒）。「評価」は、事前学習の後の対話の正答率の測定。RL は強化学習。SFT 以降の段の時間には、直後の評価の時間も含む。全工程が約 110 秒で通る。}
 \label{fig:cap-mini-flow}
 \end{figure}
 
 一行ずつ読みます。
-\figref{fig:cap-mini-flow}は、この出力を 6 段の流れに並べ直したものです。箱の下の太字が対話の正答率で、いちばん下が経過時間です。
+\figref{fig:cap-mini-flow}は、この出力を 6 段の流れに並べ直したものです。箱の下の太字が対話の正答率です。
+いちばん下の帯は、各段にかかった時間を、長さに比例させて描いています。
+データとトークナイザは合わせて 0.3 秒で、帯の上ではほとんど幅がありません。
+全体の約 4 割（41 秒）が事前学習で、その次に長いのが SFT（評価を含めて 33 秒）です。
 学習曲線は\figref{fig:cap-mini-curves}にあります（左が事前学習の損失、右が強化学習中の報酬）。
 
 1 行目は、漱石の 20 万字とドリル 2 万行を混ぜた約 36 万字を、訓練用 344,577 字と検証用 18,136 字（5\%）に分けたことを示します。
@@ -346,21 +485,43 @@ SFT で 0\% から 11.0\% に上がり、強化学習と量子化の後は 10.0\
 1 ステップに $32\times64 = 2{,}048$ トークンを読むので、合計 $600\times2{,}048\approx 123$ 万トークンです。
 訓練データ（約 33 万トークン）を $123\div33\approx3.7$ 周したことになります。
 検証損失は 3.405 まで下がりました（\figref{fig:cap-mini-curves}の左）。
-語彙が違うので、\file{base.pt} の 3.48 とは直接は比べられません。
+この値は、\file{base.pt} の 3.48 とは直接は比べられません。
+理由は二つあります。
+一つは語彙が違うことです。損失は 1 トークンあたりの値なので、1 トークンの長さが違えば、当てやすさも違います。
+もう一つは、検証データの中の、小説とドリルの混ざり方が違うことです。
+\chapref{ch:pretraining}で見たとおり、3.48 は小説の部分（4.86）とドリルの部分（1.31）を合わせた平均で、ドリルが多いほど小さく出ます。
+後で使う \file{ch25/sweep_scale.py} で縮小版の検証データを分けて測ると、ドリルの割合はトークン数で 28\%（\file{base.pt} の検証データでは 40\%）、損失は小説の部分が 3.62、ドリルの部分が 2.77 でした。
+3.405 は、この二つを 72 対 28 で混ぜた平均です。
 その下の行は、事前学習だけのモデルに対話形式で質問した正答率で、0\% です。
 \chapref{ch:posttraining}の基盤モデルと同じく、質問に答えるという振る舞いをまだ知らないからです。
 
+では、この基盤モデルは、ドリル形式なら計算ができるのでしょうか。
+\file{base.pt} はドリル形式で 86.5\%（訓練に出てこなかった問題だけでも 78.3\%）解けました。
+\file{sweep_scale.py} で同じ 200 問を解かせると、縮小版の基盤モデルは 2.5\% しか正しく答えませんでした。
+200 問のうち 77\% は訓練データに同じ行があったのに、その答えも覚えていません。
+縮小版の基盤モデルは、2 桁の計算をほとんどできないのです。
+
+\begin{caution}{問題文の切れ目とトークン}
+この 2.5\% は、問題文を「\code{12+35}」と「\code{=}」の手前まで与え、続きが「\code{=47}」になるかで測った値です。
+\file{llmbook} の \code{drill_accuracy} のように「\code{12+35=}」まで与えると、どの大きさの縮小版でも 1.5\% でした。
+語彙 512 のトークナイザは、「\code{=4}」を 1 つのトークンにまとめます（改行で始まる \texttt{\textbackslash n12+35=47} は、\texttt{\textbackslash n1}・\code{2}・\code{+3}・\code{5}・\code{=4}・\code{7} の 6 トークン。\texttt{\textbackslash n} は改行）。
+だから学習データの中では、「\code{=}」だけのトークンの後に数字が続くことが、ほとんどありません。
+「\code{=}」で終わる問題文は、モデルが学習でほとんど見たことのない切れ目から、続きを書かせることになるのです。
+トークナイザを変えたら、評価の問題文の切れ目も確かめてください。
+\end{caution}
+
 4 行目の SFT で、正答率は 0\% から 11.0\% になりました。
 行の先頭の「損失 0.541」は、最後のステップの 32 件で測った損失です。
-手本の形「\code{◯◯です。}」で答えるようにはなったものの、数そのものはほとんど間違えます。
-28 万パラメータ・600 ステップの事前学習では、2 桁の計算を正しくこなす力がまだ育っていないと考えられます（誤りの内訳は調べていません）。
+基盤モデルがほとんど計算できなかったので、この 11.0\% の大部分は、SFT の 2,000 件の手本（16 周）から覚えた分だと考えられます。
+\file{base.pt} のときのように「基盤モデルにあった計算の力を、SFT が質問に答える形で引き出した」とは言えません。
+28 万パラメータ・600 ステップの事前学習では、2 桁の計算の力がまだ身についていないのです（誤りの内訳は調べていません）。
 
 5 行目の強化学習の後は 10.0\% で、伸びは見られません。
 この差が意味のある差かどうかは、\chapref{ch:eval-serving}の標準誤差 $\sqrt{p(1-p)/n}$ で判断します。
 評価は $n=200$ 問、正答率は $p\approx0.1$ なので、標準誤差は $\sqrt{0.1\times0.9/200}\approx 0.021$、つまり約 2.1 ポイントです。
 11.0\% と 10.0\% の差（200 問のうち 22 問と 20 問）は 1 ポイントで、誤差の範囲です。
-縮小版の強化学習は、第 22 章では正答率が崩れた学習率 1e-4 を使っています。
-この 40 ステップでは、崩れも伸びも見えませんでした。
+縮小版の強化学習は、第 22 章で正答率が大きく下がった学習率 1e-4 を使い、KL の罰も省いています。
+それでも、この 40 ステップでは、下がることも伸びることもありませんでした。
 \figref{fig:cap-mini-curves}の右を見ても、報酬は 0〜0.22 の間を上下するだけで、上がる傾向はありません。
 1 ステップの 64 本のうち、正解は 0〜14 本でした（$14\div64\approx0.22$）。
 最初の 10 ステップの平均は 0.094、最後の 10 ステップは 0.081 です。
@@ -370,16 +531,23 @@ SFT で 0\% から 11.0\% に上がり、強化学習と量子化の後は 10.0\
 仮に 1 本が正解する確率を 0.1 とすると、8 本とも不正解になる確率は $0.9^{8}\approx0.43$ です。
 強化学習の段は、8 本の中で報酬が平均より良かった答えの確率を上げる仕組みでした。その「平均との差」がアドバンテージです。
 すべて 0 のグループは平均も 0 なので、アドバンテージがすべて 0 になり、学習の信号を生みません。
-4 割ほどのグループが、何も教えてくれないのです。
-\chapref{ch:agentic-rl}が「強化学習の前に SFT で下地を作る」（コールドスタート）理由としたのと同じ現象です。
+4 割ほどのグループは、重みを動かさないのです。
+
+では、残りの 6 割のグループから学べるのだから、ステップを増やせば伸びるのでしょうか。
+伸びる見込みはありますが、この結果からは言えません。
+縮小版が 40 ステップで集めた答えは $40\times64=2{,}560$ 本です。
+第 22 章では、正答率が 8 割の \file{sft.pt} から始めても、80 ステップ・10,240 本では伸びが見えませんでした。
+縮小版の答えの数は、その 4 分の 1 です。
+しかも 200 問の評価では、標準誤差の 2.1 ポイントより小さな変化は見分けられません。
+信号を生まないグループが多いことに加えて、学習の量が足りず、評価も粗い、というのが、伸びが見えなかった理由です。
+なお、正解が一度も出ないと強化学習が何も学べない、という点は、\chapref{ch:agentic-rl}がコールドスタート（強化学習の前に、正しい振る舞いを SFT で先に教える）を使った理由と似ています。
+第 24 章では、電卓の正しい使い方がサンプリングでほとんど出てこなかったのでした。
 
 6 行目の int8 量子化は、正答率を変えませんでした（10.0\%）。
 全体の所要時間は約 110 秒です（評価に使った時間を含みます。共有の CPU で、混雑すると 2 倍ほどかかります）。
 
 まとめると、縮小版は\textbf{工程としては最後まで通る}が、\textbf{各段の効き目を見るには小さすぎる}、という結果でした。
-SFT が振る舞いを変えること、量子化が正答率をほぼ変えないことは見えましたが、強化学習の効果は見えません。
-各段の効き目を確かめるには、本書の本番の大きさが要ります。
-それを次の節で見ます。
+SFT で質問に答える形になること、量子化が正答率をほぼ変えないことは見えましたが、基盤モデルの計算の力も、強化学習の効果も見えません。
 
 \begin{figure}[tbp]
 \centering
@@ -393,15 +561,82 @@ SFT が振る舞いを変えること、量子化が正答率をほぼ変えな�
 \end{axis}
 \end{tikzpicture}\hfill
 \begin{tikzpicture}
-\begin{axis}[width=0.48\linewidth,height=45mm,xlabel={強化学習のステップ},ylabel={平均報酬（正答率）},
+\begin{axis}[width=0.48\linewidth,height=45mm,xlabel={強化学習のステップ},ylabel={報酬の平均（64 本）},
   ymin=0,tick label style={font=\scriptsize},label style={font=\footnotesize}]
 \addplot[bookorange,thick,mark=*,mark size=1pt] table[col sep=comma,x=step,y=reward]{code/ch25/out/mini_rl.csv};
 \end{axis}
 \end{tikzpicture}
 \caption{縮小版の学習曲線。左：事前学習の損失（100 ステップごと、20 バッチの平均）。初期値は語彙 512 の一様分布の $\ln 512\approx6.24$ 付近から下がる。
-右：強化学習の各ステップで、64 本（8 問 × 8 回答、温度 1）の答えが正しかった割合。1 ステップの値は 64 本だけの平均なので大きく揺れる。}
+右：強化学習の各ステップの報酬の平均、つまり、そのステップの 64 本（8 問 × 8 回答、温度 1）のうち正しかった答えの割合。
+\figref{fig:cap-mini-flow}の対話の正答率（貪欲、200 問）とは別の量である。1 ステップの値は 64 本だけの平均なので、標準誤差が約 0.036（$\sqrt{0.09\times0.91/64}$）あり、大きく揺れる。}
 \label{fig:cap-mini-curves}
 \end{figure}
+
+\subsection*{大きくすると、何が変わるか}
+
+縮小版と本番の 2 点だけでは、「どこまで大きくすれば各段が効き始めるか」は分かりません。
+そこで \file{ch25/sweep_scale.py} で、縮小版の設定を 2 方向に変えて走らせました。
+一つはモデルの次元 \code{n_embd} で、48・96・192 の 3 通りです（層とヘッドは 2 のまま。パラメータ数は約 8.3 万・28 万・100 万）。
+もう一つは事前学習のステップ数で、300・600・1,200 の 3 通りです（次元は 96）。
+ほかの設定と乱数の種は縮小版と同じで、強化学習と量子化の段は省きました（1 本 1〜4 分）。
+96 次元・600 ステップの設定は縮小版そのもので、検証損失 3.405、SFT 後 11.0\% と、上の値をそのまま再現しました。
+結果が\figref{fig:cap-sweep}です。
+
+\begin{figure}[tbp]
+\centering
+\pgfplotsset{capsw/.style={width=0.47\linewidth,height=40mm,
+  tick label style={font=\scriptsize},label style={font=\footnotesize},
+  title style={font=\footnotesize}}}
+\begin{tikzpicture}
+\begin{axis}[capsw,name=a,xmode=log,xtick={83424,277440,997248},
+  xticklabels={8.3 万,28 万,100 万},xminorticks=false,
+  xlabel={パラメータ数（対数目盛り）},ylabel={検証損失},ymin=2.9,ymax=3.8,title={(a) 次元を変える（600 ステップ）}]
+\addplot[bookblue,thick,mark=*] table[col sep=comma,x=params,y=val_loss]{code/ch25/out/sweep_scale_size.csv};
+\end{axis}
+\begin{axis}[capsw,at={(a.east)},anchor=west,xshift=12mm,xtick={300,600,1200},
+  xlabel={事前学習のステップ数},ylabel={検証損失},ymin=2.9,ymax=3.8,title={(b) 事前学習のステップ数を変える（96 次元）}]
+\addplot[bookblue,thick,mark=*] table[col sep=comma,x=pre_steps,y=val_loss]{code/ch25/out/sweep_scale_steps.csv};
+\end{axis}
+\begin{axis}[capsw,name=c,at={(a.south west)},anchor=north west,yshift=-20mm,
+  xmode=log,xtick={83424,277440,997248},xticklabels={8.3 万,28 万,100 万},xminorticks=false,
+  xlabel={パラメータ数（対数目盛り）},ylabel={正答率（\%）},ymin=0,ymax=25,
+  title={(c) 次元を変える：正答率},
+  legend style={font=\scriptsize,at={(0.03,0.97)},anchor=north west}]
+\addplot[bookgray,thick,mark=square,mark size=2.8pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=params,y expr=100*\thisrow{drill_eq},
+  y error expr={100*sqrt(\thisrow{drill_eq}*(1-\thisrow{drill_eq})/200)}]{code/ch25/out/sweep_scale_size.csv};
+\addplot[bookaccent,thick,mark=*,mark size=1.8pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=params,y expr=100*\thisrow{chat_acc},
+  y error expr={100*sqrt(\thisrow{chat_acc}*(1-\thisrow{chat_acc})/200)}]{code/ch25/out/sweep_scale_size.csv};
+\legend{基盤（ドリル形式）,SFT 後（対話形式）}
+\end{axis}
+\begin{axis}[capsw,at={(c.east)},anchor=west,xshift=12mm,xtick={300,600,1200},
+  xlabel={事前学習のステップ数},ylabel={正答率（\%）},ymin=0,ymax=25,
+  title={(d) ステップ数を変える：正答率}]
+\addplot[bookgray,thick,mark=square,mark size=2.8pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=pre_steps,y expr=100*\thisrow{drill_eq},
+  y error expr={100*sqrt(\thisrow{drill_eq}*(1-\thisrow{drill_eq})/200)}]{code/ch25/out/sweep_scale_steps.csv};
+\addplot[bookaccent,thick,mark=*,mark size=1.8pt,error bars/.cd,y dir=both,y explicit]
+  table[col sep=comma,x=pre_steps,y expr=100*\thisrow{chat_acc},
+  y error expr={100*sqrt(\thisrow{chat_acc}*(1-\thisrow{chat_acc})/200)}]{code/ch25/out/sweep_scale_steps.csv};
+\end{axis}
+\end{tikzpicture}
+\caption{縮小版の大きさと事前学習の長さを変えたときの、検証損失と正答率。各設定 1 回の実験（\file{ch25/sweep_scale.py}）。
+左の列は次元 \code{n_embd} を 48・96・192 に変えた（2 層・2 ヘッド・600 ステップは固定）。右の列はステップ数を 300・600・1,200 に変えた（96 次元は固定）。
+正答率は 2 桁の加減算 200 問で、ひげは標準誤差 $\sqrt{p(1-p)/200}$。灰（白抜きの四角）は SFT の前の基盤モデルのドリル形式（「\code{=}」の手前まで与える）、赤（丸）は SFT の後の対話形式。(c) の 100 万では、二つの値が同じ 11.5\% で、赤の丸が灰の四角の中に重なる。}
+\label{fig:cap-sweep}
+\end{figure}
+
+図の読み方は、上の段（損失）と下の段（正答率）を見比べることです。
+上の 2 枚では、次元を 4 倍にしても、ステップ数を 4 倍にしても、検証損失は 3.6 台から 3.0 台まで素直に下がります。
+下の 2 枚の灰色の線（基盤モデルのドリル形式）は、損失が 3.06 と 3.03 まで下がった 2 つの設定で、11.5\% と 14.5\% に上がりました。ほかの設定は 1.5〜2.5\% です。
+損失が下がった先で、計算の力が少しずつ現れ始めたのです。
+一方、赤い線（SFT 後の対話形式）は、どの設定でも 8.5〜11.5\% で、ひげ（約 2 ポイント）の範囲にとどまります。
+この範囲の大きさでは、損失が規模とともに下がっても、SFT 後の対話の正答率は、すぐには動かないのです。
+各設定 1 回だけの実験なので、1〜3 ポイントの差は、種を変えれば入れ替わりえます。
+本番の \file{base.pt}（260 万パラメータ、4 層・192 次元、4,000 ステップ）は、さらにその先で、ドリル形式 86.5\% まで届いていました。
+各段の効き目を確かめるには、本書の本番の大きさが要ります。
+それを次の節で見ます。
 
 \subsection*{縮小版と本物の対比}
 
@@ -417,7 +652,7 @@ SFT が振る舞いを変えること、量子化が正答率をほぼ変えな�
  & 縮小版（本章） & 本書の本番 & 本物の開発 \\
 \midrule
 パラメータ数 & 約 28 万 & 約 260 万 & $10^{9}$〜$10^{12}$ \\
-事前学習のトークン数 & 約 33 万（延べ約 123 万） & 1,640 万 & $10^{12}$〜$10^{13}$ \\
+事前学習のトークン数 & 約 33 万（延べ約 123 万） & 約 248 万（延べ 1,640 万） & $10^{12}$〜$10^{13}$ \\
 語彙 & 512 & 4,096 & 3 万〜26 万 \\
 SFT の手本 & 2,000 件 & 3,000 件 & $10^{4}$〜$10^{6}$ 件 \\
 強化学習 & 40 ステップ × 64 本 & 250 ステップ × 256 本 & 数千ステップ × 数千本以上 \\
@@ -432,7 +667,7 @@ SFT の手本 & 2,000 件 & 3,000 件 & $10^{4}$〜$10^{6}$ 件 \\
 ただし、ここまで小さくすると、各段の効き目は弱くなります。
 
 \section{既存の成果物で物語をたどり直す}\label{sec:cap-replay}
-\skimread{各章のチェックポイントを同じ物差しで測り直すと、各章の数値がそのまま再現します。最も効いたのは SFT（0\% → 82.6\%）と Agentic RL（92.8\%）でした。この結論は\figref{fig:cap-replay}の棒グラフだけで押さえられます。}
+\skimread{各章のチェックポイントを同じ物差しで測り直すと、各章の数値がそのまま再現します。最も効いたのは SFT（0\% → 82.6\%）で、電卓を使うエージェントの経路が 92.8\% まで伸ばしました（\file{sft.pt} からは約 10 ポイント）。この結論は\figref{fig:cap-replay}の棒グラフだけで押さえられます。}
 
 縮小版は全工程が通ることを見せてくれましたが、効き目は小さなものでした。
 では、本書の本番の大きさ（260 万パラメータ）で、各段はどれだけ効いたのでしょうか。
@@ -455,45 +690,64 @@ LoRA は基盤モデルに第 17 章のアダプタ（$r=8$、全線形層）を
 \outputfile{ch25/out/eval_agent.txt}
 
 加減算 92.8\%、掛け算 89.0\%、掛けて足す 98.0\% で、\chapref{ch:agentic-rl}の値と小数第 1 位まで同じです。
-ほかの成果物も、\file{sft.pt} 82.6\%、LoRA 81.7\%、\file{ch22_rl.pt} 84.7\%、基盤モデルのドリル形式 86.5\%（200 問）と、各章の値がそのまま出ました。
+ほかの成果物も、\file{sft.pt} 82.6\%、LoRA 81.7\%、\file{ch22_rl.pt} 84.7\%、基盤モデルのドリル形式 86.5\%（200 問。訓練に出た問題を含む値。\chapref{ch:pretraining}）と、各章の値がそのまま出ました。
 int8 の \file{sft.pt} は 82.6\% でした（\chapref{ch:distillation}の 82.4\% と 0.2 ポイント違うのは、実装の小さな差です。第 18 章の \code{quantize} は「0.0 に当たる整数」（ゼロ点）を別に持ち、それを整数に丸めますが、\coderef{code:cap-quant}は最小値 \code{lo} をそのまま基準にしています。どちらも標準誤差 約 1.2 ポイントの範囲内です）。
 評価 1 回は 20 秒〜3 分ほどでした（出力はすべて \file{ch25/out/eval_*.txt} にあります）。
 
 \begin{figure}[tbp]
 \centering
 \begin{tikzpicture}
-\begin{axis}[xbar,width=0.78\linewidth,height=58mm,xmin=0,xmax=100,bar width=3.6mm,
-  symbolic y coords={base,sft,lora,int8,rl,agent},ytick=data,
-  yticklabels={基盤（対話形式）,SFT（\file{sft.pt}）,LoRA $r=8$,SFT を int8 に,強化学習（\file{ch22_rl.pt}）,エージェント＋RL（電卓）},
+\begin{axis}[xbar,bar shift=0pt,width=0.72\linewidth,height=72mm,xmin=0,xmax=108,xtick={0,20,...,100},bar width=3.4mm,clip=false,
+  symbolic y coords={base,sft,lora,int8,rl,tool,cold,agent},ytick={base,sft,lora,int8,rl,tool,cold,agent},
+  yticklabels={基盤（対話形式。200 問）,SFT（\file{sft.pt}）,LoRA $r=8$,SFT を int8 に,強化学習（\file{ch22_rl.pt}）,ツール SFT の直後,コールドスタートの後,Agentic RL の後},
   y dir=reverse,y tick label style={font=\scriptsize},
   xlabel={加減算 1,000 問の正答率（\%）},label style={font=\footnotesize},
-  nodes near coords,nodes near coords style={font=\scriptsize,/pgf/number format/fixed,/pgf/number format/precision=1},
-  enlarge y limits=0.12,xmajorgrids=true,ymajorgrids=false,tick label style={font=\scriptsize}]
-\addplot[fill=figblue,draw=bookblue] coordinates {(0,base) (82.6,sft) (81.7,lora) (82.6,int8) (84.7,rl) (92.8,agent)};
+  nodes near coords,nodes near coords style={font=\scriptsize,xshift=2.2mm,/pgf/number format/fixed,/pgf/number format/precision=1},
+  enlarge y limits=0.08,xmajorgrids=true,ymajorgrids=false,tick label style={font=\scriptsize},
+  error bars/error bar style={black!70},error bars/error mark options={rotate=90,mark size=1.2pt}]
+\addplot[fill=figblue,draw=bookblue,error bars/.cd,x dir=both,x explicit] coordinates {
+  (82.6,sft) +- (1.2,0) (81.7,lora) +- (1.2,0) (82.6,int8) +- (1.2,0) (84.7,rl) +- (1.1,0)};
+\addplot[fill=figpurple!50,draw=bookpurple,dashed,error bars/.cd,x dir=both,x explicit] coordinates {
+  (31.6,tool) +- (1.5,0) (63.9,cold) +- (1.5,0)};
+\addplot[fill=bookpurple!45,draw=bookpurple,error bars/.cd,x dir=both,x explicit] coordinates {(92.8,agent) +- (0.8,0)};
+\addplot[draw=bookblue,fill=white,nodes near coords={0（参考）}] coordinates {(0,base)};
+\draw[densely dotted,thick,bookblue] (axis cs:82.6,{[normalized]-0.6}) -- (axis cs:82.6,{[normalized]7.6});
+\draw[decorate,decoration={brace,amplitude=3pt},bookpurple] (axis cs:111,{[normalized]4.6}) -- (axis cs:111,{[normalized]7.4})
+  node[midway,right=3pt,font=\scriptsize,align=left,text=bookpurple]{電卓を\\使う};
 \end{axis}
 \end{tikzpicture}
-\caption{各章の成果物を同じ 1,000 問（種 777、貪欲）で測り直した正答率。基盤モデルの 0\% は \file{code/README.md} の値（200 問。この値だけは測り直していない）。
-SFT が 0 から 82.6\% へ最大の跳躍を生み、LoRA と int8 は SFT とほぼ同じ正答率を安く保ち、強化学習の +2.1 ポイントは誤差と区別しきれず、電卓の使い方を変える Agentic RL が 92.8\% まで押し上げる。SFT との差が約 2.4 ポイント（標準誤差 約 1.2 ポイントの 2 倍）より小さい 3 本（LoRA の $-0.9$、int8 の $0.0$、強化学習の $+2.1$）は、この 1,000 問では SFT と区別しきれない。}
+\caption{各章の成果物を同じ 1,000 問（種 777、貪欲）で測り直した正答率。ひげは 1 つのモデルの標準誤差 $\sqrt{p(1-p)/1000}$（0.8〜1.5 ポイント）、縦の点線は SFT の 82.6\%。
+青の 4 本は暗算で答えるモデル、紫の 3 本は電卓を使うエージェントの経路（ツール SFT → コールドスタート → Agentic RL）である。
+基盤モデルの 0\% は \file{code/README.md} の値（200 問・応答の完全一致）で、測り直していないので白抜きにした。破線の 2 本は\chapref{ch:agentic-rl}の値で、本章では測り直していない。
+SFT との差の標準誤差は約 1.7 ポイント（別々の問題で測ったとした場合）なので、差がその 2 倍の約 3.4 ポイントに届かない LoRA（$-0.9$）、int8（$0.0$）、強化学習（$+2.1$）は、この 1,000 問では SFT と区別しきれない。}
 \label{fig:cap-replay}
 \end{figure}
 
 \figref{fig:cap-replay}を上から読むと、本書の物語の要約になっています。
-基盤モデルは、計算はできるのに（ドリル形式 86.5\%）、対話形式の質問には答えられません（0\%）。
+基盤モデルは、ドリル形式なら 86.5\% 解けるのに、対話形式の質問には答えられません（0\%）。
+86.5\% には訓練に出た問題も含まれますが、初めて見る問題だけでも 78.3\% 解けました（\chapref{ch:pretraining}）。
+計算の力の多くは、事前学習の段階でできていたのです。
 SFT は新しい計算能力を教えたのではなく、「質問に答える」という振る舞いを教えました。
 だから 0\% から一気に 82.6\% になります。
+ただし、86.5\% はドリル形式の 200 問、82.6\% は対話形式の 1,000 問で、問題の集合も形式も違います。
+二つの数から言えるのは「近い値だ」ということまでで、どちらが上かは比べられません。
 LoRA はパラメータの 4\% ほどを学習するだけで、ほぼ同じ 81.7\% に届きます。
 int8 にしてもファイルは約 1/4 になり、正答率は変わりません。
-強化学習の +2.1 ポイントは、標準誤差（約 1.2 ポイント）の 2 倍にわずかに届かない小さな伸びで、偶然の差と区別しきれません（\chapref{ch:rl-llm}でも「伸びは小さい」と結論しました）。
-最後に、電卓という道具の使い方を教えた Agentic RL が、92.8\% まで押し上げました。
+強化学習の +2.1 ポイントは、差の標準誤差（約 1.7 ポイント）の約 1.2 倍しかない小さな伸びで、偶然の差と区別しきれません（\chapref{ch:rl-llm}でも「伸びは小さい」と結論しました）。
+最後の紫の 3 本が、電卓を使うエージェントの経路です。
+電卓を持たせた直後は 31.6\% に下がり、コールドスタートで 63.9\%、Agentic RL で 92.8\% になりました。
+強化学習の分は約 29 ポイントですが、点線の \file{sft.pt} から見れば、経路全体で約 10 ポイントの伸びです（\secref{sec:cap-map}の表の後の説明）。
 
 この結果が再現したことには、もう一つ意味があります。
 各章の数値は、乱数の種、評価の問題、生成の仕方（貪欲）を固定して測ったものでした。
-だから、別の日に別のスクリプトから測っても、同じ数字が出ます。
-\textbf{比べられる物差しを先に固定しておく}ことが、長い開発を迷わずに進めるための土台です（\secref{sec:cap-project}）。
+だから、同じチェックポイントを同じ環境（ライブラリの版、CPU のスレッド数）で測れば、別の日に別のスクリプトから測っても、同じ数字が出ます。
+ただし、学習そのものをやり直すと、数ポイントずれることがあります。
+同じ設定で作った \file{sft.pt} と \file{ch16_sft.pt} は、200 問で 87.0\% と 89.0\% に分かれました。スレッド数の違いで足し算の順序が変わり、丸め誤差が学習の中で増幅されたためと考えられます（\chapref{ch:posttraining}のコラム）。
+\textbf{比べられる物差しを先に固定しておく}ことが、長い開発の途中で判断を誤らないための前提です（\secref{sec:cap-project}）。
 
 この節で分かったことを言い直します。
 既存の成果物を同じ物差しで測り直すと、各章の数値がそのまま再現し、全工程の各段の効き目が 1 枚の図に並びます。
-最も効いたのは SFT（振る舞いを教える）と Agentic RL（道具の使い方を教える）でした。
+最も効いたのは SFT（振る舞いを教える）で、次が電卓を使うエージェントの経路（ツール SFT・コールドスタート・Agentic RL）でした。
 
 \subsection*{ここまでの道のり}
 
@@ -511,21 +765,24 @@ GPU 1 枚、8 枚のノード、クラスタと規模を上げるとき、コー
 \subsection*{4 つの段階}
 
 規模の段階を 4 つに分けます。
-各段階のモデルの大きさ $N$（パラメータ数）とトークン数 $D$ を決めれば、\chapref{ch:infra}の一本道（\secref{sec:infra-pipeline}）で費用まで計算できます。
+各段階のモデルの大きさ $N$（パラメータ数）とトークン数 $D$ を決めれば、\chapref{ch:infra}の見積もりの手順（\secref{sec:infra-pipeline}。計算量 → GPU 時間 → 日数・費用を、順に計算でつなぐ手順）で、費用まで計算できます。
 思い出しておくと、学習の計算量は $C\approx 6ND$（浮動小数点演算の回数。\chapref{ch:gpu}）でした。
 \textbf{GPU 時間}は「GPU 1 枚 × 1 時間」を 1 とする仕事の単位です。8 枚を 3 時間使えば 24 GPU 時間です。
 式\eqref{eq:infra-gpuhours}のとおり、$C$ を「公称の速さ $P$ × MFU × 3600」で割って求めます。
 割る数は GPU 1 枚が 1 時間にこなせる計算量で、3600 は秒を時間に直すための数です。
 MFU は公称の速さのうち実際に学習に使えた割合で、ここでは \chapref{ch:infra}と同じ 40\% と置きます。
-\coderef{code:cap-estimate}は、その一本道をそのまま関数にしたものです。
+\coderef{code:cap-estimate}は、その手順をそのまま関数にしたものです。
 
 \snippet{第 15 章の見積もりを関数にする}{code:cap-estimate}{ch25/scale_config.py}{scale-estimate}
 
-1 行目の \code{GPUS} は H100 の公称の速さ（BF16 の密な行列積で 989 TFLOP/s）と、1 GPU 時間の価格の目安 3.99 ドルです（\tabref{tab:infra-gpus}）。
+1 行目の \code{GPUS} は H100 の公称の速さ（BF16 の密な行列積で 989 TFLOP/s）と、1 GPU 時間の価格の目安 3.99 ドルです（\tabref{tab:infra-gpus}。2026 年 11 月時点の中央値）。
+「密な」は、ゼロの多い行列を特別に速く扱う仕組み（疎な行列の計算）を使わない、ふつうの行列積の値という意味です（\chapref{ch:infra}）。
 \code{C = 6 * N * D} が計算量、その次の行が GPU 時間で、式\eqref{eq:infra-gpuhours}そのものです。
 日数は GPU 時間を枚数と 24 時間で割り、費用は GPU 時間に単価を掛けます。
 最後の \code{16 * N} は、学習中に GPU のメモリに置く「状態」の大きさです。
 重み（4 バイト）、勾配（4 バイト）、AdamW の 2 つの移動平均（各 4 バイト）で、1 パラメータあたり 16 バイトになります（\chapref{ch:infra}）。
+学習中は、このほかに活性化（順伝播の途中の計算結果。逆伝播で使うために取っておく）の置き場が要ります。
+活性化はバッチサイズと文脈長に比例して増え、$16N$ には入っていません（\secref{sec:infra-memory}）。
 
 4 つの段階の $N$ と $D$ は、次のように選びました。
 
@@ -543,8 +800,8 @@ GPU 1 枚の段階は GPT-2（小）と同じ 1.24 億パラメータ、8 枚の
 \code{2.6e+06} は $2.6\times10^{6}$ のことで、\code{e} の後ろの数が 10 の指数です。
 列は左から、パラメータ数 $N$、トークン数 $D$、計算量 $C$、GPU 時間、日数、費用（ドル）、状態のメモリです。
 最後の \code{mem(GB)} は、上の $16N$ バイトを GB に直した値です。たとえば 8 枚ノードの行は $16\times10^{9}$ バイト $=16$ GB です。
-CPU の行だけは、見積もりではなく実測です。
-GPU を使わないので GPU 時間は「\code{-}」、費用は 0 です。日数の 0.02 は、\file{base.pt} の学習にかかった約 36 分を日に直した値です（$36\div60\div24\approx0.025$ 日）。
+CPU の行は、$N$ と $D$ が \file{base.pt} の実際の値で、日数と費用が実測です（計算量 $C$ は、ほかの行と同じく $6ND$ で求めた見積もりです）。
+GPU を使わないので GPU 時間は「\code{-}」、費用は 0 です。日数の 0.02 は、\file{base.pt} の学習にかかった約 36 分を日に直した値です（$36\div60\div24\approx0.025$ 日。小数第 2 位までの表示で 0.02 になります）。
 下半分の 3 行は、\secref{sec:cap-next}で使います。
 
 8 枚ノードの行を検算してみましょう。
@@ -563,41 +820,44 @@ $1.2\times10^{20} \div 1.42\times10^{18} \approx 84$ GPU 時間、8 枚なら $8
 \centering
 \begin{tikzpicture}
 \begin{axis}[xbar,xmode=log,width=0.8\linewidth,height=40mm,bar width=3.5mm,
-  xmin=1e13,xmax=1e23,ytick={0,1,2,3},y dir=reverse,
+  xmin=1e13,xmax=1e25,ytick={0,1,2,3},y dir=reverse,
   yticklabels={CPU（本書）,GPU 1 枚,8 枚ノード,クラスタ 64 枚},
   xlabel={学習の計算量 $C=6ND$（FLOPs、対数目盛り）},label style={font=\footnotesize},
   tick label style={font=\scriptsize},enlarge y limits=0.2,xmajorgrids=true,ymajorgrids=false,
-  nodes near coords,point meta=explicit symbolic,
+  nodes near coords={\pgfmathprintnumber[fixed,precision=0,1000 sep={\mbox{,}}]{\pgfplotspointmeta}\,ドル},point meta=explicit,
   nodes near coords style={font=\scriptsize,anchor=west,xshift=1pt}]
 \addplot[fill=figblue,draw=bookblue] table[col sep=comma,x=C,y expr=\coordindex,meta=cost]{code/ch25/out/scale_config.csv};
 \end{axis}
 \end{tikzpicture}
-\caption{規模の 4 段階の計算量（\file{ch25/out/scale_config.csv}）。棒の右の数字は H100・MFU 40\% での費用（ドル。CPU は 0）。計算量が 1 段で 64〜7,000 倍になる。GPU を使う 3 段では、費用も計算量と同じ割合（約 64 倍ずつ）で増える。}
+\caption{規模の 4 段階の計算量（\file{ch25/out/scale_config.csv}）。棒の右の数字は H100・MFU 40\% での費用（CPU は 0 ドル）。計算量が 1 段で 64〜7,000 倍になる。GPU を使う 3 段では、費用も計算量と同じ割合（約 64 倍ずつ）で増える。
+対数目盛りなので、目盛り 1 つが 10 倍である。棒の根元（$10^{13}$）は目盛りの都合で置いた位置で、棒の長さの比は計算量の比ではない。}
 \label{fig:cap-cost}
 \end{figure}
 CPU から GPU 1 枚へは約 7,000 倍、そこから 8 枚ノードへは約 65 倍、クラスタへはさらに約 64 倍です。
 出力の $C$ の列で割り算をすると、$1.9\times10^{18}\div2.6\times10^{14}\approx7{,}300$、$1.2\times10^{20}\div1.86\times10^{18}\approx65$、$7.7\times10^{21}\div1.2\times10^{20}\approx64$ です（2 つ目は、丸める前の $C=1.86\times10^{18}$ で割りました）。
+なお、GPU 1 枚の行と、下半分の「(1) 1.24 億・D=20N」の行は同じ大きさのモデルですが、$C$ が $1.9\times10^{18}$ と $1.8\times10^{18}$ で少し違います。
+GPU 1 枚の行は $D$ を 25 億に丸め、下の行は $D=20N=24.8$ 億をそのまま使ったからです。
 後ろの 2 段がどちらも約 64 倍なのは、$N$ を約 8 倍にすると $D=20N$ も約 8 倍になり、$C=6ND$ が $8\times8=64$ 倍になるからです。
 
 \begin{figure}[tbp]
 \centering
-\begin{tikzpicture}[font=\footnotesize,
-  stp/.style={box,minimum width=26mm,minimum height=15mm,align=left,anchor=south west,inner sep=3pt},
-  lab/.style={font=\scriptsize,align=center,text width=24mm}]
-  \node[stp,fill=figgray,draw=bookgray] (a) at (0,0) {\textbf{CPU（本書）}\\$N=2.6\times10^{6}$\\$D=1.6\times10^{7}$\\30〜40 分・0 ドル};
-  \node[stp] (b) at (3.3,0.9) {\textbf{GPU 1 枚}\\$N=1.2\times10^{8}$\\$D=2.5\times10^{9}$\\1.3 時間・約 5 ドル};
-  \node[stp,fill=figgreen,draw=bookgreen] (c) at (6.6,1.8) {\textbf{8 枚ノード}\\$N=10^{9}$\\$D=2\times10^{10}$\\10.5 時間・約 340 ドル};
-  \node[stp,fill=figorange,draw=bookorange] (d) at (9.9,2.7) {\textbf{クラスタ 64 枚}\\$N=8\times10^{9}$\\$D=1.6\times10^{11}$\\3.5 日・約 2.2 万ドル};
-  \draw[arr] (a.east) -- (b.west|-a.east);
-  \draw[arr] (b.east) -- (c.west|-b.east);
-  \draw[arr] (c.east) -- (d.west|-c.east);
-  \node[lab] at (2.95,-0.75) {\textbf{×7,000}\\device を cuda に、\\BF16、compile};
-  \node[lab] at (6.25,-0.75) {\textbf{×65}\\DDP、torchrun};
-  \node[lab] at (9.55,-0.75) {\textbf{×64}\\FSDP、\\ノード間の通信};
-  \draw[->,black!40] (0,-1.6) -- node[below,font=\scriptsize]{規模（計算量 $C=6ND$ は 1 段で 64〜7,000 倍）} (12.0,-1.6);
+\begin{tikzpicture}[font=\scriptsize,
+  stp/.style={box,minimum width=21.5mm,text width=19mm,minimum height=17mm,align=left,anchor=south west,inner sep=3pt,font=\scriptsize},
+  lab/.style={font=\scriptsize,align=left,text width=21mm,anchor=north west,text=black!75}]
+  \node[stp,fill=figgray,draw=bookgray] (a) at (0,0) {\textbf{CPU（本書）}\\$N=2.6\times10^{6}$\\$D=1.6\times10^{7}$\\30〜40 分\\0 ドル};
+  \node[stp] (b) at (3.45,1.1) {\textbf{GPU 1 枚}\\$N=1.2\times10^{8}$\\$D=2.5\times10^{9}$\\1.3 時間\\約 5 ドル};
+  \node[stp,fill=figgreen,draw=bookgreen] (c) at (6.9,2.2) {\textbf{8 枚ノード}\\$N=10^{9}$\\$D=2\times10^{10}$\\10.5 時間\\約 340 ドル};
+  \node[stp,fill=figorange,draw=bookorange] (d) at (10.35,3.3) {\textbf{クラスタ 64 枚}\\$N=8\times10^{9}$\\$D=1.6\times10^{11}$\\3.5 日\\約 2.2 万ドル};
+  \foreach \u/\v/\m in {a/b/{×7,000},b/c/{×65},c/d/{×64}} {
+    \draw[arr] (\u.east|-\v.south) ++(0,0.25) coordinate (s) -- (s-|\v.west);
+    \node[font=\scriptsize\bfseries,anchor=south] at ($(s)!0.5!(s-|\v.west)$) {\m};
+  }
+  \node[lab] at (b.south west) {\textbf{変更}：\code{device} を \code{cuda} に、BF16、\code{torch.compile}};
+  \node[lab] at (c.south west) {\textbf{変更}：DDP、\code{torchrun}};
+  \node[lab] at (d.south west) {\textbf{変更}：FSDP、ノード間の通信};
 \end{tikzpicture}
-\caption{規模の 4 段階。箱の中は、モデルの大きさ $N$、トークン数 $D$、H100・MFU 40\% での所要時間と費用（CPU は実測）。
-箱の下の文字は、その段を上がるときに増える計算量の倍率と、コードの主な変更点。変わるのは「どこで・何枚で・どの精度で」計算するかで、モデルと損失の式は同じである。}
+\caption{規模の 4 段階（模式図。段の高さは倍率に比例しない）。箱の中は、モデルの大きさ $N$、トークン数 $D$、H100・MFU 40\% での所要時間と費用（CPU は実測）。
+矢印の上の数は、その段に上がるときに増える計算量の倍率。箱の下の「変更」は、その段に上がるときのコードの主な変更点。変わるのは「どこで・何枚で・どの精度で」計算するかで、モデルと損失の式は同じである。}
 \label{fig:cap-stairs}
 \end{figure}
 
@@ -608,16 +868,16 @@ CPU から GPU 1 枚へは約 7,000 倍、そこから 8 枚ノードへは約 6
 
 \begin{table}[tbp]
 \centering
-\caption{規模を上げると変わるもの・変わらないもの。右端の列の「変わらない」ものが、本書で作った部品そのものである。}
+\caption{規模を上げると変わるもの・変わらないもの。右端の列の「変わらない」ものが、本書で作った部品の骨組みである。ただし大きな規模では、注意や FFN などの部品を改良版に差し替えることが多い（設定の行）。}
 \label{tab:cap-change}
 \footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}>{\raggedright\arraybackslash}p{17mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{25mm}>{\raggedright\arraybackslash}p{24mm}@{}}
 \toprule
  & CPU → GPU 1 枚 & → 8 枚ノード & → クラスタ & 変わらない \\
 \midrule
-コード & \code{device="cuda"}、BF16 の autocast、\code{torch.compile}（\chapref{ch:gpu}） & DDP、\code{torchrun}（\chapref{ch:distributed}） & FSDP、テンソル並列など（\chapref{ch:distributed}） & \code{GPT}、損失、\code{lr_at}、AdamW \\
-データ & 公開コーパス数十億トークン、memmap（\chapref{ch:infra}） & 数百億トークン、重複除去（\chapref{ch:pretraining}） & 数千億トークン、並列ストレージ（\chapref{ch:infra}） & 「次のトークンを当てる」形 \\
-設定 & 12 層・768 次元、文脈 1,024 & 24 層・2,048 次元 & 32 層・4,096 次元、GQA など（\chapref{ch:modern-arch}） & 事前学習 → SFT → RL の順 \\
+コード & \code{device="cuda"}、BF16 の \code{autocast}、\code{torch.compile}（\chapref{ch:gpu}） & DDP、\code{torchrun}（\chapref{ch:distributed}） & FSDP、テンソル並列など（\chapref{ch:distributed}） & \code{GPT}、損失、\code{lr_at}、AdamW \\
+データ & 公開コーパス数十億トークン、memmap（\chapref{ch:pretraining}） & 数百億トークン、重複除去（\chapref{ch:pretraining}） & 数千億トークン、並列ファイルシステム（\chapref{ch:infra}） & 「次のトークンを当てる」形 \\
+設定 & 12 層・768 次元、文脈 1,024 & 24 層・2,048 次元（約 12 億。$N$ は 10 億に丸めた） & 32 層・4,096 次元、GQA など（\chapref{ch:modern-arch}） & 事前学習 → SFT → RL の順 \\
 運用 & 学習曲線を見る & チェックポイントと再開（\chapref{ch:infra}） & 故障前提の保存間隔、監視 & 評価を先に作る \\
 費用 & 数ドル〜数十ドル & 数百ドル & 数万ドル & 見積もりの式 \\
 \bottomrule
@@ -625,21 +885,34 @@ CPU から GPU 1 枚へは約 7,000 倍、そこから 8 枚ノードへは約 6
 \end{table}
 
 表の右端の列を見てください。
-モデルの定義（\file{llmbook/model.py} の \code{GPT}）、損失（交差エントロピー）、学習率のスケジュール、最適化手法は、どの段階でも同じです。
+モデルの骨組み（Transformer のブロックを重ね、次のトークンの交差エントロピーで学習する。\file{llmbook/model.py} の \code{GPT}）、学習率のスケジュール、最適化手法の考え方は、どの段階でも同じです。
+ただし大きな規模では、GQA や RoPE のような改良（\chapref{ch:modern-arch}）に部品を差し替えることが多くなります。
 変わるのは、計算を「どこで、何枚で、どの精度で」するかと、データの量、そしてそれを支える運用です。
+表の中の、まだ説明していない言葉を補っておきます。
+\code{autocast} は、行列積などを自動で BF16 で計算させる PyTorch の仕組みです（\chapref{ch:gpu}）。
+memmap は、ディスク上の大きなファイルを、全部をメモリに読み込まずに配列のように読む方法です（\chapref{ch:pretraining}）。
+テンソル並列は、1 つの層の行列を縦や横に切り、複数の GPU で分けて計算する方法です（\chapref{ch:distributed}）。
+並列ファイルシステムは、データを多数のサーバに分けて置き、並列に読み書きする仕組みです（\chapref{ch:infra}）。
+8 枚ノードの設定の 24 層・2,048 次元は、ブロックの部分だけで $12Ld^2=12\times24\times2048^2\approx12$ 億になります。表の $N=10$ 億は、桁を見るために丸めた値です。
+
 1 段目の変更は数行です。
 \code{device} を \code{"cuda"} にし、行列積を BF16（16 ビットの浮動小数点数。32 ビットの半分のメモリで速く計算できる）で計算させ（\chapref{ch:gpu}）、\code{GPTConfig} の数字を大きくします。
+\code{torch.compile} も 1 行で足せます。
+ただし\chapref{ch:gpu}の実験では、CPU では速くなりませんでした（計算そのものが重い tanh が時間の大半だったため）。
+GPU では、要素ごとの演算をまとめる効果が大きいと見込まれますが、本書では GPU で測っていません。
 2 段目では、同じスクリプトを \code{torchrun} で 8 プロセス起動し、モデルを DDP（各 GPU が同じモデルを持ち、別々のデータで計算した勾配を平均する仕組み）で包みます（\chapref{ch:distributed}）。
+DDP は、各 GPU が状態をまるごと持つので、1 枚あたりのメモリは減りません。
+8 枚にするのは、10 億パラメータの状態（16 GB）が 1 枚に載らないからではなく、84 GPU 時間を 8 枚で分けて約 10.5 時間に縮めるためです。
 3 段目で初めて、1 枚の GPU にモデルの状態が載らなくなります。
 80 億パラメータの状態は $16 \times 8\times10^{9} = 128$ GB で、H100 の 80 GB を超えるからです。
 そこで、状態を GPU の間で分割して持ち合う FSDP が要ります（\chapref{ch:distributed}）。
-64 枚で分ければ、1 枚あたり $128\div64=2$ GB です。
+64 枚で分ければ、1 枚あたり $128\div64=2$ GB です（このほかに、活性化と、FSDP が計算のたびに一時的に集める重みの置き場が要ります）。
 FSDP は、ZeRO という方法の考え方を PyTorch に組み込んだものなので、ZeRO の名前で呼ばれることもあります。
 
 \begin{caution}{「GPU を増やせば同じ」の限界}
 「あとはデータと計算機を増やせば、同じことをするだけだ」は、\textbf{原理}については正しい言い方です。
 ただし規模を上げると、小さな規模では起きなかった問題が現れます。
-学習率が大きすぎて損失が跳ねる（\chapref{ch:pretraining}）、数週間の学習の途中で GPU が故障する（\chapref{ch:infra}）、データの重複や汚染が評価を狂わせる（\chapref{ch:eval-serving}）、といったものです。
+学習率が大きすぎて損失が急に大きくなる（\chapref{ch:pretraining}）、数週間の学習の途中で GPU が故障する（\chapref{ch:infra}）、データの重複や汚染が評価を狂わせる（\chapref{ch:eval-serving}）、といったものです。
 本物の開発の仕事の多くは、こうした問題への対処です。
 だから「1 段ずつ上がり、各段で評価して確かめる」ことが大切になります。
 \end{caution}
@@ -649,13 +922,13 @@ FSDP は、ZeRO という方法の考え方を PyTorch に組み込んだもの�
 
 この節で分かったことを言い直します。
 規模を上げるとき、モデルと損失の式は変わらず、変わるのは計算の場所・枚数・精度とデータの量です。
-費用は\chapref{ch:infra}の一本道で事前に見積もれ、1 億パラメータ級なら GPU 1 枚・数ドルから始められます。
+費用は\chapref{ch:infra}の見積もりの手順で事前に見積もれ、1 億パラメータ級なら GPU 1 枚・数ドルから始められます。
 
 \section{次の一歩を 3 つ}\label{sec:cap-next}
 
 階段の図は「どこまで行けるか」を示しました。
 では、本を閉じた明日、最初に何をすればよいでしょうか。
-ここでは、費用と難しさの順に 3 つの「次の一歩」を挙げます。
+ここでは、自分で作る部分が多い順に 3 つの「次の一歩」を挙げます（(1) はモデルを一から、(2) は公開モデルの適応、(3) は学習をしない）。
 どれも本書のコードの延長で始められ、どれも 1 人で、数ドル〜数十ドルで試せます。
 見積もりは\coderef{code:cap-estimate}の関数で計算しました（\coderef{code:cap-next}）。
 
@@ -704,8 +977,8 @@ $D=20N$: 1.3 GPU 時間・約 5 ドル。$D=100N$: 6.5 GPU 時間・約 26 ド�
 見積もりは $D=20N$ で 1.3 GPU 時間（約 5 ドル）です。
 ただし、$D=20N$ は「計算量を一定にしたときの最適」で、推論の安さまで考えると、小さなモデルをもっと多くのトークンで学習するのが今の主流です（\chapref{ch:pretraining}）。
 $D=100N$ にしても 6.5 GPU 時間・約 26 ドルです。
-同じ道を最短で通す公開の実装として、nanochat~\cite{karpathy2025nanochat}があります。
-トークナイザから事前学習、SFT、評価、推論までを 1 本のスクリプトで回し、GPT-2 と同等の性能のモデルを 8 枚の H100 で約 2 時間（48 ドル程度）で作れるとしています。8 枚 × 2 時間は 16 GPU 時間なので、1 GPU 時間 3 ドルの計算です（本書の単価 3.99 ドルなら約 64 ドル）。上の見積もり（1.3 GPU 時間）より 10 倍以上多いのは、GPT-2 と同じ性能に届かせるために、モデルを 24〜26 層と深くし、より多くのトークンで学習するからです。
+同じ工程を最短で通す公開の実装として、nanochat~\cite{karpathy2025nanochat}があります。
+トークナイザから事前学習、SFT、評価、推論までを 1 本のスクリプトで回し、GPT-2 と同等の性能のモデルを 8 枚の H100 で約 2 時間（48 ドル程度）で作れるとしています。8 枚 × 2 時間は 16 GPU 時間なので、1 GPU 時間 3 ドルの計算です（本書の単価 3.99 ドルなら約 64 ドル）。上の見積もり（1.3 GPU 時間）より 10 倍以上多いのは、GPT-2 と同じ性能に届かせるために、モデルを 24 層（\code{--depth=24}）と深くし、より多くのトークンで学習するからです。
 本章のパイプラインを大きくした形なので、比べながら読むとよい教材になります。
 
 \subsection*{(2) 公開モデルを LoRA で自分の用途に合わせる}
@@ -729,7 +1002,7 @@ $D=100N$ にしても 6.5 GPU 時間・約 26 ドルです。
 ループの中のミニGPT を、推論エンジンで立てた公開モデル（あるいは API）に差し替えれば、同じループが本物の LLM で動きます（第 23 章の \file{real_llm_backend.py}）。
 あとは、自分の仕事に合ったツール（ファイルの検索、計算、社内の API など）と、成功を判定できる課題集を作ります。
 成功率が足りなければ、まず成功した軌跡を集めて SFT し、それでも足りなければ第 24 章の強化学習を検討します。
-これは第 24 章で見た「SFT で下地を作ってから強化学習」の順そのものです。
+これは第 24 章で見た「正しい振る舞いを SFT で先に教えてから強化学習」の順そのものです。
 道具を持つエージェントには、権限の最小化とサンドボックスが欠かせません（\chapref{ch:agent}）。
 
 \begin{quiz}
@@ -767,7 +1040,7 @@ $C = 6ND = 6N \times 20N = 120N^{2}$ なので、$N = \sqrt{C/120} = \sqrt{1.5\t
 物差しが粗いと、効いていない工夫を「効いた」と思い込みます。
 \item \textbf{記録を残し、再現できるようにする}。
 乱数の種、設定、データの版、コードの版を、結果と一緒に保存します。
-本章の\secref{sec:cap-replay}で各章の数値がぴたりと再現したのは、種と評価問題が固定されていたからです。
+本章の\secref{sec:cap-replay}で各章の数値がぴたりと再現したのは、種と評価問題が固定され、同じチェックポイントを同じ環境で測ったからです。
 実験管理の道具の選び方は\secref{sec:tm-track}にあります。
 \item \textbf{一度に一つだけ変える}。
 第 24 章の報酬の実験では、電卓を使うたびに報酬から引く値（ツールのコスト $c$）だけを、0, 0.2, 0.35, 0.5 と変えました。
@@ -786,10 +1059,10 @@ $C = 6ND = 6N \times 20N = 120N^{2}$ なので、$N = \sqrt{C/120} = \sqrt{1.5\t
 \toprule
 起きたこと & 章 & 教訓 \\
 \midrule
-掛け算の継続事前学習で、加減算が 0\% になった & 16 & 新しいデータだけで学習すると前の能力を忘れる。古いデータを混ぜる（混ぜると 79\%） \\
-DPO で、数が正しい割合が 87.0\% から 0.5\% に崩れた & 22 & 選好だけを最適化すると中身が壊れる。NLL の項を足し、正しさも測り続ける \\
-学習率 1e-4 の GRPO が 10 ステップで 71.5\% に崩れた & 22 & 強化学習は学習率に敏感。KL を監視し、跳ねたら止める \\
-強化学習だけでは、電卓の正しい使い方を見つけられなかった（43.5\%） & 24 & 探索で見つからない振る舞いは、先に SFT で教える（コールドスタート後に 92.8\%） \\
+掛け算の継続事前学習で、加減算が 0\% になった & 16 & 新しいデータだけで学習すると前の能力を忘れる。古いデータを混ぜる（バッチの半分を元のデータにすると 79\%） \\
+DPO で、数が正しい割合が 87.0\% から 0.5\% に下がった & 22 & 選好だけを最適化すると、答えの数の正しさが失われ、意味をなさない文字列まで出る。NLL の項を足し、正しさも測り続ける \\
+学習率 1e-4 の GRPO で、正答率が 10 ステップ目に 87\% から 71.5\% まで下がった（200 問） & 22 & 強化学習は学習率に敏感。KL を毎ステップ記録し、急に大きくなったら学習率を下げるか止める \\
+強化学習だけでは、電卓の正しい使い方を見つけられなかった（43.5\%） & 24 & 探索で見つからない振る舞いは、先に SFT で教える（コールドスタートで 63.9\%、その後の強化学習で 92.8\%） \\
 蒸留の優位が、計算の対話では再現しなかった & 18 & 小さな実験の結論を一般化しない。差が評価のぶれより大きいかを確かめる \\
 80 ステップ版の強化学習が 200 問で 90.5\% に見えた（1,000 問では 83.3\%） & 22 & 評価の問題数が少ないと、効いていない工夫を「効いた」と思い込む \\
 \bottomrule
@@ -813,8 +1086,10 @@ DPO で、数が正しい割合が 87.0\% から 0.5\% に崩れた & 22 & 選�
 第 23 章で見たように、ツールの権限を最小にし、危険な操作の前には人の確認を挟み、外から読み込んだ文章に紛れた指示（プロンプトインジェクション）に従わない仕組みを、ループの側に作ります。
 
 \textbf{評価の誠実さ}。
-本書では、目標に届かなかった実験（第 22 章の +5 ポイント、第 18 章の蒸留の比較）も、そのまま載せてきました。
-評価問題が学習データに紛れ込んでいないか（汚染、第 19 章）、比較の差が標準誤差より大きいかを確かめ、都合のよい数字だけを選ばないことが、自分の開発を正しい方向に進める唯一の方法です。
+本書では、はっきりした効果が見えなかった実験も、そのまま載せてきました。
+第 22 章の強化学習は +2.1 ポイントで、誤差よりはっきり大きい伸び（たとえば 5 ポイント以上）には届きませんでした。
+第 18 章の蒸留の比較も、計算の対話では蒸留の優位が再現しませんでした。
+評価問題が学習データに紛れ込んでいないか（汚染、第 19 章）、比較の差が標準誤差より大きいかを確かめ、都合のよい数字だけを選ばないことは、自分の開発を正しい方向に進めるために欠かせません。
 
 この節で分かったことを言い直します。
 小さく始め、評価を先に作り、記録を残し、一度に一つだけ変え、失敗も記録する。
@@ -823,9 +1098,9 @@ DPO で、数が正しい割合が 87.0\% から 0.5\% に崩れた & 22 & 選�
 \section{この先の学び方}\label{sec:cap-learn}
 \skimread{本書の外の話題（\tabref{tab:cap-beyond}）と、論文・講義の案内です。初読では「こういう話題と資料がある」と眺めるだけで構いません。最後の小節「本書の中へ戻る」だけは読んでください。次に読む章が決まります。}
 
-本書で扱ったのは、言語モデルを作り、役立つ形にし、道具を使わせるまでの一本道でした。
-では、その一本道の外には何があり、本を閉じた後は何をどう読めばよいのでしょうか。
-最後の節では、本書で扱わなかった話題の地図と、学び続けるための読み方・資料を案内します。
+本書で扱ったのは、言語モデルを作り、役立つ形にし、道具を使わせるまでの工程（\figref{fig:cap-pipeline}）でした。
+では、その工程の外には何があり、本を閉じた後は何をどう読めばよいのでしょうか。
+最後の節では、本書で扱わなかった話題の一覧と、学び続けるための読み方・資料を案内します。
 
 \subsection*{本書で扱わなかった話題}
 
@@ -880,26 +1155,29 @@ DPO で、数が正しい割合が 87.0\% から 0.5\% に崩れた & 22 & 選�
 \subsection*{本書の中へ戻る：2 周目と 3 周目}
 
 本を閉じる前に、本書の中への戻り方にも触れておきます。
-1 周目（背骨の章）だけを読んだ人は、いま全工程の地図を持っています。
-2 周目では、その地図の各段を「実用にする」章を読みます。
-学習を安定させる技術（\chapref{ch:training}）、トークナイザの中身（\chapref{ch:tokenizer}）、現代の構成（\chapref{ch:modern-arch}）、GPU（\chapref{ch:gpu}）、LoRA（\chapref{ch:lora}）、評価と推論（\chapref{ch:eval-serving}）、強化学習（\chapref{ch:rl-basics}〜\chapref{ch:rl-llm}）です。
+この章は、\chapref{ch:intro}の読み方の案内では 2 周目の最後に読む章です。
+ここまで読んだあなたに残っているのは、3 周目です。
 3 周目では、規模を上げて運用する章を読みます。
-分散学習（\chapref{ch:distributed}）、見積もり（\chapref{ch:infra}）、蒸留と量子化（\chapref{ch:distillation}）、Agentic RL（\chapref{ch:agentic-rl}）、ベンチマークと道具選び（\appref{app:benchmarks}・\appref{app:toolmap}）です。
-2 周目の最後にこの章を読んだ人は、残りがこの 3 周目です。
+分散学習（\chapref{ch:distributed}）、見積もり（\chapref{ch:infra}）、蒸留と量子化（\chapref{ch:distillation}）、Agentic RL（\chapref{ch:agentic-rl}）の 4 章と、ベンチマークと道具選びの 2 つの付録（\appref{app:benchmarks}・\appref{app:toolmap}）です。
 本章で名前だけ受け取った言葉が、そのまま入口になります。
 \secref{sec:cap-scale}の DDP と FSDP は\chapref{ch:distributed}、見積もりの式と故障への備えは\chapref{ch:infra}、\figref{fig:cap-pipeline}の蒸留と量子化は\chapref{ch:distillation}、コールドスタートと 92.8\% は\chapref{ch:agentic-rl}で、中身を確かめられます。
 どの周でも、読み終えたら本章に戻り、\tabref{tab:cap-stages}の自分が読んだ段の行を見直してください。
 その段で何を作り、何が本物と違うかが、前より細かく見えるはずです。
 
+\chapref{ch:intro}で示した 1 周目の 10 章を終えたところで、この章を先に眺めた人もいるでしょう。
+その人は、いま全工程の地図を持っています。
+次は 2 周目で、その地図の各段を「実用にする」章を読みます。
+学習を安定させる技術（\chapref{ch:training}）、トークナイザの中身（\chapref{ch:tokenizer}）、現代の構成（\chapref{ch:modern-arch}）、GPU（\chapref{ch:gpu}）、LoRA（\chapref{ch:lora}）、評価と推論（\chapref{ch:eval-serving}）、強化学習（\chapref{ch:rl-basics}〜\chapref{ch:rl-llm}）です。
+
 この節で分かったことを言い直します。
 本書の外の話題も、本書の部品の上に立っています。
-論文は「どの段の話か」を決めて読み、講義と参照実装で知識を新しく保ち、本書の 2 周目・3 周目で地図を細かくしていきます。
+論文は「どの段の話か」を決めて読み、講義と参照実装で知識を新しく保ち、本書の 2 周目・3 周目で、全工程の各段を細かく理解していきます。
 
 \begin{summary}
-\item LLM 開発は、データ → トークナイザ → 事前学習 → SFT → LoRA・強化学習・エージェント → 蒸留・量子化 → 評価の工程で、評価の結果で前の段に戻る輪になっている（\figref{fig:cap-pipeline}、\tabref{tab:cap-stages}）。
-\item 縮小版のパイプラインは、手元の CPU で数分で全工程を通せる。テキストファイルを差し替えれば、自分のデータで同じ工程を回せる。
-\item 既存の成果物を同じ物差しで測り直すと、各章の数値（82.6\%、84.7\%、92.8\% など）がそのまま再現する。固定した評価と乱数の種が、比較を可能にする。
-\item 規模を上げても、モデル・損失・最適化の式は変わらない。変わるのは計算の場所・枚数・精度とデータの量で、費用は $C\approx6ND$ から見積もれる（GPU 1 枚・1 億パラメータ級で数ドル、8 枚・10 億で約 340 ドル、64 枚・80 億で約 2.2 万ドル）。
+\item LLM 開発は、データ → トークナイザ → 事前学習 → SFT（または LoRA）→ 強化学習・エージェント → 蒸留・量子化 → 評価の工程で、評価の結果で前の段に戻る輪になっている（\figref{fig:cap-pipeline}、\tabref{tab:cap-stages}）。
+\item 縮小版のパイプラインは、手元の CPU で数分で全工程を通せる。テキストファイルを差し替えれば、自分のデータで同じ工程を回せる。ただし 28 万パラメータでは基盤モデルが計算をほとんどできず、大きさや学習の長さを 4 倍にしても、損失は下がるが正答率はすぐには動かない（\figref{fig:cap-sweep}）。
+\item 既存の成果物を同じ物差しで測り直すと、各章の数値（82.6\%、84.7\%、92.8\% など）がそのまま再現する。固定した評価と乱数の種が、比較を可能にする。伸びを比べるときは、出発点と測る条件をそろえ、差の標準誤差で判断する。
+\item 規模を上げても、モデルの骨組み・損失・最適化の考え方は変わらない（部品の改良はある）。変わるのは計算の場所・枚数・精度とデータの量で、費用は $C\approx6ND$ から見積もれる（GPU 1 枚・1 億パラメータ級で数ドル、8 枚・10 億で約 340 ドル、64 枚・80 億で約 2.2 万ドル）。
 \item 次の一歩は、自分で事前学習、公開モデルを LoRA で適応、公開モデル＋自作エージェントの 3 つ。どれも最も手間がかかるのはデータと評価の準備である。
 \item 小さく始め、評価を先に作り、記録を残し、一度に一つだけ変える。データの権利・安全性・評価の誠実さを守る。
 \end{summary}
@@ -907,8 +1185,8 @@ DPO で、数が正しい割合が 87.0\% から 0.5\% に崩れた & 22 & 選�
 \section*{本書を閉じて}
 
 この本は、「次のトークンを当てる」という一つの練習から始まりました。
-その練習が、計算を覚え、質問に答え、正しさで磨かれ、電卓を呼ぶエージェントになるまでを、あなたは自分の手で追ってきました。
-事前学習だけでは 0\% だった対話の正答率は、SFT で 82.6\%、強化学習で 84.7\%、電卓を持たせて 92.8\% になりました。
+その練習から始めたモデルが、計算を覚え、質問に答え、正誤の報酬で鍛えられ、電卓を呼ぶエージェントになるまでを、あなたは自分の手で追ってきました。
+事前学習だけでは 0\% だった対話の正答率は、SFT で 82.6\%、強化学習で 84.7\% になり、電卓を使うエージェントは 92.8\% に届きました。
 いま手元にあるのは 260 万パラメータの小さなモデルですが、それを作った手順は、数千億パラメータのモデルを作る手順と同じです。
 違うのは数字の桁で、その桁をどう上げるかも、もう見積もれます。
 

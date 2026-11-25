@@ -1,0 +1,21 @@
+step     0 | train 6.271 | val 6.270 | 2 秒
+step   100 | train 4.340 | val 4.361 | 20 秒
+step   200 | train 3.530 | val 3.576 | 38 秒
+step   300 | train 3.336 | val 3.344 | 58 秒
+step   400 | train 3.152 | val 3.207 | 78 秒
+step   500 | train 3.014 | val 3.120 | 97 秒
+step   600 | train 2.923 | val 3.061 | 117 秒
+name         e192
+n_embd       192
+pre_steps    600
+params       997248
+val_loss     3.0608
+val_novel    3.2360
+val_drill    2.5991
+drill_share  0.2820
+drill_acc    0.0150
+drill_eq     0.1150
+seen         0.7700
+sft_loss     0.6028
+chat_acc     0.1150
+sec          212.1543

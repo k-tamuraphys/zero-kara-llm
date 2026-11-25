@@ -1,0 +1,15 @@
+== flow: 'どうも仕方が'
+ids [[1434, 1394]] shape (1, 2)
+logits shape (1, 2, 4096)
+last-position scores shape (4096,)
+probs shape (4096,)  sum 1.000
+  'ない。'      score  11.47  prob 0.559
+  'ないから'     score   9.94  prob 0.121
+  'ないと'      score   9.30  prob 0.064
+== branch: '\n12+35=' tokens 7
+  1st '5' 0.559 -> 2nd '7' 0.918  (path 0.513)
+  1st '4' 0.428 -> 2nd '7' 0.929  (path 0.398)
+  1st '6' 0.011 -> 2nd '7' 0.876  (path 0.010)
+greedy (temperature=0): 57
+sampling {'temperature': 1.0} 1000 draws: [('57', 513), ('47', 392), ('58', 28), ('48', 21)]
+sampling {'temperature': 0.8, 'top_k': 50} 1000 draws: [('57', 555), ('47', 405), ('58', 14), ('48', 10)]
